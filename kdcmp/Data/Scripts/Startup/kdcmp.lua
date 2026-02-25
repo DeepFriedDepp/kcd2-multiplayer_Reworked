@@ -6,7 +6,33 @@ KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
-KCD2MP.workingClass = "NPC"
+KCD2MP.workingClass = "AnimObject"
+KCD2MP.playerSneaking = false   -- set by OnAction hook when sneak key pressed
+KCD2MP.logActions = true        -- log all action names on first use (find sneak action name)
+
+-- ===== Debug Logger =====
+-- Messages are queued in KCD2MP.debugLog (max 50).
+-- Server polls KCD2MP_PopLog() via evalLua and prints to its console.
+KCD2MP.debugLog = {}
+local MP_LOG_MAX = 50
+
+local function mp_log(msg)
+    local entry = string.format("[%.2f] %s", os.clock(), msg)
+    table.insert(KCD2MP.debugLog, entry)
+    if #KCD2MP.debugLog > MP_LOG_MAX then
+        table.remove(KCD2MP.debugLog, 1)
+    end
+end
+
+-- Server calls this via evalLua to dequeue one message at a time
+function KCD2MP_PopLog()
+    if #KCD2MP.debugLog > 0 then
+        return table.remove(KCD2MP.debugLog, 1)
+    end
+    return ""
+end
+
+mp_log("MOD INIT")
 
 -- ===== Math Helpers =====
 
@@ -71,9 +97,6 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         class = KCD2MP.workingClass,
         position = pos,
         name = name,
-        Properties = {
-            sFactionName = "Neutral",
-        },
     })
 
     if not ok or not entity then
@@ -82,6 +105,13 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     end
 
     System.LogAlways("[KCD2-MP] Spawned entityId=" .. tostring(entity.id))
+
+    -- Load armor character model (AnimObject has no Mannequin ADB = no crash)
+    local cdfPath = "Objects/characters/humans/male/skeleton/preview/male_preview_armor.cdf"
+    pcall(function()
+        local charOk = entity:LoadCharacter(0, cdfPath)
+        System.LogAlways("[KCD2-MP] LoadCharacter: " .. tostring(charOk))
+    end)
 
     local r = rotZ or 0
 
@@ -101,31 +131,18 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         alphaStep = 0.25,
         -- Dead reckoning velocity (units/sec), computed from last two packets
         vx = 0, vy = 0, vz = 0,
+        -- Last ACTUAL packet position (separate from tx/ty which DR extends)
+        lastPacketX = x, lastPacketY = y,
         -- Ticks since last server packet (for dead reckoning timeout)
         ticksSincePacket = 0,
         -- Packet arrival count (for logging)
         packetCount = 0,
         -- Animation state
-        animState = "none",   -- "none", "idle", "run"
-        animTimer = 0,        -- ticks since last StartAnimation call
+        animTag = "idle",     -- "idle"/"walk"/"run" - current animation state
+        smoothedSpeed = 0,
+        prevCx = x, prevCy = y,
+        speedDropTicks = 0,   -- consecutive ticks with low speed after high speed
     }
-
-    local hasChar = false
-    pcall(function() hasChar = entity:IsSlotCharacter(0) end)
-    if not hasChar then
-        pcall(function()
-            entity:LoadLight(0, {
-                radius = 3,
-                diffuse_color = {x=0, y=1, z=0},
-                diffuse_multiplier = 10,
-                cast_shadow = 0,
-            })
-        end)
-    end
-
-    -- Try to disable AI so it doesn't fight our animation calls
-    pcall(function() entity:SetAIEnabled(false) end)
-    pcall(function() entity:EnableAI(false) end)
 
     KCD2MP.ghosts[id] = {
         entity = entity,
@@ -142,10 +159,9 @@ end
 -- ===== Ghost Update (called by server each packet) =====
 
 -- SERVER_INTERVAL: expected time between server packets in seconds.
--- Used to compute alphaStep so interpolation reaches target in ~1 packet interval.
-local SERVER_INTERVAL = 0.2  -- 200ms
+local SERVER_INTERVAL = 0.05  -- 50ms (exchange-based server tick)
 
-function KCD2MP_UpdateGhost(id, x, y, z, rotZ)
+function KCD2MP_UpdateGhost(id, x, y, z, rotZ, stance)
     local ghost = KCD2MP.ghosts[id]
 
     -- Spawn if doesn't exist yet
@@ -156,65 +172,261 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ)
 
     local istate = ghost.istate
     if not istate then
-        -- Shouldn't happen, but recover
         KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         return
     end
 
     local r = rotZ or istate.tr
 
-    -- Compute dead reckoning velocity from delta between last two targets
-    -- velocity = (newTarget - oldTarget) / serverInterval
-    istate.vx = (x - istate.tx) / SERVER_INTERVAL
-    istate.vy = (y - istate.ty) / SERVER_INTERVAL
-    istate.vz = (z - istate.tz) / SERVER_INTERVAL
+    -- Velocity from actual packet positions (for dead reckoning).
+    -- Use lastPacketX/Y (real previous packet pos), NOT tx/ty which dead reckoning extends.
+    local ddx = x - (istate.lastPacketX or x)
+    local ddy = y - (istate.lastPacketY or y)
+    local raw_vx = ddx / SERVER_INTERVAL
+    local raw_vy = ddy / SERVER_INTERVAL
+    istate.vx = lerpVal(istate.vx or 0, raw_vx, 0.5)
+    istate.vy = lerpVal(istate.vy or 0, raw_vy, 0.5)
+    istate.lastPacketX = x
+    istate.lastPacketY = y
 
-    -- Adjust alphaStep based on measured packet interval
-    -- ticksSincePacket * 50ms = measured interval
-    if istate.ticksSincePacket > 0 then
-        local measuredInterval = istate.ticksSincePacket * 0.05
-        -- alphaStep = 50ms / measured_interval, clamped to [0.1, 1.0]
-        istate.alphaStep = clamp(0.05 / measuredInterval, 0.1, 1.0)
+    -- Log large target jumps; reset velocity on teleport/fast-travel
+    local jumpDist = math.sqrt(ddx*ddx + ddy*ddy + (z - (istate.tz or z))*(z - (istate.tz or z)))
+    if jumpDist > 5.0 then
+        istate.vx = 0
+        istate.vy = 0
+        mp_log(string.format("JUMP id=%s dist=%.2f vx/vy reset", id, jumpDist))
+    elseif jumpDist > 2.0 then
+        mp_log(string.format("JUMP id=%s dist=%.2f", id, jumpDist))
     end
 
-    -- New prev = where ghost is RIGHT NOW (current lerped pos)
-    istate.px = istate.cx
-    istate.py = istate.cy
-    istate.pz = istate.cz
-    istate.pr = istate.cr
-
-    -- New target
     istate.tx = x
     istate.ty = y
     istate.tz = z
     istate.tr = r
-
-    -- Reset interpolation to start from current pos toward new target
-    istate.alpha = 0.0
+    istate.stance = stance or "s"
     istate.ticksSincePacket = 0
     istate.packetCount = istate.packetCount + 1
 
-    if istate.packetCount % 20 == 1 then
-        System.LogAlways(string.format("[KCD2-MP] ghost '%s' packet#%d target=%.1f,%.1f,%.1f step=%.3f",
-            id, istate.packetCount, x, y, z, istate.alphaStep))
+    if istate.packetCount % 40 == 1 then
+        local spd = math.sqrt(raw_vx*raw_vx + raw_vy*raw_vy)
+        mp_log(string.format("pkt#%d id=%s pos=%.1f,%.1f,%.1f spd=%.1f",
+            istate.packetCount, id, x, y, z, spd))
     end
+end
+
+-- ===== Exchange: read local player state + apply ghost from other player =====
+-- Returns CSV "x,y,z,rotZ,stance"  (stance: "s"=stand, "c"=crouch/sneak)
+-- gstance: other player's stance to apply to ghost
+function KCD2MP_Exchange(ghost_id, gx, gy, gz, gr, gstance)
+    -- Apply incoming ghost state
+    if ghost_id and gx then
+        KCD2MP_UpdateGhost(ghost_id, gx, gy, gz, gr, gstance)
+    end
+    -- Read and return local player state
+    if not player then return "" end
+    local pos = player:GetWorldPos()
+    if not pos then return "" end
+    local rot = 0
+    pcall(function()
+        local ang = player:GetWorldAngles()
+        if ang then rot = ang.z or 0 end
+    end)
+    -- Stance: use OnAction-tracked flag (most reliable in KCD2)
+    -- Fallback to engine API in case action hook missed something
+    local stance = "s"
+    if KCD2MP.playerSneaking then
+        stance = "c"
+    else
+        pcall(function()
+            local s = player:GetStance()
+            if s == 2 or s == 3 then stance = "c" end
+        end)
+        if stance == "s" then
+            pcall(function()
+                if player.actor and player.actor.bSneaking then stance = "c" end
+            end)
+        end
+    end
+    return string.format("%.3f,%.3f,%.3f,%.4f,%s", pos.x, pos.y, pos.z, rot, stance)
 end
 
 -- Auto-start interp tick (safe to call multiple times)
 function KCD2MP_StartInterp()
     if KCD2MP.interpRunning then return end
     KCD2MP.interpRunning = true
-    System.LogAlways("[KCD2-MP] Interp tick started (50ms)")
-    Script.SetTimer(50, KCD2MP_InterpTick)
+    System.LogAlways("[KCD2-MP] Interp tick started (20ms)")
+    Script.SetTimer(20, KCD2MP_InterpTick)
 end
 
--- ===== Interpolation Tick (50ms) =====
+-- ===== Animation Update =====
 
--- How many 50ms ticks beyond alpha=1 before we start dead reckoning
--- 6 ticks = 300ms (1.5x default packet interval)
-local DR_START_TICKS = 6
--- Max extrapolation time in seconds (cap dead reckoning)
-local DR_MAX_SECS = 1.0
+-- Sneak animation candidates (probed on first use, result cached).
+local SNEAK_WALK_ANIMS = {
+    "3d_sneak_walk_turn_strafe",
+    "3d_sneaking_walk_turn_strafe",
+    "3d_stealth_walk_turn_strafe",
+    "3d_crouch_walk_turn_strafe",
+}
+local SNEAK_IDLE_ANIMS = {
+    "sneak_idle_both",
+    "sneaking_idle_both",
+    "stealth_idle_both",
+    "crouch_idle_both",
+}
+KCD2MP._sneakWalkAnim = nil
+KCD2MP._sneakIdleAnim = nil
+
+local function findAnim(entity, candidates)
+    for _, name in ipairs(candidates) do
+        local len = 0
+        pcall(function() len = entity:GetAnimationLength(0, name) or 0 end)
+        if len > 0 then return name end
+    end
+    return nil
+end
+
+-- Hysteresis thresholds (m/s).
+-- Different enter/exit speeds prevent oscillation when speed hovers at a boundary.
+-- Enter: must EXCEED this speed to switch INTO this state.
+-- Exit:  must DROP BELOW this speed to switch OUT of this state (go lower).
+local ANIM_UP   = { walk=1.5, run=4.5, sprint=6.5 }
+local ANIM_DOWN = { walk=0.7, run=3.5, sprint=5.5 }
+
+local function calcAnimTag(speed, cur, stance)
+    if stance == "c" then
+        return speed > 0.3 and "sneak_walk" or "sneak_idle"
+    end
+    -- Start from current tag and check if we cross hysteresis bands.
+    local t = cur or "idle"
+    if t == "sprint" then
+        if speed < ANIM_DOWN.sprint then t = "run"   else return "sprint" end
+    end
+    if t == "run" then
+        if     speed >= ANIM_UP.sprint  then return "sprint"
+        elseif speed <  ANIM_DOWN.run   then t = "walk"  else return "run" end
+    end
+    if t == "walk" then
+        if     speed >= ANIM_UP.sprint  then return "sprint"
+        elseif speed >= ANIM_UP.run     then return "run"
+        elseif speed <  ANIM_DOWN.walk  then return "idle" else return "walk" end
+    end
+    -- idle / sneak states
+    if     speed >= ANIM_UP.sprint then return "sprint"
+    elseif speed >= ANIM_UP.run    then return "run"
+    elseif speed >= ANIM_UP.walk   then return "walk"
+    else                                 return "idle" end
+end
+
+function KCD2MP_UpdateAnimation(id, ghost)
+    local istate = ghost.istate
+    local speed = istate.smoothedSpeed or 0
+    local stance = istate.stance or "s"
+
+    -- Sanity: can't be sneaking at running speeds (auto-clears bad toggle state)
+    if stance == "c" and speed > 4.0 then stance = "s" end
+    local wantTag = calcAnimTag(speed, istate.animTag, stance)
+
+    if istate.animTag == wantTag then return end
+    local prevTag = istate.animTag or "?"
+    istate.animTag = wantTag
+
+    local animName
+    if wantTag == "sneak_walk" then
+        if not KCD2MP._sneakWalkAnim then
+            KCD2MP._sneakWalkAnim = findAnim(ghost.entity, SNEAK_WALK_ANIMS)
+                                    or "3d_relaxed_walk_turn_strafe"
+            mp_log("SneakWalkAnim: " .. KCD2MP._sneakWalkAnim)
+        end
+        animName = KCD2MP._sneakWalkAnim
+    elseif wantTag == "sneak_idle" then
+        if not KCD2MP._sneakIdleAnim then
+            KCD2MP._sneakIdleAnim = findAnim(ghost.entity, SNEAK_IDLE_ANIMS)
+                                    or "relaxed_idle_both"
+            mp_log("SneakIdleAnim: " .. KCD2MP._sneakIdleAnim)
+        end
+        animName = KCD2MP._sneakIdleAnim
+    else
+        local anims = {
+            sprint = "3d_relaxed_sprint_turn_strafe",
+            run    = "3d_relaxed_run_turn_strafe",
+            walk   = "3d_relaxed_walk_turn_strafe",
+            idle   = "relaxed_idle_both",
+        }
+        animName = anims[wantTag]
+    end
+
+    -- Don't restart if the same animation is already playing (avoids mid-stride reset)
+    local alreadyPlaying = false
+    pcall(function() alreadyPlaying = ghost.entity:IsAnimationRunning(0, animName) end)
+    if not alreadyPlaying then
+        -- blend=0.4s: long enough to smoothly cross-fade without feeling sluggish
+        pcall(function() ghost.entity:StartAnimation(0, animName, 0, 0.4, 1.0, true) end)
+    end
+    mp_log(string.format("Anim: %s %s->%s spd=%.1f sta=%s [%s]%s",
+        id, prevTag, wantTag, speed, stance, animName,
+        alreadyPlaying and " (skip-restart)" or ""))
+end
+
+-- ===== Interpolation Tick (20ms) =====
+
+-- Floor detection: physics raycast hits real geometry (roads, rocks, bridges).
+-- Falls back to terrain elevation if raycast unavailable.
+local function getFloorZ(x, y, curZ)
+    local floorZ = nil
+    local reliable = false
+
+    -- Physics raycast: origin 2m above ghost, ray goes 12m DOWN.
+    -- Direction vector magnitude = ray length in CryEngine: {z=-12} = 12m downward.
+    -- This covers range [curZ+2 .. curZ-10] - hits bridges, stairs, terrain.
+    -- Flags 15 = ent_terrain(1)|ent_static(2)|ent_rigid(4)|ent_sleeping_rigid(8)
+    pcall(function()
+        local hits = Physics.RayWorldIntersection(
+            {x=x, y=y, z=curZ + 2.0},
+            {x=0,  y=0, z=-12},
+            15,
+            1
+        )
+        if hits and hits[1] then
+            local h = hits[1]
+
+            -- Log raycast field layout once (helps identify correct field name)
+            if not KCD2MP._rayFmtLogged then
+                KCD2MP._rayFmtLogged = true
+                local parts = {}
+                for k, v in pairs(h) do
+                    if type(v) == "number" then
+                        parts[#parts+1] = k .. "=" .. string.format("%.2f", v)
+                    elseif type(v) == "table" then
+                        parts[#parts+1] = k .. "={z=" .. tostring(v.z) .. "}"
+                    end
+                end
+                mp_log("RAY_FORMAT: " .. table.concat(parts, " "))
+            end
+
+            -- CryEngine may return hit point as h.pt, h.pos, or h.point
+            local hz = nil
+            if     h.pt    then hz = h.pt.z
+            elseif h.pos   then hz = h.pos.z
+            elseif h.point then hz = h.point.z
+            end
+            -- Accept hits within 10m below current position
+            if hz and hz > curZ - 10.0 then
+                floorZ   = hz
+                reliable = true
+            end
+        end
+    end)
+
+    -- Fallback to terrain mesh (underestimates height on bridges/platforms)
+    if not floorZ then
+        pcall(function()
+            local gz = Terrain.GetElevation(x, y)
+            if gz then floorZ = gz end
+        end)
+    end
+
+    return floorZ, reliable
+end
 
 function KCD2MP_InterpTick()
     if not KCD2MP.interpRunning then return end
@@ -223,95 +435,96 @@ function KCD2MP_InterpTick()
         local istate = ghost.istate
         if istate and ghost.entity then
             istate.ticksSincePacket = istate.ticksSincePacket + 1
-            istate.alpha = istate.alpha + istate.alphaStep
 
-            local x, y, z, r
-
-            if istate.alpha <= 1.0 then
-                -- === Normal interpolation: lerp prev -> target ===
-                x = lerpVal(istate.px, istate.tx, istate.alpha)
-                y = lerpVal(istate.py, istate.ty, istate.alpha)
-                z = lerpVal(istate.pz, istate.tz, istate.alpha)
-                r = lerpAngle(istate.pr, istate.tr, istate.alpha)
-
-            elseif istate.ticksSincePacket <= DR_START_TICKS then
-                -- === Holding at target, waiting for next packet ===
-                x = istate.tx
-                y = istate.ty
-                z = istate.tz
-                r = istate.tr
-
-            else
-                -- === Dead reckoning: extrapolate beyond target ===
-                -- Extra ticks beyond DR_START_TICKS, converted to seconds
-                local extraSecs = (istate.ticksSincePacket - DR_START_TICKS) * 0.05
-                extraSecs = math.min(extraSecs, DR_MAX_SECS)
-                x = istate.tx + istate.vx * extraSecs
-                y = istate.ty + istate.vy * extraSecs
-                z = istate.tz + istate.vz * extraSecs
-                r = istate.tr
+            -- If ghost drifted very far from target (>5m), teleport directly.
+            -- Prevents STEP_CAP from locking ghost hundreds of meters away.
+            local distSq = (istate.tx-istate.cx)*(istate.tx-istate.cx)
+                         + (istate.ty-istate.cy)*(istate.ty-istate.cy)
+                         + (istate.tz-istate.cz)*(istate.tz-istate.cz)
+            if distSq > 25.0 then
+                mp_log(string.format("TELEPORT id=%s dist=%.1f", id, math.sqrt(distSq)))
+                istate.cx = istate.tx
+                istate.cy = istate.ty
+                istate.cz = istate.tz
+                istate.cr = istate.tr
             end
 
-            -- Save current rendered position (used as prev-source on next packet)
-            istate.cx = x
-            istate.cy = y
-            istate.cz = z
-            istate.cr = r
-
-            -- Terrain snap: prevent ghost from going underground
-            -- Terrain.GetElevation(x, y) returns terrain Z at horizontal position (x, y)
-            local sz = z
-            pcall(function()
-                local gz = Terrain.GetElevation(x, y)
-                if gz and sz < gz then
-                    sz = gz
-                    istate.cz = gz  -- update lerp source so next frame continues from snapped z
+            -- Non-destructive DR: project render target forward WITHOUT touching istate.tx/ty.
+            -- istate.tx/ty stays = last received packet. When next packet arrives it's
+            -- simply overwritten - no snap-back rubber-band.
+            -- DR just makes the ghost look ahead of the last-known position while waiting
+            -- for the next packet, keeping movement smooth at sprint speeds.
+            local renderX = istate.tx or istate.cx
+            local renderY = istate.ty or istate.cy
+            local DR_MAX = 3  -- 3 * 20ms = 60ms lookahead (covers 50ms packet gap)
+            local ticks = istate.ticksSincePacket or 0
+            if ticks >= 1 and ticks <= DR_MAX then
+                local vx = istate.vx or 0
+                local vy = istate.vy or 0
+                if math.sqrt(vx*vx + vy*vy) > 0.5 then
+                    renderX = renderX + vx * (ticks * 0.020)
+                    renderY = renderY + vy * (ticks * 0.020)
                 end
-            end)
+            end
 
-            -- Apply to entity
+            -- Smooth ghost toward render target (DR-extended, never snaps back)
+            local factor = 0.5
+            local nx = lerpVal(istate.cx, renderX, factor)
+            local ny = lerpVal(istate.cy, renderY, factor)
+            local nz = lerpVal(istate.cz, istate.tz or istate.cz, factor)
+
+            istate.cx = nx
+            istate.cy = ny
+            istate.cz = nz
+            istate.cr = lerpAngle(istate.cr, istate.tr, factor)
+
+            local x = istate.cx
+            local y = istate.cy
+            local z = istate.cz
+            local r = istate.cr
+
+            -- Floor snap: correct ghost Z against raycast floor.
+            -- Snap-UP: underground up to 10m (handles slopes, slight embedding).
+            -- Snap-DOWN: hovering up to 2m (hover fix; >2m cap prevents snapping off bridges).
+            local sz = z
+            local floorZ, reliable = getFloorZ(x, y, z)
+            if floorZ then
+                local diff = sz - floorZ
+                if diff < -0.05 and diff > -10.0 then
+                    -- Underground up to 10m: snap up to floor
+                    sz = floorZ
+                    istate.cz = floorZ
+                elseif diff > 0.05 and diff < 2.0 then
+                    -- Hovering up to 2m above floor: snap down
+                    sz = floorZ
+                end
+            end
+
+            -- Apply position + rotation
             local ok, err = pcall(function()
                 ghost.entity:SetWorldPos({x=x, y=y, z=sz})
                 ghost.entity:SetWorldAngles({x=0, y=0, z=r})
             end)
             if not ok then
-                System.LogAlways("[KCD2-MP] InterpTick err on '" .. id .. "': " .. tostring(err))
+                System.LogAlways("[KCD2-MP] InterpTick err '" .. id .. "': " .. tostring(err))
                 ghost.entity = nil
             else
-                -- === Animation ===
-                -- Speed from velocity (horizontal only, ignore vertical)
-                local speed = math.sqrt(istate.vx * istate.vx + istate.vy * istate.vy)
-                -- Animation state machine based on speed
-                -- Thresholds from ADB analysis (KCD2 walk ~1.5 m/s, run ~4 m/s)
-                local wantAnim, wantTag
-                if speed > 2.5 then
-                    wantAnim = "3d_relaxed_run_turn_strafe"
-                    wantTag  = "run"
-                elseif speed > 0.3 then
-                    wantAnim = "3d_relaxed_walk_turn_strafe"
-                    wantTag  = "walk"
-                else
-                    wantAnim = "relaxed_idle_both"
-                    wantTag  = ""
-                end
+                -- === Animation speed from PACKET velocity, NOT rendered position ===
+                -- istate.vx/vy = velocity from actual packet positions (smoothed EMA 0.5).
+                -- Using rendered position delta caused STEP_CAP artifacts: ghost slowed
+                -- by cap then surged to catch up → speed oscillated 3→7→3 m/s per tick.
+                local pvx = istate.vx or 0
+                local pvy = istate.vy or 0
+                local packetSpeed = math.sqrt(pvx*pvx + pvy*pvy)
+                -- Light EMA so speed follows packet changes without being too jumpy.
+                istate.smoothedSpeed = lerpVal(istate.smoothedSpeed or 0, packetSpeed, 0.25)
 
-                istate.animTimer = (istate.animTimer or 0) + 1
-                if wantAnim ~= istate.animState or istate.animTimer >= 20 then
-                    istate.animState = wantAnim
-                    istate.animTimer = 0
-                    -- StartAnimation: works for walk/idle (started=true)
-                    -- For run blendspace (started=false) AI.SetAnimationTag takes over
-                    pcall(function() ghost.entity:StartAnimation(0, wantAnim) end)
-                    -- AI tag drives Mannequin fragment selection
-                    pcall(function() AI.SetAnimationTag(ghost.entityId, wantTag) end)
-                    pcall(function() AI.SetSpeed(ghost.entityId, speed) end)
-                end
-                istate.isMoving = (speed > 0.3)
+                KCD2MP_UpdateAnimation(id, ghost)
             end
         end
     end
 
-    Script.SetTimer(50, KCD2MP_InterpTick)
+    Script.SetTimer(20, KCD2MP_InterpTick)
 end
 
 -- ===== Main Tick (500ms) - position reporting =====
@@ -888,6 +1101,25 @@ function KCD2MP_TerrainCheck()
     end
 end
 
+-- ===== Stance Probe =====
+
+function KCD2MP_ProbeStance()
+    if not player then System.LogAlways("[KCD2-MP] ProbeStance: no player"); return end
+    System.LogAlways("[KCD2-MP] === STANCE PROBE ===")
+    local s1, s2, s3 = nil, nil, nil
+    local ok1 = pcall(function() s1 = player:GetStance() end)
+    System.LogAlways("[KCD2-MP] GetStance() ok=" .. tostring(ok1) .. " val=" .. tostring(s1))
+    local ok2 = pcall(function()
+        if player.actor then
+            s2 = player.actor.bSneaking
+            System.LogAlways("[KCD2-MP] actor.bSneaking=" .. tostring(s2))
+        else
+            System.LogAlways("[KCD2-MP] actor=nil")
+        end
+    end)
+    System.LogAlways("[KCD2-MP] === END ===")
+end
+
 -- ===== Register Console Commands =====
 
 local ok, err = pcall(function()
@@ -906,24 +1138,103 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_probe_tags",   "KCD2MP_ProbeAnimTags()", "Probe Mannequin animation tags on ghost")
     System.AddCCommand("mp_test_run",     "KCD2MP_TestRunAnim()",   "Test 3d_relaxed_run_turn_strafe on ghost")
     System.AddCCommand("mp_terrain",      "KCD2MP_TerrainCheck()",  "Check player/ghost vs terrain height")
+    System.AddCCommand("mp_probe_stance", "KCD2MP_ProbeStance()",   "Log player stance value (for crouch detection calibration)")
+    System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
+    System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     System.LogAlways("[KCD2-MP] Commands OK")
 end)
 if not ok then
     System.LogAlways("[KCD2-MP] Command error: " .. tostring(err))
 end
 
+-- ===== Sneak action handler (shared, installed by both hook paths) =====
+
+-- KCD2 sneak key = C, fires "chat_init_with_focus" as TOGGLE (press=toggle on/off).
+-- Activations come as STRINGS "press"/"release"/"hold" (not integers).
+local SNEAK_TOGGLE_ACTIONS = {
+    -- Confirmed KCD2: C key triggers these
+    chat_init_with_focus = true,
+    -- Fallback: other common names in case C is rebound
+    sneak_toggle=true, toggle_sneak=true,
+}
+-- Hold-style sneak: pressed=on, released=off (other games/bindings)
+local SNEAK_HOLD_ACTIONS = {
+    sneak=true, stealth=true, crouch=true,
+    wh_sneak=true, wh_stealth=true,
+    action_sneak=true, action_stealth=true,
+    sneaking=true, stealth_mode=true,
+}
+
+-- Analog axis actions - ignore completely, they flood the log
+local AXIS_ACTIONS = {
+    combat_zone_mouse_x=true, combat_zone_mouse_y=true,
+    mouse_x=true, mouse_y=true, look_lx=true, look_ly=true,
+    move_lx=true, move_ly=true,
+}
+
+local function handleAction(action, activation, value)
+    if AXIS_ACTIONS[action] then return end
+    if KCD2MP.logActions then
+        mp_log(string.format("ACT '%s' a=%s", tostring(action), tostring(activation)))
+    end
+
+    -- Toggle-style: each press of C flips sneak on/off
+    if SNEAK_TOGGLE_ACTIONS[action] and activation == "press" then
+        KCD2MP.playerSneaking = not KCD2MP.playerSneaking
+        mp_log("SNEAK=" .. tostring(KCD2MP.playerSneaking) .. " toggle via '" .. action .. "'")
+        return
+    end
+
+    -- Hold-style: press = on, release = off
+    if SNEAK_HOLD_ACTIONS[action] then
+        local pressed = (activation == "press" or activation == "hold"
+                         or activation == 1 or activation == 2)
+        if pressed ~= KCD2MP.playerSneaking then
+            KCD2MP.playerSneaking = pressed
+            mp_log("SNEAK=" .. tostring(pressed) .. " hold via '" .. action .. "'")
+            KCD2MP.logActions = false
+        end
+    end
+end
+
 -- ===== Player hook =====
 
 local ok2, err2 = pcall(function()
-    if Player and Player.Client then
-        local origOnInit = Player.Client.OnInit
-        Player.Client.OnInit = function(self)
-            if origOnInit then origOnInit(self) end
-            System.LogAlways("[KCD2-MP] Player loaded!")
-            KCD2MP_GetPos()
+    if not (Player and Player.Client) then return end
+
+    -- OnInit: fires when save is loaded
+    local origOnInit = Player.Client.OnInit
+    Player.Client.OnInit = function(self)
+        if origOnInit then origOnInit(self) end
+        System.LogAlways("[KCD2-MP] Player loaded!")
+        KCD2MP_GetPos()
+
+        -- Re-install OnAction hooks here (after player fully initialized).
+        -- Player.Client.OnAction may be reset during game load; re-hooking in OnInit
+        -- ensures our handler is always active.
+        local origCA = Player.Client.OnAction
+        Player.Client.OnAction = function(s, action, activation, value)
+            if origCA then pcall(origCA, s, action, activation, value) end
+            handleAction(action, activation, value)
         end
-        System.LogAlways("[KCD2-MP] Player hook OK")
+        System.LogAlways("[KCD2-MP] Client.OnAction hooked")
     end
+
+    -- Also hook at mod-init time (catches actions before first save load)
+    local origCA0 = Player.Client.OnAction
+    Player.Client.OnAction = function(self, action, activation, value)
+        if origCA0 then pcall(origCA0, self, action, activation, value) end
+        handleAction(action, activation, value)
+    end
+
+    -- Also try Player.OnAction (non-Client path, some CryEngine versions use this)
+    local origPA = Player.OnAction
+    Player.OnAction = function(self, action, activation, value)
+        if origPA then pcall(origPA, self, action, activation, value) end
+        handleAction(action, activation, value)
+    end
+
+    System.LogAlways("[KCD2-MP] Player hooks OK (OnInit + OnAction x2)")
 end)
 if not ok2 then
     System.LogAlways("[KCD2-MP] Hook error: " .. tostring(err2))

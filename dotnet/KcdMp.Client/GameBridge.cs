@@ -18,11 +18,11 @@ namespace KcdMp.Client;
 /// </summary>
 public partial class GameBridge(string serverHost, int serverPort, string name, string gameApiBase)
 {
-    private const int TickMs = 150;
+    private const int TickMs = 10;
     private const float PosThreshold = 0.05f;
     private const float RotThreshold = 0.02f;
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMilliseconds(800) };
 
     // Last pushed position (for change detection)
     private float _lastX, _lastY, _lastZ, _lastRotZ;
@@ -120,9 +120,17 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
         // --- Position push loop ---
         try
         {
+            int tickCount = 0;
+            long totalReadMs = 0;
+
             while (tcp.Connected)
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 var pos = await ReadPositionAsync();
+                sw.Stop();
+                totalReadMs += sw.ElapsedMilliseconds;
+                tickCount++;
+
                 if (pos.HasValue)
                 {
                     var (x, y, z, rotZ) = pos.Value;
@@ -131,9 +139,14 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                         _hasPushed = true;
                         _lastX = x; _lastY = y; _lastZ = z; _lastRotZ = rotZ;
                         await SendPositionAsync(stream, x, y, z, rotZ);
-                        Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}");
+                        Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  read={sw.ElapsedMilliseconds}ms");
                     }
                 }
+
+                // Print average read time every 100 ticks
+                if (tickCount % 100 == 0)
+                    Console.WriteLine($"[stat] avg read={totalReadMs / tickCount}ms over {tickCount} ticks");
+
                 await Task.Delay(TickMs);
             }
         }
@@ -184,9 +197,14 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
     {
         try
         {
-            // Position
-            var xml = await _http.GetStringAsync($"{gameApiBase}/api/rpg/SoulList/PlayerSoul?depth=1");
-            var posMatch = PosRegex().Match(xml);
+            // Fire position read and rotation-CVar-set in parallel (both are independent)
+            var posTask = _http.GetStringAsync($"{gameApiBase}/api/rpg/SoulList/PlayerSoul?depth=1");
+            var rotSetTask = ExecLuaAsync(@"System.SetCVar(""sv_servername"",tostring(player:GetWorldAngles().z))");
+
+            await Task.WhenAll(posTask, rotSetTask);
+
+            // Parse position
+            var posMatch = PosRegex().Match(posTask.Result);
             if (!posMatch.Success) return null;
 
             var parts = posMatch.Groups[1].Value.Split(',');
@@ -196,11 +214,10 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
             float y = float.Parse(parts[1], CultureInfo.InvariantCulture);
             float z = float.Parse(parts[2], CultureInfo.InvariantCulture);
 
-            // Rotation via CVar eval trick
+            // Read rotation CVar (must come after rotSetTask)
             float rotZ = 0;
             try
             {
-                await ExecLuaAsync(@"System.SetCVar(""sv_servername"",tostring(player:GetWorldAngles().z))");
                 var rotXml = await _http.GetStringAsync($"{gameApiBase}/api/System/Console/GetCvarValue?name=sv_servername");
                 var rm = CvarValueRegex().Match(rotXml);
                 if (rm.Success) float.TryParse(rm.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out rotZ);
