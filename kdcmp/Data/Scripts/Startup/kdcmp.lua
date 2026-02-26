@@ -115,9 +115,17 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         pcall(function() System.ExecuteCommand("closeVisorOn " .. ghostName) end)
     end)
 
-    -- Try to disable NPC AI so position is fully controlled by SetWorldPos each tick
-    pcall(function() AI.EnableUpdateAgent(entity, false) end)
-    pcall(function() entity.AI:SetBehaviorVariable("bAiDisabled", 1) end)
+    -- Disable NPC AI: try immediately and again after 500ms (NPC may re-enable on init)
+    local function disableAI(eid)
+        pcall(function() AI.EnableUpdateAgent(eid, false) end)
+        pcall(function() AI.Signal(0, 1, "OnBackToIdle", eid) end)
+        pcall(function() AI.Signal(0, 1, "OnNoTarget", eid) end)
+        pcall(function() AI.Signal(0, 1, "OnFriendlyInWay", eid) end)
+    end
+    disableAI(entity.id)
+    local disableEid = entity.id
+    Script.SetTimer(500, function() disableAI(disableEid) end)
+    Script.SetTimer(2000, function() disableAI(disableEid) end)
 
     local r = rotZ or 0
 
@@ -295,8 +303,8 @@ end
 -- Different enter/exit speeds prevent oscillation when speed hovers at a boundary.
 -- Enter: must EXCEED this speed to switch INTO this state.
 -- Exit:  must DROP BELOW this speed to switch OUT of this state (go lower).
-local ANIM_UP   = { walk=1.5, run=4.5, sprint=6.5 }
-local ANIM_DOWN = { walk=0.7, run=3.5, sprint=5.5 }
+local ANIM_UP   = { walk=1.0, run=2.5, sprint=4.0 }
+local ANIM_DOWN = { walk=0.4, run=1.8, sprint=3.2 }
 
 local function calcAnimTag(speed, cur, stance)
     if stance == "c" then
@@ -507,6 +515,8 @@ function KCD2MP_InterpTick()
             end
 
             -- Apply position + rotation
+            -- Also tell AI to go here (suppresses wandering if AI.EnableUpdateAgent didn't work)
+            pcall(function() ghost.entity.AI:GoTo({x=x, y=y, z=sz}) end)
             local ok, err = pcall(function()
                 ghost.entity:SetWorldPos({x=x, y=y, z=sz})
                 ghost.entity:SetWorldAngles({x=0, y=0, z=r})
