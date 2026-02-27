@@ -96,15 +96,29 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
 
     System.LogAlways(string.format("[KCD2-MP] Spawning ghost '%s' at %.1f,%.1f,%.1f", id, x, y, z))
 
-    local ok, entity = pcall(System.SpawnEntity, {
-        class = "NPC",
-        position = pos,
-        name = name,
-        properties = { esFaction = "Civilians" },  -- prevent combat with player
-    })
+    -- XGenAIModule.SpawnEntity gives the entity a proper soul (defaultSoulArchetype="NPC"),
+    -- which enables human:Mount() for horse riding. Fallback to System.SpawnEntity if needed.
+    local entity = nil
+    pcall(function()
+        XGenAIModule.SpawnEntity{
+            Name      = name,
+            ClassName = "NPC",
+            Pos       = {x, y, z},
+            Properties = { esFaction = "Civilians" },
+        }
+        entity = System.GetEntityByName(name)
+    end)
+    if not entity then
+        System.LogAlways("[KCD2-MP] XGenAI spawn failed, fallback System.SpawnEntity")
+        local ok2, e2 = pcall(System.SpawnEntity, {
+            class = "NPC", position = pos, name = name,
+            properties = { esFaction = "Civilians" },
+        })
+        if ok2 then entity = e2 end
+    end
 
-    if not ok or not entity then
-        System.LogAlways("[KCD2-MP] SpawnEntity failed: " .. tostring(entity))
+    if not entity then
+        System.LogAlways("[KCD2-MP] SpawnEntity failed for ghost id=" .. tostring(id))
         return nil
     end
 
@@ -225,27 +239,32 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     local pos = {x=x, y=y, z=z}
     local horseName = "kcd2mp_horse_" .. id
 
-    -- Try class="Horse" first, then "Animal" as fallback
-    local ok, horse = pcall(System.SpawnEntity, {
-        class = "Horse",
-        position = pos,
-        name = horseName,
-    })
-
-    if not ok or not horse then
-        ok, horse = pcall(System.SpawnEntity, {
-            class = "Animal",
-            position = pos,
-            name = horseName,
+    local horse = nil
+    pcall(function()
+        XGenAIModule.SpawnEntity{
+            Name      = horseName,
+            ClassName = "Horse",
+            Pos       = {x, y, z},
+            Properties = { esFaction = "Civilians" },
+        }
+        horse = System.GetEntityByName(horseName)
+    end)
+    if not horse then
+        mp_log("HorseSpawn XGenAI failed, fallback System.SpawnEntity")
+        local ok2, h2 = pcall(System.SpawnEntity, {
+            class = "Horse", position = {x=x, y=y, z=z},
+            name = horseName, properties = { esFaction = "Civilians" },
         })
+        if ok2 then horse = h2 end
     end
 
-    if not ok or not horse then
-        mp_log("HorseSpawn FAILED id=" .. id .. " err=" .. tostring(horse))
+    if not horse then
+        mp_log("HorseSpawn FAILED id=" .. id)
         return nil
     end
 
     pcall(function() horse:SetWorldAngles({x=0, y=0, z=rotZ or 0}) end)
+    pcall(function() horse:SetMountableByPlayer(false) end)
 
     KCD2MP.horseGhosts[id] = {
         entity = horse,
@@ -271,15 +290,68 @@ function KCD2MP_MountNPCOnHorse(id)
         return
     end
 
-    -- MountAnimal and LinkToEntity both fail silently in KCD2 (no error, no effect).
-    -- Always use position-offset fallback: NPC placed at saddle height above horse.
-    ghost.istate.ridingFallback = true
-    mp_log("MountNPCOnHorse: ridingFallback=true id=" .. id)
+    local horse = horseData.entity
+
+    -- Log IsMountable so we know if the horse C++ object is ready.
+    local isMountable = nil
+    pcall(function() isMountable = horse.horse and horse.horse:IsMountable() end)
+    mp_log("MountNPCOnHorse: horse.IsMountable=" .. tostring(isMountable) .. " id=" .. id)
+
+    -- Step 1: position NPC at the horse's mount point (required for human:Mount to work).
+    -- ForceMount is player-only; for NPC use GetHorseMountPoint + SetWorldPos + Mount.
+    local mountPos, mountDir = nil, nil
+    pcall(function()
+        mountPos, mountDir = ghost.human:GetHorseMountPoint(horse.id)
+    end)
+    mp_log("MountNPCOnHorse: mountPos=" .. tostring(mountPos) .. " id=" .. id)
+
+    if mountPos then
+        pcall(function() ghost.entity:SetWorldPos(mountPos) end)
+        if mountDir then
+            pcall(function() ghost.entity:SetWorldAngles({x=0, y=0, z=mountDir.z or 0}) end)
+        end
+    end
+
+    -- Step 2: try human:Mount (NPC mount with animation).
+    local mounted = false
+    local ok2, err2 = pcall(function() ghost.human:Mount(horse.id) end)
+    if ok2 then
+        -- Verify via IsMounted (may take a tick to update, so check after short delay).
+        Script.SetTimer(200, function()
+            local ok3, isMounted = pcall(function() return ghost.human and ghost.human:IsMounted() end)
+            mp_log("MountNPCOnHorse: Mount() post-check IsMounted ok=" .. tostring(ok3) .. " val=" .. tostring(isMounted))
+            if isMounted then
+                ghost.istate.nativeMounted  = true
+                ghost.istate.ridingFallback = false
+                mp_log("MountNPCOnHorse: NATIVE MOUNT SUCCESS id=" .. id)
+            else
+                -- Also try ForceMount as fallback (works for player, sometimes NPC)
+                local ok4 = pcall(function() ghost.human:ForceMount(horse.id) end)
+                mp_log("MountNPCOnHorse: ForceMount fallback ok=" .. tostring(ok4))
+                ghost.istate.nativeMounted  = false
+                ghost.istate.ridingFallback = true
+            end
+        end)
+    else
+        mp_log("MountNPCOnHorse: Mount() FAILED (" .. tostring(err2) .. ") id=" .. id)
+        -- ForceMount last resort
+        pcall(function() ghost.human:ForceMount(horse.id) end)
+        ghost.istate.nativeMounted  = false
+        ghost.istate.ridingFallback = true
+    end
 end
 
 function KCD2MP_RemoveHorse(id)
     local horseData = KCD2MP.horseGhosts[id]
     if not horseData then return end
+    -- Dismount NPC before removing horse (avoids orphaned mounted state)
+    local ghost = KCD2MP.ghosts[id]
+    if ghost and ghost.entity and ghost.istate and ghost.istate.nativeMounted then
+        pcall(function() ghost.human:ForceDismount() end)
+        ghost.istate.nativeMounted  = false
+        ghost.istate.ridingFallback = false
+        mp_log("RemoveHorse: ForceDismount id=" .. id)
+    end
     if horseData.entityId then
         pcall(function() System.RemoveEntity(horseData.entityId) end)
     end
@@ -713,14 +785,21 @@ function KCD2MP_InterpTick()
                 end
             end
 
-            local ok, err = pcall(function()
-                ghost.entity:SetWorldPos({x=x, y=y, z=sz})
-                ghost.entity:SetWorldAngles({x=0, y=0, z=r})
-            end)
-            if not ok then
-                System.LogAlways("[KCD2-MP] InterpTick err '" .. id .. "': " .. tostring(err))
-                ghost.entity = nil
-            else
+            -- When nativeMounted, the engine links NPC to horse - skip manual NPC SetWorldPos.
+            -- We only update horse position; rider follows automatically.
+            local ok = true
+            if not istate.nativeMounted then
+                local _, err = pcall(function()
+                    ghost.entity:SetWorldPos({x=x, y=y, z=sz})
+                    ghost.entity:SetWorldAngles({x=0, y=0, z=r})
+                end)
+                if err then
+                    System.LogAlways("[KCD2-MP] InterpTick err '" .. id .. "': " .. tostring(err))
+                    ghost.entity = nil
+                    ok = false
+                end
+            end
+            if ok then
                 -- Speed from rendered XY movement this tick
                 local movedDx = nx - prevCx
                 local movedDy = ny - prevCy
@@ -1811,6 +1890,96 @@ function KCD2MP_RidingState()
     System.LogAlways("[KCD2-MP] === END ===")
 end
 
+function KCD2MP_GhostState()
+    System.LogAlways("[KCD2-MP] === GHOST STATE ===")
+    local count = 0
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        count = count + 1
+        local istate = ghost.istate or {}
+        local horseData = KCD2MP.horseGhosts[id]
+        System.LogAlways(string.format(
+            "[KCD2-MP] Ghost id=%s isRiding=%s nativeMounted=%s ridingFallback=%s hasHorse=%s",
+            tostring(id),
+            tostring(istate.isRiding),
+            tostring(istate.nativeMounted),
+            tostring(istate.ridingFallback),
+            tostring(horseData ~= nil)
+        ))
+        -- Check if NPC has .human and if IsMounted works
+        if ghost.entity then
+            local ok, mounted = pcall(function() return ghost.human and ghost.human:IsMounted() end)
+            System.LogAlways("[KCD2-MP]   IsMounted ok=" .. tostring(ok) .. " val=" .. tostring(mounted))
+            -- Check if horse entity exists
+            if horseData and horseData.entity then
+                local ok2, hasRider = pcall(function()
+                    return horseData.entity.horse and horseData.entity.horse:HasRider()
+                end)
+                local ok3, isMountable = pcall(function()
+                    return horseData.entity.horse and horseData.entity.horse:IsMountable()
+                end)
+                System.LogAlways("[KCD2-MP]   horse.HasRider ok=" .. tostring(ok2) .. " val=" .. tostring(hasRider))
+                System.LogAlways("[KCD2-MP]   horse.IsMountable ok=" .. tostring(ok3) .. " val=" .. tostring(isMountable))
+            end
+        end
+    end
+    System.LogAlways("[KCD2-MP] Total ghosts=" .. count .. " horseGhosts=" .. (function()
+        local n=0; for _ in pairs(KCD2MP.horseGhosts) do n=n+1 end; return n
+    end)())
+end
+
+-- Test spawning entities via XGenAIModule with various class names.
+-- Safe: each class wrapped in pcall, entity removed after 10s.
+-- Usage: mp_test_xgen <ClassName>  (default: NullAI)
+function KCD2MP_TestXGenSpawn(className)
+    if not player then System.LogAlways("[KCD2-MP] TestXGenSpawn: no player"); return end
+    local pos = player:GetWorldPos()
+    if not pos then return end
+
+    className = (className and className ~= "") and className or "NullAI"
+    local testName = "kcd2mp_xgen_test"
+    System.LogAlways("[KCD2-MP] TestXGenSpawn: trying ClassName=" .. className)
+
+    -- Remove previous test entity if exists
+    pcall(function()
+        local old = System.GetEntityByName(testName)
+        if old then System.RemoveEntity(old.id) end
+    end)
+
+    -- Try XGenAIModule.SpawnEntity
+    local ok, err = pcall(function()
+        local eid = XGenAIModule.SpawnEntity{
+            Name      = testName,
+            ClassName = className,
+            Pos       = {pos.x + 2, pos.y, pos.z},
+            Properties = { esFaction = "Civilians" },
+        }
+        System.LogAlways("[KCD2-MP] TestXGenSpawn: XGenAI returned eid=" .. tostring(eid))
+        local ent = System.GetEntityByName(testName)
+        if ent then
+            System.LogAlways("[KCD2-MP] TestXGenSpawn: entity found id=" .. tostring(ent.id)
+                .. " class=" .. tostring(ent.class))
+            -- Check human/actor/horse sub-objects
+            local hasSoul   = pcall(function() return ent.soul end)
+            local hasHuman  = pcall(function() return ent.human end)
+            local isMounted = pcall(function() return ent.human and ent.human:IsMounted() end)
+            System.LogAlways("[KCD2-MP] TestXGenSpawn: hasSoul=" .. tostring(hasSoul)
+                .. " hasHuman=" .. tostring(hasHuman)
+                .. " IsMounted=" .. tostring(isMounted))
+            -- Remove after 10s
+            local eid2 = ent.id
+            Script.SetTimer(10000, function()
+                pcall(function() System.RemoveEntity(eid2) end)
+                System.LogAlways("[KCD2-MP] TestXGenSpawn: removed test entity")
+            end)
+        else
+            System.LogAlways("[KCD2-MP] TestXGenSpawn: entity NOT found by name after spawn")
+        end
+    end)
+    if not ok then
+        System.LogAlways("[KCD2-MP] TestXGenSpawn: CRASHED/ERROR: " .. tostring(err))
+    end
+end
+
 -- ===== Register Console Commands =====
 
 local ok, err = pcall(function()
@@ -1839,6 +2008,10 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_find_horses",     "KCD2MP_FindHorses()",     "Find horse entities near player - shows class names")
     System.AddCCommand("mp_spawn_horse_test","KCD2MP_SpawnHorseTest()", "Force-spawn a horse at player position (class probe)")
     System.AddCCommand("mp_riding_state",    "KCD2MP_RidingState()",    "Log current riding detection state")
+    System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
+    System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
+    System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
+    System.AddCCommand("mp_test_xgen_horse",  'KCD2MP_TestXGenSpawn("Horse")',  "Test XGenAIModule.SpawnEntity ClassName=Horse")
     System.LogAlways("[KCD2-MP] Commands OK")
 end)
 if not ok then
