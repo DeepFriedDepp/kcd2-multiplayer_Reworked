@@ -1,4 +1,19 @@
 mods - Shortcut.lnk
 memory.md
 .claude
+
+# Build output
+bin/
+obj/
+out/
+Debug/
+Release/
 publish/
+
+# Visual Studio / Rider IDE state — never commit
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
