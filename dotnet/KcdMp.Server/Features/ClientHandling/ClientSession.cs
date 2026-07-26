@@ -10,20 +10,7 @@ namespace KcdMp.Server.Features.ClientHandling;
 /// <summary>
 /// Handles one connected client agent.
 ///
-/// Wire protocol (all packets):
-///   [type:1][payloadLen:2 LE][payload:N]
-///
-/// C→S  0x00  Handshake:  [nameLen:1][name:UTF-8]
-/// C→S  0x01  Position:   [x:4f][y:4f][z:4f][rotZ:4f][flags:1]  (17 bytes, LE IEEE-754)
-///               flags bit 0: isRiding
-/// C→S  0x04  Ping:       [timestamp:8 LE int64]
-/// S→C  0xFF  Ack:        [assignedId:1]
-/// S→C  0x02  Ghost:      [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]  (18 bytes)
-/// S→C  0x03  Name:       [ghostId:1][name:UTF-8...]
-/// C→S  0x07  Voice:      [pcm: 640 bytes]  (16kHz mono 16-bit, 20 ms frame)
-/// S→C  0x05  Pong:       [timestamp:8 LE int64]  (echo of Ping)
-/// S→C  0x06  Disconnect: [ghostId:1]
-/// S→C  0x08  Voice:      [sourceId:1][pcm: 640 bytes]
+/// See <see cref="Protocol"/> for the framing and packet layouts.
 /// </summary>
 public class ClientSession
 {
@@ -52,58 +39,87 @@ public class ClientSession
         var writeTask = WriteLoopAsync();
         try
         {
-            // --- Handshake ---
+            // --- Handshake:  [version:1][nameLen:1][name:UTF-8] ---
             var header = new byte[3];
             await ReadExactAsync(header);
 
-            if (header[0] != 0x00)
+            if (header[0] != Protocol.Handshake)
             {
-                _logger.Debug("[!] Client sent bad handshake type 0x{B:X2}, dropping.", header[0]);
+                _logger.Warning("[!] Client sent bad handshake type 0x{Type:X2}, dropping.", header[0]);
                 return;
             }
 
-            int nameLen = header[1]; // single byte, max 255
-            var nameBytes = new byte[nameLen];
-            await ReadExactAsync(nameBytes);
-            Name = Encoding.UTF8.GetString(nameBytes);
+            int handshakeLen = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(1));
+            if (handshakeLen < 2)
+            {
+                // Pre-versioning clients sent [nameLen:1][name] with no version
+                // byte. Their payload is the bare name, so there is nothing to
+                // negotiate — reject rather than misread the first byte as a version.
+                _logger.Warning("[!] Handshake payload too short ({Len} bytes) — client predates version negotiation. Rejecting.", handshakeLen);
+                EnqueueRaw(BuildPacket(Protocol.VersionMismatch, [Protocol.Version]));
+                return;
+            }
 
-            _logger.Debug("[+] '{Name}' connected (id={Id}) from {ClientRemoteEndPoint}. Clients: active", Name, Id, _tcp.Client.RemoteEndPoint);
+            var handshakePayload = new byte[handshakeLen];
+            await ReadExactAsync(handshakePayload);
+
+            byte clientVersion = handshakePayload[0];
+            if (clientVersion != Protocol.Version)
+            {
+                _logger.Warning("[!] Rejecting client with protocol v{ClientVersion}; this relay speaks v{ServerVersion}.",
+                    clientVersion, Protocol.Version);
+                EnqueueRaw(BuildPacket(Protocol.VersionMismatch, [Protocol.Version]));
+                return;
+            }
+
+            int nameLen = handshakePayload[1]; // single byte, max 255
+            if (nameLen > handshakeLen - 2)
+            {
+                _logger.Warning("[!] Handshake declares a {NameLen}-byte name but carries {Available}. Dropping.",
+                    nameLen, handshakeLen - 2);
+                return;
+            }
+            Name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
+
+            _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}) from {ClientRemoteEndPoint}.",
+                Name, Id, clientVersion, _tcp.Client.RemoteEndPoint);
 
             // Send Ack with assigned ID
-            EnqueueRaw(BuildPacket(0xFF, [Id]));
+            EnqueueRaw(BuildPacket(Protocol.Ack, [Id]));
 
             // Broadcast this client's name to all others; send existing names to this client
             _broadcastService.BroadcastName(this);
             _broadcastService.SendAllNamesTo(this);
 
             // --- Position receive loop ---
-            // Accepts both v1 (16 bytes: x,y,z,rotZ) and v2 (17 bytes: x,y,z,rotZ,flags)
-            var posPayload = new byte[17];
+            // Payload length is now exact: the version byte replaced the old
+            // 16-vs-17-byte sniffing, and a v1 peer always sends 17.
+            var posPayload = new byte[Protocol.PositionPayloadLen];
             while (true)
             {
                 await ReadExactAsync(header);
                 int type = header[0];
                 int payloadLen = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(1));
 
-                if (type == 0x04 && payloadLen == 8)
+                if (type == Protocol.Ping && payloadLen == 8)
                 {
                     // Ping → echo back as Pong with same 8-byte timestamp
                     var tsBytes = new byte[8];
                     await ReadExactAsync(tsBytes);
-                    EnqueueRaw(BuildPacket(0x05, tsBytes));
+                    EnqueueRaw(BuildPacket(Protocol.Pong, tsBytes));
                     continue;
                 }
 
-                if (type == 0x07 && payloadLen == 640)
+                if (type == Protocol.VoiceUp && payloadLen == Protocol.VoiceFrameLen)
                 {
                     // Voice frame → relay to all other ready clients
-                    var pcm = new byte[640];
+                    var pcm = new byte[Protocol.VoiceFrameLen];
                     await ReadExactAsync(pcm);
                     _broadcastService.BroadcastVoice(this, pcm);
                     continue;
                 }
 
-                if (type != 0x01 || (payloadLen != 16 && payloadLen != 17))
+                if (type != Protocol.Position || payloadLen != Protocol.PositionPayloadLen)
                 {
                     // Skip unknown/malformed packet
                     if (payloadLen > 0)
@@ -114,14 +130,13 @@ public class ClientSession
                     continue;
                 }
 
-                // Read exactly payloadLen bytes (16 or 17)
-                await ReadExactAsync(posPayload, payloadLen);
+                await ReadExactAsync(posPayload, Protocol.PositionPayloadLen);
 
                 float x    = ReadFloat(posPayload, 0);
                 float y    = ReadFloat(posPayload, 4);
                 float z    = ReadFloat(posPayload, 8);
                 float rotZ = ReadFloat(posPayload, 12);
-                byte  flags = payloadLen >= 17 ? posPayload[16] : (byte)0x00;
+                byte  flags = posPayload[16];
 
                 _broadcastService.Broadcast(this, x, y, z, rotZ, flags);
             }
@@ -148,12 +163,12 @@ public class ClientSession
         WriteFloat(payload, 9, z);
         WriteFloat(payload, 13, rotZ);
         payload[17] = flags;
-        EnqueueRaw(BuildPacket(0x02, payload));
+        EnqueueRaw(BuildPacket(Protocol.Ghost, payload));
     }
 
     /// <summary>Thread-safe: enqueue a Disconnect packet (0x06) to be sent to this client.</summary>
     public void EnqueueDisconnect(byte ghostId) =>
-        EnqueueRaw(BuildPacket(0x06, [ghostId]));
+        EnqueueRaw(BuildPacket(Protocol.Disconnect, [ghostId]));
 
     /// <summary>Thread-safe: enqueue a Voice packet (0x08) to be sent to this client.</summary>
     public void EnqueueVoice(byte sourceId, byte[] pcm)
@@ -161,7 +176,7 @@ public class ClientSession
         var payload = new byte[1 + pcm.Length];
         payload[0] = sourceId;
         Buffer.BlockCopy(pcm, 0, payload, 1, pcm.Length);
-        EnqueueRaw(BuildPacket(0x08, payload));
+        EnqueueRaw(BuildPacket(Protocol.VoiceDown, payload));
     }
 
     /// <summary>Thread-safe: enqueue a Name packet (0x03) to be sent to this client.</summary>
@@ -171,7 +186,7 @@ public class ClientSession
         var payload = new byte[1 + nameBytes.Length];
         payload[0] = ghostId;
         nameBytes.CopyTo(payload, 1);
-        EnqueueRaw(BuildPacket(0x03, payload));
+        EnqueueRaw(BuildPacket(Protocol.Name, payload));
     }
 
     private void EnqueueRaw(byte[] packet) =>

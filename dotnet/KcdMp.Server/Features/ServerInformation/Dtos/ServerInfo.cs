@@ -8,7 +8,7 @@ public record ServerInfo
 	/// <summary>
 	/// The map's name (Trosky or Kuttenberg)
 	/// </summary>
-	public string MapName { get; set; }
+	public string MapName { get; set; } = string.Empty;
 	
 	/// <summary>
 	/// The current player count.
@@ -23,5 +23,5 @@ public record ServerInfo
 	/// <summary>
 	/// The server's tags.
 	/// </summary>
-	public string[] Tags { get; set; }
+	public string[] Tags { get; set; } = [];
 }

@@ -23,7 +23,7 @@ namespace KcdMp.Client;
 ///     RotStateIntervalMs (80 ms). Cached values are used by the position loop.
 ///     This cuts per-tick latency from ~50 ms to ~15 ms.
 /// </summary>
-public partial class GameBridge(string serverHost, int serverPort, string name, string gameApiBase)
+public partial class GameBridge(ClientConfig config)
 {
     private const int TickMs           = 10;
     private const int RotStateIntervalMs = 80;
@@ -59,6 +59,12 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                 await ConnectAndRunAsync(ct);
             }
             catch (OperationCanceledException) { break; }
+            catch (ProtocolVersionMismatchException ex)
+            {
+                // Fatal: reconnecting to the same relay cannot succeed.
+                Console.WriteLine($"[!] {ex.Message}");
+                break;
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[!] Unexpected error: {ex.Message}");
@@ -82,7 +88,7 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
         {
             try
             {
-                var xml = await _http.GetStringAsync($"{gameApiBase}/api/rpg/Calendar?depth=1");
+                var xml = await _http.GetStringAsync($"{config.GameApiBase}/api/rpg/Calendar?depth=1");
                 var m = GameTimeRegex().Match(xml);
                 if (m.Success && float.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float t) && t > 0)
                 {
@@ -104,10 +110,10 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
     {
         using var tcp = new TcpClient();
 
-        Console.WriteLine($"Connecting to relay server {serverHost}:{serverPort}...");
+        Console.WriteLine($"Connecting to relay server {config.ServerHost}:{config.ServerPort}...");
         try
         {
-            await tcp.ConnectAsync(serverHost, serverPort);
+            await tcp.ConnectAsync(config.ServerHost, config.ServerPort);
         }
         catch (Exception ex)
         {
@@ -117,20 +123,35 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
 
         var stream = tcp.GetStream();
 
-        // --- Handshake ---
-        var nameBytes = Encoding.UTF8.GetBytes(name);
-        var handshake = new byte[3 + nameBytes.Length];
-        handshake[0] = 0x00;
-        handshake[1] = (byte)nameBytes.Length; // payloadLen low byte (name ≤ 255 chars)
-        handshake[2] = 0x00;                   // payloadLen high byte
-        nameBytes.CopyTo(handshake, 3);
+        // --- Handshake:  [version:1][nameLen:1][name:UTF-8] ---
+        var nameBytes = Encoding.UTF8.GetBytes(config.PlayerName ?? Environment.MachineName);
+        if (nameBytes.Length > 255)
+            nameBytes = nameBytes[..255];
+
+        var handshake = new byte[3 + 2 + nameBytes.Length];
+        handshake[0] = Protocol.Handshake;
+        BinaryPrimitives.WriteUInt16LittleEndian(handshake.AsSpan(1), (ushort)(2 + nameBytes.Length));
+        handshake[3] = Protocol.Version;
+        handshake[4] = (byte)nameBytes.Length;
+        nameBytes.CopyTo(handshake, 5);
         await stream.WriteAsync(handshake);
 
-        // --- Ack (S→C  0xFF [id:1]) ---
-        var ack = new byte[4]; // header(3) + id(1)
-        await ReadExactAsync(stream, ack);
-        byte myId = ack[3];
-        Console.WriteLine($"Connected! Assigned id={myId}");
+        // --- Ack (S→C 0xFF [id:1]) or rejection (S→C 0x09 [serverVersion:1]) ---
+        // Both are 4 bytes on the wire, so the type byte decides.
+        var reply = new byte[4]; // header(3) + 1
+        await ReadExactAsync(stream, reply);
+
+        if (reply[0] == Protocol.VersionMismatch)
+            throw new ProtocolVersionMismatchException(reply[3]);
+
+        if (reply[0] != Protocol.Ack)
+        {
+            Console.WriteLine($"[!] Expected Ack, got packet type 0x{reply[0]:X2}. Dropping connection.");
+            return;
+        }
+
+        byte myId = reply[3];
+        Console.WriteLine($"Connected! Assigned id={myId} (protocol v{Protocol.Version})");
         Console.WriteLine();
 
         _hasPushed = false;
@@ -141,9 +162,17 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
         catch { /* ignore if mod not loaded yet */ }
 
         // Start voice chat — frames captured on background thread, queued, sent in main loop.
-        _voice = new VoiceChat(frame => _voiceQueue.Enqueue(frame));
-        try { _voice.Start(); }
-        catch (Exception ex) { Console.WriteLine($"[voice] Failed to start: {ex.Message}"); }
+        // Left null when disabled, which also suppresses every _voice?. call below.
+        if (config.VoiceChatEnabled)
+        {
+            _voice = new VoiceChat(frame => _voiceQueue.Enqueue(frame));
+            try { _voice.Start(); }
+            catch (Exception ex) { Console.WriteLine($"[voice] Failed to start: {ex.Message}"); }
+        }
+        else
+        {
+            Console.WriteLine("[voice] Disabled by config — microphone will not be opened.");
+        }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(appCt);
 
@@ -229,7 +258,7 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                 BinaryPrimitives.WriteInt64LittleEndian(tsBytes, ts);
                 _pingsSent[ts] = System.Diagnostics.Stopwatch.GetTimestamp();
                 var packet = new byte[3 + 8];
-                packet[0] = 0x04;
+                packet[0] = Protocol.Ping;
                 BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), 8);
                 tsBytes.CopyTo(packet, 3);
                 await stream.WriteAsync(packet, ct);
@@ -254,7 +283,7 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                     @"local ride=KCD2MP and KCD2MP.isRiding and 'r' or 's';" +
                     @"return string.format('%.4f,%s',r,ride)end)())");
 
-                var xml = await _http.GetStringAsync($"{gameApiBase}/api/System/Console/GetCvarValue?name=sv_servername");
+                var xml = await _http.GetStringAsync($"{config.GameApiBase}/api/System/Console/GetCvarValue?name=sv_servername");
                 var m = CvarValueRegex().Match(xml);
                 if (m.Success)
                 {
@@ -288,7 +317,7 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                 var payload    = new byte[payloadLen];
                 await ReadExactAsync(stream, payload, ct);
 
-                if (type == 0x05 && payloadLen == 8)
+                if (type == Protocol.Pong && payloadLen == 8)
                 {
                     long ts = BinaryPrimitives.ReadInt64LittleEndian(payload);
                     if (_pingsSent.TryRemove(ts, out long sentAt))
@@ -299,27 +328,27 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                         try { await ExecLuaAsync($"KCD2MP_ShowPing({ms})"); } catch { }
                     }
                 }
-                else if (type == 0x02 && (payloadLen == 17 || payloadLen == 18))
+                else if (type == Protocol.Ghost && payloadLen == Protocol.GhostPayloadLen)
                 {
-                    // Ghost packet v1 (17): [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f]
-                    // Ghost packet v2 (18): [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
+                    // Ghost: [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
+                    // Length is exact now that the handshake pins the version.
                     byte ghostId   = payload[0];
                     float x        = ReadFloat(payload, 1);
                     float y        = ReadFloat(payload, 5);
                     float z        = ReadFloat(payload, 9);
                     float rotZ     = ReadFloat(payload, 13);
-                    bool  isRiding = payloadLen >= 18 && (payload[17] & 0x01) != 0;
+                    bool  isRiding = (payload[17] & 0x01) != 0;
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
                     await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding);
                 }
-                else if (type == 0x03 && payloadLen >= 2)
+                else if (type == Protocol.Name && payloadLen >= 2)
                 {
                     // Name packet: [ghostId:1][name:UTF-8...]
                     byte ghostId = payload[0];
                     string gname = Encoding.UTF8.GetString(payload, 1, payloadLen - 1);
                     await SetGhostNameAsync(ghostId.ToString(), gname);
                 }
-                else if (type == 0x06 && payloadLen == 1)
+                else if (type == Protocol.Disconnect && payloadLen == 1)
                 {
                     // Disconnect packet: [ghostId:1]
                     byte ghostId = payload[0];
@@ -327,12 +356,12 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
                     _voice?.RemovePlayer(ghostId);
                     try { await ExecLuaAsync($"KCD2MP_RemoveGhost(\"{ghostId}\")"); } catch { }
                 }
-                else if (type == 0x08 && payloadLen == 641)
+                else if (type == Protocol.VoiceDown && payloadLen == 1 + Protocol.VoiceFrameLen)
                 {
                     // Voice packet: [sourceId:1][pcm: 640 bytes]
                     byte sourceId = payload[0];
-                    var pcm = new byte[640];
-                    Buffer.BlockCopy(payload, 1, pcm, 0, 640);
+                    var pcm = new byte[Protocol.VoiceFrameLen];
+                    Buffer.BlockCopy(payload, 1, pcm, 0, Protocol.VoiceFrameLen);
                     _voice?.OnVoiceReceived(sourceId, pcm);
                 }
             }
@@ -353,7 +382,7 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
     {
         try
         {
-            var xml = await _http.GetStringAsync($"{gameApiBase}/api/rpg/SoulList/PlayerSoul?depth=1");
+            var xml = await _http.GetStringAsync($"{config.GameApiBase}/api/rpg/SoulList/PlayerSoul?depth=1");
             var posMatch = PosRegex().Match(xml);
             if (!posMatch.Success) return null;
 
@@ -402,7 +431,7 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
     private async Task ExecLuaAsync(string lua)
     {
         var cmd = Uri.EscapeDataString($"#{lua}");
-        await _http.GetStringAsync($"{gameApiBase}/api/System/Console/ExecuteString?command={cmd}");
+        await _http.GetStringAsync($"{config.GameApiBase}/api/System/Console/ExecuteString?command={cmd}");
     }
 
     // -------------------------------------------------------------------------
@@ -412,19 +441,19 @@ public partial class GameBridge(string serverHost, int serverPort, string name, 
     private static async Task SendVoiceAsync(NetworkStream stream, byte[] pcm)
     {
         // 3 header + 640 payload = 643 bytes
-        var packet = new byte[3 + 640];
-        packet[0] = 0x07;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), 640);
-        Buffer.BlockCopy(pcm, 0, packet, 3, 640);
+        var packet = new byte[3 + Protocol.VoiceFrameLen];
+        packet[0] = Protocol.VoiceUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.VoiceFrameLen);
+        Buffer.BlockCopy(pcm, 0, packet, 3, Protocol.VoiceFrameLen);
         await stream.WriteAsync(packet);
     }
 
     private static async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ, bool isRiding)
     {
         // 3 header + 17 payload = 20 bytes
-        var packet = new byte[3 + 17];
-        packet[0] = 0x01;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), 17);
+        var packet = new byte[3 + Protocol.PositionPayloadLen];
+        packet[0] = Protocol.Position;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PositionPayloadLen);
         WriteFloat(packet, 3,  x);
         WriteFloat(packet, 7,  y);
         WriteFloat(packet, 11, z);

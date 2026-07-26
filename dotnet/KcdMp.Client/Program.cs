@@ -2,15 +2,19 @@ using KcdMp.Client;
 using Microsoft.Win32;
 using System.Text.RegularExpressions;
 
-// Usage: KcdMpClient [serverHost] [serverPort] [name] [gameApiBase]
-// All arguments are optional; defaults work for a single-PC setup.
-string serverHost  = args.Length > 0 ? args[0] : "localhost";
-int    serverPort  = args.Length > 1 ? int.Parse(args[1]) : 7778;
-string name        = args.Length > 2 ? args[2]
-    : GetSteamNameFromKcdLog()   // primary: kcd.log written by KCD2's own Steam API
-    ?? GetSteamPersonaName()     // fallback: loginusers.vdf
-    ?? Environment.MachineName;  // last resort
-string gameApiBase = args.Length > 3 ? args[3] : "http://localhost:1403";
+// Settings live in kcdmp-client.json next to the executable; it is created with
+// defaults on first run. Everything can still be overridden on the command line:
+//   named:      --host <ip> --port <n> --name <s> --game-api <url> [--no-voice]
+//   positional: <serverHost> <serverPort> <name> <gameApiBase>   (legacy form)
+var config = ClientConfig.Load();
+config.ApplyCommandLine(args);
+
+// An empty name means auto-detect.
+if (string.IsNullOrWhiteSpace(config.PlayerName))
+    config.PlayerName =
+        GetSteamNameFromKcdLog()     // primary: kcd.log written by KCD2's own Steam API
+        ?? GetSteamPersonaName()     // fallback: loginusers.vdf
+        ?? Environment.MachineName;  // last resort
 
 // ---------------------------------------------------------------------------
 // Find all Steam library paths via libraryfolders.vdf, then look for
@@ -139,9 +143,11 @@ static string? GetSteamPersonaName()
 }
 
 Console.WriteLine("=== KCD2 Multiplayer Client Agent ===");
-Console.WriteLine($"Server : {serverHost}:{serverPort}");
-Console.WriteLine($"Name   : {name}");
-Console.WriteLine($"Game   : {gameApiBase}");
+Console.WriteLine($"Server   : {config.ServerHost}:{config.ServerPort}");
+Console.WriteLine($"Name     : {config.PlayerName}");
+Console.WriteLine($"Game     : {config.GameApiBase}");
+Console.WriteLine($"Voice    : {(config.VoiceChatEnabled ? "on" : "off")}");
+Console.WriteLine($"Protocol : v{Protocol.Version}");
 Console.WriteLine();
 
 using var cts = new CancellationTokenSource();
@@ -150,5 +156,5 @@ using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 AppDomain.CurrentDomain.ProcessExit += (_, _) => { cts.Cancel(); Thread.Sleep(500); };
 
-var bridge = new GameBridge(serverHost, serverPort, name, gameApiBase);
+var bridge = new GameBridge(config);
 await bridge.RunAsync(cts.Token);
