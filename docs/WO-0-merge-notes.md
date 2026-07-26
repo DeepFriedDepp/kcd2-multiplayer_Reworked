@@ -135,15 +135,20 @@ dotnet build KCD2-MP.sln
 
 Specific things a compile would settle, in rough order of likelihood:
 
-1. **Whether `builder.Services.AddSerilog(...)` registers `Serilog.ILogger` in
-   DI.** `TcpSocketService` and `ClientSession` inject it directly. If it does
-   not, the relay fails at startup with a DI resolution error — loud and
-   obvious, not subtle. This was pre-existing on the refactor branch.
-2. **The launcher.** It references `Serilog.Extensions.Logging` 10.0.0 on
+1. **The launcher.** It references `Serilog.Extensions.Logging` 10.0.0 on
    `net8.0-windows`; that package does publish a `net8.0` target, so it should
    restore, but the launcher has never been built here and Photino may want a
    native asset per RID.
-3. **`Nullable`/analyser warnings** across the merged server files.
+2. **`Nullable`/analyser warnings** across the merged server files.
+
+Two things were checked without a compiler and are *not* open questions:
+
+- **Package/TFM compatibility** — every pinned version was confirmed to exist
+  on NuGet and to publish a `net8.0` target, read from the nuspecs.
+- **`Serilog.ILogger` injection** — `TcpSocketService` and `ClientSession` take
+  `Serilog.ILogger` as a constructor dependency. The `AddSerilog(Action<LoggerConfiguration>)`
+  overload used in `Program.cs` does register it as a singleton (confirmed in
+  `SerilogServiceCollectionExtensions`), so it resolves.
 
 The Python master server was not run either; it needs its own venv and a
 database, and it has no interaction with the .NET build.
