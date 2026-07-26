@@ -95,14 +95,23 @@ KcdMpServer.exe --port 7778
 
 You should see:
 ```
-=== KCD2 Multiplayer Relay Server ===
-Port: 7778
-
-Listening on port 7778...
-Waiting for clients to connect.
+[12:00:00 INF] Listening on port 7778...
+[12:00:00 INF] Waiting for clients to connect.
 ```
 
-The server has no config — it doesn't need to know anyone's IP.
+The relay still doesn't need to know anyone's IP. Its settings live in
+`appsettings.json` next to the executable:
+
+| Key | Description | Default |
+|---|---|---|
+| `Tcp:Port` | Relay port clients connect to | `7778` |
+| `Echo` | Debug mode — reflects your own position back as a ghost | `false` |
+| `Urls` | HTTP listener for `/api/information`, polled by the master server | `http://0.0.0.0:5273` |
+| `ServerInfo:*` | Map name, max players and tags reported to the master server | Kuttenberg / 64 |
+| `Serilog:*` | Log levels and sinks | Console, Information |
+
+`--port <n>` and `--echo` still work as overrides, as does any key in
+dotted form (`--Tcp:Port 7779`).
 
 ---
 
@@ -110,32 +119,37 @@ The server has no config — it doesn't need to know anyone's IP.
 
 Each player runs `KcdMpClient.exe` on their own machine.
 
-```
-KcdMpClient.exe [serverIP] [serverPort] [yourName] [gameApiUrl]
-```
+On first run the agent writes `kcdmp-client.json` next to the executable and
+uses it from then on. Usually the only field you need to change is
+`ServerHost`.
 
-All arguments are optional — if omitted, the client auto-detects your Steam name and uses `localhost:7778` and `http://localhost:1403`.
-
-| Argument | Description | Default |
-|---|---|---|
-| `serverIP` | IP of the PC running the relay server | `localhost` |
-| `serverPort` | Relay server port | `7778` |
-| `yourName` | Your display name (auto-read from Steam if omitted) | Steam name |
-| `gameApiUrl` | Local game debug API | `http://localhost:1403` |
-
-### Example: relay server on PC1, two players
-
-**PC1** (relay server + game on same machine):
-```
-KcdMpClient.exe localhost 7778 PC1 http://localhost:1403
+```jsonc
+{
+  "ServerHost": "localhost",              // IP of the PC running the relay
+  "ServerPort": 7778,                     // relay port
+  "PlayerName": null,                     // null = auto-detect from Steam
+  "GameApiBase": "http://localhost:1403", // local game debug API
+  "VoiceChatEnabled": true                // false = never open the microphone
+}
 ```
 
-**PC2**:
+Every field can be overridden on the command line, which wins over the file:
+
+```
+KcdMpClient.exe --host 192.168.1.10 --port 7778 --name Henry --no-voice
+```
+
+The old positional form still works, so existing shortcuts don't break:
+
 ```
 KcdMpClient.exe 192.168.1.10 7778 PC2 http://localhost:1403
 ```
 
 Replace `192.168.1.10` with PC1's actual local IP (`ipconfig` → IPv4 Address).
+
+> The agent and the relay negotiate a protocol version at connect time. If
+> they disagree, the agent prints the mismatch and exits instead of
+> reconnecting in a loop — update both to the same build.
 
 When connected, you'll see:
 ```
@@ -154,7 +168,9 @@ Proximity voice chat starts automatically when the client connects.
 - **Range:** 20 metres — volume falls off linearly to zero at max range
 - **Format:** 16 kHz mono 16-bit PCM, 20 ms frames
 - **VAD:** frames with no detected speech are not transmitted
-- **Mute:** not yet exposed as a hotkey — can be added in a future version
+- **Off switch:** `"VoiceChatEnabled": false` in `kcdmp-client.json`, or
+  `--no-voice`. The microphone is then never opened at all.
+- **Mute hotkey:** not yet exposed — the config flag is all-or-nothing per session
 
 No extra ports are needed — voice data is relayed through the same TCP connection as position data.
 
@@ -171,21 +187,48 @@ Client agents automatically wait for the game to have a save loaded and reconnec
 
 ---
 
+## Repository Layout
+
+| Path | What it is |
+|---|---|
+| `kdcmp/` | The game mod — Lua, the clothing preset table, and the built `kdcmp.pak` |
+| `dotnet/KcdMp.Client/` | `KcdMpClient.exe`, the per-PC agent (net8.0) |
+| `dotnet/KcdMp.Server/` | `KcdMpServer.exe`, the relay (net8.0, ASP.NET Core hosted) |
+| `KCDMP_launcher/` | Photino/Blazor desktop launcher with server browser (net8.0-windows) |
+| `kcd2_master_server/` | Flask + SQLAlchemy server-discovery service (Python) |
+| `KCD2-MP.sln` | Root solution — launcher, agent and relay |
+| `dotnet/KcdMp.sln` | Agent and relay only, for working without the launcher |
+
+---
+
 ## Building from Source
 
-Requires [.NET 8 SDK](https://dotnet.microsoft.com/download).
+Requires [.NET 8 SDK](https://dotnet.microsoft.com/download). Everything
+targets .NET 8; nothing needs a newer SDK.
 
 ```powershell
-cd dotnet
+# Everything at once
+dotnet build KCD2-MP.sln
 
 # Run directly (development)
-dotnet run --project KcdMp.Server
-dotnet run --project KcdMp.Client -- localhost 7778 PC1 http://localhost:1403
+dotnet run --project dotnet\KcdMp.Server
+dotnet run --project dotnet\KcdMp.Client -- --host localhost --name PC1
+dotnet run --project KCDMP_launcher
 
 # Build standalone executables (no .NET required to run)
+cd dotnet
 dotnet publish KcdMp.Server -c Release -r win-x64   --self-contained -p:PublishSingleFile=true -o publish\server-win
 dotnet publish KcdMp.Server -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true -o publish\server-linux
 dotnet publish KcdMp.Client -c Release -r win-x64   --self-contained -p:PublishSingleFile=true -o publish\client-win
+```
+
+The master server is a separate Python service:
+
+```bash
+cd kcd2_master_server
+cp .env.example .env
+./migrate.sh
+python run.py
 ```
 
 ---
