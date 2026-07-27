@@ -67,6 +67,41 @@ method proved nothing.**
 | **Set world time** | `Calendar.SetWorldTime(t+3600)`: 388805 → 392405, hour 12.0015 → 13.0014. Restored afterwards. **This one genuinely works.** |
 | Enumerate NPCs | `System.GetEntitiesInSphere` — 267 entities at 120 m |
 
+### Re-tested in the open world — result unchanged
+
+The first round ran during the tutorial, which was a fair objection: tutorial
+sequences commonly make the player invulnerable and script-protect NPCs. Re-run
+after leaving the tutorial, and the answer is the same.
+
+| Test | Result |
+|---|---|
+| Player `SetHealth(90)` from 100 — **downward**, so no max-health clamping excuse | stayed **100** |
+| Player `soul:DealDamage(5)` | stayed **100** |
+| Live open-world pig (`SpawnedAnimal_Pig_*`), `SetHealth(40)` | stayed **100** |
+| Same pig, `soul:DealDamage(30)` | stayed **100** |
+
+The first open-world attempt was itself invalid — the player was at full health,
+so a +0.4 nudge would have been clamped and unobservable either way. Repeating it
+downward removed that ambiguity. **Health writes are inert regardless of game
+phase.**
+
+Also learned: `entity:EnableAI(false)` **raises an error** on a real NPC — the
+`pcall` returned false. That method is not available here, whatever the mod's
+existing horse-mount code hoped.
+
+### AI suppression: still untested after four attempts
+
+Not because the API refuses, but because **no genuinely mobile subject could be
+found**. Sampling 102 nearby actors twice over 3 s, 17 showed *any* position
+change and the largest was 0.16 m — idle drift, not locomotion. The pig that
+drifted furthest was completely stationary by the time the suppression test ran,
+so "before" and "after" are identical for the same reason as every earlier
+attempt.
+
+This is worth less than it looks. Suppression without damage writes buys shared
+ambient *movement* only — and the NPCs near the player are barely moving, which
+undercuts the payoff. It is parked rather than pursued.
+
 ### Verified NOT working
 
 `actor:SetHealth` and `soul:DealDamage` are **inert**. Tested on three
