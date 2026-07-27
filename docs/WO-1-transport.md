@@ -220,14 +220,78 @@ smoothness ever regresses this is the first thing to suspect.
 
 ---
 
+---
+
+## Steps 4-5: batched inbound and the GameBridge rewire
+
+Both landed. The agent now selects its transport at runtime and batches
+outbound Lua.
+
+### Batching needs per-statement pcall
+
+Measured, twelve statements with a deliberate fault at the sixth:
+
+| batch form | statements that ran |
+|---|---|
+| plain, no errors | 12 / 12 |
+| **pcall-wrapped**, fault at #6 | **11 / 11** — every good one |
+| **unwrapped**, fault at #6 | **5 / 11** — aborted, #6-#12 lost |
+
+A batch aborts at the first error, so one malformed ghost update would silently
+discard every later update in the same call. Each statement therefore goes out
+as `pcall(function() ... end)`. Payload is free, so the wrapping costs nothing
+measurable, and it matches the project rule that Lua touching game state runs in
+a pcall.
+
+### Effect on the sync loop
+
+Same 20-second window, same machine, echo relay reflecting a ghost back:
+
+| | before | after |
+|---|---|---|
+| transport | http-debug-api | kcd-log-tail |
+| avg state read | 20 ms | **0 ms** |
+| ticks completed | ~300 | **~900** |
+
+The loop was transport-bound and now is not. That 3x is the practical result
+of WO-1 — more than the 1.5x raw sample-rate gain suggests, because the tick
+loop no longer blocks on HTTP at all and the receive loop no longer blocks per
+ghost update.
+
+### Selection and fallback
+
+`Transport` in `kcdmp-client.json` (or `--transport`) picks `logtail` or
+`http`, defaulting to logtail. Selection happens after the game is up, and
+logtail is only adopted once the emitter has actually produced a frame —
+otherwise it falls back to HTTP and says why. A transport that silently reads
+nothing is indistinguishable from a game that never loads, which is a bad
+failure to debug.
+
+**One bug worth recording, because it only appeared in integration:** enabling
+batching broke transport selection. `LogTailGameTransport.StartAsync` sends
+`KCD2MP_StartEmitter` through `ExecuteAsync`, which now buffers, so the start
+command sat unsent while the code waited for frames that could never arrive —
+presenting as "the mod isn't loaded" when it was. Start and stop commands now
+flush explicitly. Anything that must reach the game *before* its effect is
+awaited has to flush; batching is not transparent.
+
+### HTTP is now 1 round trip, not 3
+
+The yaw/mount-state background loop moved into `HttpGameTransport`, so the
+production HTTP path costs one round trip per read (position) with yaw served
+from cache — matching what the agent always did, now behind the interface. The
+uncached three-round-trip path is kept and measured separately as the true cost
+of the CVar hack.
+
+---
+
 ## Next steps
 
 1. ~~Measure log-to-disk visibility latency~~ — done, ~45 ms.
 2. ~~Implement `LogTailGameTransport` and the Lua emitter~~ — done, measured above.
 3. ~~Rebuild the pak and install the mod~~ — done via tools/Build-And-Install-Mod.ps1; MOD INIT confirmed.
-4. Add batched `ExecuteAsync`/`FlushAsync` buffering to the HTTP path for inbound.
-   Batching is free, so this is the cheapest remaining win.
-5. Rewire `GameBridge` onto `IGameTransport`, selecting by config.
+4. ~~Batched inbound~~ — done, with per-statement pcall.
+5. ~~Rewire GameBridge onto IGameTransport~~ — done, with runtime selection and fallback.
 6. Consider whether ~30 Hz frame-bound emission is enough. If not, the emitter
    could pack several samples per line, though the frame rate still bounds how
    often state is *sampled*.

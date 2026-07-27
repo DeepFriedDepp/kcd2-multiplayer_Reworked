@@ -42,6 +42,27 @@ public sealed class ClientConfig
     /// </summary>
     public bool VoiceChatEnabled { get; set; } = true;
 
+    /// <summary>
+    /// How the agent reads player state from the game.
+    ///
+    ///   "logtail" — the mod pushes state into kcd.log and the agent tails it.
+    ///               No round trips per read, and sv_servername is left alone.
+    ///               Needs the mod installed and loaded.
+    ///   "http"    — poll the debug API. Always works, costs a round trip per
+    ///               read, and hijacks sv_servername for yaw and mount state.
+    ///
+    /// Defaults to logtail, falling back to http automatically if kcd.log
+    /// cannot be found or the emitter never produces a frame.
+    /// </summary>
+    public string Transport { get; set; } = "logtail";
+
+    /// <summary>
+    /// Interval the mod's state emitter is asked to run at, in milliseconds.
+    /// Script.SetTimer is frame-bound, so the delivered rate is capped by the
+    /// frame rate regardless of what is requested here.
+    /// </summary>
+    public int EmitIntervalMs { get; set; } = 20;
+
     [JsonIgnore]
     public static string DefaultPath =>
         Path.Combine(
@@ -145,6 +166,10 @@ public sealed class ClientConfig
                         break;
                     case "--game-api" when value is not null:
                         GameApiBase = value;
+                        i++;
+                        break;
+                    case "--transport" when value is not null:
+                        Transport = value;
                         i++;
                         break;
                     case "--voice":

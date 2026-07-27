@@ -15,30 +15,28 @@ namespace KcdMp.Client;
 ///   2. Connect to the relay server via TCP and send Handshake.
 ///   3. Push local player position every tick (only when changed).
 ///   4. Receive Ghost packets from the relay server and update the local
-///      game's ghost NPCs via the game debug REST API.
+///      game's ghost NPCs.
 ///
-/// Smoothness optimisation:
-///   - Position read = 1 HTTP call (GET PlayerSoul) per TickMs.
-///   - Rotation + riding state are read in a SEPARATE background loop every
-///     RotStateIntervalMs (80 ms). Cached values are used by the position loop.
-///     This cuts per-tick latency from ~50 ms to ~15 ms.
+/// How it talks to the game is <see cref="IGameTransport"/>'s problem, not this
+/// class's. Reading a state sample is one call; whether that costs a round trip
+/// (HTTP) or reads a pushed frame (log tail) is the transport's business.
+///
+/// Outbound Lua is batched. <c>ExecuteAsync</c> buffers and the tick loop
+/// flushes once, so N ghost updates arriving between ticks become one call
+/// instead of N. Round trips are the only thing the channel charges for --
+/// payload is free -- so this is close to pure win.
 /// </summary>
 public partial class GameBridge(ClientConfig config)
 {
     private const int TickMs           = 10;
-    private const int RotStateIntervalMs = 80;
     private const float PosThreshold  = 0.05f;
     private const float RotThreshold  = 0.02f;
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMilliseconds(800) };
+    private IGameTransport _transport = null!;   // set in RunAsync before use
 
     // Last pushed position (for change detection)
     private float _lastX, _lastY, _lastZ, _lastRotZ;
     private bool _hasPushed;
-
-    // Cached rotation + riding state updated by background loop (volatile = visible across threads)
-    private volatile float _cachedRotZ = 0f;
-    private volatile bool  _cachedIsRiding = false;
 
     // Ping: maps sent timestamp (ticks) → Stopwatch timestamp at send time
     private readonly ConcurrentDictionary<long, long> _pingsSent = new();
@@ -49,10 +47,79 @@ public partial class GameBridge(ClientConfig config)
 
     public async Task RunAsync(CancellationToken ct = default)
     {
+        var http = new HttpGameTransport(config.GameApiBase);
+        await http.StartAsync(ct);
+        _transport = http;
+
+        try
+        {
+            await RunLoopAsync(http, ct);
+        }
+        finally
+        {
+            if (!ReferenceEquals(_transport, http))
+                await _transport.DisposeAsync();
+            await http.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Picks the state-read transport once the game is up.
+    ///
+    /// Log tail is preferred but only works with the mod loaded and emitting,
+    /// so it is verified to actually produce a frame before being adopted --
+    /// otherwise the agent would sit reading nothing and look like a game that
+    /// never becomes ready. HTTP polling is the fallback and always works.
+    /// </summary>
+    private async Task<IGameTransport> SelectTransportAsync(HttpGameTransport http, CancellationToken ct)
+    {
+        if (!config.Transport.Equals("logtail", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"[transport] {http.Name} (configured)");
+            return http;
+        }
+
+        LogTailGameTransport tail;
+        try
+        {
+            tail = LogTailGameTransport.Create(http, config.EmitIntervalMs);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[transport] log tail unavailable ({ex.Message}); falling back to {http.Name}");
+            return http;
+        }
+
+        await tail.StartAsync(ct);
+        Console.WriteLine($"[transport] waiting for the mod's state emitter ({Path.GetFileName(tail.LogPath)})...");
+
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        while (tail.FramesReceived == 0 && DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+            await Task.Delay(50, ct);
+
+        if (tail.FramesReceived == 0)
+        {
+            Console.WriteLine($"[transport] emitter produced no frames; falling back to {http.Name}");
+            Console.WriteLine("[transport] (is the mod installed and loaded? look for '=== MOD INIT ===' in kcd.log)");
+            await tail.DisposeAsync();
+            return http;
+        }
+
+        Console.WriteLine($"[transport] {tail.Name} — 0 round trips per state read");
+        return tail;
+    }
+
+    private async Task RunLoopAsync(HttpGameTransport http, CancellationToken ct)
+    {
         while (!ct.IsCancellationRequested)
         {
             await WaitForGameAsync(ct);
             if (ct.IsCancellationRequested) break;
+
+            // Chosen after the game is up, because the log-tail probe needs the
+            // mod running to answer.
+            if (ReferenceEquals(_transport, http))
+                _transport = await SelectTransportAsync(http, ct);
 
             try
             {
@@ -86,18 +153,11 @@ public partial class GameBridge(ClientConfig config)
         Console.WriteLine("Waiting for game to load a save...");
         while (!ct.IsCancellationRequested)
         {
-            try
+            if (await _transport.IsGameReadyAsync(ct))
             {
-                var xml = await _http.GetStringAsync($"{config.GameApiBase}/api/rpg/Calendar?depth=1");
-                var m = GameTimeRegex().Match(xml);
-                if (m.Success && float.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float t) && t > 0)
-                {
-                    Console.WriteLine("Game ready!");
-                    return;
-                }
+                Console.WriteLine("Game ready!");
+                return;
             }
-            catch { /* game not running yet */ }
-
             await Task.Delay(3000, ct).ContinueWith(_ => { });
         }
     }
@@ -185,7 +245,6 @@ public partial class GameBridge(ClientConfig config)
 
         // Start background tasks
         var receiveTask  = ReceiveLoopAsync(stream, cts.Token);
-        var rotStateTask = RotStateLoopAsync(cts.Token);
         var pingTask     = PingLoopAsync(stream, cts.Token);
 
         // --- Position push loop ---
@@ -197,16 +256,14 @@ public partial class GameBridge(ClientConfig config)
             while (tcp.Connected)
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var pos = await ReadPositionAsync();
+                var state = await _transport.ReadPlayerStateAsync(cts.Token);
                 sw.Stop();
                 totalReadMs += sw.ElapsedMilliseconds;
                 tickCount++;
 
-                if (pos.HasValue)
+                if (state.HasValue)
                 {
-                    var (x, y, z) = pos.Value;
-                    float rotZ    = _cachedRotZ;
-                    bool  riding  = _cachedIsRiding;
+                    var (x, y, z, rotZ, riding) = state.Value;
 
                     // Update voice local position and recalculate all player volumes.
                     if (_voice != null)
@@ -228,6 +285,9 @@ public partial class GameBridge(ClientConfig config)
                 while (_voiceQueue.TryDequeue(out var voiceFrame))
                     await SendVoiceAsync(stream, voiceFrame);
 
+                // Send everything the receive loop buffered this tick as one call.
+                await _transport.FlushAsync(cts.Token);
+
                 // Print average read time every 100 ticks
                 if (tickCount % 100 == 0)
                     Console.WriteLine($"[stat] avg read={totalReadMs / tickCount}ms over {tickCount} ticks");
@@ -239,7 +299,6 @@ public partial class GameBridge(ClientConfig config)
         {
             cts.Cancel();
             try { await receiveTask;  } catch { }
-            try { await rotStateTask; } catch { }
             try { await pingTask;     } catch { }
             _voice?.Stop();
             _voice?.Dispose();
@@ -272,38 +331,6 @@ public partial class GameBridge(ClientConfig config)
             }
             catch (OperationCanceledException) { break; }
             catch { break; }
-        }
-    }
-
-    private async Task RotStateLoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                // Riding state is detected in the Lua interp tick (where Terrain API is
-                // available) and cached in KCD2MP.isRiding. We just read that here.
-                // Note: Terrain.GetElevation is NOT available in ExecuteString context.
-                await ExecLuaAsync(
-                    @"System.SetCVar(""sv_servername"",(function()" +
-                    @"local r=player:GetWorldAngles().z;" +
-                    @"local ride=KCD2MP and KCD2MP.isRiding and 'r' or 's';" +
-                    @"return string.format('%.4f,%s',r,ride)end)())");
-
-                var xml = await _http.GetStringAsync($"{config.GameApiBase}/api/System/Console/GetCvarValue?name=sv_servername");
-                var m = CvarValueRegex().Match(xml);
-                if (m.Success)
-                {
-                    var parts = m.Groups[1].Value.Split(',');
-                    if (parts.Length >= 1 && float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float rot))
-                        _cachedRotZ = rot;
-                    if (parts.Length >= 2)
-                        _cachedIsRiding = parts[1].Trim() == "r";
-                }
-            }
-            catch { /* game might be loading, just use cached values */ }
-
-            await Task.Delay(RotStateIntervalMs, ct);
         }
     }
 
@@ -381,32 +408,6 @@ public partial class GameBridge(ClientConfig config)
     // Game REST API helpers
     // -------------------------------------------------------------------------
 
-    /// <summary>
-    /// Reads local player position via a single HTTP call (GET PlayerSoul).
-    /// Rotation and riding state come from the background RotStateLoopAsync.
-    /// </summary>
-    private async Task<(float x, float y, float z)?> ReadPositionAsync()
-    {
-        try
-        {
-            var xml = await _http.GetStringAsync($"{config.GameApiBase}/api/rpg/SoulList/PlayerSoul?depth=1");
-            var posMatch = PosRegex().Match(xml);
-            if (!posMatch.Success) return null;
-
-            var parts = posMatch.Groups[1].Value.Split(',');
-            if (parts.Length < 3) return null;
-
-            float x = float.Parse(parts[0], CultureInfo.InvariantCulture);
-            float y = float.Parse(parts[1], CultureInfo.InvariantCulture);
-            float z = float.Parse(parts[2], CultureInfo.InvariantCulture);
-            return (x, y, z);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     private async Task UpdateGhostAsync(string ghostId, float x, float y, float z, float rotZ, bool isRiding)
     {
         string gx   = x.ToString("F2",  CultureInfo.InvariantCulture);
@@ -435,11 +436,12 @@ public partial class GameBridge(ClientConfig config)
         catch { }
     }
 
-    private async Task ExecLuaAsync(string lua)
-    {
-        var cmd = Uri.EscapeDataString($"#{lua}");
-        await _http.GetStringAsync($"{config.GameApiBase}/api/System/Console/ExecuteString?command={cmd}");
-    }
+    /// <summary>
+    /// Queues a Lua statement. The transport batches it; the tick loop flushes.
+    /// Returning without a round trip is the point -- the receive loop can take
+    /// a burst of ghost updates without blocking on HTTP for each one.
+    /// </summary>
+    private Task ExecLuaAsync(string lua) => _transport.ExecuteAsync(lua);
 
     // -------------------------------------------------------------------------
     // TCP helpers
@@ -496,12 +498,5 @@ public partial class GameBridge(ClientConfig config)
     // Source-generated regexes
     // -------------------------------------------------------------------------
 
-    [GeneratedRegex(@"GameTime=""([^""]+)""")]
-    private static partial Regex GameTimeRegex();
-
-    [GeneratedRegex(@"Position=""([^""]+)""")]
-    private static partial Regex PosRegex();
-
-    [GeneratedRegex(@">([^<]*)<")]
-    private static partial Regex CvarValueRegex();
+    // XML scraping moved to HttpGameTransport along with the calls that needed it.
 }

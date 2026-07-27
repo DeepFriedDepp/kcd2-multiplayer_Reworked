@@ -1,39 +1,90 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace KcdMp.Client;
 
 /// <summary>
-/// The existing channel, behind <see cref="IGameTransport"/>: the game's debug
-/// REST API on localhost:1403, one HTTP round trip per call.
+/// The game's debug REST API on localhost:1403, one HTTP round trip per call.
 ///
-/// This is the WO-1 baseline, kept faithful to what the agent does today so a
-/// benchmark against it is honest. Reading one player-state sample costs three
-/// round trips:
+/// Two measured facts shape this class:
 ///
-///   1. GET  /api/rpg/SoulList/PlayerSoul   -> scrape Position="x,y,z"
-///   2. GET  /api/System/Console/ExecuteString -> Lua stuffs yaw and mount
-///      state into the sv_servername CVar
-///   3. GET  /api/System/Console/GetCvarValue  -> read that CVar back
+/// **Cost is per round trip, flat.** ~13-42 ms depending on game load, and
+/// completely independent of payload -- 20 Lua statements in one call cost the
+/// same as one. So statements are batched and flushed together, turning N ghost
+/// updates per tick from N round trips into one.
 ///
-/// Steps 2 and 3 are the CVar hack: there is no push channel out of the game,
-/// so an unrelated real CVar is hijacked as a one-slot mailbox. It also means
-/// yaw and mount state cannot be read without *writing* to the game first.
+/// **A batch aborts at the first error.** With twelve statements and a
+/// deliberate fault at the sixth, an unwrapped batch ran only the first five;
+/// the same batch with each statement wrapped in its own pcall ran all eleven
+/// good ones. So every batched statement is wrapped individually. This also
+/// matches the project rule that Lua touching game state goes in a pcall.
 ///
-/// The live agent softens this by running steps 2-3 on a slower background
-/// loop (80 ms) than position (10 ms) and reusing the cached value. This class
-/// exposes both: <see cref="ReadPlayerStateAsync"/> pays the full cost so the
-/// benchmark measures the real thing, while <see cref="ReadPositionOnlyAsync"/>
-/// and <see cref="ReadRotStateAsync"/> allow the split the agent actually uses.
+/// Reading player state is split the way the agent has always done it: position
+/// is one round trip per tick, while yaw and mount state come from a slower
+/// background loop through the sv_servername CVar. That CVar round trip is the
+/// hack WO-1 removes -- see <see cref="LogTailGameTransport"/> -- but it stays
+/// here so this remains an honest baseline and a working fallback.
 /// </summary>
 public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs = 800) : IGameTransport
 {
+    /// <summary>How often the background loop refreshes yaw and mount state.</summary>
+    private const int RotStateIntervalMs = 80;
+
+    /// <summary>
+    /// Flush before the batch gets long. Payload does not affect latency and an
+    /// 8000-character chunk was verified to execute, so this is comfortably
+    /// conservative rather than a measured ceiling.
+    /// </summary>
+    private const int MaxBatchChars = 4000;
+
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+
+    private readonly List<string> _pending = [];
+    private readonly SemaphoreSlim _batchLock = new(1, 1);
+
+    private CancellationTokenSource? _rotCts;
+    private Task? _rotTask;
+    private volatile float _cachedRotZ;
+    private volatile bool _cachedIsRiding;
+
+    /// <summary>
+    /// When true, <see cref="ExecuteAsync"/> buffers until <see cref="FlushAsync"/>.
+    /// </summary>
+    public bool BatchingEnabled { get; set; } = true;
 
     public string Name => "http-debug-api";
 
-    /// <summary>Position, CVar write, CVar read.</summary>
-    public int RoundTripsPerStateRead => 3;
+    /// <summary>
+    /// One: position. Yaw and mount state come from the background loop, so they
+    /// are not charged per read. <see cref="ReadPlayerStateUncachedAsync"/> is
+    /// the three-round-trip cost of doing it without that loop.
+    /// </summary>
+    public int RoundTripsPerStateRead => 1;
+
+    /// <summary>Starts the background yaw/mount-state refresh.</summary>
+    public Task StartAsync(CancellationToken ct = default)
+    {
+        if (_rotTask is not null) return Task.CompletedTask;
+        _rotCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _rotTask = Task.Run(() => RotStateLoopAsync(_rotCts.Token), CancellationToken.None);
+        return Task.CompletedTask;
+    }
+
+    private async Task RotStateLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var rot = await ReadRotStateAsync(ct);
+            if (rot is not null)
+            {
+                _cachedRotZ = rot.Value.rotZ;
+                _cachedIsRiding = rot.Value.isRiding;
+            }
+            try { await Task.Delay(RotStateIntervalMs, ct); }
+            catch (OperationCanceledException) { break; }
+        }
+    }
 
     public async Task<bool> IsGameReadyAsync(CancellationToken ct = default)
     {
@@ -48,11 +99,23 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         catch { return false; }
     }
 
+    /// <summary>Position this tick, plus the most recent cached yaw/mount state.</summary>
     public async Task<PlayerState?> ReadPlayerStateAsync(CancellationToken ct = default)
     {
         var pos = await ReadPositionOnlyAsync(ct);
         if (pos is null) return null;
+        var (x, y, z) = pos.Value;
+        return new PlayerState(x, y, z, _cachedRotZ, _cachedIsRiding);
+    }
 
+    /// <summary>
+    /// Full state without the cache: three round trips. Only used to measure
+    /// what the CVar hack actually costs.
+    /// </summary>
+    public async Task<PlayerState?> ReadPlayerStateUncachedAsync(CancellationToken ct = default)
+    {
+        var pos = await ReadPositionOnlyAsync(ct);
+        if (pos is null) return null;
         var rot = await ReadRotStateAsync(ct);
         var (x, y, z) = pos.Value;
         return new PlayerState(x, y, z, rot?.rotZ ?? 0f, rot?.isRiding ?? false);
@@ -79,17 +142,18 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
 
     /// <summary>
     /// Two round trips: have Lua pack yaw and mount state into sv_servername,
-    /// then read it back.
+    /// then read it back. Sent immediately -- buffering the write would leave
+    /// the read fetching a stale value.
     ///
-    /// The riding flag is computed in the interp tick rather than here because
-    /// Terrain.GetElevation is not available in the console context, so the
-    /// tick caches it in KCD2MP.isRiding and this only collects it.
+    /// The riding flag is computed in the interp tick rather than here, because
+    /// Terrain is not available in the console context; this only collects what
+    /// the tick already cached in KCD2MP.isRiding.
     /// </summary>
     public async Task<(float rotZ, bool isRiding)?> ReadRotStateAsync(CancellationToken ct = default)
     {
         try
         {
-            await ExecuteAsync(
+            await SendNowAsync(
                 @"System.SetCVar(""sv_servername"",(function()" +
                 @"local r=player:GetWorldAngles().z;" +
                 @"local ride=KCD2MP and KCD2MP.isRiding and 'r' or 's';" +
@@ -113,17 +177,68 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
 
     public async Task ExecuteAsync(string lua, CancellationToken ct = default)
     {
+        if (!BatchingEnabled)
+        {
+            await SendNowAsync(lua, ct);
+            return;
+        }
+
+        bool flushNow = false;
+        await _batchLock.WaitAsync(ct);
+        try
+        {
+            _pending.Add(lua);
+            if (_pending.Sum(s => s.Length + 32) >= MaxBatchChars) flushNow = true;
+        }
+        finally { _batchLock.Release(); }
+
+        if (flushNow) await FlushAsync(ct);
+    }
+
+    public async Task FlushAsync(CancellationToken ct = default)
+    {
+        string[] batch;
+        await _batchLock.WaitAsync(ct);
+        try
+        {
+            if (_pending.Count == 0) return;
+            batch = [.. _pending];
+            _pending.Clear();
+        }
+        finally { _batchLock.Release(); }
+
+        // Each statement gets its own pcall so one failure cannot swallow the
+        // rest of the batch -- measured: unwrapped, a fault at statement 6 of 12
+        // lost everything after it.
+        var sb = new StringBuilder();
+        foreach (var stmt in batch)
+        {
+            sb.Append("pcall(function() ").Append(stmt).Append(" end)\n");
+        }
+
+        try { await SendNowAsync(sb.ToString(), ct); }
+        catch { /* fire-and-forget, same as the unbatched path */ }
+    }
+
+    /// <summary>Sends immediately, bypassing the batch buffer.</summary>
+    private async Task SendNowAsync(string lua, CancellationToken ct = default)
+    {
         var cmd = Uri.EscapeDataString($"#{lua}");
         await _http.GetStringAsync($"{gameApiBase}/api/System/Console/ExecuteString?command={cmd}", ct);
     }
 
-    /// <summary>Nothing is buffered; every call already went out.</summary>
-    public Task FlushAsync(CancellationToken ct = default) => Task.CompletedTask;
-
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        try { await FlushAsync(); } catch { }
+
+        _rotCts?.Cancel();
+        if (_rotTask is not null)
+        {
+            try { await _rotTask; } catch { }
+        }
+        _rotCts?.Dispose();
+        _batchLock.Dispose();
         _http.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     [GeneratedRegex(@"GameTime=""([^""]+)""")]

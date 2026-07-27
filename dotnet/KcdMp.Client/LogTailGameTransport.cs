@@ -99,7 +99,11 @@ public sealed class LogTailGameTransport : IGameTransport
 
         if (!_emitterStarted)
         {
+            // Flush explicitly: the HTTP transport batches by default, and a
+            // buffered start command would sit unsent while we wait for frames
+            // that can never arrive -- which reads exactly like a missing mod.
             await _http.ExecuteAsync($"KCD2MP_StartEmitter({_emitIntervalMs})", ct);
+            await _http.FlushAsync(ct);
             _emitterStarted = true;
         }
     }
@@ -275,9 +279,15 @@ public sealed class LogTailGameTransport : IGameTransport
 
         if (_emitterStarted)
         {
-            // Best effort: leaving the emitter running would write to kcd.log
-            // at 50 Hz for the rest of the session.
-            try { await _http.ExecuteAsync("KCD2MP_StopEmitter()"); } catch { }
+            // Best effort: leaving the emitter running would keep writing to
+            // kcd.log for the rest of the session. Flushed for the same reason
+            // as the start command.
+            try
+            {
+                await _http.ExecuteAsync("KCD2MP_StopEmitter()");
+                await _http.FlushAsync();
+            }
+            catch { }
         }
 
         _cts.Dispose();

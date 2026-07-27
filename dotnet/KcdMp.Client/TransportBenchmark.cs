@@ -79,7 +79,14 @@ public static class TransportBenchmark
         results.Add(await MeasureAsync("rot+ride CVar cycle (2 RT)", "ms", 100, ct,
             async () => await transport.ReadRotStateAsync(ct) is not null));
 
-        results.Add(await MeasureAsync("full player state (3 RT)", "ms", 60, ct,
+        results.Add(await MeasureAsync("full state, uncached (3 RT)", "ms", 60, ct,
+            async () => await transport.ReadPlayerStateUncachedAsync(ct) is not null));
+
+        // What the agent actually does: position each tick, yaw and mount state
+        // from the background loop. Start that loop so this is the real path.
+        await transport.StartAsync(ct);
+        await Task.Delay(200, ct);
+        results.Add(await MeasureAsync("full state, cached rot (1 RT)", "ms", 100, ct,
             async () => await transport.ReadPlayerStateAsync(ct) is not null));
 
         // Option (d): does coalescing N statements into one ExecuteString beat
@@ -111,7 +118,7 @@ public static class TransportBenchmark
         Console.WriteLine($"  implied ceiling  : {ok / sw.Elapsed.TotalSeconds * 3:F0} HTTP round trips/s");
 
         double httpRate = ok / sw.Elapsed.TotalSeconds;
-        double httpP50 = results.First(r => r.Label.StartsWith("full player state")).P(50);
+        double httpP50 = results.First(r => r.Label.StartsWith("full state, cached")).P(50);
 
         await RunLogTailAsync(transport, httpRate, httpP50, ct);
         return 0;
@@ -194,7 +201,7 @@ public static class TransportBenchmark
             Console.WriteLine("=== comparison ===");
             Console.WriteLine($"{"",-22} {"http-debug-api",18} {"kcd-log-tail",18}");
             Console.WriteLine(new string('-', 60));
-            Console.WriteLine($"{"round trips / read",-22} {3,18} {0,18}");
+            Console.WriteLine($"{"round trips / read",-22} {1,18} {0,18}");
             Console.WriteLine($"{"state read p50 (ms)",-22} {httpP50,18:F1} {sorted[sorted.Count / 2],18:F4}");
             Console.WriteLine($"{"samples / second",-22} {httpRate,18:F1} {tailRate,18:F1}");
             if (httpRate > 0)
