@@ -45,6 +45,16 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentQueue<byte[]> _voiceQueue = new();
     private VoiceChat? _voice;
 
+    /// <summary>
+    /// Interaction sessions (WO-2). Dice and duelling hang off this rather than
+    /// adding their own protocols. Null until connected.
+    /// </summary>
+    public InteractionClient? Interactions { get; private set; }
+
+    // ghostId → display name, from Name packets. Lets an invite prompt say who
+    // is asking instead of showing a bare relay id.
+    private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
+
     public async Task RunAsync(CancellationToken ct = default)
     {
         var http = new HttpGameTransport(config.GameApiBase);
@@ -223,6 +233,20 @@ public partial class GameBridge(ClientConfig config)
 
         _hasPushed = false;
 
+        // --- Interaction layer ---
+        // Framing lives here because this class owns the stream; the interaction
+        // client only decides what to say.
+        var interactions = new InteractionClient(async (type, payload, ict) =>
+        {
+            var pkt = new byte[3 + payload.Length];
+            pkt[0] = type;
+            BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(1), (ushort)payload.Length);
+            payload.CopyTo(pkt, 3);
+            await stream.WriteAsync(pkt, ict);
+        });
+        WireInteractionFeedback(interactions);
+        Interactions = interactions;
+
         // Kick off the Lua interp tick immediately so KCD2MP.isRiding gets updated
         // even before the first ghost is spawned (e.g. player already on horse at connect time).
         try { await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end"); }
@@ -303,6 +327,13 @@ public partial class GameBridge(ClientConfig config)
             _voice?.Stop();
             _voice?.Dispose();
             _voice = null;
+
+            // The relay drops our sessions when the socket closes, so local
+            // state has to go too or a reconnect would think it is still busy.
+            Interactions?.Reset();
+            Interactions = null;
+            _ghostNames.Clear();
+
             Console.WriteLine("Removing all ghosts...");
             try { await ExecLuaAsync("KCD2MP_RemoveAllGhosts()"); } catch { }
         }
@@ -380,6 +411,7 @@ public partial class GameBridge(ClientConfig config)
                     // Name packet: [ghostId:1][name:UTF-8...]
                     byte ghostId = payload[0];
                     string gname = Encoding.UTF8.GetString(payload, 1, payloadLen - 1);
+                    _ghostNames[ghostId] = gname;
                     await SetGhostNameAsync(ghostId.ToString(), gname);
                 }
                 else if (type == Protocol.Disconnect && payloadLen == 1)
@@ -397,6 +429,10 @@ public partial class GameBridge(ClientConfig config)
                     var pcm = new byte[Protocol.VoiceFrameLen];
                     Buffer.BlockCopy(payload, 1, pcm, 0, Protocol.VoiceFrameLen);
                     _voice?.OnVoiceReceived(sourceId, pcm);
+                }
+                else if (Interactions?.HandlePacket(type, payload) == true)
+                {
+                    // Session packet consumed by the interaction layer.
                 }
             }
         }
@@ -435,6 +471,40 @@ public partial class GameBridge(ClientConfig config)
         }
         catch { }
     }
+
+    /// <summary>
+    /// Reports session lifecycle to the console and to the game.
+    ///
+    /// Kept separate from <see cref="InteractionClient"/> so that class stays a
+    /// pure protocol layer: presentation is queued as Lua and rides the batch
+    /// like any other outbound call.
+    /// </summary>
+    private void WireInteractionFeedback(InteractionClient interactions)
+    {
+        interactions.InviteReceived += invite =>
+        {
+            string who = _ghostNames.TryGetValue(invite.FromGhostId, out var n) ? n : $"player {invite.FromGhostId}";
+            Console.WriteLine($"[interaction] {who} invites you to {invite.Kind} (session {invite.SessionId})");
+            _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\") end");
+        };
+
+        interactions.SessionStarted += session =>
+        {
+            Console.WriteLine($"[interaction] {session.Kind} session {session.SessionId} started as {session.Role}");
+            _ = ExecLuaAsync($"if KCD2MP_HideInvite then KCD2MP_HideInvite() end");
+        };
+
+        interactions.SessionEnded += (sid, reason) =>
+        {
+            Console.WriteLine($"[interaction] session {sid} ended: {reason}");
+            _ = ExecLuaAsync($"if KCD2MP_HideInvite then KCD2MP_HideInvite() end");
+            _ = ExecLuaAsync($"if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"{reason}\") end");
+        };
+    }
+
+    /// <summary>Escapes a string for embedding in a double-quoted Lua literal.</summary>
+    private static string Escape(string s) =>
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     /// <summary>
     /// Queues a Lua statement. The transport batches it; the tick loop flushes.

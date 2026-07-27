@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
+using KcdMp.Server.Features.Interactions;
 using KcdMp.Server.Features.Tcp;
 using ILogger = Serilog.ILogger;
 
@@ -20,18 +21,23 @@ public class ClientSession
     private readonly TcpClient _tcp;
     private readonly NetworkStream _stream;
     private readonly TcpBroadcastService _broadcastService;
+    private readonly SessionManager _sessions;
+    private readonly ClientHandler _clientHandler;
     private readonly Channel<byte[]> _writeQueue = Channel.CreateUnbounded<byte[]>();
 
     public byte Id { get; } = (byte)Interlocked.Increment(ref _idCounter);
     public string? Name { get; private set; }
     public bool IsReady => Name is not null;
 
-    public ClientSession(ILogger logger, TcpClient tcp, TcpBroadcastService broadcastService)
+    public ClientSession(ILogger logger, TcpClient tcp, TcpBroadcastService broadcastService,
+        SessionManager sessions, ClientHandler clientHandler)
     {
         _logger = logger;
         _tcp = tcp;
         _stream = tcp.GetStream();
         _broadcastService = broadcastService;
+        _sessions = sessions;
+        _clientHandler = clientHandler;
     }
 
     public async Task RunAsync()
@@ -119,6 +125,16 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Interaction layer (WO-2) ---
+                if (type is Protocol.Invite or Protocol.InviteResponse
+                         or Protocol.SessionEventUp or Protocol.SessionLeave)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    HandleSessionPacket(type, body);
+                    continue;
+                }
+
                 if (type != Protocol.Position || payloadLen != Protocol.PositionPayloadLen)
                 {
                     // Skip unknown/malformed packet
@@ -178,6 +194,87 @@ public class ClientSession
         Buffer.BlockCopy(pcm, 0, payload, 1, pcm.Length);
         EnqueueRaw(BuildPacket(Protocol.VoiceDown, payload));
     }
+
+    // -------------------------------------------------------------------------
+    // Interaction layer (WO-2)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Dispatches an interaction packet to the session manager.
+    ///
+    /// Length is validated here rather than trusted: a short payload would
+    /// otherwise index past the end of the array, and a client is free to send
+    /// anything it likes.
+    /// </summary>
+    private void HandleSessionPacket(int type, byte[] body)
+    {
+        switch (type)
+        {
+            case Protocol.Invite when body.Length >= 2:
+                _sessions.Invite(this, body[0], (InteractionKind)body[1], _clientHandler);
+                break;
+
+            case Protocol.InviteResponse when body.Length >= 3:
+                _sessions.Respond(this, ReadUInt16(body, 0), body[2] != 0);
+                break;
+
+            case Protocol.SessionEventUp when body.Length >= 2:
+                _sessions.RelayEvent(this, ReadUInt16(body, 0), body[2..]);
+                break;
+
+            case Protocol.SessionLeave when body.Length >= 3:
+                _sessions.Leave(this, ReadUInt16(body, 0), (SessionEndReason)body[2]);
+                break;
+
+            default:
+                _logger.Warning("[!] '{Name}' sent malformed interaction packet 0x{Type:X2} ({Len} bytes)",
+                    Name, type, body.Length);
+                break;
+        }
+    }
+
+    /// <summary>Thread-safe: enqueue an InviteReceived (0x0B).</summary>
+    public void EnqueueInviteReceived(ushort sessionId, byte fromGhostId, InteractionKind kind)
+    {
+        var payload = new byte[4];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
+        payload[2] = fromGhostId;
+        payload[3] = (byte)kind;
+        EnqueueRaw(BuildPacket(Protocol.InviteReceived, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a SessionStart (0x0D).</summary>
+    public void EnqueueSessionStart(ushort sessionId, byte peerGhostId, InteractionKind kind, SessionRole role)
+    {
+        var payload = new byte[5];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
+        payload[2] = peerGhostId;
+        payload[3] = (byte)kind;
+        payload[4] = (byte)role;
+        EnqueueRaw(BuildPacket(Protocol.SessionStart, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a SessionEvent (0x0F) from the peer.</summary>
+    public void EnqueueSessionEvent(ushort sessionId, byte fromGhostId, byte[] eventPayload)
+    {
+        var payload = new byte[3 + eventPayload.Length];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
+        payload[2] = fromGhostId;
+        eventPayload.CopyTo(payload, 3);
+        EnqueueRaw(BuildPacket(Protocol.SessionEventDown, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a SessionEnd (0x11).</summary>
+    public void EnqueueSessionEnd(ushort sessionId, SessionEndReason reason)
+    {
+        var payload = new byte[3];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
+        payload[2] = (byte)reason;
+        EnqueueRaw(BuildPacket(Protocol.SessionEnd, payload));
+    }
+
+    private static ushort ReadUInt16(byte[] buf, int offset) =>
+        BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(offset));
 
     /// <summary>Thread-safe: enqueue a Name packet (0x03) to be sent to this client.</summary>
     public void EnqueueName(byte ghostId, string name)

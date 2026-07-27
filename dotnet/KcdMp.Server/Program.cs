@@ -1,4 +1,5 @@
 using KcdMp.Server.Features.ClientHandling;
+using KcdMp.Server.Features.Interactions;
 using KcdMp.Server.Features.Tcp;
 using Serilog;
 
@@ -44,6 +45,7 @@ class Program
 
 		builder.Services.AddSingleton<ClientHandler>();
 		builder.Services.AddSingleton<TcpBroadcastService>();
+		builder.Services.AddSingleton<SessionManager>();
 
 		await using var app = builder.Build();
 

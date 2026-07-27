@@ -6,6 +6,7 @@ namespace KcdMp.Server;
 /// Framing (every packet):  [type:1][payloadLen:2 LE][payload:N]
 /// Floats are little-endian IEEE-754.
 ///
+/// Presence layer:
 /// C→S  0x00  Handshake:  [version:1][nameLen:1][name:UTF-8]
 /// C→S  0x01  Position:   [x:4f][y:4f][z:4f][rotZ:4f][flags:1]  (17 bytes)
 ///                          flags bit 0: isRiding
@@ -19,7 +20,24 @@ namespace KcdMp.Server;
 /// S→C  0x09  VersionMismatch: [serverVersion:1]
 /// S→C  0xFF  Ack:        [assignedId:1]
 ///
-/// Free type bytes for new features: 0x0A and up.
+/// Interaction layer (WO-2). Opt-in paired interactions: one player invites,
+/// the other accepts or declines, both enter a session the relay arbitrates,
+/// both leave. Dice (WO-3) and duelling (WO-5) are clients of this rather than
+/// separate protocols.
+/// C→S  0x0A  Invite:         [targetGhostId:1][kind:1]
+/// S→C  0x0B  InviteReceived: [sessionId:2][fromGhostId:1][kind:1]
+/// C→S  0x0C  InviteResponse: [sessionId:2][accept:1]
+/// S→C  0x0D  SessionStart:   [sessionId:2][peerGhostId:1][kind:1][role:1]
+/// C→S  0x0E  SessionEvent:   [sessionId:2][payload:N]
+/// S→C  0x0F  SessionEvent:   [sessionId:2][fromGhostId:1][payload:N]
+/// C→S  0x10  SessionLeave:   [sessionId:2][reason:1]
+/// S→C  0x11  SessionEnd:     [sessionId:2][reason:1]
+///
+/// Session event payloads are deliberately opaque to this layer. Each
+/// interaction kind defines its own, so dice scoring or duel arbitration can
+/// change without touching the session framing.
+///
+/// Free type bytes for new features: 0x12 and up.
 ///
 /// NOTE: this file is duplicated as dotnet/KcdMp.Client/Protocol.cs. The two
 /// projects share no assembly, so the constants are mirrored by hand — change
@@ -31,32 +49,85 @@ public static class Protocol
 	/// <summary>
 	/// Protocol version, negotiated in the Handshake.
 	///
-	/// Bump this on any breaking change to packet layout. Before version
-	/// negotiation existed, Position v1/v2 were told apart by payload length
-	/// (16 vs 17 bytes); that is what this replaces, so payload lengths are now
-	/// exact and a mismatched peer is rejected at handshake instead of
-	/// misparsing packets later.
+	/// Bumped to 2 for the interaction layer. A v1 peer has no session packets,
+	/// and because the relay rejects a mismatch at handshake rather than letting
+	/// it misparse later, an old agent gets a clear refusal instead of silently
+	/// ignoring invites.
 	/// </summary>
-	public const byte Version = 1;
+	public const byte Version = 2;
 
 	// C→S
-	public const byte Handshake = 0x00;
-	public const byte Position  = 0x01;
-	public const byte Ping      = 0x04;
-	public const byte VoiceUp   = 0x07;
+	public const byte Handshake      = 0x00;
+	public const byte Position       = 0x01;
+	public const byte Ping           = 0x04;
+	public const byte VoiceUp        = 0x07;
+	public const byte Invite         = 0x0A;
+	public const byte InviteResponse = 0x0C;
+	public const byte SessionEventUp = 0x0E;
+	public const byte SessionLeave   = 0x10;
 
 	// S→C
-	public const byte Ghost           = 0x02;
-	public const byte Name            = 0x03;
-	public const byte Pong            = 0x05;
-	public const byte Disconnect      = 0x06;
-	public const byte VoiceDown       = 0x08;
-	public const byte VersionMismatch = 0x09;
-	public const byte Ack             = 0xFF;
+	public const byte Ghost            = 0x02;
+	public const byte Name             = 0x03;
+	public const byte Pong             = 0x05;
+	public const byte Disconnect       = 0x06;
+	public const byte VoiceDown        = 0x08;
+	public const byte VersionMismatch  = 0x09;
+	public const byte InviteReceived   = 0x0B;
+	public const byte SessionStart     = 0x0D;
+	public const byte SessionEventDown = 0x0F;
+	public const byte SessionEnd       = 0x11;
+	public const byte Ack              = 0xFF;
 
 	/// <summary>Exact Position (0x01) payload length.</summary>
 	public const int PositionPayloadLen = 17;
 
 	/// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
 	public const int VoiceFrameLen = 640;
+
+	/// <summary>
+	/// How long an invite waits for a response before the relay expires it.
+	/// Long enough to notice a prompt mid-game, short enough that a forgotten
+	/// invite does not keep the target blocked.
+	/// </summary>
+	public const int InviteTimeoutSeconds = 30;
+}
+
+/// <summary>What kind of interaction a session is running.</summary>
+public enum InteractionKind : byte
+{
+	Dice = 0x01,
+	Duel = 0x02,
+}
+
+/// <summary>
+/// Which side of the session a participant is on. Interactions needing an
+/// asymmetry — dice turn order, who strikes first — derive it from this rather
+/// than negotiating separately.
+/// </summary>
+public enum SessionRole : byte
+{
+	Initiator = 0x00,
+	Acceptor  = 0x01,
+}
+
+/// <summary>Why a session ended. Sent in SessionEnd so clients can tell the player.</summary>
+public enum SessionEndReason : byte
+{
+	/// <summary>Ran to a natural conclusion.</summary>
+	Completed = 0x00,
+	/// <summary>Invitee said no.</summary>
+	Declined = 0x01,
+	/// <summary>Nobody answered the invite in time.</summary>
+	Timeout = 0x02,
+	/// <summary>The other participant dropped off the relay.</summary>
+	PeerDisconnected = 0x03,
+	/// <summary>A participant walked away deliberately.</summary>
+	Left = 0x04,
+	/// <summary>Target was already in a session.</summary>
+	TargetBusy = 0x05,
+	/// <summary>No such target, or the target is not ready.</summary>
+	TargetUnavailable = 0x06,
+	/// <summary>Malformed or out-of-order request.</summary>
+	ProtocolError = 0x07,
 }
