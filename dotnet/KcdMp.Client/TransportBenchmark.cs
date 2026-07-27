@@ -37,8 +37,22 @@ public static class TransportBenchmark
 
         await using var transport = new HttpGameTransport(config.GameApiBase);
 
+        // The very first request pays TCP connect and can take seconds against a
+        // busy game -- measured at ~2.2 s cold versus ~40 ms warm -- which blows
+        // the transport's 800 ms per-call timeout. Retry rather than declaring
+        // the game absent, the same way the agent's 3 s poll loop rides it out.
         Console.Write("Checking the game is up with a save loaded... ");
-        if (!await transport.IsGameReadyAsync(ct))
+        bool ready = false;
+        for (int attempt = 1; attempt <= 5 && !ready && !ct.IsCancellationRequested; attempt++)
+        {
+            ready = await transport.IsGameReadyAsync(ct);
+            if (!ready)
+            {
+                Console.Write($"[retry {attempt}] ");
+                await Task.Delay(1000, ct);
+            }
+        }
+        if (!ready)
         {
             Console.WriteLine("NO");
             Console.WriteLine();
@@ -49,8 +63,8 @@ public static class TransportBenchmark
         Console.WriteLine("yes");
         Console.WriteLine();
 
-        // Warm up: first call pays TCP connect and JIT, which would otherwise
-        // land in the samples as a fake outlier.
+        // Warm up so the cold-connect cost does not land in the samples as a
+        // fake outlier.
         for (int i = 0; i < 5; i++)
             await transport.ReadPositionOnlyAsync(ct);
 

@@ -1,101 +1,156 @@
-# WO-1 — Transport replacement: status
+# WO-1 — Transport replacement
 
 Replacing per-call HTTP and the `sv_servername` CVar hack with a duplex,
 low-latency channel between the Lua mod and `KcdMpClient.exe`.
 
-**This phase is blocked on a decision that only the game can answer.** Options
-(a) and (b) both hinge on whether the Lua sandbox exposes `io`, `socket` or
-LuaJIT's `ffi`, and the brief's first rule is not to invent an API. So the
-deliverable here is the probe that settles it, plus everything that does not
-depend on the answer.
+**Investigation is complete.** Probes and the baseline benchmark were run
+against KCD2 v1.5.2 on 2026-07-27. Two of the four candidate options are dead,
+and the answer is a combination of the other two.
 
-## What the current channel costs
+---
 
-One player-state sample is **three HTTP round trips**:
+## Probe results
 
-| # | Call | Purpose |
-|---|---|---|
-| 1 | `GET /api/rpg/SoulList/PlayerSoul` | scrape `Position="x,y,z"` |
-| 2 | `GET /api/System/Console/ExecuteString` | Lua packs yaw + mount state into `sv_servername` |
-| 3 | `GET /api/System/Console/GetCvarValue` | read that CVar back |
+Run: `powershell -ExecutionPolicy Bypass -File tools\Probe-Transport.ps1`
+(raw output in `tools/probe-results.txt`, regenerated per run).
 
-Steps 2–3 are the CVar hack. There is no push channel out of the game, so an
-unrelated real CVar is hijacked as a one-slot mailbox — meaning yaw cannot be
-*read* without first *writing* to the game. The live agent hides some of this
-by running steps 2–3 on an 80 ms background loop while position ticks at 10 ms,
-but the ceiling is still set by HTTP round trips.
+### The sandbox is a stripped Lua 5.1, not LuaJIT
 
-## The four options, and what each needs
+| | |
+|---|---|
+| `_VERSION` | `Lua 5.1` |
+| `jit`, `ffi`, `bit` | **nil** — this is not LuaJIT |
+| `io` | **nil**, in *both* the console and tick contexts |
+| `socket` | nil; `require("socket")` fails with "module not found" |
+| `os` | table, but stripped to **`clock` and `time` only** — no `getenv`, `date`, `remove`, `rename`, `tmpname`, `execute` |
+| present | `package`, `require`, `load`, `loadstring`, `dofile`, `loadfile`, `setfenv`, `debug`, `coroutine`, `string`, `table`, `math` |
 
-| | Option | Needs | Verdict |
+### `System.LogAlways` is cheap and lossless
+
+50 tagged lines took **0.98 ms** of Lua time. All 50 reached `kcd.log`, in
+order, none dropped.
+
+---
+
+## Verdict on the four options
+
+| | Option | Verdict | Why |
 |---|---|---|---|
-| a | Lua-side socket | `socket` table, or `ffi` to reach `ws2_32` | **probe** |
-| b | File mailbox / ring buffer on disk | working `io.open` + a writable path, *in the tick context* | **probe** |
-| c | Structured `kcd.log` tail + batched inbound | known-good `System.LogAlways`; needs measured flush latency and no drops | **probe** (partly) |
-| d | Batch N Lua statements per `ExecuteString` | nothing — always available | **fallback, measured** |
+| a | Lua-side socket | **DEAD** | No `socket` module, and no `ffi` to reach `ws2_32` — the runtime is plain Lua 5.1, not LuaJIT |
+| b | File mailbox on disk | **DEAD** | `io` is nil in both contexts. There is no file API to write with, and `os.getenv`/`os.remove` are gone too |
+| c | Structured `kcd.log` tail | **VIABLE — chosen for outbound** | LogAlways costs ~20 µs/line, lossless and ordered |
+| d | Batched `ExecuteString` | **VIABLE — chosen for inbound** | Batching is measurably free (below) |
 
-`ffi` is the headline. If LuaJIT's FFI is exposed, option (a) is reachable
-without LuaSocket by calling Win32 sockets directly, and it beats everything
-else. If `io` works but `ffi` does not, option (b) is the pick. If neither, it
-is (c) for outbound plus (d) for inbound.
+Options (a) and (b) are not "hard", they are **impossible** on this runtime. No
+amount of engineering opens them; only a different Lua build would.
 
-**One trap the probe is built around:** `Terrain.GetElevation` is already known
-to exist inside a `Script.SetTimer` tick but *not* in the console
-`ExecuteString` context. The two environments demonstrably differ, so the probe
-re-runs every check inside a tick and reports `exec.*` and `tick.*` separately.
-A capability that only exists in the console context is useless for options (b)
-and (c), which have to run from the tick.
+---
 
-## Run the probe
+## Baseline benchmark
 
-Needs KCD2 running through the **Modding Tools** entry with a save loaded. No
-pak rebuild and no restart — the probes define nothing and persist nothing.
+Run: `dotnet run --project dotnet\KcdMp.Client -- --benchmark`
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\Probe-Transport.ps1
+```
+operation                            min     p50     p95     p99     max    mean
+--------------------------------------------------------------------------------
+noop ExecuteString                  39.4    42.2    44.9    45.6    47.6    42.4
+position read (1 RT)                40.0    43.4    45.7    47.0    47.4    43.5
+rot+ride CVar cycle (2 RT)          81.6    84.6    87.6    89.3    89.9    84.8
+full player state (3 RT)           123.0   127.4   132.9   134.3   134.3   127.8
+batched ExecuteString x5            39.9    42.2    43.5    45.7    45.7    42.3
+batched ExecuteString x20           39.7    42.0    45.0    48.3    48.3    42.3
+
+full state reads : 7.8/s
+implied ceiling  : 23 HTTP round trips/s
 ```
 
-It sends each block of `tools/probe_transport.lua` through the debug console,
-then reads the answers back out of `kcd.log` and writes
-`tools/probe-results.txt`. Paste that file back to decide the transport.
+Two things fall straight out of this:
 
-## Run the baseline benchmark
+**Cost is per round trip, flat, at ~42 ms.** One round trip is 43 ms, two are
+85 ms, three are 128 ms — dead linear. Latency does not vary with payload.
 
-Same requirement — game up, save loaded:
+**Batching is free.** Twenty Lua statements in one call cost the same 42 ms as
+one statement. Nothing is charged for the content of a call, only for making
+it. This is the single most useful measurement in the set, and it means the
+cheap fallback option (d) is worth far more than "lowest risk" suggested.
 
-```powershell
-dotnet run --project dotnet\KcdMp.Client -- --benchmark
-```
+The consequence is stark: the sync loop ticks at 10 ms but the channel supports
+**7.8 full state reads per second**. The loop is entirely transport-bound.
 
-Reports latency percentiles for a no-op `ExecuteString`, a position read, the
-CVar cycle, a full state read, and batched `ExecuteString` at x5 and x20 — that
-last pair is option (d) measured directly, so its value is known before
-anything gets built. Finishes with sustained full-state reads per second.
+Also measured: the **first** request after connect takes ~2.2 s versus ~40 ms
+warm. Anything with a short timeout must retry rather than conclude the game is
+absent — the benchmark itself had that bug and now retries five times.
 
-Percentiles, not averages, because smoothness is set by the bad ticks: an
-occasional 200 ms stall is what a player sees, so p95/p99 are the real numbers.
+---
 
-## What is already in place
+## The design
 
-- `IGameTransport` — the seam, so the rest of the agent does not care which
-  channel is in use. Deliberately intent-based: `ReadPlayerStateAsync` asks for
-  a whole sample rather than exposing "read position" and "read a CVar"
-  separately. HTTP needs three round trips to answer it; a push transport
-  answers from its latest frame with none. Callers see one method either way.
-  `RoundTripsPerStateRead` is on the interface so a comparison shows *why* one
-  transport is faster.
-- `HttpGameTransport` — today's channel behind that interface, kept faithful so
-  the baseline is honest.
-- `TransportBenchmark` — the measurement, run via `--benchmark`.
+**Outbound (game → agent): tail `kcd.log`.** The Lua tick already runs every
+20 ms. It emits one structured `[KCD2-MP-DATA]` line per tick with position,
+yaw and mount state; the agent tails the file. This removes the CVar hack and
+the polling read entirely.
 
-`GameBridge` has **not** been rewired onto the interface yet. That is
-deliberate: the seam is worth confirming against one real replacement before
-committing the whole sync loop to it.
+- 3 round trips per sample → **0**
+- 7.8 samples/s → **~50/s**, set by the Lua tick rate rather than by HTTP
+- Yaw no longer requires *writing* to the game to read it
+- `sv_servername` is handed back to the game
 
-## Next, once probe results land
+**Inbound (agent → game): one batched `ExecuteString` per tick.** Ghost
+updates are coalesced into a single call instead of one call per ghost. With
+N players, cost goes from N x 42 ms to a flat 42 ms.
 
-1. Pick the transport from the table above.
-2. Implement it as a second `IGameTransport`.
-3. Re-run `--benchmark` against it and put the two side by side — that is the
-   work order's actual deliverable.
-4. Rewire `GameBridge` onto the interface and select the transport by config.
+Both halves use only APIs already proven in the existing mod. Nothing here
+depends on an unverified capability.
+
+### Known risks, to settle during implementation
+
+1. **Log-to-disk visibility latency is not yet measured.** The burst test proved
+   LogAlways is cheap Lua-side and lossless, but not how quickly a line becomes
+   readable by an external tailer. If the engine buffers, outbound latency is
+   set by flush cadence, not by the tick. **This is the number that decides
+   whether the design delivers, and it should be measured first.**
+2. **`kcd.log` is noisy and grows.** During testing it was 3.5 MB and being
+   flooded by siege AI ("First shot replanning for ..."). The tailer must seek
+   to the end and filter by prefix, never re-read the file.
+3. **Log rotation on game restart** must be handled by the tailer.
+
+---
+
+## What is in place
+
+- `IGameTransport` — the seam. Intent-based: `ReadPlayerStateAsync` asks for a
+  whole sample rather than exposing position and CVar reads separately, so HTTP
+  can spend three round trips answering it while a log-tail transport answers
+  from its latest frame with none. `RoundTripsPerStateRead` is on the interface
+  so a comparison shows *why* one is faster.
+- `HttpGameTransport` — today's channel behind that interface, the baseline above.
+- `TransportBenchmark` — `--benchmark`, reporting percentiles rather than means
+  because smoothness is set by the slow ticks, not the average.
+- `tools/probe_transport.lua` + `tools/Probe-Transport.ps1` — re-runnable
+  capability check. Worth re-running after any game patch, since the whole
+  design rests on `io` and `ffi` being absent.
+
+`GameBridge` is deliberately **not** rewired onto the interface yet; that lands
+with the log-tail transport, against a real second implementation.
+
+## Next steps
+
+1. Measure log-to-disk visibility latency (risk 1 above). It gates the design.
+2. Implement `LogTailGameTransport` for outbound, plus the `[KCD2-MP-DATA]` tick
+   emitter in Lua — the emitter half already exists in `KCD2MP_WritePos`.
+3. Add batched `ExecuteAsync`/`FlushAsync` buffering to the HTTP path for inbound.
+4. Re-run `--benchmark` against the new transport and put the two side by side.
+5. Rewire `GameBridge` onto `IGameTransport`, selecting by config.
+
+## Tooling notes
+
+- **Keep probe blocks small.** Long or deeply nested chunks are dropped by the
+  console endpoint silently — no output, no Lua error. Length is not the cause
+  (an 8000-character single-line chunk runs fine, as does a 60-line one), so the
+  trigger is chunk complexity. Not worth pinning down; several short blocks are
+  reliable, one long one is not.
+- **`kcd.log` lives with the Modding Tools install** (`steamapps\common\KCD2Mod`),
+  not the base game folder. `Probe-Transport.ps1` scans every Steam library and
+  takes the most recently written match. The agent's own `GetSteamNameFromKcdLog`
+  still hardcodes the base-game path and so silently falls through to its
+  `loginusers.vdf` fallback under Modding Tools — harmless today, worth fixing.

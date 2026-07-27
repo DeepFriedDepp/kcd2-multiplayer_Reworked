@@ -19,12 +19,21 @@
 [CmdletBinding()]
 param(
     [string] $ApiBase = 'http://localhost:1403',
-    [string] $LuaFile = (Join-Path $PSScriptRoot 'probe_transport.lua'),
+    [string] $LuaFile,
     [string] $KcdLog,
     [int]    $SettleMs = 1200
 )
 
 $ErrorActionPreference = 'Stop'
+
+# $PSScriptRoot is not reliably populated inside a param() default under
+# Windows PowerShell 5.1, so resolve the script directory here instead.
+$ScriptDir =
+    if ($PSScriptRoot) { $PSScriptRoot }
+    elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    else { (Get-Location).Path }
+
+if (-not $LuaFile) { $LuaFile = Join-Path $ScriptDir 'probe_transport.lua' }
 
 function Resolve-KcdLog {
     if ($KcdLog) { return $KcdLog }
@@ -53,16 +62,29 @@ function Resolve-KcdLog {
             }
         }
     }
-    foreach ($r in $roots) {
-        $p = Join-Path $r 'steamapps\common\KingdomComeDeliverance2\kcd.log'
-        if (Test-Path $p) { return $p }
+    # The Modding Tools entry is a separate install (KCD2Mod) with its own
+    # kcd.log, and it is the one that gets launched for modding -- so hardcoding
+    # the base game's folder finds nothing, or worse, finds a stale log. Scan
+    # every KCD-ish folder in every library and take the most recently written.
+    $found = @()
+    foreach ($r in ($roots | Sort-Object -Unique)) {
+        $common = Join-Path $r 'steamapps\common'
+        if (-not (Test-Path $common)) { continue }
+        Get-ChildItem $common -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'Kingdom|KCD' } |
+            ForEach-Object {
+                $found += Get-ChildItem $_.FullName -Filter 'kcd.log' -Recurse -Depth 2 -ErrorAction SilentlyContinue
+            }
     }
-    return $null
+    if ($found.Count -eq 0) { return $null }
+    return ($found | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
 
 function Invoke-Lua([string] $Lua) {
-    Add-Type -AssemblyName System.Web
-    $encoded = [System.Web.HttpUtility]::UrlEncode('#' + $Lua)
+    # EscapeDataString, not HttpUtility.UrlEncode: it percent-encodes spaces
+    # rather than turning them into '+', matching what the agent already sends
+    # successfully through this endpoint.
+    $encoded = [uri]::EscapeDataString('#' + $Lua)
     $url = "$ApiBase/api/System/Console/ExecuteString?command=$encoded"
     Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15 | Out-Null
 }
@@ -165,7 +187,7 @@ if ($rate) {
     }
 }
 
-$outFile = Join-Path $PSScriptRoot 'probe-results.txt'
+$outFile = Join-Path $ScriptDir 'probe-results.txt'
 $hits | Set-Content -Path $outFile -Encoding utf8
 Write-Host ''
 Write-Host "Full output written to $outFile" -ForegroundColor Green
