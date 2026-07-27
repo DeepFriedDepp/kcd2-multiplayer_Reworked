@@ -153,6 +153,10 @@ public sealed class ClientConfig
                     case "--no-voice":
                         VoiceChatEnabled = false;
                         break;
+                    case "--benchmark":
+                        // Handled in Program before the agent starts; listed
+                        // here so it is not reported as an unknown argument.
+                        break;
                     default:
                         Console.WriteLine($"[config] Ignoring unknown or incomplete argument '{args[i]}'");
                         break;

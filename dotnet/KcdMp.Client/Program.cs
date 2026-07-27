@@ -9,6 +9,15 @@ using System.Text.RegularExpressions;
 var config = ClientConfig.Load();
 config.ApplyCommandLine(args);
 
+// --benchmark measures the game channel and exits; it never touches the relay,
+// so it needs no name resolution and no server.
+if (args.Contains("--benchmark"))
+{
+    using var benchCts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; benchCts.Cancel(); };
+    return await TransportBenchmark.RunAsync(config, benchCts.Token);
+}
+
 // An empty name means auto-detect.
 if (string.IsNullOrWhiteSpace(config.PlayerName))
     config.PlayerName =
@@ -158,3 +167,4 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) => { cts.Cancel(); Thread.Sleep(50
 
 var bridge = new GameBridge(config);
 await bridge.RunAsync(cts.Token);
+return 0;

@@ -17,3 +17,6 @@ publish/
 *.suo
 *.userosscache
 *.sln.docstates
+
+# Probe output, regenerated per run
+tools/probe-results.txt
