@@ -89,7 +89,51 @@ Also learned: `entity:EnableAI(false)` **raises an error** on a real NPC — the
 `pcall` returned false. That method is not available here, whatever the mod's
 existing horse-mount code hoped.
 
-### AI suppression: still untested after four attempts
+### AI suppression: CONCLUSIVELY DOES NOT WORK
+
+Settled with a controlled A/B test after four inconclusive attempts. 14 animals
+were split into a treatment group and a control group, movement accumulated
+in-tick over ~9 s per phase, then `AI.SetBehaviorTreeEvaluationEnabled(id,false)`
+plus `AI.AutoDisable(id,1)` applied to the treatment group only:
+
+| Phase | Control | Treatment |
+|---|---|---|
+| baseline | 45.02 m | 17.79 m |
+| suppressed | 35.30 m | **18.74 m** |
+
+The treatment group **kept walking at the same rate** — slightly more, in fact.
+Had suppression worked it would have gone to roughly zero. The control's 22 %
+drop is ordinary grazing variance, which is exactly why the paired design was
+needed.
+
+**Livestock and NPCs do move**, and earlier claims to the contrary were wrong:
+cows covered 12.49 m, 10.69 m and 8.76 m over six seconds, sheep 7.35 m. The
+mistake was sampling only the four *nearest* actors, which happened to be a
+static scripted brawl group (`rvacka_apprentice_1/2/3`), and generalising from
+them. Animals also graze in bursts, so any single-subject test lands on an idle
+window about half the time — hence four dead attempts before switching to a
+treatment/control design.
+
+### The pattern across every result
+
+| | Reads | Writes |
+|---|---|---|
+| Health | `actor:GetHealth()` real fractional values | `SetHealth`, `DealDamage` inert |
+| Position | `GetWorldPos`, `GetEntitiesInSphere` accurate | — |
+| AI state | `IsMoving`, attention getters respond | `SetBehaviorTreeEvaluationEnabled`, `AutoDisable` no effect |
+| World time | `GetWorldTime` accurate | **`SetWorldTime` works** |
+
+**The exposed Lua surface is read-mostly.** Observation works; mutation almost
+entirely does not, with world time the lone exception. That is precisely the
+shape a *presence* layer needs and precisely what a *shared simulation* cannot
+be built on — which is, in hindsight, why the original parallel-worlds design
+was the right call.
+
+The game was confirmed simulating throughout: `IsWorldTimePaused()` was false
+and world time advanced 554708 → 554768 over four real seconds, so none of these
+negatives are an artefact of a backgrounded, paused game.
+
+### Superseded: AI suppression, four earlier attempts
 
 Not because the API refuses, but because **no genuinely mobile subject could be
 found**. Sampling 102 nearby actors twice over 3 s, 17 showed *any* position
