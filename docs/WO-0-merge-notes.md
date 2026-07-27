@@ -119,43 +119,36 @@ Packet types now live in `Protocol.cs`. **Two things worth knowing:**
   Extracting a shared `KcdMp.Protocol` project is worth doing but is its own
   work order.
 
-## Not verified — read this before trusting the build
+## Verification
 
-**There is no .NET SDK installed on this machine.** Only runtimes are present
-(`Microsoft.NETCore.App` up to 9.0.10, `Microsoft.AspNetCore.App` 9.0.10);
-`dotnet --version` reports "No .NET SDKs were found." So **nothing here has
-been compiled, restored, or run.** The merge is complete and the code was
-reviewed by hand, but "one buildable `main`" is unverified.
+Initially written without a .NET SDK on the machine; a user-scope .NET 8 SDK
+(8.0.423, `%USERPROFILE%\.dotnet-sdk8`, not on PATH) was installed afterwards
+and the following was verified:
 
-To verify, install the .NET 8 SDK and run:
+- **`dotnet build KCD2-MP.sln` succeeds** — all three projects, 0 errors.
+  8 warnings, all pre-existing (CA1416 in the client's Steam registry helpers,
+  two nullability/unused-variable warnings in the launcher). The launcher
+  restores and compiles; Photino needed no extra native assets to build.
+- **The relay starts and behaves.** Serilog resolves from DI, the commented
+  `appsettings.json` parses (the JSON config provider skips comments), the
+  listener binds 7778, and `/api/information` returns the expected JSON.
+- **Version negotiation, probed over raw TCP:**
+  - v1 handshake → `FF` Ack with assigned id
+  - v9 handshake → `09` VersionMismatch carrying the relay's version
+  - legacy pre-version handshake (bare name payload) → rejected with `09`
+  - full session: Position accepted, Ping echoed back as Pong
+- **Legacy CLI flags:** `--port 7779` remaps to `Tcp:Port`, bare `--echo`
+  survives `NormaliseArgs`, and echo mode reflects a Ghost (`0x02`, 18-byte
+  payload, ghostId 0).
+- **The agent** writes `kcdmp-client.json` with defaults on first run, layers
+  `--host/--name/--no-voice` overrides on top, and waits for the game.
 
-```powershell
-dotnet build KCD2-MP.sln
-```
-
-Specific things a compile would settle, in rough order of likelihood:
-
-1. **The launcher.** It references `Serilog.Extensions.Logging` 10.0.0 on
-   `net8.0-windows`; that package does publish a `net8.0` target, so it should
-   restore, but the launcher has never been built here and Photino may want a
-   native asset per RID.
-2. **`Nullable`/analyser warnings** across the merged server files.
-
-Two things were checked without a compiler and are *not* open questions:
-
-- **Package/TFM compatibility** — every pinned version was confirmed to exist
-  on NuGet and to publish a `net8.0` target, read from the nuspecs.
-- **`Serilog.ILogger` injection** — `TcpSocketService` and `ClientSession` take
-  `Serilog.ILogger` as a constructor dependency. The `AddSerilog(Action<LoggerConfiguration>)`
-  overload used in `Program.cs` does register it as a singleton (confirmed in
-  `SerilogServiceCollectionExtensions`), so it resolves.
-
-The Python master server was not run either; it needs its own venv and a
-database, and it has no interaction with the .NET build.
+Not verified: an end-to-end run with the actual game (needs KCD2 + Modding
+Tools running), and the Python master server (needs its own venv and database;
+no interaction with the .NET build).
 
 ## Suggested next step
 
-WO-1 (transport replacement) is the stated next work order. Before it, someone
-with an SDK should run the build above and confirm the relay starts and two
-agents connect — WO-1's deliverable is a *latency benchmark against the current
-channel*, which needs a working baseline to measure.
+WO-1 (transport replacement) is the stated next work order. The relay/agent
+baseline works; the remaining prerequisite for WO-1's latency benchmark is a
+run against the real game's debug API.

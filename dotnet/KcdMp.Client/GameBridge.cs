@@ -126,7 +126,14 @@ public partial class GameBridge(ClientConfig config)
         // --- Handshake:  [version:1][nameLen:1][name:UTF-8] ---
         var nameBytes = Encoding.UTF8.GetBytes(config.PlayerName ?? Environment.MachineName);
         if (nameBytes.Length > 255)
-            nameBytes = nameBytes[..255];
+        {
+            // Trim to 255 bytes without splitting a multi-byte UTF-8 sequence:
+            // back off while the first cut byte is a continuation byte (10xxxxxx).
+            int len = 255;
+            while (len > 0 && (nameBytes[len] & 0xC0) == 0x80)
+                len--;
+            nameBytes = nameBytes[..len];
+        }
 
         var handshake = new byte[3 + 2 + nameBytes.Length];
         handshake[0] = Protocol.Handshake;
