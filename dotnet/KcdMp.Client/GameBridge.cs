@@ -115,6 +115,10 @@ public partial class GameBridge(ClientConfig config)
             return http;
         }
 
+        // Player decisions (accepting an invite, initiating one) come back out
+        // through the same log channel, since nothing else leads out of the game.
+        tail.GameEvent += OnGameEvent;
+
         Console.WriteLine($"[transport] {tail.Name} — 0 round trips per state read");
         return tail;
     }
@@ -470,6 +474,52 @@ public partial class GameBridge(ClientConfig config)
             Console.WriteLine($"[name] ghost {ghostId} = {ghostName}");
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Handles a discrete event the player triggered in game, delivered via the
+    /// log tail. Fire-and-forget because this runs on the tail loop's thread and
+    /// must not block it.
+    /// </summary>
+    private void OnGameEvent(string name, string arg)
+    {
+        var interactions = Interactions;
+        if (interactions is null) return;
+
+        switch (name)
+        {
+            case "invite_accept":
+                Console.WriteLine("[interaction] player accepted");
+                _ = interactions.RespondAsync(true);
+                break;
+
+            case "invite_decline":
+                Console.WriteLine("[interaction] player declined");
+                _ = interactions.RespondAsync(false);
+                break;
+
+            case "invite_send":
+            {
+                // "<ghostId> <kind>" — Lua picks the target because it has the
+                // ghost positions; we only know relay ids.
+                var parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 1 || !byte.TryParse(parts[0], out byte targetId))
+                {
+                    Console.WriteLine($"[interaction] malformed invite_send '{arg}'");
+                    break;
+                }
+                var kind = parts.Length > 1 && parts[1].Equals("duel", StringComparison.OrdinalIgnoreCase)
+                    ? InteractionKind.Duel
+                    : InteractionKind.Dice;
+                Console.WriteLine($"[interaction] inviting ghost {targetId} to {kind}");
+                _ = interactions.InviteAsync(targetId, kind);
+                break;
+            }
+
+            default:
+                Console.WriteLine($"[event] ignoring unknown game event '{name}'");
+                break;
+        }
     }
 
     /// <summary>

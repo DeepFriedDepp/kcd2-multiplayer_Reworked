@@ -166,6 +166,125 @@ function KCD2MP_WritePos()
     return KCD2MP_EmitState()
 end
 
+-- ===== Outbound Events (WO-2) =====
+-- A second line type on the same log channel, for discrete things the player
+-- did rather than continuous state. Accepting an invite has to travel game →
+-- agent, and the log tail is the only outbound path (no sockets, no io), so it
+-- rides here instead of resurrecting the sv_servername CVar hack.
+--
+--   [KCD2-MP-EVT] v1 <seq> <name> <arg>
+--
+-- Sequence numbers are separate from the state stream so a dropped position
+-- frame cannot be mistaken for a dropped event.
+KCD2MP.evtSeq = 0
+
+function KCD2MP_EmitEvent(name, arg)
+    KCD2MP.evtSeq = KCD2MP.evtSeq + 1
+    System.LogAlways(string.format("[KCD2-MP-EVT] v1 %d %s %s",
+        KCD2MP.evtSeq, tostring(name), tostring(arg or "")))
+end
+
+-- ===== Interaction Prompt UI (WO-2) =====
+-- Drawn from the existing 8 ms label loop via System.DrawText. Game.ShowNotification
+-- was already rejected for injecting '@' decorators, and DrawLabel is world-space,
+-- so screen-space DrawText is the right tool for a prompt.
+KCD2MP.invite = nil            -- {sid, who, kind, shownAt}
+KCD2MP.interactionMsg = nil    -- {text, shownAt}
+
+local INVITE_TIMEOUT   = 30    -- matches the relay's invite expiry
+local MSG_TIMEOUT      = 5
+
+-- Called by the agent when a peer invites this player.
+function KCD2MP_ShowInvite(sid, who, kind)
+    KCD2MP.invite = { sid = sid, who = tostring(who), kind = tostring(kind), shownAt = os.clock() }
+    mp_log("INVITE from " .. tostring(who) .. " (" .. tostring(kind) .. ") session " .. tostring(sid))
+end
+
+function KCD2MP_HideInvite()
+    KCD2MP.invite = nil
+end
+
+-- Transient feedback: "Declined", "PeerDisconnected", and so on.
+function KCD2MP_ShowInteractionMsg(text)
+    KCD2MP.interactionMsg = { text = tostring(text), shownAt = os.clock() }
+end
+
+function KCD2MP_AcceptInvite()
+    if not KCD2MP.invite then
+        mp_log("No invite to accept")
+        return false
+    end
+    KCD2MP_EmitEvent("invite_accept", KCD2MP.invite.sid)
+    KCD2MP_HideInvite()
+    KCD2MP_ShowInteractionMsg("Accepted")
+    return true
+end
+
+function KCD2MP_DeclineInvite()
+    if not KCD2MP.invite then return false end
+    KCD2MP_EmitEvent("invite_decline", KCD2MP.invite.sid)
+    KCD2MP_HideInvite()
+    KCD2MP_ShowInteractionMsg("Declined")
+    return true
+end
+
+-- Invites the nearest ghost. Lua picks the target because it already has both
+-- the player's position and every ghost's; the agent only knows relay ids.
+-- kindStr is "dice" or "duel".
+function KCD2MP_InviteNearest(kindStr)
+    kindStr = tostring(kindStr or ""):gsub("%s+", "")
+    if kindStr == "" then kindStr = "dice" end
+
+    local ppos = player and player:GetWorldPos()
+    if not ppos then return false end
+
+    local bestId, bestD = nil, nil
+    for id, g in pairs(KCD2MP.ghosts or {}) do
+        if g and g.entity then
+            local ok, gp = pcall(function() return g.entity:GetWorldPos() end)
+            if ok and gp then
+                local d = (gp.x - ppos.x)^2 + (gp.y - ppos.y)^2 + (gp.z - ppos.z)^2
+                if not bestD or d < bestD then bestD, bestId = d, id end
+            end
+        end
+    end
+
+    if not bestId then
+        mp_log("No other player nearby to invite")
+        KCD2MP_ShowInteractionMsg("No player nearby")
+        return false
+    end
+
+    mp_log("Inviting ghost " .. tostring(bestId) .. " to " .. kindStr)
+    KCD2MP_EmitEvent("invite_send", tostring(bestId) .. " " .. kindStr)
+    KCD2MP_ShowInteractionMsg("Invite sent")
+    return true
+end
+
+-- Draws the prompt and any transient message. Called from the label loop, which
+-- already runs at 8 ms so text does not flicker between frames.
+function KCD2MP_DrawInteractionUI()
+    local inv = KCD2MP.invite
+    if inv then
+        if os.clock() - inv.shownAt > INVITE_TIMEOUT then
+            KCD2MP.invite = nil
+        else
+            local left = math.ceil(INVITE_TIMEOUT - (os.clock() - inv.shownAt))
+            System.DrawText(10, 60, inv.who .. " invites you to " .. inv.kind .. "  (" .. left .. "s)", 2)
+            System.DrawText(10, 84, "mp_accept  /  mp_decline", 1.6)
+        end
+    end
+
+    local msg = KCD2MP.interactionMsg
+    if msg then
+        if os.clock() - msg.shownAt > MSG_TIMEOUT then
+            KCD2MP.interactionMsg = nil
+        else
+            System.DrawText(10, 110, msg.text, 1.6)
+        end
+    end
+end
+
 -- ===== Ghost NPC Spawn =====
 
 function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
@@ -580,6 +699,9 @@ function KCD2MP_LabelTick()
             System.DrawText(10, 10, KCD2MP.pingText, 2)
         end)
     end
+
+    -- Interaction prompt (WO-2) shares this loop rather than adding a timer.
+    pcall(KCD2MP_DrawInteractionUI)
 end
 
 -- ===== Animation Update =====
@@ -2346,6 +2468,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_emit_on",         "KCD2MP_StartEmitter()",   "Start [KCD2-MP-DATA] state emitter (WO-1 log transport)")
     System.AddCCommand("mp_emit_off",        "KCD2MP_StopEmitter()",    "Stop the state emitter")
     System.AddCCommand("mp_emit_once",       "KCD2MP_EmitState()",      "Emit a single state line")
+    System.AddCCommand("mp_accept",          "KCD2MP_AcceptInvite()",   "Accept a pending interaction invite")
+    System.AddCCommand("mp_decline",         "KCD2MP_DeclineInvite()",  "Decline a pending interaction invite")
+    System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
@@ -2379,10 +2504,33 @@ local AXIS_ACTIONS = {
     move_lx=true, move_ly=true,
 }
 
+-- Accept/decline keybinds (WO-2).
+--
+-- These action names are UNVERIFIED GUESSES. The project rule is not to invent
+-- API names, and the same applies to action ids, so the console commands
+-- mp_accept / mp_decline are the supported path and these are a convenience that
+-- may simply never fire. To find the real names: set KCD2MP.logActions = true,
+-- press the key you want, and read the ACT lines out of kcd.log.
+local ACCEPT_ACTIONS  = { ["dialog_answer1"] = true, ["confirm"] = true, ["ui_accept"] = true }
+local DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_cancel"] = true }
+
 local function handleAction(action, activation, value)
     if AXIS_ACTIONS[action] then return end
     if KCD2MP.logActions then
         mp_log(string.format("ACT '%s' a=%s", tostring(action), tostring(activation)))
+    end
+
+    -- Only consume these while a prompt is actually up, so they never interfere
+    -- with normal dialogue or menus.
+    if KCD2MP.invite and activation == "press" then
+        if ACCEPT_ACTIONS[action] then
+            pcall(KCD2MP_AcceptInvite)
+            return
+        end
+        if DECLINE_ACTIONS[action] then
+            pcall(KCD2MP_DeclineInvite)
+            return
+        end
     end
 
     -- Toggle-style: each press of C flips sneak on/off

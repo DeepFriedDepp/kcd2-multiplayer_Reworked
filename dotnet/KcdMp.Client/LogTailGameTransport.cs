@@ -32,6 +32,25 @@ public sealed class LogTailGameTransport : IGameTransport
     private const string Tag = "[KCD2-MP-DATA]";
     private const string Version = "v1";
 
+    /// <summary>
+    /// Discrete player actions, emitted by KCD2MP_EmitEvent on the same log
+    /// channel: [KCD2-MP-EVT] v1 &lt;seq&gt; &lt;name&gt; &lt;arg&gt;
+    ///
+    /// This is the only way anything travels game → agent. There is no socket
+    /// and no file API in the sandbox, so an accepted invite has to come out
+    /// through the log like everything else.
+    /// </summary>
+    private const string EventTag = "[KCD2-MP-EVT]";
+
+    /// <summary>
+    /// Raised for each game event line: (name, argument). The argument is the
+    /// raw remainder of the line, so an event can carry whatever it needs.
+    /// </summary>
+    public event Action<string, string>? GameEvent;
+
+    /// <summary>Events seen since start.</summary>
+    public long EventsReceived { get; private set; }
+
     private readonly HttpGameTransport _http;
     private readonly string _logPath;
     private readonly int _emitIntervalMs;
@@ -221,6 +240,13 @@ public sealed class LogTailGameTransport : IGameTransport
     /// </summary>
     private void ProcessLine(ReadOnlySpan<char> line)
     {
+        int evtIdx = line.IndexOf(EventTag);
+        if (evtIdx >= 0)
+        {
+            ProcessEventLine(line[(evtIdx + EventTag.Length)..].Trim());
+            return;
+        }
+
         int tagIdx = line.IndexOf(Tag);
         if (tagIdx < 0) return;
 
@@ -254,8 +280,34 @@ public sealed class LogTailGameTransport : IGameTransport
         }
     }
 
+    /// <summary>
+    /// Parses "v1 &lt;seq&gt; &lt;name&gt; &lt;arg...&gt;" and raises <see cref="GameEvent"/>.
+    ///
+    /// The handler runs on the tail loop's thread, so subscribers must not block.
+    /// A throwing subscriber is swallowed: losing one event is bad, but killing
+    /// the tail loop would silently stop all position updates too.
+    /// </summary>
+    private void ProcessEventLine(ReadOnlySpan<char> rest)
+    {
+        Span<Range> fields = stackalloc Range[4];
+        int n = SplitOnSpaces(rest, fields, limit: 3);
+        if (n < 3) return;
+        if (!rest[fields[0]].SequenceEqual(Version)) return;
+
+        string name = rest[fields[2]].ToString();
+        string arg = n > 3 ? rest[fields[3]].ToString().Trim() : string.Empty;
+
+        EventsReceived++;
+        try { GameEvent?.Invoke(name, arg); }
+        catch (Exception ex) { Console.WriteLine($"[event] handler for '{name}' threw: {ex.Message}"); }
+    }
+
     /// <summary>Splits on runs of spaces without allocating.</summary>
-    private static int SplitOnSpaces(ReadOnlySpan<char> s, Span<Range> into)
+    /// <param name="limit">
+    /// When non-negative, everything after this many fields is returned as one
+    /// final field, so a trailing argument may itself contain spaces.
+    /// </param>
+    private static int SplitOnSpaces(ReadOnlySpan<char> s, Span<Range> into, int limit = -1)
     {
         int count = 0, i = 0;
         while (i < s.Length && count < into.Length)
@@ -263,6 +315,13 @@ public sealed class LogTailGameTransport : IGameTransport
             while (i < s.Length && s[i] == ' ') i++;
             if (i >= s.Length) break;
             int start = i;
+
+            if (limit >= 0 && count == limit)
+            {
+                into[count++] = new Range(start, s.Length);
+                break;
+            }
+
             while (i < s.Length && s[i] != ' ') i++;
             into[count++] = new Range(start, i);
         }
