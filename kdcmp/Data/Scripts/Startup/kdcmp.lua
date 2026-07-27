@@ -82,17 +82,88 @@ function KCD2MP_GetPos()
     return nil
 end
 
-function KCD2MP_WritePos()
+-- ===== Outbound State Emitter (WO-1) =====
+-- The game has no push channel, so the agent used to poll: one HTTP call for
+-- position plus two more to stuff yaw and mount state through the sv_servername
+-- CVar and read it back. Measured at ~128 ms for one full sample, capping the
+-- sync loop at 7.8 samples/s.
+--
+-- System.LogAlways costs ~20 us per line and kcd.log is readable by an external
+-- tailer roughly 45 ms later, so the game can simply push instead. This emits
+-- one line per tick; KcdMpClient tails the log. Three round trips become zero
+-- and the rate becomes whatever this timer runs at.
+--
+-- Line format, space separated, fixed field count:
+--   [KCD2-MP-DATA] v1 <seq> <clock> <x> <y> <z> <rotZ> <flags>
+--
+--   seq    monotonic, so the tailer can spot drops and reordering
+--   clock  os.clock() at emit, so the agent can age the sample
+--   flags  bit0 riding, bit1 sneaking
+--
+-- The version token is first so the parser can reject anything it does not
+-- understand rather than misread it. Bump it on any field change.
+KCD2MP.emitRunning = false
+KCD2MP.emitSeq = 0
+KCD2MP.emitIntervalMs = 20
+
+local EMIT_VERSION = "v1"
+
+-- Builds and writes one state line. Returns false when the player is not in a
+-- state worth reporting (no world, mid-load).
+function KCD2MP_EmitState()
     if not player then return false end
-    local pos = player:GetWorldPos()
+
+    local pos = nil
+    pcall(function() pos = player:GetWorldPos() end)
     if not pos then return false end
 
     local ang = nil
     pcall(function() ang = player:GetWorldAngles() end)
     local rotZ = ang and ang.z or 0
 
-    System.LogAlways(string.format("[KCD2-MP-DATA] %.2f,%.2f,%.2f,%.2f", pos.x, pos.y, pos.z, rotZ))
+    local flags = 0
+    if KCD2MP.isRiding      then flags = flags + 1 end
+    if KCD2MP.playerSneaking then flags = flags + 2 end
+
+    KCD2MP.emitSeq = KCD2MP.emitSeq + 1
+    System.LogAlways(string.format("[KCD2-MP-DATA] %s %d %.3f %.3f %.3f %.3f %.4f %d",
+        EMIT_VERSION, KCD2MP.emitSeq, os.clock(), pos.x, pos.y, pos.z, rotZ, flags))
     return true
+end
+
+function KCD2MP_EmitTick()
+    if not KCD2MP.emitRunning then return end
+    Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)  -- reschedule FIRST: a Lua error must not kill the stream
+
+    local ok, err = pcall(KCD2MP_EmitState)
+    if not ok then
+        -- Report once rather than every tick; at 50 Hz a hot error would bury the log.
+        if not KCD2MP._emitErrLogged then
+            KCD2MP._emitErrLogged = true
+            System.LogAlways("[KCD2-MP] EmitTick error: " .. tostring(err))
+        end
+    end
+end
+
+-- intervalMs is optional; the agent passes its configured rate.
+function KCD2MP_StartEmitter(intervalMs)
+    if intervalMs and intervalMs >= 5 then KCD2MP.emitIntervalMs = intervalMs end
+    if KCD2MP.emitRunning then return end
+    KCD2MP.emitRunning = true
+    KCD2MP._emitErrLogged = false
+    System.LogAlways("[KCD2-MP] State emitter started (" .. KCD2MP.emitIntervalMs .. "ms)")
+    Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)
+end
+
+function KCD2MP_StopEmitter()
+    KCD2MP.emitRunning = false
+    System.LogAlways("[KCD2-MP] State emitter stopped after " .. KCD2MP.emitSeq .. " lines")
+end
+
+-- Legacy name, kept because the 500 ms KCD2MP_Tick calls it. Delegates so there
+-- is only ever one [KCD2-MP-DATA] format for the tailer to parse.
+function KCD2MP_WritePos()
+    return KCD2MP_EmitState()
 end
 
 -- ===== Ghost NPC Spawn =====
@@ -2272,6 +2343,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_find_horses",     "KCD2MP_FindHorses()",     "Find horse entities near player - shows class names")
     System.AddCCommand("mp_spawn_horse_test","KCD2MP_SpawnHorseTest()", "Force-spawn a horse at player position (class probe)")
     System.AddCCommand("mp_riding_state",    "KCD2MP_RidingState()",    "Log current riding detection state")
+    System.AddCCommand("mp_emit_on",         "KCD2MP_StartEmitter()",   "Start [KCD2-MP-DATA] state emitter (WO-1 log transport)")
+    System.AddCCommand("mp_emit_off",        "KCD2MP_StopEmitter()",    "Stop the state emitter")
+    System.AddCCommand("mp_emit_once",       "KCD2MP_EmitState()",      "Emit a single state line")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")

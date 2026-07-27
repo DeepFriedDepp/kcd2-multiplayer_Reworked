@@ -110,9 +110,96 @@ public static class TransportBenchmark
         Console.WriteLine($"  full state reads : {ok / sw.Elapsed.TotalSeconds:F1}/s  ({ok} ok, {fail} failed)");
         Console.WriteLine($"  implied ceiling  : {ok / sw.Elapsed.TotalSeconds * 3:F0} HTTP round trips/s");
 
-        Console.WriteLine();
-        Console.WriteLine("Baseline captured. Re-run against a replacement transport to compare.");
+        double httpRate = ok / sw.Elapsed.TotalSeconds;
+        double httpP50 = results.First(r => r.Label.StartsWith("full player state")).P(50);
+
+        await RunLogTailAsync(transport, httpRate, httpP50, ct);
         return 0;
+    }
+
+    /// <summary>
+    /// Measures the log-tail transport and puts it beside the HTTP baseline.
+    ///
+    /// Skips cleanly when the mod is not loaded or the emitter is absent: the
+    /// pak has to be rebuilt for KCD2MP_StartEmitter to exist, so a missing
+    /// emitter is an expected state rather than a failure.
+    /// </summary>
+    private static async Task RunLogTailAsync(
+        HttpGameTransport http, double httpRate, double httpP50, CancellationToken ct)
+    {
+        Console.WriteLine();
+        Console.WriteLine("=== log-tail transport ===");
+
+        LogTailGameTransport tail;
+        try
+        {
+            tail = LogTailGameTransport.Create(http);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  skipped: {ex.Message}");
+            return;
+        }
+
+        Console.WriteLine($"  tailing {tail.LogPath}");
+        await using (tail)
+        {
+            await tail.StartAsync(ct);
+
+            Console.Write("  waiting for the emitter to produce frames... ");
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (tail.FramesReceived == 0 && DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+                await Task.Delay(50, ct);
+
+            if (tail.FramesReceived == 0)
+            {
+                Console.WriteLine("none");
+                Console.WriteLine();
+                Console.WriteLine("  The emitter is not running. KCD2MP_StartEmitter needs the rebuilt");
+                Console.WriteLine("  pak loaded (or the functions injected via the console).");
+                return;
+            }
+            Console.WriteLine("yes");
+
+            // Read latency: this should be a cache read, not a round trip.
+            long before = tail.FramesReceived;
+            var readSamples = new List<double>(200);
+            for (int i = 0; i < 200 && !ct.IsCancellationRequested; i++)
+            {
+                var s = Stopwatch.StartNew();
+                _ = await tail.ReadPlayerStateAsync(ct);
+                s.Stop();
+                readSamples.Add(s.Elapsed.TotalMilliseconds);
+            }
+            var sorted = readSamples.OrderBy(v => v).ToList();
+
+            // Frame rate actually delivered by the emitter over a fixed window.
+            long start = tail.FramesReceived;
+            long droppedStart = tail.FramesDropped;
+            var w = Stopwatch.StartNew();
+            await Task.Delay(5000, ct);
+            w.Stop();
+            double frames = tail.FramesReceived - start;
+            double drops = tail.FramesDropped - droppedStart;
+            double tailRate = frames / w.Elapsed.TotalSeconds;
+
+            Console.WriteLine();
+            Console.WriteLine($"  state read latency  p50 {sorted[sorted.Count / 2]:F4} ms   "
+                            + $"p95 {sorted[(int)(sorted.Count * 0.95)]:F4} ms   (cached, {tail.RoundTripsPerStateRead} round trips)");
+            Console.WriteLine($"  frames delivered    {tailRate:F1}/s over {w.Elapsed.TotalSeconds:F1}s");
+            Console.WriteLine($"  frames dropped      {drops:F0}"
+                            + (drops > 0 ? "  <-- emitter outpacing the tailer or the log dropping lines" : ""));
+
+            Console.WriteLine();
+            Console.WriteLine("=== comparison ===");
+            Console.WriteLine($"{"",-22} {"http-debug-api",18} {"kcd-log-tail",18}");
+            Console.WriteLine(new string('-', 60));
+            Console.WriteLine($"{"round trips / read",-22} {3,18} {0,18}");
+            Console.WriteLine($"{"state read p50 (ms)",-22} {httpP50,18:F1} {sorted[sorted.Count / 2],18:F4}");
+            Console.WriteLine($"{"samples / second",-22} {httpRate,18:F1} {tailRate,18:F1}");
+            if (httpRate > 0)
+                Console.WriteLine($"{"throughput gain",-22} {"",18} {tailRate / httpRate,17:F1}x");
+        }
     }
 
     private static async Task<Result> MeasureAsync(

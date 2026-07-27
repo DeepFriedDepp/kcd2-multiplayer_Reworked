@@ -147,14 +147,74 @@ depends on an unverified capability.
 `GameBridge` is deliberately **not** rewired onto the interface yet; that lands
 with the log-tail transport, against a real second implementation.
 
+---
+
+## Measured result: log tail vs HTTP
+
+Steps 1 and 2 are built and were run end-to-end against the live game. The
+emitter was injected through the console rather than loaded from the pak (the
+game was running and the pak is locked while it is), which exercises exactly
+the same code path.
+
+```
+                           http-debug-api       kcd-log-tail
+------------------------------------------------------------
+round trips / read                      3                  0
+state read p50 (ms)                  55.0             0.0001
+samples / second                     18.1               30.4
+throughput gain                                          1.7x
+frames dropped                          -                  0
+```
+
+**Note the HTTP baseline moved.** It measured 128 ms / 7.8 per second during the
+first run and 55 ms / 18.1 per second here. The difference is game load: the
+first run happened during a siege with the AI flooding the log. Absolute
+numbers are not comparable between runs, only ratios within a run. Anything
+quoting a fixed "128 ms" is quoting one loaded-game sample.
+
+### The projection that did not hold
+
+The design predicted ~50 samples/s from a 20 ms emitter tick. **It delivers
+~30/s.** Sequence numbers were contiguous and zero frames were dropped, so
+nothing is being lost in the log or the tailer — the emitter genuinely only
+fires ~30 times a second. `Script.SetTimer` is evidently frame-bound rather
+than a true 20 ms timer, so the ceiling is the frame rate, not the interval.
+Asking for 20 ms does not produce 50 Hz.
+
+### What this actually buys, stated plainly
+
+The throughput gain is **1.7x, not the 6.4x** the earlier projection implied.
+The real wins are structural rather than raw rate:
+
+1. **Reads cost nothing.** 3 round trips become 0, and a read is a cache hit at
+   0.0001 ms instead of a 55 ms blocking call. The whole HTTP channel is freed
+   for outbound ghost updates, which is what it should have been doing all
+   along.
+2. **The CVar hack is gone.** `sv_servername` goes back to the game, and yaw no
+   longer requires *writing* to the game in order to read it.
+3. **Zero drops** across the measured window.
+
+One honest cost: **freshness is worse, not better.** A tailed frame is up to
+one frame period old plus ~45 ms of log-flush latency, so roughly 45-80 ms
+stale. A direct HTTP position read returns data ~18 ms old. The log tail trades
+sample freshness for eliminating round trips. For a presence layer showing
+other players' avatars that is the right trade, but it is a trade, and if ghost
+smoothness ever regresses this is the first thing to suspect.
+
+---
+
 ## Next steps
 
-1. ~~Measure log-to-disk visibility latency~~ — done, ~45 ms, design holds.
-2. Implement `LogTailGameTransport` for outbound, plus the `[KCD2-MP-DATA]` tick
-   emitter in Lua — the emitter half already exists in `KCD2MP_WritePos`.
-3. Add batched `ExecuteAsync`/`FlushAsync` buffering to the HTTP path for inbound.
-4. Re-run `--benchmark` against the new transport and put the two side by side.
+1. ~~Measure log-to-disk visibility latency~~ — done, ~45 ms.
+2. ~~Implement `LogTailGameTransport` and the Lua emitter~~ — done, measured above.
+3. **Rebuild the pak** so `KCD2MP_StartEmitter` loads normally instead of needing
+   console injection. Requires closing the game; script in `docs/kcd2_lua_api.md`.
+4. Add batched `ExecuteAsync`/`FlushAsync` buffering to the HTTP path for inbound.
+   Batching is free, so this is the cheapest remaining win.
 5. Rewire `GameBridge` onto `IGameTransport`, selecting by config.
+6. Consider whether ~30 Hz frame-bound emission is enough. If not, the emitter
+   could pack several samples per line, though the frame rate still bounds how
+   often state is *sampled*.
 
 ## Tooling notes
 

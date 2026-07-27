@@ -1,0 +1,285 @@
+using System.Globalization;
+using System.Text;
+
+namespace KcdMp.Client;
+
+/// <summary>
+/// The WO-1 replacement channel: the game pushes state into kcd.log and the
+/// agent tails it.
+///
+/// Deliberately hybrid, because the log only runs one way. Outbound
+/// (agent to game) still needs the debug API, so an <see cref="HttpGameTransport"/>
+/// is composed for that; this class replaces only the *inbound* direction,
+/// which is where the cost was:
+///
+///   before: 3 HTTP round trips per sample, ~128 ms, 7.8 samples/s
+///   after:  0 round trips -- reads whatever the emitter last pushed
+///
+/// The mod's KCD2MP_EmitTick writes one line per tick, which this parses into
+/// a cached <see cref="PlayerState"/>. Reads are then free and the sample rate
+/// is set by the Lua timer rather than by HTTP.
+///
+/// Three things the tail has to survive, all of them observed rather than
+/// hypothetical: the log is huge (3.5 MB during testing) and flooded with
+/// unrelated engine chatter, so it is opened at the end and never re-read; the
+/// game truncates or replaces it on restart, so shrinkage is detected and the
+/// handle reopened; and lines are written while we read, so a trailing partial
+/// line is held back until its newline arrives.
+/// </summary>
+public sealed class LogTailGameTransport : IGameTransport
+{
+    /// <summary>Emitted by KCD2MP_EmitState. Must match the Lua EMIT_VERSION.</summary>
+    private const string Tag = "[KCD2-MP-DATA]";
+    private const string Version = "v1";
+
+    private readonly HttpGameTransport _http;
+    private readonly string _logPath;
+    private readonly int _emitIntervalMs;
+    private readonly CancellationTokenSource _cts = new();
+
+    private Task? _tailTask;
+    private volatile bool _emitterStarted;
+
+    // Latest parsed frame. Written by the tail loop, read by callers.
+    private readonly object _stateLock = new();
+    private PlayerState? _latest;
+    private long _latestSeq = -1;
+    private DateTime _latestAtUtc = DateTime.MinValue;
+
+    /// <summary>Frames parsed since start.</summary>
+    public long FramesReceived { get; private set; }
+
+    /// <summary>
+    /// Frames missing according to the emitter's sequence numbers. Non-zero
+    /// means the log dropped lines or the tailer could not keep up, which is
+    /// the signal that this transport is not delivering what it promises.
+    /// </summary>
+    public long FramesDropped { get; private set; }
+
+    /// <summary>
+    /// A sample older than this is treated as no sample. Generous relative to
+    /// the emit interval so a single late tick does not blank the state.
+    /// </summary>
+    public TimeSpan MaxAge { get; init; } = TimeSpan.FromMilliseconds(500);
+
+    public string Name => "kcd-log-tail";
+
+    /// <summary>Reads come from cached push state, so none.</summary>
+    public int RoundTripsPerStateRead => 0;
+
+    public LogTailGameTransport(HttpGameTransport http, string logPath, int emitIntervalMs = 20)
+    {
+        _http = http;
+        _logPath = logPath;
+        _emitIntervalMs = emitIntervalMs;
+    }
+
+    /// <summary>
+    /// Resolves kcd.log automatically. Throws if it cannot be found, because a
+    /// silently non-functional transport would look like a game that is simply
+    /// never ready.
+    /// </summary>
+    public static LogTailGameTransport Create(HttpGameTransport http, int emitIntervalMs = 20)
+    {
+        string path = KcdLogLocator.Find()
+            ?? throw new FileNotFoundException(
+                "Could not locate kcd.log in any Steam library. Set it explicitly to use the log-tail transport.");
+        return new LogTailGameTransport(http, path, emitIntervalMs);
+    }
+
+    public string LogPath => _logPath;
+
+    /// <summary>
+    /// Starts the tail loop and asks the mod to begin emitting. Safe to call
+    /// repeatedly; the Lua side is idempotent too.
+    /// </summary>
+    public async Task StartAsync(CancellationToken ct = default)
+    {
+        _tailTask ??= Task.Run(() => TailLoopAsync(_cts.Token), CancellationToken.None);
+
+        if (!_emitterStarted)
+        {
+            await _http.ExecuteAsync($"KCD2MP_StartEmitter({_emitIntervalMs})", ct);
+            _emitterStarted = true;
+        }
+    }
+
+    public Task<bool> IsGameReadyAsync(CancellationToken ct = default) =>
+        _http.IsGameReadyAsync(ct);
+
+    public Task<PlayerState?> ReadPlayerStateAsync(CancellationToken ct = default)
+    {
+        lock (_stateLock)
+        {
+            if (_latest is null || DateTime.UtcNow - _latestAtUtc > MaxAge)
+                return Task.FromResult<PlayerState?>(null);
+            return Task.FromResult(_latest);
+        }
+    }
+
+    public Task ExecuteAsync(string lua, CancellationToken ct = default) =>
+        _http.ExecuteAsync(lua, ct);
+
+    public Task FlushAsync(CancellationToken ct = default) =>
+        _http.FlushAsync(ct);
+
+    // -------------------------------------------------------------------------
+
+    private async Task TailLoopAsync(CancellationToken ct)
+    {
+        var decoder = Encoding.UTF8.GetDecoder();
+        var buffer = new byte[64 * 1024];
+        var chars = new char[64 * 1024];
+        var partial = new StringBuilder();
+
+        FileStream? fs = null;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                if (fs is null)
+                {
+                    try
+                    {
+                        // FileShare.ReadWrite|Delete: the game holds this open and
+                        // may replace it; refusing to share would fail the open or
+                        // block the game's own writes.
+                        fs = new FileStream(_logPath, FileMode.Open, FileAccess.Read,
+                            FileShare.ReadWrite | FileShare.Delete);
+                        fs.Seek(0, SeekOrigin.End); // only new lines matter
+                        partial.Clear();
+                        decoder.Reset();
+                    }
+                    catch
+                    {
+                        await Task.Delay(500, ct);
+                        continue;
+                    }
+                }
+
+                // Rotation or truncation on game restart: the file got shorter
+                // than where we are, so our offset is meaningless. Start over.
+                try
+                {
+                    if (fs.Length < fs.Position)
+                    {
+                        fs.Dispose();
+                        fs = null;
+                        continue;
+                    }
+                }
+                catch
+                {
+                    fs.Dispose();
+                    fs = null;
+                    continue;
+                }
+
+                int read;
+                try { read = await fs.ReadAsync(buffer.AsMemory(0, buffer.Length), ct); }
+                catch (OperationCanceledException) { break; }
+                catch { fs.Dispose(); fs = null; continue; }
+
+                if (read == 0)
+                {
+                    // Caught up. Poll well inside the emit interval so a fresh
+                    // line is picked up promptly without spinning a core.
+                    await Task.Delay(Math.Max(2, _emitIntervalMs / 4), ct);
+                    continue;
+                }
+
+                int charCount = decoder.GetChars(buffer, 0, read, chars, 0);
+                partial.Append(chars, 0, charCount);
+
+                // Consume whole lines only; anything after the last newline is
+                // an incomplete write and stays buffered.
+                int start = 0;
+                string text = partial.ToString();
+                for (int i = 0; i < text.Length; i++)
+                {
+                    if (text[i] != '\n') continue;
+                    ProcessLine(text.AsSpan(start, i - start));
+                    start = i + 1;
+                }
+
+                partial.Clear();
+                if (start < text.Length)
+                    partial.Append(text, start, text.Length - start);
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally { fs?.Dispose(); }
+    }
+
+    /// <summary>
+    /// Parses one log line if it is ours. The tag is searched for rather than
+    /// anchored at position 0, so an engine-added prefix does not break it.
+    /// </summary>
+    private void ProcessLine(ReadOnlySpan<char> line)
+    {
+        int tagIdx = line.IndexOf(Tag);
+        if (tagIdx < 0) return;
+
+        var rest = line[(tagIdx + Tag.Length)..].Trim();
+
+        // v1 <seq> <clock> <x> <y> <z> <rotZ> <flags>
+        Span<Range> fields = stackalloc Range[9];
+        int n = SplitOnSpaces(rest, fields);
+        if (n < 8) return;
+
+        if (!rest[fields[0]].SequenceEqual(Version)) return; // unknown emitter version
+
+        if (!long.TryParse(rest[fields[1]], NumberStyles.Integer, CultureInfo.InvariantCulture, out long seq)) return;
+        if (!float.TryParse(rest[fields[3]], NumberStyles.Float, CultureInfo.InvariantCulture, out float x)) return;
+        if (!float.TryParse(rest[fields[4]], NumberStyles.Float, CultureInfo.InvariantCulture, out float y)) return;
+        if (!float.TryParse(rest[fields[5]], NumberStyles.Float, CultureInfo.InvariantCulture, out float z)) return;
+        if (!float.TryParse(rest[fields[6]], NumberStyles.Float, CultureInfo.InvariantCulture, out float rotZ)) return;
+        if (!int.TryParse(rest[fields[7]], NumberStyles.Integer, CultureInfo.InvariantCulture, out int flags)) return;
+
+        lock (_stateLock)
+        {
+            // Emitter restarts reset the sequence, so only count a gap when it
+            // moves forward -- otherwise a restart would report a huge fake drop.
+            if (_latestSeq >= 0 && seq > _latestSeq + 1)
+                FramesDropped += seq - _latestSeq - 1;
+
+            _latestSeq = seq;
+            _latest = new PlayerState(x, y, z, rotZ, (flags & 0x01) != 0);
+            _latestAtUtc = DateTime.UtcNow;
+            FramesReceived++;
+        }
+    }
+
+    /// <summary>Splits on runs of spaces without allocating.</summary>
+    private static int SplitOnSpaces(ReadOnlySpan<char> s, Span<Range> into)
+    {
+        int count = 0, i = 0;
+        while (i < s.Length && count < into.Length)
+        {
+            while (i < s.Length && s[i] == ' ') i++;
+            if (i >= s.Length) break;
+            int start = i;
+            while (i < s.Length && s[i] != ' ') i++;
+            into[count++] = new Range(start, i);
+        }
+        return count;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        if (_tailTask is not null)
+        {
+            try { await _tailTask; } catch { }
+        }
+
+        if (_emitterStarted)
+        {
+            // Best effort: leaving the emitter running would write to kcd.log
+            // at 50 Hz for the rest of the session.
+            try { await _http.ExecuteAsync("KCD2MP_StopEmitter()"); } catch { }
+        }
+
+        _cts.Dispose();
+    }
+}

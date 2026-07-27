@@ -33,58 +33,32 @@ static string? GetSteamNameFromKcdLog()
 {
     try
     {
-        // Steam client directory  (e.g. C:\Program Files (x86)\Steam)
-        string? steamDir =
-            Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null) as string
-            ?? Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam",           "InstallPath", null) as string
-            ?? Registry.GetValue(@"HKEY_CURRENT_USER\SOFTWARE\Valve\Steam",            "SteamPath",   null) as string;
-
-        Console.WriteLine($"[KcdLog] Steam dir = {steamDir ?? "(not found)"}");
-        if (steamDir is null) return null;
-
-        // Collect all Steam library root paths from libraryfolders.vdf
-        var libraryPaths = new List<string> { steamDir };
-
-        string lf = Path.Combine(steamDir, "config", "libraryfolders.vdf");
-        if (File.Exists(lf))
-        {
-            var pathRe = new Regex(@"""path""\s+""([^""]+)""", RegexOptions.IgnoreCase);
-            foreach (string line in File.ReadLines(lf))
-            {
-                var m = pathRe.Match(line.Trim());
-                if (m.Success)
-                {
-                    string p = m.Groups[1].Value.Replace("\\\\", "\\");
-                    if (!libraryPaths.Contains(p, StringComparer.OrdinalIgnoreCase))
-                        libraryPaths.Add(p);
-                }
-            }
-        }
-
-        Console.WriteLine($"[KcdLog] Steam libraries: {string.Join(", ", libraryPaths)}");
-
-        // KCD2 sub-path inside any library
-        const string KCD2SubPath = @"steamapps\common\KingdomComeDeliverance2\kcd.log";
+        // This used to hardcode steamapps\common\KingdomComeDeliverance2, which
+        // misses the Modding Tools install (KCD2Mod) -- the one actually launched
+        // for modding -- and so silently fell through to the loginusers.vdf
+        // fallback. KcdLogLocator scans every library and takes the newest log.
+        string? logPath = KcdLogLocator.Find();
+        Console.WriteLine($"[KcdLog] kcd.log = {logPath ?? "(not found)"}");
+        if (logPath is null) return null;
 
         var nameRe = new Regex(@"user_id=\d+='([^']+)'");
 
-        foreach (string lib in libraryPaths)
-        {
-            string logPath = Path.Combine(lib, KCD2SubPath);
-            if (!File.Exists(logPath)) continue;
+        // The running game keeps kcd.log open, so File.ReadLines throws
+        // "used by another process". Open it shared instead.
+        using var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream);
 
-            Console.WriteLine($"[KcdLog] Reading {logPath}");
-            int n = 0;
-            foreach (string line in File.ReadLines(logPath))
+        int n = 0;
+        while (reader.ReadLine() is { } line)
+        {
+            var m = nameRe.Match(line);
+            if (m.Success)
             {
-                var m = nameRe.Match(line);
-                if (m.Success)
-                {
-                    Console.WriteLine($"[KcdLog] Found Steam name: {m.Groups[1].Value}");
-                    return m.Groups[1].Value;
-                }
-                if (++n > 500) break;
+                Console.WriteLine($"[KcdLog] Found Steam name: {m.Groups[1].Value}");
+                return m.Groups[1].Value;
             }
+            if (++n > 500) break;
         }
     }
     catch (Exception ex) { Console.WriteLine($"[KcdLog] Error: {ex.Message}"); }
