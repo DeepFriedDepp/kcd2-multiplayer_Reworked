@@ -46,6 +46,69 @@ shared; the blacksmith who gives you work is not.
 This is deliberately MMO-shaped. You both go to the siege, you both fight the
 same soldiers, your damage adds up, and your quest credit is your own.
 
+> **STATUS 2026-07-27, after behavioural testing: shared combat is not
+> achievable on this API surface.** The methods for writing NPC health exist but
+> are inert. See "Behavioural test results" below. The shared-ambient design as
+> specified cannot be built; what survives is presence plus shared world time
+> plus opt-in bubbles. The rest of this document is kept because the reasoning
+> about *where* to draw the boundary remains correct and will matter if a future
+> game patch or a native plugin opens these APIs.
+
+## Behavioural test results
+
+Enumerating the API said one thing; calling it said another. **Existence of a
+method proved nothing.**
+
+### Verified working
+
+| Capability | Evidence |
+|---|---|
+| Read health | `player.actor:GetHealth()` = **73.1132**, stamina 113.816 — real decimal values, not a stub. NPCs genuinely read 100/100 because they were at full health. |
+| **Set world time** | `Calendar.SetWorldTime(t+3600)`: 388805 → 392405, hour 12.0015 → 13.0014. Restored afterwards. **This one genuinely works.** |
+| Enumerate NPCs | `System.GetEntitiesInSphere` — 267 entities at 120 m |
+
+### Verified NOT working
+
+`actor:SetHealth` and `soul:DealDamage` are **inert**. Tested on three
+independent subjects:
+
+| Subject | Attempt | Result |
+|---|---|---|
+| mod-spawned ghost | `SetHealth(50)`, `DealDamage(10)` | stayed 100 |
+| wild hare | `SetHealth(37)`, `SetHealth(0.4)`, `DealDamage(50)` | stayed 100, via both `actor:GetHealth` and `soul:GetState("health")` |
+| **the player** | `SetHealth(73.5132)` | stayed **73.1132** exactly |
+
+The player case is decisive: reads on that same entity return real fractional
+health, so the read path is sound and the write simply does nothing.
+
+**Corroborating signal:** `SetHealth()`, `DealDamage()`, `CreateStimulusEvent()`,
+`SetBehaviorTreeEvaluationEnabled()` and `SetAlarmed()` were each called with
+**zero arguments** and none raised an error. A real binding expecting a number
+reports "bad argument #1 (number expected, got no value)". Accepting anything
+silently is what an inert stub looks like.
+
+### Unresolved — three invalid tests, all my own fault
+
+AI suppression and stimulus injection are still genuinely unknown, because
+every test of them was broken:
+
+1. **Suppression, attempt 1** — subject had a static position for the whole run,
+   so there was no motion to suppress.
+2. **Stimulus** — the `CreateStimulusEvent` signature was *invented* rather than
+   found, which the project's first rule explicitly forbids.
+3. **Suppression, attempt 2** — the "find a moving NPC" filter used
+   `if AI.IsMoving(id) then`, but **`AI.IsMoving` returns `0` and in Lua `0` is
+   truthy**; only `nil` and `false` are falsy. So it picked the first NPC
+   regardless and the earlier "25 moving NPCs" figure is meaningless.
+
+To settle suppression properly, detect movement by **sampling positions twice
+and comparing**, rather than trusting any `IsMoving` return convention. To
+settle stimulus, recover the real signature from the game's own scripts
+(`Scripts.pak`) instead of guessing.
+
+Even if both worked, they would buy shared ambient NPC *movement*, not shared
+combat — combat needs the damage writes that are confirmed inert.
+
 ## Verified capabilities
 
 Probed against KCD2 v1.5.2 on 2026-07-27 (`tools/probe_sharedworld.lua`,
