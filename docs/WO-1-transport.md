@@ -151,20 +151,37 @@ with the log-tail transport, against a real second implementation.
 
 ## Measured result: log tail vs HTTP
 
-Steps 1 and 2 are built and were run end-to-end against the live game. The
-emitter was injected through the console rather than loaded from the pak (the
-game was running and the pak is locked while it is), which exercises exactly
-the same code path.
+Steps 1 and 2 are built and were run end-to-end **against the real mod loaded
+from the rebuilt pak** — `MOD INIT` confirmed, `KCD2MP` a real table, the interp
+tick running and maintaining `isRiding`.
 
 ```
                            http-debug-api       kcd-log-tail
 ------------------------------------------------------------
 round trips / read                      3                  0
-state read p50 (ms)                  55.0             0.0001
-samples / second                     18.1               30.4
-throughput gain                                          1.7x
+state read p50 (ms)                  39.6             0.0001
+samples / second                     25.3               37.7
+throughput gain                                          1.5x
 frames dropped                          -                  0
 ```
+
+An earlier run with the emitter console-injected against a stub `KCD2MP` gave
+55.0 ms / 18.1 per second / 30.4 per second / 1.7x. Same shape, different
+absolutes — see the load caveat below.
+
+### Flags verified
+
+The flags byte was 0 in every earlier test, so it was carried as unverified.
+Driving `KCD2MP.playerSneaking` through the real mod exercises bit 1:
+
+```
+[KCD2-MP-DATA] v1 269 248.316 919.302 1999.762 14.402 0.7290 0    <- sneak off
+[KCD2-MP-DATA] v1 318 250.113 919.302 1999.762 14.402 0.7290 2    <- sneak on
+```
+
+Sequence numbers contiguous, position and yaw real. **Bit 0 (riding) is still
+unexercised** — it needs the player actually mounted, which no amount of
+console poking substitutes for.
 
 **Note the HTTP baseline moved.** It measured 128 ms / 7.8 per second during the
 first run and 55 ms / 18.1 per second here. The difference is game load: the
@@ -207,8 +224,7 @@ smoothness ever regresses this is the first thing to suspect.
 
 1. ~~Measure log-to-disk visibility latency~~ — done, ~45 ms.
 2. ~~Implement `LogTailGameTransport` and the Lua emitter~~ — done, measured above.
-3. **Rebuild the pak** so `KCD2MP_StartEmitter` loads normally instead of needing
-   console injection. Requires closing the game; script in `docs/kcd2_lua_api.md`.
+3. ~~Rebuild the pak and install the mod~~ — done via tools/Build-And-Install-Mod.ps1; MOD INIT confirmed.
 4. Add batched `ExecuteAsync`/`FlushAsync` buffering to the HTTP path for inbound.
    Batching is free, so this is the cheapest remaining win.
 5. Rewire `GameBridge` onto `IGameTransport`, selecting by config.
