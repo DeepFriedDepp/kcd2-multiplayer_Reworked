@@ -179,9 +179,23 @@ Driving `KCD2MP.playerSneaking` through the real mod exercises bit 1:
 [KCD2-MP-DATA] v1 318 250.113 919.302 1999.762 14.402 0.7290 2    <- sneak on
 ```
 
-Sequence numbers contiguous, position and yaw real. **Bit 0 (riding) is still
-unexercised** — it needs the player actually mounted, which no amount of
-console poking substitutes for.
+Sequence numbers contiguous, position and yaw real.
+
+**Bit 0 (riding) verified 2026-07-27** with the player genuinely mounted, after a
+pak rebuild so the emitter loaded normally rather than by console injection:
+
+```
+v1 112 249.246 2224.338 1856.202 89.271 1.4689 1
+v1 117 249.393 2223.912 1856.255 89.223 1.4688 1
+                                              ^ flags = 1, bit 0 set
+```
+
+`KCD2MP.isRiding` was true and position advanced as the horse moved, with
+contiguous sequence numbers. Note this needs the interp tick running —
+`isRiding` is derived there, not in the emitter — so `KCD2MP_StartInterp()` must
+have been called, which the agent does on connect.
+
+**The flags byte is now fully exercised: bit 0 riding, bit 1 sneaking.**
 
 **Note the HTTP baseline moved.** It measured 128 ms / 7.8 per second during the
 first run and 55 ms / 18.1 per second here. The difference is game load: the
