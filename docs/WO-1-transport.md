@@ -104,11 +104,25 @@ depends on an unverified capability.
 
 ### Known risks, to settle during implementation
 
-1. **Log-to-disk visibility latency is not yet measured.** The burst test proved
-   LogAlways is cheap Lua-side and lossless, but not how quickly a line becomes
-   readable by an external tailer. If the engine buffers, outbound latency is
-   set by flush cadence, not by the tick. **This is the number that decides
-   whether the design delivers, and it should be measured first.**
+1. **Log-to-disk visibility latency: measured, design holds.**
+   A tailer holding the file open and reading from the end sees a line
+   **~45 ms** after the write is triggered (min 39.1, p50 46.0, p95 53.7,
+   max 53.7, n=15). The engine does not sit on log writes for long, so an
+   external tailer is viable.
+
+   **Caveat: this is an upper bound, not the true write-to-visible latency.**
+   The trigger was an HTTP `ExecuteString` and the clock started when that
+   response returned, so the figure still contains however much command
+   dispatch and main-thread scheduling sat between the response and Lua
+   actually running. The real emitter is an autonomous Lua tick with no HTTP
+   involved, so its latency is *at most* this and probably lower. Re-measure
+   from inside the mod's own tick once the emitter exists.
+
+   Worth being clear about what this does and does not buy. Against a
+   *position-only* HTTP read (43 ms) the latency is a wash. The win is that it
+   collapses the **3-round-trip full-state read (128 ms)** to a single ~45 ms
+   push, and lifts throughput from 7.8/s to the tick rate. This is a
+   throughput and round-trip win, not a raw single-sample latency win.
 2. **`kcd.log` is noisy and grows.** During testing it was 3.5 MB and being
    flooded by siege AI ("First shot replanning for ..."). The tailer must seek
    to the end and filter by prefix, never re-read the file.
@@ -135,7 +149,7 @@ with the log-tail transport, against a real second implementation.
 
 ## Next steps
 
-1. Measure log-to-disk visibility latency (risk 1 above). It gates the design.
+1. ~~Measure log-to-disk visibility latency~~ — done, ~45 ms, design holds.
 2. Implement `LogTailGameTransport` for outbound, plus the `[KCD2-MP-DATA]` tick
    emitter in Lua — the emitter half already exists in `KCD2MP_WritePos`.
 3. Add batched `ExecuteAsync`/`FlushAsync` buffering to the HTTP path for inbound.
