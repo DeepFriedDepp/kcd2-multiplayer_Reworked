@@ -27,4 +27,12 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="KcdMp.Wire" />
+  </ItemGroup>
+
 </Project>

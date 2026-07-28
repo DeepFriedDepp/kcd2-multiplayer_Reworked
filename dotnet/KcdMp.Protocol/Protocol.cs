@@ -1,4 +1,4 @@
-namespace KcdMp.Server;
+namespace KcdMp.Wire;
 
 /// <summary>
 /// The relay wire protocol.
@@ -22,7 +22,7 @@ namespace KcdMp.Server;
 ///
 /// Interaction layer (WO-2). Opt-in paired interactions: one player invites,
 /// the other accepts or declines, both enter a session the relay arbitrates,
-/// both leave. Dice (WO-3) and duelling (WO-5) are clients of this rather than
+/// both leave. Dice (WO-5) and duelling are clients of this rather than
 /// separate protocols.
 /// C→S  0x0A  Invite:         [targetGhostId:1][kind:1]
 /// S→C  0x0B  InviteReceived: [sessionId:2][fromGhostId:1][kind:1]
@@ -68,82 +68,90 @@ namespace KcdMp.Server;
 ///
 /// Free type bytes for new features: 0x16 and up.
 ///
-/// NOTE: this file is duplicated as dotnet/KcdMp.Client/Protocol.cs. The two
-/// projects share no assembly, so the constants are mirrored by hand — change
-/// both together. Extracting a shared KcdMp.Protocol project is a separate
-/// work order.
+/// This file lives in the shared KcdMp.Protocol project (net8.0, no
+/// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
+/// exactly one copy of the wire contract to keep in sync with itself.
 /// </summary>
 public static class Protocol
 {
-	/// <summary>
-	/// Protocol version, negotiated in the Handshake.
-	///
-	/// Bumped to 3 for the combat layer. A v2 peer has no damage or death
-	/// packets, and because the relay rejects a mismatch at handshake rather
-	/// than letting it misparse later, an old agent gets a clear refusal instead
-	/// of silently dropping hits — which would present as "damage does not
-	/// replicate" rather than as a version problem.
-	/// </summary>
-	public const byte Version = 3;
+    /// <summary>
+    /// Protocol version, negotiated in the Handshake.
+    ///
+    /// Bumped to 3 for the combat layer. A v2 peer has no damage or death
+    /// packets, and because the relay rejects a mismatch at handshake rather
+    /// than letting it misparse later, an old agent gets a clear refusal instead
+    /// of silently dropping hits — which would present as "damage does not
+    /// replicate" rather than as a version problem.
+    /// </summary>
+    public const byte Version = 3;
 
-	// C→S
-	public const byte Handshake      = 0x00;
-	public const byte Position       = 0x01;
-	public const byte Ping           = 0x04;
-	public const byte VoiceUp        = 0x07;
-	public const byte Invite         = 0x0A;
-	public const byte InviteResponse = 0x0C;
-	public const byte SessionEventUp = 0x0E;
-	public const byte SessionLeave   = 0x10;
-	public const byte DamageUp       = 0x12;
-	public const byte DeathUp        = 0x14;
+    // C→S
+    public const byte Handshake      = 0x00;
+    public const byte Position       = 0x01;
+    public const byte Ping           = 0x04;
+    public const byte VoiceUp        = 0x07;
+    public const byte Invite         = 0x0A;
+    public const byte InviteResponse = 0x0C;
+    public const byte SessionEventUp = 0x0E;
+    public const byte SessionLeave   = 0x10;
+    public const byte DamageUp       = 0x12;
+    public const byte DeathUp        = 0x14;
 
-	// S→C
-	public const byte Ghost            = 0x02;
-	public const byte Name             = 0x03;
-	public const byte Pong             = 0x05;
-	public const byte Disconnect       = 0x06;
-	public const byte VoiceDown        = 0x08;
-	public const byte VersionMismatch  = 0x09;
-	public const byte InviteReceived   = 0x0B;
-	public const byte SessionStart     = 0x0D;
-	public const byte SessionEventDown = 0x0F;
-	public const byte SessionEnd       = 0x11;
-	public const byte DamageDown       = 0x13;
-	public const byte DeathDown        = 0x15;
-	public const byte Ack              = 0xFF;
+    // S→C
+    public const byte Ghost            = 0x02;
+    public const byte Name             = 0x03;
+    public const byte Pong             = 0x05;
+    public const byte Disconnect       = 0x06;
+    public const byte VoiceDown        = 0x08;
+    public const byte VersionMismatch  = 0x09;
+    public const byte InviteReceived   = 0x0B;
+    public const byte SessionStart     = 0x0D;
+    public const byte SessionEventDown = 0x0F;
+    public const byte SessionEnd       = 0x11;
+    public const byte DamageDown       = 0x13;
+    public const byte DeathDown        = 0x15;
+    public const byte Ack              = 0xFF;
 
-	/// <summary>Exact Position (0x01) payload length.</summary>
-	public const int PositionPayloadLen = 17;
+    /// <summary>Exact Position (0x01) payload length.</summary>
+    public const int PositionPayloadLen = 17;
 
-	/// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
-	public const int VoiceFrameLen = 640;
+    /// <summary>Exact Ghost (0x02) payload length.</summary>
+    public const int GhostPayloadLen = 18;
 
-	/// <summary>Length of a SharedSoulGuid on the wire.</summary>
-	public const int SoulGuidLen = 16;
+    /// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
+    public const int VoiceFrameLen = 640;
 
-	/// <summary>Exact Damage (0x12) upstream payload length.</summary>
-	public const int DamageUpPayloadLen = SoulGuidLen + 4 + 4 + 1;
+    /// <summary>Length of a SharedSoulGuid on the wire.</summary>
+    public const int SoulGuidLen = 16;
 
-	/// <summary>Exact Death (0x14) upstream payload length.</summary>
-	public const int DeathUpPayloadLen = SoulGuidLen;
+    /// <summary>Exact Damage (0x12) upstream payload length.</summary>
+    public const int DamageUpPayloadLen = SoulGuidLen + 4 + 4 + 1;
 
-	/// <summary>Damage flag: apply without playing a hit reaction.</summary>
-	public const byte DamageFlagSuppressHitReaction = 0x01;
+    /// <summary>Exact Damage (0x13) downstream payload length.</summary>
+    public const int DamageDownPayloadLen = 1 + DamageUpPayloadLen;
 
-	/// <summary>
-	/// How long an invite waits for a response before the relay expires it.
-	/// Long enough to notice a prompt mid-game, short enough that a forgotten
-	/// invite does not keep the target blocked.
-	/// </summary>
-	public const int InviteTimeoutSeconds = 30;
+    /// <summary>Exact Death (0x14) upstream payload length.</summary>
+    public const int DeathUpPayloadLen = SoulGuidLen;
+
+    /// <summary>Exact Death (0x15) downstream payload length.</summary>
+    public const int DeathDownPayloadLen = 1 + SoulGuidLen;
+
+    /// <summary>Damage flag: apply without playing a hit reaction.</summary>
+    public const byte DamageFlagSuppressHitReaction = 0x01;
+
+    /// <summary>
+    /// How long an invite waits for a response before the relay expires it.
+    /// Long enough to notice a prompt mid-game, short enough that a forgotten
+    /// invite does not keep the target blocked.
+    /// </summary>
+    public const int InviteTimeoutSeconds = 30;
 }
 
 /// <summary>What kind of interaction a session is running.</summary>
 public enum InteractionKind : byte
 {
-	Dice = 0x01,
-	Duel = 0x02,
+    Dice = 0x01,
+    Duel = 0x02,
 }
 
 /// <summary>
@@ -153,27 +161,27 @@ public enum InteractionKind : byte
 /// </summary>
 public enum SessionRole : byte
 {
-	Initiator = 0x00,
-	Acceptor  = 0x01,
+    Initiator = 0x00,
+    Acceptor  = 0x01,
 }
 
 /// <summary>Why a session ended. Sent in SessionEnd so clients can tell the player.</summary>
 public enum SessionEndReason : byte
 {
-	/// <summary>Ran to a natural conclusion.</summary>
-	Completed = 0x00,
-	/// <summary>Invitee said no.</summary>
-	Declined = 0x01,
-	/// <summary>Nobody answered the invite in time.</summary>
-	Timeout = 0x02,
-	/// <summary>The other participant dropped off the relay.</summary>
-	PeerDisconnected = 0x03,
-	/// <summary>A participant walked away deliberately.</summary>
-	Left = 0x04,
-	/// <summary>Target was already in a session.</summary>
-	TargetBusy = 0x05,
-	/// <summary>No such target, or the target is not ready.</summary>
-	TargetUnavailable = 0x06,
-	/// <summary>Malformed or out-of-order request.</summary>
-	ProtocolError = 0x07,
+    /// <summary>Ran to a natural conclusion.</summary>
+    Completed = 0x00,
+    /// <summary>Invitee said no.</summary>
+    Declined = 0x01,
+    /// <summary>Nobody answered the invite in time.</summary>
+    Timeout = 0x02,
+    /// <summary>The other participant dropped off the relay.</summary>
+    PeerDisconnected = 0x03,
+    /// <summary>A participant walked away deliberately.</summary>
+    Left = 0x04,
+    /// <summary>Target was already in a session.</summary>
+    TargetBusy = 0x05,
+    /// <summary>No such target, or the target is not ready.</summary>
+    TargetUnavailable = 0x06,
+    /// <summary>Malformed or out-of-order request.</summary>
+    ProtocolError = 0x07,
 }

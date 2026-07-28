@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35931.197
@@ -8,6 +8,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KcdMp.Server", "dotnet\KcdMp.Server\KcdMp.Server.csproj", "{3E7F8A92-B1D4-4C6E-9F25-1A3B7E8D9C4F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KcdMp.Client", "dotnet\KcdMp.Client\KcdMp.Client.csproj", "{8D2C1A5F-E3B7-4D90-A8C6-2F9E5B4A7D1C}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "dotnet", "dotnet", "{15FB77F0-B999-49E5-80DB-AC45F17434A7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KcdMp.Protocol", "dotnet\KcdMp.Protocol\KcdMp.Protocol.csproj", "{06D9A067-11AC-4914-A53E-7001E6F4100B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -27,11 +31,18 @@ Global
 		{8D2C1A5F-E3B7-4D90-A8C6-2F9E5B4A7D1C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8D2C1A5F-E3B7-4D90-A8C6-2F9E5B4A7D1C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8D2C1A5F-E3B7-4D90-A8C6-2F9E5B4A7D1C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {1F147E62-B874-4D30-A443-5DE30B0B64F2}
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{06D9A067-11AC-4914-A53E-7001E6F4100B} = {15FB77F0-B999-49E5-80DB-AC45F17434A7}
 	EndGlobalSection
 EndGlobal

@@ -12,4 +12,12 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="KcdMp.Wire" />
+  </ItemGroup>
+
 </Project>
