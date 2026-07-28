@@ -1,4 +1,4 @@
-// KCDMP.dll -- the injected native plugin.
+﻿// KCDMP.dll -- the injected native plugin.
 //
 // Loaded by KCDMP_LauncherInjector.exe via CreateRemoteThread(LoadLibraryA),
 // which is what KCDMP_launcher's LaunchGame already expects.
@@ -14,6 +14,7 @@ bool validate();
 void walk_to_soul();
 void probe_invoke();
 void probe_take_damage();
+void probe_attribution();
 }
 
 namespace {
@@ -56,7 +57,7 @@ DWORD WINAPI plugin_main(LPVOID) {
     const bool ran = kcdmp::main_thread::run_sync([] {
         kcdmp::rttr::walk_to_soul();
         kcdmp::rttr::probe_invoke();
-        kcdmp::rttr::probe_take_damage();
+        kcdmp::rttr::probe_attribution();
     });
     kcdmp::logf(ran ? "MAIN: probes completed on the main thread"
                     : "MAIN: probes timed out waiting for a frame");

@@ -179,6 +179,31 @@ using Invoke1 = void* (*)(const Method* self, Variant* ret, const void* instance
 using Invoke3 = void* (*)(const Method* self, Variant* ret, const void* instance,
                           const void* a0, const void* a1, const void* a2);
 
+// --- associative container traversal ---------------------------------------
+//
+// SoulsByGuid is an unordered_map<CryGUID, C_Soul*>. rttr exposes it through
+// variant_associative_view, which also has find(argument) -- the eventual
+// SharedSoulGuid -> Soul* lookup the shared-world design needs.
+//
+// These types hold real state: the view's destructor reserves 0xD0 of stack and
+// begin() reads from view+0x30, so the sizes are NOT the single-pointer shape
+// the other wrappers had. Rather than guess, callers over-allocate. Writing
+// into a return buffer bigger than the object is always safe; the only failure
+// mode would be a buffer smaller than the object, which these are not.
+constexpr size_t kViewBufBytes = 512;
+constexpr size_t kIterBufBytes = 256;
+constexpr size_t kPairBufBytes = 128;   // std::pair<variant,variant> is 48
+
+// rttr::variant_associative_view rttr::variant::create_associative_view() const
+using CreateAssocView = void* (*)(const Variant* self, void* ret);
+using ViewIsValid     = bool  (*)(const void* view);
+using ViewGetSize     = uint64_t (*)(const void* view);
+using ViewBegin       = void* (*)(void* view, void* ret_iterator);
+using ViewDtor        = void  (*)(void* view);
+// std::pair<variant,variant> iterator::operator*()
+using IterDeref       = void* (*)(void* iter, void* ret_pair);
+using IterDtor        = void  (*)(void* iter);
+
 struct Api {
     GetByName          get_by_name          = nullptr;
     TypeIsValid        type_is_valid        = nullptr;
@@ -196,13 +221,22 @@ struct Api {
     ArgumentFromVariant argument_from_variant = nullptr;
     Invoke1            invoke1              = nullptr;
     Invoke3            invoke3              = nullptr;
+    CreateAssocView    create_assoc_view    = nullptr;
+    ViewIsValid        view_is_valid        = nullptr;
+    ViewGetSize        view_get_size        = nullptr;
+    ViewBegin          view_begin           = nullptr;
+    ViewDtor           view_dtor            = nullptr;
+    IterDeref          iter_deref           = nullptr;
+    IterDtor           iter_dtor            = nullptr;
 
     bool complete() const {
         return get_by_name && type_is_valid && get_method && get_property &&
                method_is_valid && method_get_name && method_get_signature &&
                property_is_valid && get_property_value && variant_dtor &&
                game_interface && get_enumeration && name_to_value &&
-               argument_from_variant && invoke1 && invoke3;
+               argument_from_variant && invoke1 && invoke3 &&
+               create_assoc_view && view_is_valid && view_get_size &&
+               view_begin && view_dtor && iter_deref && iter_dtor;
     }
 };
 
@@ -222,5 +256,11 @@ bool validate();
 void walk_to_soul();
 void probe_invoke();
 void probe_take_damage();
+
+// Pull one soul out of SoulList::SoulsByGuid that is not the player, and
+// attribute damage to the player. This is the attribution test that needs two
+// distinct souls, and the map traversal it requires is the same machinery the
+// plugin needs for SharedSoulGuid -> Soul* lookup.
+void probe_attribution();
 
 } // namespace kcdmp::rttr
