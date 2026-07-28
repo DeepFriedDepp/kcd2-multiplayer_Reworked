@@ -121,6 +121,21 @@ bool resolve(Api& api) {
     api.variant_dtor = reinterpret_cast<VariantDtor>(
         find_export(exports, "??1variant@rttr@@QEAA@XZ"));
 
+    api.get_enumeration = reinterpret_cast<GetEnumeration>(
+        find_export(exports, "?get_enumeration@type@rttr@@QEBA"));
+    api.name_to_value = reinterpret_cast<NameToValue>(
+        find_export(exports, "?name_to_value@enumeration@rttr@@QEBA"));
+    api.argument_from_variant = reinterpret_cast<ArgumentFromVariant>(
+        find_export(exports, "??0argument@rttr@@QEAA@AEBVvariant@1@@Z"));
+    // Seven invoke overloads differ only in trailing argument repeats, so
+    // select the single-argument one by exact suffix.
+    api.invoke1 = reinterpret_cast<Invoke1>(
+        find_export_suffix(exports, "?invoke@method@rttr@@QEBA",
+                           "Vinstance@2@Vargument@2@@Z"));
+    api.invoke3 = reinterpret_cast<Invoke3>(
+        find_export_suffix(exports, "?invoke@method@rttr@@QEBA",
+                           "Vinstance@2@Vargument@2@11@Z"));
+
     // The root object lives in a different module.
     if (HMODULE shared = GetModuleHandleA("Shared.dll")) {
         const auto shared_exports = module_exports(shared);
@@ -289,6 +304,12 @@ int read_int_property(const Api& api, const char* type_name, const void* obj,
 
 } // namespace
 
+// Results of the walk, kept for the invoke probe that follows it.
+static void*          g_player = nullptr;
+static void*          g_combat = nullptr;
+static InstanceLayout g_layout = InstanceLayout::TypeTypeData;
+static bool           g_walked = false;
+
 // Walk GameInterface -> RPGModule -> SoulList and read SoulCount.
 //
 // SoulCount is the checkpoint on purpose: it is a plain int, and the HTTP API
@@ -347,10 +368,277 @@ void walk_to_soul() {
 
         logf("WALK: SUCCESS with layout %s -- compare SoulCount against the HTTP API",
              layout_name(layout));
+
+        g_player = player;
+        g_combat = combat;
+        g_layout = layout;
+        g_walked = true;
         return;
     }
 
     logf("WALK: no candidate instance layout worked");
+}
+
+namespace {
+
+bool call_get_enumeration(GetEnumeration fn, const Type* self, Enumeration* out) {
+    __try { fn(self, out); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool call_name_to_value(NameToValue fn, const Enumeration* self, Variant* out,
+                        const std::string_view* name) {
+    __try { fn(self, out, name); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool call_argument_from_variant(ArgumentFromVariant fn, void* self, const Variant* v) {
+    __try { fn(self, v); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool call_invoke1(Invoke1 fn, const Method* self, Variant* ret,
+                  const void* inst, const void* arg) {
+    __try { fn(self, ret, inst, arg); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+} // namespace
+
+// First invocation of a reflected method from native code.
+//
+// Soul::GetState(health) is chosen deliberately: it mutates nothing, takes
+// exactly one argument, and the HTTP API reports the same health for the same
+// soul, so the result is checkable against an independent source rather than
+// merely "looking like a number".
+void probe_invoke() {
+    if (!g_walked) { logf("INVOKE: no soul from the walk; skipping"); return; }
+
+    Api api{};
+    if (!resolve(api)) { logf("INVOKE: resolve incomplete"); return; }
+
+    // The enum value for "health". Passing the string the way the HTTP layer
+    // does is not an option here -- that conversion lives in the REST handler,
+    // not in rttr.
+    const std::string_view state_type_name{"wh::rpgmodule::SoulState"};
+    Type t_state{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_state, &state_type_name) ||
+        !call_is_valid(api.type_is_valid, &t_state, &ok) || !ok) {
+        logf("INVOKE: SoulState type did not resolve");
+        return;
+    }
+
+    Enumeration en{};
+    if (!call_get_enumeration(api.get_enumeration, &t_state, &en)) {
+        logf("INVOKE: FAULT in type::get_enumeration");
+        return;
+    }
+    logf("INVOKE: SoulState enumeration = %p", en.data);
+
+    const std::string_view health_name{"health"};
+    Variant v_enum{};
+    if (!call_name_to_value(api.name_to_value, &en, &v_enum, &health_name)) {
+        logf("INVOKE: FAULT in enumeration::name_to_value");
+        return;
+    }
+    uint64_t enum_word = 0;
+    std::memcpy(&enum_word, v_enum.data, sizeof(enum_word));
+    logf("INVOKE: name_to_value(\"health\") -> variant{data[0..7]=0x%llX policy=%p}",
+         static_cast<unsigned long long>(enum_word), v_enum.policy);
+
+    // Build an argument from that variant using the exported constructor, then
+    // read the bytes back to learn the layout. v_enum must outlive the argument:
+    // the argument almost certainly refers to the variant's storage rather than
+    // owning a copy.
+    alignas(8) unsigned char argbuf[32]{};
+    if (!call_argument_from_variant(api.argument_from_variant, argbuf, &v_enum)) {
+        logf("INVOKE: FAULT in argument(const variant&)");
+        return;
+    }
+    auto* w = reinterpret_cast<void**>(argbuf);
+    logf("INVOKE: argument bytes = [0]=%p [8]=%p [16]=%p", w[0], w[1], w[2]);
+    logf("INVOKE:   &v_enum=%p  v_enum.data=%p  SoulState type handle=%p",
+         static_cast<void*>(&v_enum), static_cast<void*>(v_enum.data), t_state.data);
+    for (int i = 0; i < 3; ++i) {
+        const char* what = "?";
+        if (w[i] == static_cast<void*>(&v_enum))            what = "&variant";
+        else if (w[i] == static_cast<void*>(v_enum.data))   what = "&variant.data";
+        else if (w[i] == t_state.data)                      what = "SoulState type";
+        else if (w[i] == nullptr)                           what = "null";
+        logf("INVOKE:   field[%d] = %s", i * 8, what);
+    }
+
+    // Now call it.
+    const std::string_view soul_type_name{"wh::rpgmodule::Soul"};
+    Type t_soul{};
+    if (!call_get_by_name(api.get_by_name, &t_soul, &soul_type_name)) return;
+
+    const std::string_view method_name{"GetState"};
+    Method m{};
+    if (!call_get_method(api.get_method, &t_soul, &m, &method_name)) {
+        logf("INVOKE: FAULT in get_method(GetState)");
+        return;
+    }
+    bool mv = false;
+    call_method_is_valid(api.method_is_valid, &m, &mv);
+    if (!mv) { logf("INVOKE: GetState did not resolve"); return; }
+
+    InstanceBuf inst{};
+    inst.build(g_layout, t_soul, g_player);
+
+    Variant result{};
+    if (!call_invoke1(api.invoke1, &m, &result, inst.bytes, argbuf)) {
+        logf("INVOKE: FAULT during method::invoke -- argument layout is wrong");
+        return;
+    }
+
+    float health = 0.0f;
+    std::memcpy(&health, result.data, sizeof(health));
+    logf("INVOKE: PlayerSoul.GetState(health) = %.4f   <-- compare with the HTTP API",
+         health);
+    call_variant_dtor(api.variant_dtor, &result);
+
+    // ---------------------------------------------------------------------
+    // Hand-built argument.
+    //
+    // The oracle above is ambiguous: Variant::data sits at offset 0, so
+    // &v_enum and v_enum.data are the SAME address and fields [0] and [8]
+    // cannot be told apart from that one sample. Either both point at the
+    // value, or one points at the enclosing variant.
+    //
+    // This matters because TakeDamage needs arguments built from raw floats
+    // and a raw I_Soul*, where there is no enclosing variant to point at. If a
+    // field genuinely wants a variant*, handing it a float* would be
+    // dereferenced as a variant and crash.
+    //
+    // So: rebuild the SAME argument by hand from a raw enum value and see
+    // whether GetState still returns the same health. Still read-only, and it
+    // either proves the recipe or fails harmlessly.
+    // ---------------------------------------------------------------------
+    uint64_t raw_state = 0;
+    std::memcpy(&raw_state, v_enum.data, sizeof(raw_state));
+    call_variant_dtor(api.variant_dtor, &v_enum);
+
+    alignas(8) unsigned char hand[32]{};
+    auto* hw = reinterpret_cast<void**>(hand);
+    hw[0] = &raw_state;
+    hw[1] = &raw_state;
+    hw[2] = t_state.data;
+
+    Variant hand_result{};
+    if (!call_invoke1(api.invoke1, &m, &hand_result, inst.bytes, hand)) {
+        logf("INVOKE: hand-built argument FAULTED -- one of fields [0]/[8] wants a variant*, "
+             "not a pointer to the value");
+        return;
+    }
+    float hand_health = 0.0f;
+    std::memcpy(&hand_health, hand_result.data, sizeof(hand_health));
+    call_variant_dtor(api.variant_dtor, &hand_result);
+
+    logf("INVOKE: hand-built argument -> GetState(health) = %.4f  [%s]",
+         hand_health,
+         (hand_health == health) ? "MATCHES -- recipe proven for raw values"
+                                 : "MISMATCH -- do not build arguments this way");
+}
+
+namespace {
+
+bool call_invoke3(Invoke3 fn, const Method* self, Variant* ret, const void* inst,
+                  const void* a0, const void* a1, const void* a2) {
+    __try { fn(self, ret, inst, a0, a1, a2); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Resolve the first of several candidate spellings for a type name.
+bool resolve_type(const Api& api, const char* const* names, int count,
+                  Type* out, const char** chosen) {
+    for (int i = 0; i < count; ++i) {
+        const std::string_view sv{names[i]};
+        Type t{};
+        bool ok = false;
+        if (call_get_by_name(api.get_by_name, &t, &sv) &&
+            call_is_valid(api.type_is_valid, &t, &ok) && ok) {
+            *out = t;
+            *chosen = names[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+// THIS ONE MUTATES GAME STATE. It applies 5 points of damage to the player and
+// attributes it to a real I_Soul* attacker -- the exact call the HTTP boundary
+// could never make, because RTTR has no string-to-pointer conversion.
+//
+// Target is the player rather than an NPC on purpose: health is trivially
+// restorable, and the question being answered is an ABI question (can a raw
+// object pointer cross `invoke`?), not a gameplay one.
+//
+// KNOWN DEFECT: this runs on the injected thread, not the game's main thread.
+// That is a data race against the combat system, accepted here for a
+// single one-shot experiment and NOT how the plugin will work --
+// C_ModulesManager::Update(float) is exported and is the intended marshalling
+// point.
+void probe_take_damage() {
+    if (!g_walked || !g_combat) { logf("DAMAGE: no CombatSoul; skipping"); return; }
+
+    Api api{};
+    if (!resolve(api)) { logf("DAMAGE: resolve incomplete"); return; }
+
+    static const char* float_names[] = { "float" };
+    static const char* soul_names[]  = { "wh::rpgmodule::I_Soul*",
+                                         "classwh::rpgmodule::I_Soul*",
+                                         "wh::rpgmodule::I_Soul *" };
+    Type t_float{}, t_soulptr{};
+    const char* chosen = nullptr;
+    if (!resolve_type(api, float_names, 1, &t_float, &chosen)) {
+        logf("DAMAGE: 'float' type did not resolve");
+        return;
+    }
+    if (!resolve_type(api, soul_names, 3, &t_soulptr, &chosen)) {
+        logf("DAMAGE: no spelling of I_Soul* resolved -- cannot attribute an attacker");
+        return;
+    }
+    logf("DAMAGE: attacker parameter type resolved as \"%s\"", chosen);
+
+    const std::string_view cs_name{"wh::rpgmodule::CombatSoul"};
+    Type t_cs{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_cs, &cs_name) ||
+        !call_is_valid(api.type_is_valid, &t_cs, &ok) || !ok) {
+        logf("DAMAGE: CombatSoul type did not resolve");
+        return;
+    }
+
+    const std::string_view td_name{"TakeDamage"};
+    Method m{};
+    if (!call_get_method(api.get_method, &t_cs, &m, &td_name)) { logf("DAMAGE: FAULT get_method"); return; }
+    bool mv = false;
+    call_method_is_valid(api.method_is_valid, &m, &mv);
+    if (!mv) { logf("DAMAGE: TakeDamage did not resolve"); return; }
+
+    // Values must outlive the arguments that point at them.
+    float stamina_dmg = 0.0f;
+    float health_dmg  = 5.0f;
+    void* attacker    = g_player;   // the player attacking themselves
+
+    alignas(8) unsigned char a0[32], a1[32], a2[32];
+    build_argument(a0, &stamina_dmg, t_float);
+    build_argument(a1, &health_dmg,  t_float);
+    build_argument(a2, &attacker,    t_soulptr);   // pointer TO the pointer
+
+    InstanceBuf inst{};
+    inst.build(g_layout, t_cs, g_combat);
+
+    logf("DAMAGE: invoking TakeDamage(0, 5, attacker=%p) on CombatSoul %p",
+         attacker, g_combat);
+
+    Variant ret{};
+    if (!call_invoke3(api.invoke3, &m, &ret, inst.bytes, a0, a1, a2)) {
+        logf("DAMAGE: FAULT during invoke -- pointer argument not passed correctly");
+        return;
+    }
+    call_variant_dtor(api.variant_dtor, &ret);
+    logf("DAMAGE: invoke returned without fault -- check health via the HTTP API");
 }
 
 } // namespace kcdmp::rttr

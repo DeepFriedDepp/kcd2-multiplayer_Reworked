@@ -1,4 +1,4 @@
-// KCDMP.dll -- the injected native plugin.
+﻿// KCDMP.dll -- the injected native plugin.
 //
 // Loaded by KCDMP_LauncherInjector.exe via CreateRemoteThread(LoadLibraryA),
 // which is what KCDMP_launcher's LaunchGame already expects. Nothing here
@@ -10,7 +10,7 @@
 #include <windows.h>
 
 namespace kcdmp { bool probe_rttr(); }
-namespace kcdmp::rttr { bool validate(); void walk_to_soul(); }
+namespace kcdmp::rttr { bool validate(); void walk_to_soul(); void probe_invoke(); void probe_take_damage(); }
 
 namespace {
 
@@ -33,6 +33,8 @@ DWORD WINAPI plugin_main(LPVOID) {
 
     if (kcdmp::probe_rttr() && kcdmp::rttr::validate()) {
         kcdmp::rttr::walk_to_soul();
+        kcdmp::rttr::probe_invoke();
+        kcdmp::rttr::probe_take_damage();
     }
     return 0;
 }

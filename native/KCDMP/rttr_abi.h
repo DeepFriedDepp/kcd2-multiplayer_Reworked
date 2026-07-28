@@ -153,6 +153,32 @@ using VariantDtor = void (*)(Variant* self);
 // Exported from Shared.dll. No hidden pointers, no class params -- result in RAX.
 using GetGameInterface = void* (*)();
 
+// rttr::enumeration -- another single-pointer wrapper.
+struct Enumeration { void* data; };
+
+// rttr::enumeration rttr::type::get_enumeration() const
+using GetEnumeration = void* (*)(const Type* self, Enumeration* ret);
+
+// rttr::variant rttr::enumeration::name_to_value(std::string_view) const
+using NameToValue = void* (*)(const Enumeration* self, Variant* ret, const std::string_view* name);
+
+// rttr::argument::argument(const rttr::variant&)
+//
+// This constructor is the way out of the argument-layout problem. Rather than
+// guessing which of argument's three fields holds what, build one from a
+// variant whose contents are already known and read the bytes back -- the
+// exported constructor is its own oracle.
+using ArgumentFromVariant = void* (*)(void* self, const Variant* v);
+
+// rttr::variant rttr::method::invoke(rttr::instance, rttr::argument) const
+using Invoke1 = void* (*)(const Method* self, Variant* ret, const void* instance, const void* arg);
+
+// ...invoke(instance, argument, argument, argument) const -- three arguments.
+// Stack arguments beyond the fourth register slot are passed by address like
+// the rest; the compiler handles that from this declaration.
+using Invoke3 = void* (*)(const Method* self, Variant* ret, const void* instance,
+                          const void* a0, const void* a1, const void* a2);
+
 struct Api {
     GetByName          get_by_name          = nullptr;
     TypeIsValid        type_is_valid        = nullptr;
@@ -165,17 +191,36 @@ struct Api {
     GetPropertyValue   get_property_value   = nullptr;
     VariantDtor        variant_dtor         = nullptr;
     GetGameInterface   game_interface       = nullptr;
+    GetEnumeration     get_enumeration      = nullptr;
+    NameToValue        name_to_value        = nullptr;
+    ArgumentFromVariant argument_from_variant = nullptr;
+    Invoke1            invoke1              = nullptr;
+    Invoke3            invoke3              = nullptr;
 
     bool complete() const {
         return get_by_name && type_is_valid && get_method && get_property &&
                method_is_valid && method_get_name && method_get_signature &&
                property_is_valid && get_property_value && variant_dtor &&
-               game_interface;
+               game_interface && get_enumeration && name_to_value &&
+               argument_from_variant && invoke1 && invoke3;
     }
 };
+
+// Build an argument for a raw value. Recipe proven against GetState: both
+// leading fields point at the value, the third is the type handle. `value`
+// must outlive the call -- the argument refers to it, it does not copy.
+inline void build_argument(void* buf32, const void* value, Type type) {
+    std::memset(buf32, 0, 32);
+    auto* w = reinterpret_cast<const void**>(buf32);
+    w[0] = value;
+    w[1] = value;
+    w[2] = type.data;
+}
 
 bool resolve(Api& api);
 bool validate();
 void walk_to_soul();
+void probe_invoke();
+void probe_take_damage();
 
 } // namespace kcdmp::rttr

@@ -66,4 +66,26 @@ inline void* find_export(const std::vector<ExportEntry>& exports,
     return (n == 1) ? found : nullptr;
 }
 
+// Exact-suffix form, for picking one arity out of an overload set.
+// method::invoke has seven overloads differing only in trailing argument
+// repeats (...Vargument@2@@Z, ...Vargument@2@1@Z, ...11@Z), so a prefix cannot
+// separate them and a full mangled name is too error-prone to type.
+inline void* find_export_suffix(const std::vector<ExportEntry>& exports,
+                                const char* prefix,
+                                const char* suffix) {
+    void* found = nullptr;
+    int   n     = 0;
+    const size_t plen = std::strlen(prefix);
+    const size_t slen = std::strlen(suffix);
+    for (const auto& e : exports) {
+        const size_t elen = std::strlen(e.name);
+        if (elen < plen || elen < slen) continue;
+        if (std::strncmp(e.name, prefix, plen) != 0) continue;
+        if (std::strcmp(e.name + elen - slen, suffix) != 0) continue;
+        if (!found) found = e.addr;
+        ++n;
+    }
+    return (n == 1) ? found : nullptr;
+}
+
 } // namespace kcdmp
