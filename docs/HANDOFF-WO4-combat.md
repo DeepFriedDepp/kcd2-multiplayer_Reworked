@@ -216,9 +216,14 @@ native\build\KCDMP_LauncherInjector\KCDMP_LauncherInjector.exe --pid <pid> --dll
 
 ## Suggested next steps
 
-1. `KCDMP_launcher` still needs wiring to the now-real injector, and the two
-   master-server gaps in `LAUNCHING.md` remain open.
-2. Consider whether the `kdcmp.lua` ghost should keep
+1. **Run `KCDMP_launcher` against a real launch.** It is now wired to the
+   injector and starts the agent, and the master-server chain is closed
+   (`LAUNCHING.md`), but the launcher's own sequencing has been reviewed rather
+   than observed. Its pieces are individually proven; the whole is not.
+2. **Run the Python master server.** There is no Python on this machine, so
+   `servers.py` and `models.py` were exercised only against a stub of the Flask
+   contract. Note the schema change: an existing database needs a migration.
+3. Consider whether the `kdcmp.lua` ghost should keep
    `esModularBehaviorTree=""`. A ghost with a behaviour tree genuinely perceives
    (it appears in `PerceptionHistory`), but the empty tree exists deliberately
    so the scheduler does not fight `ForceMount` during horse riding. Real

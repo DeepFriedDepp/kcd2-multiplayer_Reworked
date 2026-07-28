@@ -1,5 +1,6 @@
 using KcdMp.Server.Features.ClientHandling;
 using KcdMp.Server.Features.Interactions;
+using KcdMp.Server.Features.ServerInformation;
 using KcdMp.Server.Features.Tcp;
 using Serilog;
 
@@ -42,6 +43,10 @@ class Program
 
 		// Add TCP Socket as background service
 		builder.Services.AddHostedService<TcpSocketService>();
+
+		// Announces this relay to a master server. Does nothing unless
+		// MasterServer:Url is set.
+		builder.Services.AddHostedService<MasterRegistrationService>();
 
 		builder.Services.AddSingleton<ClientHandler>();
 		builder.Services.AddSingleton<TcpBroadcastService>();

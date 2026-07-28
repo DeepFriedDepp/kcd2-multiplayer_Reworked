@@ -1,5 +1,6 @@
 @inherits ModalBase
 @using KCDMP_launcher.Models
+@using KCDMP_launcher.Pages
 @using System.Windows.Forms
 @using System.Threading
 
@@ -14,7 +15,7 @@
                 <div class="modal-title" style="text-align: center;">LAUNCHER SETTINGS</div>
 
                 <div class="kcd-input-group">
-                    <label class="kcd-label">Game Executable Path</label>
+                    <label class="kcd-label">Game Executable Path (Modding Tools build)</label>
 
                     <div style="display: flex; gap: 10px;">
                         <input class="kcd-input" @bind="Settings.GamePath" style="flex-grow: 1;" />
@@ -23,6 +24,15 @@
                             BROWSE
                         </button>
                     </div>
+
+                    @if (!string.IsNullOrWhiteSpace(Settings.GamePath) && !Home.IsModdingToolsBuild(Settings.GamePath))
+                    {
+                        <div class="kcd-hint" style="color: #c86a4a;">
+                            This does not look like the Modding Tools build. Multiplayer needs
+                            KCD2Mod\Bin\Win64ReleaseSteamLTO_DLL\KingdomCome.exe — the retail
+                            executable has no debug API and no module DLLs to hook.
+                        </div>
+                    }
                 </div>
 
                 <div class="kcd-input-group">
@@ -31,8 +41,18 @@
                 </div>
 
                 <div class="kcd-input-group">
+                    <label class="kcd-label">Agent Path (KcdMpClient.exe)</label>
+                    <input class="kcd-input" @bind="Settings.AgentPath" />
+                </div>
+
+                <div class="kcd-input-group">
                     <label class="kcd-label">Master Server URL</label>
                     <input class="kcd-input" @bind="Settings.MasterServerUrl" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Server Info Port</label>
+                    <input class="kcd-input" type="number" @bind="Settings.ServerInfoPort" />
                 </div>
 
                 <div class="modal-actions">
@@ -56,7 +76,8 @@
         {
             var dialog = new OpenFileDialog();
             dialog.Filter = "KingdomCome.exe|KingdomCome.exe|Executables (*.exe)|*.exe|All Files (*.*)|*.*";
-            dialog.Title = "Select Kingdom Come: Deliverance Executable";
+            // Both builds use this filename, so the title has to say which one.
+            dialog.Title = "Select KingdomCome.exe from the Modding Tools build (KCD2Mod\\Bin\\Win64ReleaseSteamLTO_DLL)";
 
             if (dialog.ShowDialog() == DialogResult.OK)
             {

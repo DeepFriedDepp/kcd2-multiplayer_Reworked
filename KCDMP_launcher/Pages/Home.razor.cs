@@ -277,7 +277,9 @@ namespace KCDMP_launcher.Pages
             {
                 server.Ping = await NetService.SendPingServerAsync(server.Ip);
 
-                var details = await NetService.GetDedicatedServerInfoAsync(server.Ip, server.Port);
+                // The info endpoint is a different port from the one peers
+                // connect on; see AppSettings.ServerInfoPort.
+                var details = await NetService.GetDedicatedServerInfoAsync(server.Ip, settings.ServerInfoPort);
 
                 if (details != null)
                 {
@@ -285,6 +287,13 @@ namespace KCDMP_launcher.Pages
                     server.Players = details.Players;
                     server.MaxPlayers = details.MaxPlayers;
                     server.IsOnline = true;
+                }
+                else
+                {
+                    // Registered with the master but not answering. Leave the
+                    // registered map name in place and say it is offline rather
+                    // than showing counts we do not have.
+                    server.IsOnline = false;
                 }
                 await InvokeAsync(StateHasChanged);
             });
@@ -316,11 +325,40 @@ namespace KCDMP_launcher.Pages
             SaveFavorites();
         }
 
+        /// <summary>
+        /// Start the three things the system actually needs: the game, the
+        /// injected DLL, and the agent.
+        ///
+        /// This was written against a design that did not exist yet, and every
+        /// assumption in it has since been settled by the native-plugin work:
+        ///
+        /// - It passed "+map &lt;name&gt;" to boot straight into a level. KCD2
+        ///   loads a save; there is no level to boot into, so the argument and
+        ///   the level-directory check that guarded it are both gone.
+        /// - It never started KcdMpClient.exe, which is the only process that
+        ///   talks to the relay. Launching the game alone connected nothing.
+        /// - It injected 3 seconds after Process.Start. The DLL hooks
+        ///   WHGame.dll's import of C_ModulesManager::Update, so it needs that
+        ///   module loaded; 3 seconds in it is not. It now waits for the module
+        ///   to appear rather than guessing at a delay.
+        ///
+        /// The game must be the Modding Tools build. That is checked here
+        /// rather than left to fail confusingly later — see AppSettings.GamePath.
+        /// </summary>
         private async Task LaunchGame(ServerInfo server)
         {
             if (string.IsNullOrEmpty(settings.GamePath) || !File.Exists(settings.GamePath))
             {
                 UiService.ShowError("Game Executable not found! Please check Settings.");
+                return;
+            }
+
+            if (!IsModdingToolsBuild(settings.GamePath))
+            {
+                UiService.ShowError(
+                    "That looks like the retail game. KCD2 must be launched from the Modding Tools build " +
+                    "(KCD2Mod), which is the only one with the debug API on port 1403 and the separate " +
+                    "module DLLs the plugin hooks. Check Settings.");
                 return;
             }
 
@@ -330,21 +368,7 @@ namespace KCDMP_launcher.Pages
                 return;
             }
 
-            if (!ConfirmLevelExists(server.MapName))
-            {
-                return;
-            }
-
-            string dllFullPath = settings.DllPath;
-
-            if (!Path.IsPathRooted(dllFullPath))
-            {
-                string gameDir = Path.GetDirectoryName(settings.GamePath) ?? "";
-                dllFullPath = Path.Combine(gameDir, dllFullPath);
-            }
-
-            dllFullPath = Path.GetFullPath(dllFullPath);
-
+            string dllFullPath = ResolveAgainstLauncher(settings.DllPath);
             if (!File.Exists(dllFullPath))
             {
                 UiService.ShowError($"Multiplayer DLL not found at: {dllFullPath}");
@@ -352,48 +376,75 @@ namespace KCDMP_launcher.Pages
             }
 
             string injectorPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "KCDMP_LauncherInjector.exe");
-
             if (!File.Exists(injectorPath))
             {
                 UiService.ShowError($"Injector executable not found at: {injectorPath}");
                 return;
             }
 
+            string agentPath = ResolveAgainstLauncher(settings.AgentPath);
+            if (!File.Exists(agentPath))
+            {
+                UiService.ShowError($"Agent (KcdMpClient.exe) not found at: {agentPath}");
+                return;
+            }
+
             try
             {
-                string gameArgs = $"+map {server.MapName} --kcdmp-ip {server.Ip} --kcdmp-port {server.Port}";
-
                 var gameStartInfo = new ProcessStartInfo
                 {
                     FileName = settings.GamePath,
-                    Arguments = gameArgs,
                     UseShellExecute = false,
                     WorkingDirectory = Path.GetDirectoryName(settings.GamePath)
                 };
 
-                UiService.ShowError($"Launching: {gameArgs}");
                 var gameProcess = Process.Start(gameStartInfo);
-
-                if (gameProcess != null)
+                if (gameProcess == null)
                 {
-                    await Task.Delay(3000);
-
-                    if (gameProcess.HasExited)
-                    {
-                        UiService.ShowError("Game process exited unexpectedly before injection.");
-                        return;
-                    }
-
-                    var injectorStartInfo = new ProcessStartInfo
-                    {
-                        FileName = injectorPath,
-                        Arguments = $"--pid {gameProcess.Id} --dll \"{dllFullPath}\"",
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-
-                    Process.Start(injectorStartInfo);
+                    UiService.ShowError("The game process could not be started.");
+                    return;
                 }
+
+                if (!await WaitForInjectableAsync(gameProcess, settings.InjectDelaySeconds))
+                {
+                    UiService.ShowError(gameProcess.HasExited
+                        ? "Game process exited unexpectedly before injection."
+                        : $"WHGame.dll did not load within {settings.InjectDelaySeconds}s, so the DLL was not injected.");
+                    return;
+                }
+
+                var injectorStartInfo = new ProcessStartInfo
+                {
+                    FileName = injectorPath,
+                    Arguments = $"--pid {gameProcess.Id} --dll \"{dllFullPath}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (var injector = Process.Start(injectorStartInfo))
+                {
+                    if (injector != null)
+                    {
+                        await injector.WaitForExitAsync();
+                        if (injector.ExitCode != 0)
+                        {
+                            UiService.ShowError($"Injection failed (exit code {injector.ExitCode}).");
+                            return;
+                        }
+                    }
+                }
+
+                // The agent waits for a save to load on its own, so starting it
+                // now is fine even though the player is still at the main menu.
+                var agentStartInfo = new ProcessStartInfo
+                {
+                    FileName = agentPath,
+                    Arguments = $"--host {server.Ip} --port {server.Port}",
+                    UseShellExecute = false,
+                    WorkingDirectory = Path.GetDirectoryName(agentPath)
+                };
+
+                Process.Start(agentStartInfo);
             }
             catch (Exception ex)
             {
@@ -402,47 +453,83 @@ namespace KCDMP_launcher.Pages
             }
         }
 
+        /// <summary>
+        /// Both builds name their executable KingdomCome.exe, so the filename
+        /// cannot tell them apart, and neither can WHGame.dll — retail ships
+        /// that one too. What actually differs is that the Modding Tools build
+        /// links its engine modules as separate DLLs (45 of them beside the
+        /// executable) while retail is monolithic (6, none of these).
+        ///
+        /// Framework.dll and CrySystem.dll are the two the plugin depends on
+        /// specifically: the IAT hook rewrites WHGame.dll's import of
+        /// Framework.dll's C_ModulesManager::Update, and the reflection ABI is
+        /// exported from CrySystem.dll. So this tests for what is needed rather
+        /// than for an install path.
+        /// </summary>
+        public static bool IsModdingToolsBuild(string gamePath)
+        {
+            string dir = Path.GetDirectoryName(gamePath) ?? "";
+            if (dir.Length == 0) return false;
+
+            return File.Exists(Path.Combine(dir, "Framework.dll"))
+                && File.Exists(Path.Combine(dir, "CrySystem.dll"));
+        }
+
+        /// <summary>
+        /// A relative path in settings means "next to the launcher", which is
+        /// where a packaged build puts the DLL, the injector and the agent.
+        /// </summary>
+        private static string ResolveAgainstLauncher(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return "";
+            if (!Path.IsPathRooted(path))
+                path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, path);
+            return Path.GetFullPath(path);
+        }
+
+        /// <summary>
+        /// True once the DLL's hook target is loadable. The injector only needs
+        /// a live pid, but the DLL's install() looks up WHGame.dll's import of
+        /// Framework.dll's C_ModulesManager::Update and gives up if it is not
+        /// there — injecting before then attaches a DLL that hooks nothing.
+        ///
+        /// Falls back to a plain wait if the module list cannot be read, which
+        /// happens when the launcher and the game differ in bitness or the
+        /// process is still initialising.
+        /// </summary>
+        private static async Task<bool> WaitForInjectableAsync(Process game, int timeoutSeconds)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(Math.Max(5, timeoutSeconds));
+
+            while (DateTime.UtcNow < deadline)
+            {
+                if (game.HasExited) return false;
+
+                try
+                {
+                    game.Refresh();
+                    foreach (ProcessModule module in game.Modules)
+                    {
+                        if (string.Equals(module.ModuleName, "WHGame.dll", StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug($"Could not read the game's module list yet: {ex.Message}");
+                }
+
+                await Task.Delay(500);
+            }
+
+            return !game.HasExited;
+        }
+
         private bool IsServerReachable(ServerInfo server)
         {
             if (server.Ping < 0)
             {
                 return false;
-            }
-            return true;
-        }
-
-        private bool ConfirmLevelExists(string mapName)
-        {
-            if (string.IsNullOrEmpty(settings.GamePath) || !File.Exists(settings.GamePath))
-            {
-                UiService.ShowError("Game executable not found!");
-                return false;
-            }
-
-            try
-            {
-                string exeDir = Path.GetDirectoryName(settings.GamePath) ?? "";
-                string gameDir = Directory.GetParent(exeDir)?.Parent?.FullName ?? "";
-                string levelsDir = Path.Combine(gameDir, "Data", "Levels");
-                
-                if (!Directory.Exists(levelsDir))
-                {
-                    UiService.ShowError($"Levels directory not found: {levelsDir}");
-                    return false;
-                }
-
-                string levelFile = Path.Combine(levelsDir, mapName);
-
-                if (!Directory.Exists(levelFile))
-                {
-                    UiService.ShowError($"Level not found: {levelFile}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                UiService.ShowError("Error occured while searching for level");
-
             }
             return true;
         }

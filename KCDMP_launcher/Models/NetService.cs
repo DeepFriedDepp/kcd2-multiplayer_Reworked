@@ -116,7 +116,10 @@ namespace KCDMP_launcher.Services
                             Name = entry.Name,
                             Ip = entry.Ip,
                             Port = entry.Port,
-                            MapName = "Loading...",
+                            // The master already knows the map from
+                            // registration, so show it rather than a
+                            // placeholder. The live poll refreshes it.
+                            MapName = entry.MapName,
                             Ping = -1,
                             Players = 0,
                             MaxPlayers = 0
@@ -136,63 +139,66 @@ namespace KCDMP_launcher.Services
             return resultList;
         }
 
-        public async Task<DedicatedServerInfoData> GetDedicatedServerInfoAsync(string ip, int port)
+        /// <summary>
+        /// Live detail for one relay, read from the HTTP endpoint the relay
+        /// already serves. This used to return random numbers behind a "TODO:
+        /// actual udp" — which meant the browser showed a plausible-looking
+        /// map and player count for servers that were not even running.
+        ///
+        /// Returns null when the relay does not answer, so the caller can leave
+        /// the row marked offline instead of inventing values for it.
+        /// </summary>
+        public async Task<DedicatedServerInfoData?> GetDedicatedServerInfoAsync(string ip, int infoPort)
         {
-            var info = new DedicatedServerInfoData();
-
             try
             {
-                // TODO: actual udp when we have server framework
+                var info = await _httpClient.GetFromJsonAsync<DedicatedServerInfoData>(
+                    $"http://{FormatHost(ip)}:{infoPort}/api/information");
 
-                // Mock up for testing
-                await Task.Delay(new Random().Next(50, 250));
-
-                info.MapName = "trosecko";
-                info.Players = new Random().Next(0, 32);
-                info.MaxPlayers = 64;
+                return info;
             }
-            catch
+            catch (Exception ex)
             {
-                Log.Error($"Failed to get info for server {ip}:{port}");
+                Log.Error($"Failed to get info for server {ip}:{infoPort} - {ex.Message}");
+                return null;
             }
-
-            return info;
         }
 
+        /// <summary>
+        /// An IPv6 literal has to be bracketed in a URL, or the colons in the
+        /// address are read as the port separator and the request throws.
+        /// </summary>
+        private static string FormatHost(string ip) =>
+            System.Net.IPAddress.TryParse(ip, out var parsed)
+            && parsed.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+                ? $"[{ip}]"
+                : ip;
+
+        /// <summary>
+        /// Accepts anything the framework can parse as an address, IPv4 or IPv6.
+        ///
+        /// The hand-rolled four-octet check this replaces rejected every IPv6
+        /// address, which matters now that relays self-register: the master
+        /// server falls back to the address the registration arrived from, and
+        /// that is "::1" for a relay on the same machine and can be a real IPv6
+        /// address for a remote one. Those servers reached the browser and were
+        /// then dropped as unreachable, having never been pinged.
+        ///
+        /// It also dropped the old "last octet cannot be 0" rule, which is not
+        /// a real constraint on a host address.
+        /// </summary>
         public bool ValidateIpAddr(string ip, bool showError = true)
         {
-            List<string> parts = ip.Split('.').ToList();
-            if (parts.Count != 4)
+            if (!string.IsNullOrWhiteSpace(ip) && System.Net.IPAddress.TryParse(ip, out _))
             {
-                if (showError)
-                {
-                    _uiService.ShowError("Invalid IP address format. An IP address must consist of 4 octets separated by dots.");
-                }
-                return false;
+                return true;
             }
 
-            foreach (string part in parts)
+            if (showError)
             {
-                
-                if (!int.TryParse(part, out int num) || num < 0 || num > 255)
-                {
-                    if (showError)
-                    {
-                        _uiService.ShowError("Invalid IP address format. Each octet must be a number between 0 and 255.");
-                    }
-                    return false;
-                }
-
-                if (part == parts.Last() && num == 0)
-                {
-                    if (showError)
-                    {
-                        _uiService.ShowError("Invalid IP address format. The last octet cannot be 0.");
-                    }
-                    return false;
-                }
+                _uiService.ShowError("Invalid IP address. Enter an IPv4 address such as 192.168.1.10, or an IPv6 address.");
             }
-            return true;
+            return false;
         }
 
         public bool ValidatePort(int port, bool showError = true)
