@@ -190,6 +190,7 @@ end
 -- so screen-space DrawText is the right tool for a prompt.
 KCD2MP.invite = nil            -- {sid, who, kind, shownAt}
 KCD2MP.interactionMsg = nil    -- {text, shownAt}
+KCD2MP.diceTurn = nil          -- {text} -- optional glanceable hint; the launcher window is the real dice UI
 
 local INVITE_TIMEOUT   = 30    -- matches the relay's invite expiry
 local MSG_TIMEOUT      = 5
@@ -226,6 +227,18 @@ function KCD2MP_DeclineInvite()
     KCD2MP_HideInvite()
     KCD2MP_ShowInteractionMsg("Declined")
     return true
+end
+
+-- Optional in-game hint for whose turn it is in an active dice match (WO-5).
+-- Dice presentation itself is the launcher window, not this -- this is just a
+-- glance-without-alt-tabbing convenience, called from the agent whenever a
+-- DiceState arrives. text == nil/"" hides it (match ended, or no session).
+function KCD2MP_ShowDiceTurn(text)
+    if text == nil or text == "" then
+        KCD2MP.diceTurn = nil
+    else
+        KCD2MP.diceTurn = { text = tostring(text) }
+    end
 end
 
 -- Invites the nearest ghost. Lua picks the target because it already has both
@@ -282,6 +295,10 @@ function KCD2MP_DrawInteractionUI()
         else
             System.DrawText(10, 110, msg.text, 1.6)
         end
+    end
+
+    if KCD2MP.diceTurn then
+        System.DrawText(10, 134, KCD2MP.diceTurn.text, 1.6)
     end
 end
 
@@ -2514,6 +2531,16 @@ local AXIS_ACTIONS = {
 local ACCEPT_ACTIONS  = { ["dialog_answer1"] = true, ["confirm"] = true, ["ui_accept"] = true }
 local DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_cancel"] = true }
 
+-- Dice-invite keybind (WO-5). Same unverified-guess situation as accept/decline
+-- above: not gated behind any of our own UI state (there is nothing to gate on
+-- when *sending* an invite), so a wrong guess means this fires on whatever the
+-- action really does elsewhere -- KCD2MP_InviteNearest is harmless to call
+-- spuriously (worst case, an unwanted invite the other player just declines).
+-- Picked from the same dialog_answerN family already accepted above rather
+-- than a fresh guess, since dialog trees rarely go past two answers.
+-- mp_invite dice is the verified, always-working fallback.
+local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = true }
+
 local function handleAction(action, activation, value)
     if AXIS_ACTIONS[action] then return end
     if KCD2MP.logActions then
@@ -2531,6 +2558,14 @@ local function handleAction(action, activation, value)
             pcall(KCD2MP_DeclineInvite)
             return
         end
+    end
+
+    -- Challenge the nearest player to dice (WO-5). Unlike accept/decline this
+    -- has no KCD2MP.invite-style gate to check first -- see the comment on
+    -- DICE_INVITE_ACTIONS above for why that's an accepted risk here.
+    if DICE_INVITE_ACTIONS[action] and activation == "press" then
+        pcall(KCD2MP_InviteNearest, "dice")
+        return
     end
 
     -- Toggle-style: each press of C flips sneak on/off

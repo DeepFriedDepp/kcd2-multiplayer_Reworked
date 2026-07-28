@@ -262,6 +262,7 @@ public partial class GameBridge(ClientConfig config)
         var interactions = new InteractionClient(SendPacketAsync);
         var dice = new DiceClient(SendPacketAsync);
         WireInteractionFeedback(interactions);
+        WireDiceFeedback(dice, interactions);
         Interactions = interactions;
         Dice = dice;
 
@@ -625,6 +626,37 @@ public partial class GameBridge(ClientConfig config)
             Console.WriteLine($"[interaction] session {sid} ended: {reason}");
             _ = ExecLuaAsync($"if KCD2MP_HideInvite then KCD2MP_HideInvite() end");
             _ = ExecLuaAsync($"if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"{reason}\") end");
+
+            // Harmless no-op if this wasn't a dice session -- the in-game hint
+            // is already unset in that case.
+            _ = ExecLuaAsync("if KCD2MP_ShowDiceTurn then KCD2MP_ShowDiceTurn(nil) end");
+        };
+    }
+
+    /// <summary>
+    /// Optional in-game "whose turn" hint for dice (WO-5) -- the launcher
+    /// window is the actual dice UI (settled: presentation is a launcher
+    /// window, not Scaleform), so this is only a glance-without-alt-tabbing
+    /// convenience, kept separate from <see cref="WireInteractionFeedback"/>
+    /// since it is specific to one interaction kind rather than the whole layer.
+    /// </summary>
+    private void WireDiceFeedback(DiceClient dice, InteractionClient interactions)
+    {
+        dice.StateChanged += snapshot =>
+        {
+            var session = interactions.Current;
+            if (session is null || session.Kind != InteractionKind.Dice) return;
+
+            bool myTurn = (session.Role == SessionRole.Initiator && snapshot.CurrentPlayerRole == 0)
+                       || (session.Role == SessionRole.Acceptor && snapshot.CurrentPlayerRole == 1);
+            string peer = _ghostNames.TryGetValue(session.PeerGhostId, out var n) ? n : "opponent";
+            string text = myTurn ? "Dice: your turn" : $"Dice: {peer}'s turn";
+            _ = ExecLuaAsync($"if KCD2MP_ShowDiceTurn then KCD2MP_ShowDiceTurn(\"{Escape(text)}\") end");
+        };
+
+        dice.MatchEnded += result =>
+        {
+            _ = ExecLuaAsync("if KCD2MP_ShowDiceTurn then KCD2MP_ShowDiceTurn(nil) end");
         };
     }
 
