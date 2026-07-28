@@ -467,9 +467,22 @@ FACTION: calling SetParent(ghost_node, donor_parent)
 -> ghost FactionNode/Parent/Name = trosecko_outskirts_poachers_campVidlak
 ```
 
-The orphan is now a faction member. **The mechanism is proven.** Copying a
-donor's `Parent` also sidesteps having to construct any container type by hand,
-since `NPCFaction::Parent` is already a reflected `shared_ptr<C_Faction>`.
+The orphan reads as a faction member immediately afterwards. Copying a donor's
+`Parent` also sidesteps having to construct any container type by hand, since
+`NPCFaction::Parent` is already a reflected `shared_ptr<C_Faction>`.
+
+> **CORRECTION — the write does not persist.** This was first recorded as "the
+> mechanism is proven", on the strength of reading `Parent` back straight after
+> the call. Checked again minutes later, **both** re-parented ghosts report
+> `Parent = (null)`. The value was real when read and was reverted afterwards,
+> so verifying immediately after a write is not enough for anything the game
+> owns and re-derives.
+>
+> **Likely cause, unconfirmed:** faction membership is two-sided. A faction
+> holds a `Souls` list and `C_FactionBase` exports `AddRelation` alongside
+> `SetParent`, so writing only the child's parent pointer leaves the parent's
+> member list inconsistent and the game reconciles it away. Registering on both
+> sides is the thing to try next.
 
 ### But nothing reacted, and the reason is the faction chosen
 
@@ -519,6 +532,31 @@ Two ways round it, neither requiring that layout to be reverse-engineered:
    own exported constructor.
 
 Option 1 needs no new machinery at all and should be tried first.
+
+### Where option 1 actually stands
+
+Two of the three ingredients are in hand; they have not been combined.
+
+| Ingredient | Status |
+|---|---|
+| Ghost is a real soul | **yes** — in `SoulsByName`, real position, health |
+| Ghost has a brain | **yes, if spawned without `esModularBehaviorTree=""`** — such a ghost appears in `PerceptionHistory` as a perceptor, so it runs perception |
+| Ghost is in a hostile faction | **no** — `SetParent` reverts, see the correction above |
+
+`animal_wild_enemy_trosecko` was confirmed `enemy` to the player and used as a
+donor, so the *choice* of faction is no longer the problem. Nothing engaged in
+any configuration tried: no targets acquired, no `AttackersCount` movement, no
+`IsSoulCharged`, across brainless-and-hostile and brained-and-not-hostile.
+
+**The mod's own ghost is brainless by design.** `KCD2MP_SpawnGhost` passes
+`esModularBehaviorTree=""` deliberately, so the scheduler does not fight
+`ForceMount` during horse riding. That is a real trade-off to settle rather than
+an oversight: a ghost with a brain can be perceived and can act, but may break
+the mount handling the presence layer depends on.
+
+Next steps, in order: make faction membership stick by registering both sides,
+then re-test a brained ghost in a hostile faction, and only then judge whether
+option 1 delivers aggro.
 
 Incidental: destroying the entity does **not** remove its soul from `SoulList`.
 
