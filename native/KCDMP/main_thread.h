@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Marshalling onto the game's main thread.
 //
 // Everything that touches game state must run here. Calling into the combat or
@@ -23,6 +23,10 @@ void uninstall();
 
 // Queue work for the next frame. Thread-safe, returns immediately.
 void post(std::function<void()> work);
+
+// Run work on every tick, for the lifetime of the process. Used by the
+// outbound sampler, which needs a per-frame heartbeat rather than a one-shot.
+void post_repeating(std::function<void()> work);
 
 // Queue work and block until it has run, up to timeout_ms. Returns false on
 // timeout -- which means the tick is not running, not that the work failed.

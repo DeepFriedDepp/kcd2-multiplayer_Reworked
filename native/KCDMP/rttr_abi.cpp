@@ -1268,6 +1268,263 @@ void probe_faction() {
     call_variant_dtor(api.variant_dtor, &fac_v);
 }
 
+// ---------------------------------------------------------------------------
+// Outbound detection by sampling
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct Tracked {
+    unsigned char guid[16];
+    void*         soul;
+    float         health;
+    float         credit;   // damage we applied for a peer, not yet cancelled out
+    bool          dead;
+    bool          seen;
+};
+
+constexpr int   kMaxTracked     = 64;
+constexpr float kTrackRadius    = 60.0f;
+constexpr DWORD kSampleEveryMs  = 60;
+constexpr float kMinReportable  = 0.01f;
+
+Tracked g_tracked[kMaxTracked];
+int     g_tracked_count = 0;
+DWORD   g_last_sample   = 0;
+DWORD   g_last_rescan   = 0;
+
+Tracked* find_tracked(const unsigned char guid[16]) {
+    for (int i = 0; i < g_tracked_count; ++i)
+        if (std::memcmp(g_tracked[i].guid, guid, 16) == 0) return &g_tracked[i];
+    return nullptr;
+}
+
+} // namespace
+
+void note_remote_damage(const unsigned char guid[16], float health_delta) {
+    if (Tracked* t = find_tracked(guid)) t->credit += health_delta;
+}
+
+void sample_health(void (*on_hit)(const unsigned char[16], float, bool)) {
+    const DWORD now = GetTickCount();
+    if (now - g_last_sample < kSampleEveryMs) return;
+    g_last_sample = now;
+
+    if (!g_walked || !g_souls || !g_player) return;
+    Api api{};
+    if (!resolve(api)) return;
+
+    const std::string_view soul_tn{"wh::rpgmodule::Soul"};
+    Type t_soul{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_soul, &soul_tn) ||
+        !call_is_valid(api.type_is_valid, &t_soul, &ok) || !ok) return;
+
+    // Rebuild the tracked set occasionally: the player moves, souls stream in
+    // and out. Doing it every tick would mean walking 1500 souls at frame rate.
+    if (g_tracked_count == 0 || now - g_last_rescan > 3000) {
+        g_last_rescan = now;
+        float ppos[3]{};
+        if (!read_vec3(api, t_soul, g_player, "Position", g_layout, ppos)) return;
+        g_tracked_count = 0;
+
+        // Reuse the map walk; only souls with a real position are candidates.
+        InstanceBuf inst{};
+        inst.build(g_layout, t_soul, g_souls);
+        // (walk performed below via the same helper the lookup uses)
+        Type t_sl{};
+        const std::string_view sl_name{"wh::rpgmodule::SoulList"};
+        if (!call_get_by_name(api.get_by_name, &t_sl, &sl_name)) return;
+        InstanceBuf slinst{};
+        slinst.build(g_layout, t_sl, g_souls);
+        const std::string_view prop{"SoulsByGuid"};
+        Variant map_v{};
+        if (!call_get_property_value(api.get_property_value, &t_sl, &map_v, &prop, slinst.bytes)) return;
+
+        alignas(16) unsigned char view[kViewBufBytes]{};
+        if (!call_create_view(api.create_assoc_view, &map_v, view)) {
+            call_variant_dtor(api.variant_dtor, &map_v); return;
+        }
+        alignas(16) unsigned char it[kIterBufBytes]{}, it_end[kIterBufBytes]{};
+        call_view_begin(api.view_begin, view, it);
+        call_view_end(api.view_end, view, it_end);
+        alignas(16) unsigned char pr[kPairBufBytes]{};
+
+        for (int n = 0; n < 8000 && g_tracked_count < kMaxTracked; ++n) {
+            bool more = false;
+            if (!call_iter_ne(api.iter_not_equal, it, it_end, &more) || !more) break;
+            if (call_iter_deref(api.iter_deref, it, pr)) {
+                void* ka = nullptr; void* va = nullptr;
+                std::memcpy(&ka, reinterpret_cast<Variant*>(pr)->data, sizeof(ka));
+                std::memcpy(&va, reinterpret_cast<Variant*>(pr + sizeof(Variant))->data, sizeof(va));
+                if (plausible_pointer(ka) && plausible_pointer(va)) {
+                    void* soul = nullptr;
+                    std::memcpy(&soul, va, sizeof(soul));
+                    if (plausible_pointer(soul) && soul != g_player) {
+                        float p[3]{};
+                        if (read_vec3(api, t_soul, soul, "Position", g_layout, p) &&
+                            !(p[0] == 0.0f && p[1] == 0.0f && p[2] == 0.0f)) {
+                            const float dx = p[0]-ppos[0], dy = p[1]-ppos[1], dz = p[2]-ppos[2];
+                            if (dx*dx + dy*dy + dz*dz < kTrackRadius * kTrackRadius) {
+                                Tracked& t = g_tracked[g_tracked_count++];
+                                std::memcpy(t.guid, ka, 16);
+                                t.soul = soul; t.credit = 0.0f; t.dead = false; t.seen = false;
+                                t.health = -1.0f;   // primed on the next pass
+                            }
+                        }
+                    }
+                }
+            }
+            if (!call_iter_inc(api.iter_preinc, it)) break;
+        }
+        call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it);
+        call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it_end);
+        call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
+        call_variant_dtor(api.variant_dtor, &map_v);
+        logf("SAMPLE: tracking %d souls within %.0f m", g_tracked_count, kTrackRadius);
+    }
+
+    // Sample the tracked set.
+    static const char* state_names[] = { "wh::rpgmodule::SoulState" };
+    Type t_state{};
+    const char* chosen = nullptr;
+    if (!resolve_type(api, state_names, 1, &t_state, &chosen)) return;
+    Enumeration en{};
+    if (!call_get_enumeration(api.get_enumeration, &t_state, &en)) return;
+    const std::string_view hn{"health"};
+    Variant v_enum{};
+    if (!call_name_to_value(api.name_to_value, &en, &v_enum, &hn)) return;
+    uint64_t state_val = 0;
+    std::memcpy(&state_val, v_enum.data, sizeof(state_val));
+    call_variant_dtor(api.variant_dtor, &v_enum);
+
+    const std::string_view gs{"GetState"};
+    Method m{};
+    if (!call_get_method(api.get_method, &t_soul, &m, &gs)) return;
+
+    alignas(8) unsigned char arg[32];
+    build_argument(arg, &state_val, t_state);
+
+    for (int i = 0; i < g_tracked_count; ++i) {
+        Tracked& t = g_tracked[i];
+        InstanceBuf inst{};
+        inst.build(g_layout, t_soul, t.soul);
+        Variant res{};
+        if (!call_invoke1(api.invoke1, &m, &res, inst.bytes, arg)) continue;
+        bool valid = false;
+        call_variant_valid(api.variant_is_valid, &res, &valid);
+        float hp = 0.0f;
+        if (valid) std::memcpy(&hp, res.data, sizeof(hp));
+        call_variant_dtor(api.variant_dtor, &res);
+        if (!valid) continue;
+
+        if (t.health < 0.0f) { t.health = hp; continue; }   // first sight
+
+        const float drop = t.health - hp;
+        t.health = hp;
+        if (drop <= kMinReportable) { if (drop < 0.0f) t.credit = 0.0f; continue; }
+
+        // Subtract anything we applied on a peer's behalf.
+        float reportable = drop;
+        if (t.credit > 0.0f) {
+            const float used = (t.credit < reportable) ? t.credit : reportable;
+            t.credit    -= used;
+            reportable  -= used;
+        }
+        if (reportable <= kMinReportable) continue;
+
+        const bool died = (hp <= 0.0f) && !t.dead;
+        if (died) t.dead = true;
+        if (on_hit) on_hit(t.guid, reportable, died);
+    }
+}
+
+namespace {
+
+// Classify an address: which module, which section, executable or not.
+bool describe_address(const void* p, char* out, size_t n) {
+    // Range check only. plausible_pointer also demands 4-byte alignment, which
+    // code addresses need not have, and using it here truncated the vtable dump.
+    const auto v = reinterpret_cast<uintptr_t>(p);
+    if (v <= 0x10000 || v >= 0x00007FFFFFFFFFFFull) { _snprintf_s(out, n, _TRUNCATE, "-"); return false; }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(p, &mbi, sizeof(mbi))) { _snprintf_s(out, n, _TRUNCATE, "unmapped"); return false; }
+    const bool exec = (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                      PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+
+    HMODULE mod = nullptr;
+    char name[MAX_PATH]{};
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(p), &mod) && mod) {
+        GetModuleFileNameA(mod, name, MAX_PATH);
+        const char* slash = std::strrchr(name, '\\');
+        const char* base  = slash ? slash + 1 : name;
+        _snprintf_s(out, n, _TRUNCATE, "%s+0x%llX%s", base,
+                    static_cast<unsigned long long>(
+                        reinterpret_cast<const char*>(p) - reinterpret_cast<const char*>(mod)),
+                    exec ? " EXEC" : "");
+        return exec;
+    }
+    _snprintf_s(out, n, _TRUNCATE, "heap%s", exec ? " EXEC" : "");
+    return exec;
+}
+
+} // namespace
+
+void probe_method_wrapper() {
+    Api api{};
+    if (!resolve(api)) { logf("HOOK: resolve incomplete"); return; }
+
+    const std::string_view cs{"wh::rpgmodule::CombatSoul"};
+    Type t{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t, &cs) ||
+        !call_is_valid(api.type_is_valid, &t, &ok) || !ok) return;
+
+    const std::string_view td{"TakeDamage"};
+    Method m{};
+    if (!call_get_method(api.get_method, &t, &m, &td)) return;
+    bool mv = false;
+    call_method_is_valid(api.method_is_valid, &m, &mv);
+    if (!mv) { logf("HOOK: TakeDamage did not resolve"); return; }
+
+    logf("HOOK: method_wrapper at %p", m.data);
+
+    // The wrapper is a C++ object: vtable first, then whatever the concrete
+    // wrapper stores -- for a member function, a pointer-to-member, which on
+    // MSVC x64 for a non-virtual single-inheritance method is just the code
+    // address. So look for an executable pointer among the first few words.
+    char desc[256];
+    auto* words = reinterpret_cast<void* const*>(m.data);
+    for (int i = 0; i < 16; ++i) {
+        void* w = nullptr;
+        __try { w = words[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        describe_address(w, desc, sizeof(desc));
+        logf("HOOK:   [%2d] %p  %s", i * 8, w, desc);
+    }
+
+    // The vtable itself is worth dumping: its slots are the wrapper's own
+    // invoke overloads, which is a second route to the target.
+    void* const* vt = nullptr;
+    __try { vt = *reinterpret_cast<void* const* const*>(m.data); } __except (EXCEPTION_EXECUTE_HANDLER) { vt = nullptr; }
+    if (plausible_pointer(vt)) {
+        logf("HOOK: wrapper vtable at %p", static_cast<const void*>(vt));
+        // Do not filter on plausible_pointer here: it insists on 4-byte
+        // alignment, which code addresses need not have, and that silently
+        // truncated this dump to two entries on the first run.
+        for (int i = 0; i < 24; ++i) {
+            void* f = nullptr;
+            __try { f = vt[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+            if (f == nullptr) break;
+            const bool exec = describe_address(f, desc, sizeof(desc));
+            logf("HOOK:   vt[%2d] %p  %s", i, f, desc);
+            if (!exec) break;   // past the end of the vtable
+        }
+    }
+}
+
 void probe_attribution() {
     if (!g_walked || !g_souls) { logf("ATTR: no SoulList; skipping"); return; }
 

@@ -1,4 +1,4 @@
-#include "pipe_server.h"
+﻿#include "pipe_server.h"
 #include "main_thread.h"
 #include "rttr_abi.h"
 #include "log.h"
@@ -48,9 +48,34 @@ void send_frame(HANDLE h, uint8_t type, const void* payload, uint16_t len) {
     if (len) write_all(h, payload, len);
 }
 
+// Outbound hits are pushed from the game thread while the serve loop may be
+// blocked in ReadFile, so writes need their own lock.
+CRITICAL_SECTION g_write_lock;
+bool             g_write_lock_ready = false;
+
+void send_local_hit(const unsigned char guid[16], float health_delta, bool died) {
+    // Log the detection before the connectivity check, so a missing agent looks
+    // different from a missed hit.
+    logf("PIPE: LocalHit %.2f%s guid=%02X%02X%02X%02X-...%s",
+         health_delta, died ? " (fatal)" : "",
+         guid[3], guid[2], guid[1], guid[0],
+         g_connected ? "" : "  [no agent attached, not sent]");
+    if (!g_connected || g_pipe == INVALID_HANDLE_VALUE) return;
+    unsigned char body[16 + 4 + 4];
+    std::memcpy(body, guid, 16);
+    const float stamina = 0.0f;
+    std::memcpy(body + 16, &stamina, 4);
+    std::memcpy(body + 20, &health_delta, 4);
+    EnterCriticalSection(&g_write_lock);
+    send_frame(g_pipe, kLocalHit, body, sizeof(body));
+    LeaveCriticalSection(&g_write_lock);
+}
+
 void send_result(HANDLE h, bool ok, uint8_t seq) {
     BYTE body[2] = { static_cast<BYTE>(ok ? 1 : 0), seq };
+    EnterCriticalSection(&g_write_lock);
     send_frame(h, kResult, body, 2);
+    LeaveCriticalSection(&g_write_lock);
 }
 
 // One connected agent, until it disconnects.
@@ -98,6 +123,7 @@ void serve(HANDLE h) {
                 bool ok = false;
                 const bool ran = main_thread::run_sync([&] {
                     ok = rttr::apply_damage(guid, stamina, health, suppress);
+                    if (ok) rttr::note_remote_damage(guid, health);
                 });
                 if (!ran) logf("PIPE: ApplyDamage timed out waiting for a frame");
                 logf("PIPE: ApplyDamage stamina=%.2f health=%.2f -> %s",
@@ -168,7 +194,16 @@ void listen_loop() {
 } // namespace
 
 bool start() {
+    if (!g_write_lock_ready) { InitializeCriticalSection(&g_write_lock); g_write_lock_ready = true; }
     if (g_running.exchange(true)) return true;
+
+    // Outbound detection runs on the game thread every frame; the sampler
+    // rate-limits itself. Posting a self-requeueing task keeps it going without
+    // a second timer.
+    main_thread::post_repeating([] {
+        rttr::sample_health(&send_local_hit);
+    });
+
     g_thread = std::thread(listen_loop);
     logf("PIPE: listening on %s", kPipeName);
     return true;

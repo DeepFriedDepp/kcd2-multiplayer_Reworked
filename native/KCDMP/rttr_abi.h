@@ -293,6 +293,39 @@ void probe_attribution();
 // SetParent without building any container type by hand.
 void probe_faction();
 
+/// Dump the innards of the rttr method wrapper for CombatSoul::TakeDamage,
+/// looking for a pointer to the real member function. TakeDamage is not
+/// exported, so this is the route to an address we can detour for the OUTBOUND
+/// direction -- detecting a hit our own player landed. Read-only.
+void probe_method_wrapper();
+
+// ---------------------------------------------------------------------------
+// Outbound detection (WO-4).
+//
+// Detects that a nearby NPC lost health and reports it, so peers can apply the
+// same hit. Sampling rather than hooking: CombatSoul::TakeDamage is not
+// exported, and recovering its address from the rttr method wrapper means
+// disassembling for a call target -- an offset that breaks silently on the next
+// patch. Polling costs a few reflected reads per tick and cannot break that way.
+//
+// Consequences, accepted deliberately:
+//   - a hit is reported one sample late, up to ~60 ms
+//   - several fast hits inside one interval merge into one larger report
+//   - damage from ANY source is reported, including NPC-vs-NPC, which keeps
+//     the shared world consistent rather than only mirroring the player
+//   - damage this client applied because a peer told it to is excluded, or the
+//     two clients would echo the same hit forever
+// ---------------------------------------------------------------------------
+
+/// Sample tracked souls and report drops. Call from the main thread each tick;
+/// it rate-limits internally.
+void sample_health(void (*on_hit)(const unsigned char guid[16], float health_delta,
+                                  bool died));
+
+/// Tell the sampler that a health change was caused by an inbound packet, so it
+/// is not reported back out.
+void note_remote_damage(const unsigned char guid[16], float health_delta);
+
 // ---------------------------------------------------------------------------
 // Combat application (WO-4). These are what the network layer ultimately calls.
 //

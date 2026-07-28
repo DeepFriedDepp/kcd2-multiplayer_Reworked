@@ -1,4 +1,4 @@
-#include "main_thread.h"
+﻿#include "main_thread.h"
 #include "iat_hook.h"
 #include "log.h"
 
@@ -23,6 +23,7 @@ bool      g_installed = false;
 
 std::mutex                          g_mutex;
 std::vector<std::function<void()>>  g_queue;
+std::vector<std::function<void()>>  g_repeating;
 std::condition_variable             g_drained;
 volatile unsigned long long         g_frames = 0;
 DWORD                               g_main_thread_id = 0;
@@ -59,6 +60,16 @@ void hooked_update(void* self, float dt) {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (!g_queue.empty()) batch.swap(g_queue);
     }
+    // Copy under the lock, run outside it. Running them while holding g_mutex
+    // would block every post() for the duration of a call into the game, which
+    // is exactly the deadlock the comment above warns about.
+    std::vector<std::function<void()>> repeating;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        repeating = g_repeating;
+    }
+    for (auto& r : repeating) run_guarded(&r);
+
     if (batch.empty()) return;
 
     for (auto& work : batch) {
@@ -96,6 +107,11 @@ void uninstall() {
     hook_iat(g_importer, kProvider, kSymbol, reinterpret_cast<void*>(g_original));
     g_installed = false;
     logf("MAIN: unhooked");
+}
+
+void post_repeating(std::function<void()> work) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_repeating.push_back(std::move(work));
 }
 
 void post(std::function<void()> work) {
