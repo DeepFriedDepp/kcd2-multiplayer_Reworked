@@ -35,7 +35,7 @@ public static class Protocol
     /// refused at handshake, so an old peer gets a clear error rather than
     /// silently ignoring session packets it does not understand.
     /// </summary>
-    public const byte Version = 2;
+    public const byte Version = 3;
 
     // C→S
     public const byte Handshake      = 0x00;

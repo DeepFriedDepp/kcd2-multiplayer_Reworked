@@ -45,6 +45,10 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentQueue<byte[]> _voiceQueue = new();
     private VoiceChat? _voice;
 
+    // Combat (WO-4): the channel to KCDMP.dll. Remote damage can only be
+    // applied through native code, so this is the one path for it.
+    private readonly CombatPipe _combat = new();
+
     /// <summary>
     /// Interaction sessions (WO-2). Dice and duelling hang off this rather than
     /// adding their own protocols. Null until connected.
@@ -434,6 +438,32 @@ public partial class GameBridge(ClientConfig config)
                     Buffer.BlockCopy(payload, 1, pcm, 0, Protocol.VoiceFrameLen);
                     _voice?.OnVoiceReceived(sourceId, pcm);
                 }
+                else if (type == Protocol.DamageDown && payloadLen == Protocol.DamageDownPayloadLen)
+                {
+                    // Damage: [sourceGhostId:1][guid:16][stamina:4f][health:4f][flags:1]
+                    // Applied through the DLL, not Lua: Lua writes are inert.
+                    byte  sourceId = payload[0];
+                    var   soul     = new Guid(payload.AsSpan(1, 16));
+                    float stamina  = ReadFloat(payload, 17);
+                    float health   = ReadFloat(payload, 21);
+                    bool  suppress = (payload[25] & Protocol.DamageFlagSuppressHitReaction) != 0;
+
+                    bool applied = await _combat.ApplyDamageAsync(soul, stamina, health, suppress, ct);
+                    if (!applied)
+                        Console.WriteLine($"[combat] damage from ghost {sourceId} not applied " +
+                                          $"(soul {soul} not loaded here, or the DLL is absent)");
+                }
+                else if (type == Protocol.DeathDown && payloadLen == Protocol.DeathDownPayloadLen)
+                {
+                    // Death is its own packet rather than inferred from health
+                    // reaching zero, and the DLL treats it as idempotent.
+                    byte sourceId = payload[0];
+                    var  soul     = new Guid(payload.AsSpan(1, 16));
+                    bool applied  = await _combat.ApplyDeathAsync(soul, ct);
+                    if (!applied)
+                        Console.WriteLine($"[combat] death from ghost {sourceId} not applied " +
+                                          $"(soul {soul} not loaded here, or the DLL is absent)");
+                }
                 else if (Interactions?.HandlePacket(type, payload) == true)
                 {
                     // Session packet consumed by the interaction layer.
@@ -566,6 +596,42 @@ public partial class GameBridge(ClientConfig config)
     // -------------------------------------------------------------------------
     // TCP helpers
     // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Report a hit our player landed, so peers apply it to the same NPC.
+    ///
+    /// NOTHING CALLS THIS YET. Detecting a local hit needs a hook on the game's
+    /// own combat path, and TakeDamage is not exported, so that hook does not
+    /// exist. The send side is written now so the outbound work is only the
+    /// detection, not the plumbing.
+    ///
+    /// Must never be called for damage that arrived from a peer, or two clients
+    /// will bounce the same hit back and forth forever. That is why applying
+    /// remote damage goes straight to the pipe and never through here.
+    /// </summary>
+    public static async Task SendLocalHitAsync(NetworkStream stream, Guid soul,
+                                               float stamina, float health,
+                                               bool suppressHitReaction)
+    {
+        var packet = new byte[3 + Protocol.DamageUpPayloadLen];
+        packet[0] = Protocol.DamageUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.DamageUpPayloadLen);
+        soul.TryWriteBytes(packet.AsSpan(3, 16));
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(19), stamina);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(23), health);
+        packet[27] = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
+        await stream.WriteAsync(packet);
+    }
+
+    /// <summary>Report an NPC our client killed. Idempotent at every receiver.</summary>
+    public static async Task SendLocalDeathAsync(NetworkStream stream, Guid soul)
+    {
+        var packet = new byte[3 + Protocol.DeathUpPayloadLen];
+        packet[0] = Protocol.DeathUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.DeathUpPayloadLen);
+        soul.TryWriteBytes(packet.AsSpan(3, 16));
+        await stream.WriteAsync(packet);
+    }
 
     private static async Task SendVoiceAsync(NetworkStream stream, byte[] pcm)
     {
