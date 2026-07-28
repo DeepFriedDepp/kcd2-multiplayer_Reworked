@@ -59,8 +59,22 @@ public class TcpSocketService : BackgroundService
 
 				// ClientHandler is thread-safe, so the disconnect bookkeeping needs no
 				// lock and no async continuation of its own.
-				_ = client.RunAsync().ContinueWith(_ =>
+				_ = client.RunAsync().ContinueWith(task =>
 				{
+					// RunAsync's own catch only covers IOException/SocketException/
+					// EndOfStreamException (normal disconnects); anything else faults
+					// this Task. Discarding that fault here would make a real crash
+					// look identical to a normal disconnect in the log — the exact
+					// "silent catch on a background task" trap HANDOFF-WO4-combat.md
+					// already warns about, just one level up (the continuation,
+					// not RunAsync's own try/catch).
+					if (task.IsFaulted)
+					{
+						_logger.Error(task.Exception?.Flatten(),
+							"[!] {ClientName}'s connection handler faulted unexpectedly",
+							client.Name ?? $"id={client.Id}");
+					}
+
 					_clientHandler.RemoveClient(client);
 
 					// Before announcing the disconnect: a peer still in a session

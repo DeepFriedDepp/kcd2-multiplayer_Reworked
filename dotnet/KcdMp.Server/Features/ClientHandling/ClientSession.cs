@@ -399,7 +399,17 @@ public class ClientSession
         await foreach (var packet in _writeQueue.Reader.ReadAllAsync())
         {
             try { await _stream.WriteAsync(packet); }
-            catch { break; }
+            catch (Exception ex)
+            {
+                // Normal on a disconnect -- the peer's read side of the same
+                // socket is what RunAsync's own catch already treats as
+                // unremarkable, so this is Debug, not a warning. It still logs
+                // the exception rather than swallowing it silently: an
+                // unexpected write failure (not just "the peer is gone") used
+                // to be indistinguishable from a normal disconnect from here.
+                _logger.Debug(ex, "[!] Write loop for {Name} stopped", Name ?? $"id={Id}");
+                break;
+            }
         }
     }
 
