@@ -55,9 +55,15 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     public InteractionClient? Interactions { get; private set; }
 
+    /// <summary>Dice wire protocol (WO-5), relay-authoritative. Null until connected.</summary>
+    public DiceClient? Dice { get; private set; }
+
     // ghostId → display name, from Name packets. Lets an invite prompt say who
     // is asking instead of showing a bare relay id.
     private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
+
+    // The only channel to KCDMP_launcher's dice window -- see DiceIpcServer.
+    private DiceIpcServer? _diceIpcServer;
 
     public async Task RunAsync(CancellationToken ct = default)
     {
@@ -243,17 +249,29 @@ public partial class GameBridge(ClientConfig config)
 
         // --- Interaction layer ---
         // Framing lives here because this class owns the stream; the interaction
-        // client only decides what to say.
-        var interactions = new InteractionClient(async (type, payload, ict) =>
+        // and dice clients only decide what to say.
+        async Task SendPacketAsync(byte type, byte[] payload, CancellationToken ict)
         {
             var pkt = new byte[3 + payload.Length];
             pkt[0] = type;
             BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(1), (ushort)payload.Length);
             payload.CopyTo(pkt, 3);
             await stream.WriteAsync(pkt, ict);
-        });
+        }
+
+        var interactions = new InteractionClient(SendPacketAsync);
+        var dice = new DiceClient(SendPacketAsync);
         WireInteractionFeedback(interactions);
         Interactions = interactions;
+        Dice = dice;
+
+        // The launcher's dice window has no other way to reach this agent (see
+        // DiceIpcServer) -- neither process depends on the other having started
+        // first, so this cannot ride the launcher's own process-start plumbing.
+        var diceIpc = new DiceIpcState(interactions, dice,
+            ghostId => _ghostNames.TryGetValue(ghostId, out var n) ? n : null);
+        _diceIpcServer = new DiceIpcServer(diceIpc, config.DiceIpcPort);
+        _diceIpcServer.Start();
 
         // Kick off the Lua interp tick immediately so KCD2MP.isRiding gets updated
         // even before the first ghost is spawned (e.g. player already on horse at connect time).
@@ -356,6 +374,9 @@ public partial class GameBridge(ClientConfig config)
             // state has to go too or a reconnect would think it is still busy.
             Interactions?.Reset();
             Interactions = null;
+            Dice = null;
+            _diceIpcServer?.Stop();
+            _diceIpcServer = null;
             _ghostNames.Clear();
 
             Console.WriteLine("Removing all ghosts...");
@@ -484,6 +505,10 @@ public partial class GameBridge(ClientConfig config)
                 {
                     // Session packet consumed by the interaction layer.
                 }
+                else if (Dice?.HandlePacket(type, payload) == true)
+                {
+                    // Dice packet consumed by the dice layer.
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -581,7 +606,12 @@ public partial class GameBridge(ClientConfig config)
         {
             string who = _ghostNames.TryGetValue(invite.FromGhostId, out var n) ? n : $"player {invite.FromGhostId}";
             Console.WriteLine($"[interaction] {who} invites you to {invite.Kind} (session {invite.SessionId})");
-            _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\") end");
+
+            // Dice presentation is a launcher window, not Scaleform (settled,
+            // see NATIVE-PLUGIN-findings.md) -- DiceIpcState surfaces this
+            // invite to the launcher instead. Other kinds keep the in-game prompt.
+            if (invite.Kind != InteractionKind.Dice)
+                _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\") end");
         };
 
         interactions.SessionStarted += session =>

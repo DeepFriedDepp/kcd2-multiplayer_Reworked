@@ -44,6 +44,7 @@ class Program
 
             appBuilder.Services.AddSingleton<KCDMP_launcher.Services.UiService>();
             appBuilder.Services.AddSingleton<KCDMP_launcher.Services.NetService>();
+            appBuilder.Services.AddSingleton<KCDMP_launcher.Services.DiceIpcClient>();
             appBuilder.RootComponents.Add<App>("#app");
 
             var app = appBuilder.Build();

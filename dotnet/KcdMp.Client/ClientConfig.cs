@@ -63,6 +63,12 @@ public sealed class ClientConfig
     /// </summary>
     public int EmitIntervalMs { get; set; } = 20;
 
+    /// <summary>
+    /// Local port the dice IPC listener binds (see DiceIpcServer). The
+    /// launcher polls this to show the dice window; nothing else uses it.
+    /// </summary>
+    public int DiceIpcPort { get; set; } = 5901;
+
     [JsonIgnore]
     public static string DefaultPath =>
         Path.Combine(
@@ -170,6 +176,11 @@ public sealed class ClientConfig
                         break;
                     case "--transport" when value is not null:
                         Transport = value;
+                        i++;
+                        break;
+                    case "--dice-ipc-port" when value is not null:
+                        if (int.TryParse(value, out int dip)) DiceIpcPort = dip;
+                        else Console.WriteLine($"[config] --dice-ipc-port '{value}' is not a number, keeping {DiceIpcPort}");
                         i++;
                         break;
                     case "--voice":

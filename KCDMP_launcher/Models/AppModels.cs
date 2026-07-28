@@ -80,6 +80,11 @@ namespace KCDMP_launcher.Models
         // and an assumption rather than something the master tells us.
         public int ServerInfoPort { get; set; } = 5273;
 
+        // Where the locally-running agent's dice IPC listener binds (see
+        // dotnet/KcdMp.Client/DiceIpcServer.cs). Local-machine only, unlike
+        // ServerInfoPort -- there is no per-relay value to guess here.
+        public int DiceIpcPort { get; set; } = 5901;
+
         public string Language { get; set; } = "en";
     }
 }
