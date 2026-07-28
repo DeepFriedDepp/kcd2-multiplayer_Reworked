@@ -19,7 +19,7 @@ The brief numbered six work orders. Actual state:
 | WO-0 | Merge four branches onto `main`, version byte | **done** | `WO-0-merge-notes.md` |
 | WO-1 | Transport replacement | **done** | `WO-1-transport.md` |
 | WO-2 | Interaction framework (opt-in paired sessions) | **done**, 23/23 tests | protocol `0x0A`–`0x11` |
-| WO-3 | Dice (Farkle) | **not started** | — |
+| WO-3 | Dice (Farkle) | **done** — committed as `WO-5:` (see the naming collision note below) | `WO-5-dice.md`, protocol `0x16`–`0x19` |
 | WO-4 | Emotes | **not started** | — |
 | WO-5 | Duelling | **not started** | — |
 
@@ -37,6 +37,11 @@ brief's WO-4 is **Emotes**. They are unrelated. Suggested renumbering:
 
 Whatever is chosen, say it explicitly in the next session's prompt, because
 `git log` is full of "WO-4:" prefixes that mean shared combat.
+
+The same collision now applies to dice: the brief calls it WO-3, but the
+session prompt that commissioned it (superseding all earlier dice planning
+docs) renumbered it **WO-5**, and every commit that built it says `WO-5:`.
+"WO-5" in `git log` means dice, not duelling — the brief's WO-5.
 
 ---
 
@@ -84,11 +89,13 @@ fight *"is not achievable on the current transport."*
 The no-push-channel problem is solved twice: log-tail out (WO-1) and the DLL
 named pipe (shared combat). Any new feature should assume a push channel exists.
 
-### §5.1 "Dice" presentation options — unchanged and still correct
+### §5.1 "Dice" presentation options — decided and built
 
-Recommendation (b) launcher window or (a) `DrawText` overlay still stands. The
-native plugin does **not** make Scaleform (c) any more tractable — the GUI
-module's reflected surface was never examined, and nothing here touched it.
+Recommendation (b), the launcher window, is what got built (`WO-5-dice.md`).
+The native plugin still does **not** make Scaleform (c) any more tractable —
+the GUI module's reflected surface was never examined. A one-line `DrawText`
+turn hint (a) also exists, but only as a glance-without-alt-tabbing
+convenience alongside the launcher window, not as the dice UI itself.
 
 ---
 
@@ -119,11 +126,14 @@ module's reflected surface was never examined, and nothing here touched it.
 `0x83 Pong`, `0x90 LocalHit` up. **Overlapped I/O on both handles is mandatory**
 — see §5.
 
-### Wire protocol v3
+### Wire protocol v4
 
-Added `0x12`–`0x15` (Damage/Death, both directions). `Protocol.cs` is duplicated
-between client and server projects and mirrored by hand — **change both**.
-Next free type byte: **`0x16`**.
+Added `0x12`–`0x15` (Damage/Death, both directions) in v3, then `0x16`–`0x19`
+(DiceIntent/DiceState/DiceError/DiceEnd) in v4. `Protocol.cs` is **no longer
+duplicated** — it moved to a shared `KcdMp.Protocol` project (net8.0 classlib,
+namespace `KcdMp.Wire` to avoid a name collision with the `Protocol` class
+itself) that both `KcdMp.Client` and `KcdMp.Server` reference. One copy, kept
+in sync with itself by construction. Next free type byte: **`0x1A`**.
 
 ### Test scripts (`tools\`)
 
@@ -134,8 +144,12 @@ Next free type byte: **`0x16`**.
 | `Test-CombatE2E.ps1` | inbound, full chain | everything |
 | `Test-CombatOutbound.ps1` | outbound, full chain | everything |
 | `Test-Sessions.ps1` | WO-2 sessions, 23/23 | relay only |
+| `Test-Dice.ps1` | WO-5 dice, 10/10 | relay only |
 | `Probe-Reflection.ps1` | capability re-check after a game patch | game |
 | `KcdApi.ps1` | bounded REST client — dot-source it | game |
+
+`dotnet\KcdMp.Farkle.Tests` (xUnit, 59/59) covers the dice scoring/turn state
+machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ---
 
@@ -237,9 +251,14 @@ Next free type byte: **`0x16`**.
   *(This bullet previously claimed the launcher still booted the base game and
   never started the agent. That was already false when written — `54af330`
   precedes the commit that added this document.)*
-- **`Protocol.cs` duplication.** Extracting a shared `KcdMp.Protocol` project is
-  overdue; the constants are mirrored by hand and a version bump was missed once
-  already (caught only by the handshake guard).
+- **Dice (WO-5) real-game verification.** The relay/protocol/engine layers are
+  proven headless (`Test-Dice.ps1`, the Farkle xUnit suite), and the agent-side
+  IPC bridge to the launcher was verified with two real `KcdMpClient.exe`
+  processes and a synthetic wire peer. Not verified: the actual Blazor
+  rendering (no way to drive Photino's webview headlessly), the in-game
+  keybind (action names are unverified guesses — same caveat WO-2's
+  accept/decline already carried), and a real two-human match at real
+  latency. See `WO-5-dice.md`.
 - **Ghost behaviour-tree trade-off.** `KCD2MP_SpawnGhost` passes
   `esModularBehaviorTree=""` deliberately so the scheduler does not fight
   `ForceMount` during riding. A ghost *with* a tree genuinely perceives (it
@@ -254,10 +273,12 @@ Next free type byte: **`0x16`**.
 
 1. **this document** — current state and corrections
 2. `HANDOFF-WO4-combat.md` — shared combat: architecture, how to run and test
-3. `NATIVE-PLUGIN-findings.md` — capability evidence, the RTTR ABI
-4. `ARCHITECTURE-shared-world.md` — where the shared/private boundary falls
-5. `LAUNCHING.md` — launch path and the remaining launcher gaps
-6. the original brief — intent and the unstarted work orders, read *last* and
+3. `WO-5-dice.md` — dice (Farkle): architecture, how to run and test, what is
+   and is not verified
+4. `NATIVE-PLUGIN-findings.md` — capability evidence, the RTTR ABI
+5. `ARCHITECTURE-shared-world.md` — where the shared/private boundary falls
+6. `LAUNCHING.md` — launch path and the remaining launcher gaps
+7. the original brief — intent and the unstarted work orders, read *last* and
    with §2–§5 corrected by this document
 
 `git log` records reasoning and **retractions**, not just changes. Several
