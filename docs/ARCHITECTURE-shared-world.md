@@ -46,13 +46,23 @@ shared; the blacksmith who gives you work is not.
 This is deliberately MMO-shaped. You both go to the siege, you both fight the
 same soldiers, your damage adds up, and your quest credit is your own.
 
-> **STATUS 2026-07-27, after behavioural testing: shared combat is not
-> achievable on this API surface.** The methods for writing NPC health exist but
-> are inert. See "Behavioural test results" below. The shared-ambient design as
-> specified cannot be built; what survives is presence plus shared world time
-> plus opt-in bubbles. The rest of this document is kept because the reasoning
-> about *where* to draw the boundary remains correct and will matter if a future
-> game patch or a native plugin opens these APIs.
+> **STATUS 2026-07-27, superseded the same day. Shared combat IS achievable.**
+> The negative result below is real but was read too broadly: it is the **Lua
+> bindings** that are inert, not the engine. The game exposes an RTTR C++
+> reflection layer on which `Soul::SetState` and `CombatSoul::TakeDamage` were
+> verified live — NPC health written, damage applied, an NPC killed through the
+> game's own combat path. See **`NATIVE-PLUGIN-findings.md`**, which is now the
+> authority on capability.
+>
+> Everything below about *where* to draw the shared/private boundary stands, and
+> so does the evidence that Lua cannot mutate world state — do not re-run those
+> tests. What changed is the conclusion drawn from them.
+>
+> Two parts of this document are worth more than they looked at the time:
+> "Distraction does not need shared NPCs" is now the **recommended** design for
+> AI, because the reflected AI surface turns out to be nearly empty; and
+> "Classifying an NPC at runtime" needs revisiting, because soul GUIDs may not be
+> stable across clients while soul *names* may be.
 
 ## Behavioural test results
 
