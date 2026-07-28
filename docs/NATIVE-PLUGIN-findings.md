@@ -523,11 +523,32 @@ Game alive throughout.
    unavoidable — every `invoke` takes them, and the useful templated
    constructors are header-inline, so they are not in the export table.
 2. **`instance`'s full layout** likewise.
-3. **Getting a live object pointer.** Reflection can name `CombatSoul` but not
-   hand us a soul. The REST browser walks from a root `wh::shared::GameInterface`,
-   so the question is how that root is reached — `type::get_property_value` has a
-   *static* overload for globals, and `type::get_global_method` exists, so
-   enumerating registered globals is the obvious next probe.
+3. ~~Getting a live object pointer~~ — **solved.** `Shared.dll` exports it:
 
-Item 3 is the real one. Items 1 and 2 are more prologue decoding of the kind
-already done twice.
+   ```
+   ?GetInstance@C_GameInterface@shared@wh@@SAPEBV123@XZ          -> const C_GameInterface*
+   ?GetWritableInstance@C_GameInterface@shared@wh@@SAPEAV123@XZ  -> C_GameInterface*
+   ```
+
+   A zero-argument static returning the exact root object the REST browser
+   walks from — the trivial ABI case, no hidden pointers, result in RAX. From
+   there the route to a soul is the same walk the HTTP API does:
+   `GameInterface → RPGModule → SoulList → PlayerSoul → CombatSoul`.
+
+   Navigation itself has to go through reflection: `RPGModule.dll` exports only
+   121 symbols and they are almost all faction code — no `SoulList` accessor.
+
+Items 1 and 2 are more prologue decoding of the kind already done twice, and
+partially done:
+
+- `instance` default ctor fills `+0` and `+8` from two separate calls, then
+  zeroes a third field — consistent with `{ type; type; void* }`, 24 bytes, with
+  `get_type` returning the one at `+0`. **GUESS**, not yet confirmed.
+- `argument`'s copy ctor moves `+0`, `+8` and `+0x10`; its variant ctor asks the
+  source variant's policy for a raw pointer (`op=7`) and stores the result.
+
+Neither is worth more static decoding than that. The cheap way to settle both is
+to build them, walk to `PlayerSoul`, read health natively, and **compare against
+the value the HTTP API reports for the same soul at the same moment**. An
+independent ground truth already exists, so a wrong layout shows up as a
+mismatch or an SEH-caught fault rather than as a plausible-looking number.
