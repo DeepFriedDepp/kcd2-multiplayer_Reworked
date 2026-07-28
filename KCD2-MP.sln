@@ -13,6 +13,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "dotnet", "dotnet", "{15FB77
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KcdMp.Protocol", "dotnet\KcdMp.Protocol\KcdMp.Protocol.csproj", "{06D9A067-11AC-4914-A53E-7001E6F4100B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KcdMp.Farkle", "dotnet\KcdMp.Farkle\KcdMp.Farkle.csproj", "{2B848028-127F-4B43-8D71-02C0F3D08D78}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KcdMp.Farkle.Tests", "dotnet\KcdMp.Farkle.Tests\KcdMp.Farkle.Tests.csproj", "{C5E752EE-F5E9-48ED-A710-249E98347066}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -35,6 +39,14 @@ Global
 		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{06D9A067-11AC-4914-A53E-7001E6F4100B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2B848028-127F-4B43-8D71-02C0F3D08D78}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2B848028-127F-4B43-8D71-02C0F3D08D78}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2B848028-127F-4B43-8D71-02C0F3D08D78}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2B848028-127F-4B43-8D71-02C0F3D08D78}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C5E752EE-F5E9-48ED-A710-249E98347066}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C5E752EE-F5E9-48ED-A710-249E98347066}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C5E752EE-F5E9-48ED-A710-249E98347066}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C5E752EE-F5E9-48ED-A710-249E98347066}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -44,5 +56,7 @@ Global
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{06D9A067-11AC-4914-A53E-7001E6F4100B} = {15FB77F0-B999-49E5-80DB-AC45F17434A7}
+		{2B848028-127F-4B43-8D71-02C0F3D08D78} = {15FB77F0-B999-49E5-80DB-AC45F17434A7}
+		{C5E752EE-F5E9-48ED-A710-249E98347066} = {15FB77F0-B999-49E5-80DB-AC45F17434A7}
 	EndGlobalSection
 EndGlobal
