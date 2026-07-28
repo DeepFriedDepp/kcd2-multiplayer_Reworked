@@ -27,6 +27,7 @@
 
 #include <windows.h>
 #include <cstdint>
+#include <cstring>
 #include <string_view>
 
 namespace kcdmp::rttr {
@@ -66,13 +67,50 @@ struct alignas(8) Argument {
 };
 static_assert(sizeof(Argument) == 24, "argument must be 24 bytes");
 
-// rttr::instance -- type sits at offset 0 here, unlike argument.
-// Evidence: instance::get_type does `mov rax,[rbx]`, i.e. offset 0.
-// GUESS: the remaining layout is unverified; do not construct one of these
-// until its constructors have been decoded the way argument's were.
-struct alignas(8) Instance {
-    Type        type;
-    const void* data;
+// rttr::instance -- type sits at offset 0, unlike argument.
+// Evidence: instance::get_type does `mov rax,[rbx]`, i.e. offset 0. The default
+// ctor fills +0 and +8 from two separate calls and then zeroes a third field,
+// which is consistent with { type; type; void* }.
+//
+// GUESS: the field order beyond +0 is inferred, not proven. Rather than decode
+// further, InstanceBuf below lets the caller try each candidate layout and keep
+// whichever one produces a value that matches the HTTP API's ground truth.
+enum class InstanceLayout {
+    TypeTypeData,   // { type, derived_type, void* }  -- 24 bytes
+    TypeData,       // { type, void* }                -- 16 bytes
+    Count
+};
+
+inline const char* layout_name(InstanceLayout l) {
+    switch (l) {
+        case InstanceLayout::TypeTypeData: return "{type,type,data}/24";
+        case InstanceLayout::TypeData:     return "{type,data}/16";
+        default:                           return "?";
+    }
+}
+
+// Oversized and zeroed, so a layout that is smaller than the callee expects
+// still points at readable memory rather than at the stack frame behind it.
+struct alignas(8) InstanceBuf {
+    unsigned char bytes[32];
+
+    void build(InstanceLayout layout, Type t, const void* obj) {
+        std::memset(bytes, 0, sizeof(bytes));
+        auto* slot = reinterpret_cast<void**>(bytes);
+        switch (layout) {
+            case InstanceLayout::TypeTypeData:
+                slot[0] = t.data;
+                slot[1] = t.data;
+                slot[2] = const_cast<void*>(obj);
+                break;
+            case InstanceLayout::TypeData:
+                slot[0] = t.data;
+                slot[1] = const_cast<void*>(obj);
+                break;
+            default:
+                break;
+        }
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +141,18 @@ using MethodGetSignature = void* (*)(const Method* self, std::string_view* ret);
 // bool rttr::property::is_valid() const
 using PropertyIsValid = bool (*)(const Property* self);
 
+// rttr::variant rttr::type::get_property_value(std::string_view, rttr::instance) const
+// Member returning a class in memory: RCX=this, RDX=&ret, R8=&name, R9=&instance.
+using GetPropertyValue = void* (*)(const Type* self, Variant* ret,
+                                   const std::string_view* name, const void* instance);
+
+// rttr::variant::~variant()
+using VariantDtor = void (*)(Variant* self);
+
+// static wh::shared::C_GameInterface* wh::shared::C_GameInterface::GetWritableInstance()
+// Exported from Shared.dll. No hidden pointers, no class params -- result in RAX.
+using GetGameInterface = void* (*)();
+
 struct Api {
     GetByName          get_by_name          = nullptr;
     TypeIsValid        type_is_valid        = nullptr;
@@ -112,14 +162,20 @@ struct Api {
     MethodGetName      method_get_name      = nullptr;
     MethodGetSignature method_get_signature = nullptr;
     PropertyIsValid    property_is_valid    = nullptr;
+    GetPropertyValue   get_property_value   = nullptr;
+    VariantDtor        variant_dtor         = nullptr;
+    GetGameInterface   game_interface       = nullptr;
 
     bool complete() const {
         return get_by_name && type_is_valid && get_method && get_property &&
                method_is_valid && method_get_name && method_get_signature &&
-               property_is_valid;
+               property_is_valid && get_property_value && variant_dtor &&
+               game_interface;
     }
 };
 
 bool resolve(Api& api);
+bool validate();
+void walk_to_soul();
 
 } // namespace kcdmp::rttr

@@ -60,6 +60,42 @@ bool call_method_string(MethodGetName fn, const Method* self, std::string_view* 
     }
 }
 
+bool call_get_property_value(GetPropertyValue fn, const Type* self, Variant* ret,
+                             const std::string_view* name, const void* inst) {
+    __try {
+        fn(self, ret, name, inst);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool call_variant_dtor(VariantDtor fn, Variant* v) {
+    __try {
+        fn(v);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool call_game_interface(GetGameInterface fn, void** out) {
+    __try {
+        *out = fn();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// A heap/static pointer in this process. Rejects null, small integers and
+// non-canonical addresses -- enough to tell "the layout was wrong and we read
+// a type handle or a float" from "this is an object".
+bool plausible_pointer(const void* p) {
+    const auto v = reinterpret_cast<uintptr_t>(p);
+    return v > 0x10000 && v < 0x00007FFFFFFFFFFFull && (v % 4) == 0;
+}
+
 } // namespace
 
 bool resolve(Api& api) {
@@ -78,6 +114,19 @@ bool resolve(Api& api) {
     api.method_get_name      = reinterpret_cast<MethodGetName>     (find_export(exports, "?get_name@method@rttr@@"));
     api.method_get_signature = reinterpret_cast<MethodGetSignature>(find_export(exports, "?get_signature@method@rttr@@"));
     api.property_is_valid    = reinterpret_cast<PropertyIsValid>   (find_export(exports, "?is_valid@property@rttr@@"));
+    // QEBA in the prefix selects the const member overload; there is also a
+    // static one (SA) that reads a global property and takes no instance.
+    api.get_property_value = reinterpret_cast<GetPropertyValue>(
+        find_export(exports, "?get_property_value@type@rttr@@QEBA"));
+    api.variant_dtor = reinterpret_cast<VariantDtor>(
+        find_export(exports, "??1variant@rttr@@QEAA@XZ"));
+
+    // The root object lives in a different module.
+    if (HMODULE shared = GetModuleHandleA("Shared.dll")) {
+        const auto shared_exports = module_exports(shared);
+        api.game_interface = reinterpret_cast<GetGameInterface>(
+            find_export(shared_exports, "?GetWritableInstance@C_GameInterface@shared@wh@@"));
+    }
 
     return api.complete();
 }
@@ -178,6 +227,130 @@ bool validate() {
     logf(all_ok ? "ABI: VALIDATED -- model matches the binary"
                 : "ABI: NOT validated -- see failures above");
     return all_ok;
+}
+
+namespace {
+
+// Read an object-valued property. Returns the contained pointer, or null.
+// A pointer small enough to be trivially copyable lives inline at the start of
+// the variant's 16-byte payload.
+void* read_object_property(const Api& api, const char* type_name, const void* obj,
+                           const char* prop, InstanceLayout layout) {
+    const std::string_view tn{type_name};
+    Type t{};
+    if (!call_get_by_name(api.get_by_name, &t, &tn)) return nullptr;
+    bool tv = false;
+    if (!call_is_valid(api.type_is_valid, &t, &tv) || !tv) {
+        logf("WALK: type '%s' did not resolve", type_name);
+        return nullptr;
+    }
+
+    InstanceBuf inst{};
+    inst.build(layout, t, obj);
+
+    const std::string_view pn{prop};
+    Variant v{};
+    if (!call_get_property_value(api.get_property_value, &t, &v, &pn, inst.bytes)) {
+        logf("WALK: FAULT reading %s::%s", type_name, prop);
+        return nullptr;
+    }
+
+    void* result = nullptr;
+    std::memcpy(&result, v.data, sizeof(result));
+    call_variant_dtor(api.variant_dtor, &v);
+    return result;
+}
+
+int read_int_property(const Api& api, const char* type_name, const void* obj,
+                      const char* prop, InstanceLayout layout, bool* ok) {
+    *ok = false;
+    const std::string_view tn{type_name};
+    Type t{};
+    if (!call_get_by_name(api.get_by_name, &t, &tn)) return 0;
+    bool tv = false;
+    if (!call_is_valid(api.type_is_valid, &t, &tv) || !tv) return 0;
+
+    InstanceBuf inst{};
+    inst.build(layout, t, obj);
+
+    const std::string_view pn{prop};
+    Variant v{};
+    if (!call_get_property_value(api.get_property_value, &t, &v, &pn, inst.bytes)) {
+        logf("WALK: FAULT reading %s::%s", type_name, prop);
+        return 0;
+    }
+
+    int result = 0;
+    std::memcpy(&result, v.data, sizeof(result));
+    call_variant_dtor(api.variant_dtor, &v);
+    *ok = true;
+    return result;
+}
+
+} // namespace
+
+// Walk GameInterface -> RPGModule -> SoulList and read SoulCount.
+//
+// SoulCount is the checkpoint on purpose: it is a plain int, and the HTTP API
+// reports the same number independently at the same moment. A wrong instance
+// layout gives a fault, a null, or a number that is not the soul count -- none
+// of which can be mistaken for success.
+void walk_to_soul() {
+    Api api{};
+    if (!resolve(api)) {
+        logf("WALK: resolve incomplete (Shared.dll loaded? get_property_value found?)");
+        return;
+    }
+
+    void* root = nullptr;
+    if (!call_game_interface(api.game_interface, &root) || !plausible_pointer(root)) {
+        logf("WALK: C_GameInterface::GetWritableInstance() gave %p -- unusable", root);
+        return;
+    }
+    logf("WALK: GameInterface root = %p", root);
+
+    for (int i = 0; i < static_cast<int>(InstanceLayout::Count); ++i) {
+        const auto layout = static_cast<InstanceLayout>(i);
+        logf("WALK: trying instance layout %s", layout_name(layout));
+
+        void* rpg = read_object_property(api, "wh::shared::GameInterface", root, "RPGModule", layout);
+        if (!plausible_pointer(rpg)) {
+            logf("  RPGModule -> %p  rejected", rpg);
+            continue;
+        }
+        logf("  RPGModule  = %p", rpg);
+
+        void* souls = read_object_property(api, "wh::rpgmodule::RPGModule", rpg, "SoulList", layout);
+        if (!plausible_pointer(souls)) {
+            logf("  SoulList  -> %p  rejected", souls);
+            continue;
+        }
+        logf("  SoulList   = %p", souls);
+
+        bool ok = false;
+        const int count = read_int_property(api, "wh::rpgmodule::SoulList", souls, "SoulCount", layout, &ok);
+        if (!ok) { logf("  SoulCount unreadable"); continue; }
+        logf("  SoulCount  = %d", count);
+
+        if (count <= 0 || count > 100000) {
+            logf("  SoulCount implausible -- layout %s rejected", layout_name(layout));
+            continue;
+        }
+
+        void* player = read_object_property(api, "wh::rpgmodule::SoulList", souls, "PlayerSoul", layout);
+        logf("  PlayerSoul = %p", player);
+
+        void* combat = plausible_pointer(player)
+            ? read_object_property(api, "wh::rpgmodule::Soul", player, "CombatSoul", layout)
+            : nullptr;
+        logf("  CombatSoul = %p", combat);
+
+        logf("WALK: SUCCESS with layout %s -- compare SoulCount against the HTTP API",
+             layout_name(layout));
+        return;
+    }
+
+    logf("WALK: no candidate instance layout worked");
 }
 
 } // namespace kcdmp::rttr
