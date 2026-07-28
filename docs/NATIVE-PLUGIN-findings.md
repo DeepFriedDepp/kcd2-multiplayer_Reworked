@@ -361,6 +361,54 @@ also means the pak still needs to load, so Modding Tools stays in the loop.
 
 ---
 
+## Aggro: no stimulus-injection surface exists
+
+Attempted 2026-07-27, after attribution was shown not to follow from
+`TakeDamage`. **The stimulus-replication mechanism proposed in
+`ARCHITECTURE-shared-world.md` cannot be built as specified**, because nothing
+on any name-addressable surface injects a perception, alarm or aggro state.
+
+Everything below was probed, not assumed:
+
+| Surface | What is there | Usable for aggro? |
+|---|---|---|
+| `xgen` (XGenAIModule) reflected | `SmartEntityDatabase`, `PerceptionHistory` — both read-only; `PerceptionHistory.GetRecords()` reads | **no** |
+| `XBehaviorModule` reflected | **completely empty** — no properties, no methods | **no** |
+| `XGenAIModule.dll` exports (1,784) | behaviour-tree attribute-enum glue (`E_crime_stimulusKind` and friends). `C_AISingletons::PerceptionManager()` returns the singleton, but **none of its methods are exported** | not by name |
+| `C_SkirmishManager` reflected | `DebugTriggerEvent(soulName, eventName)` — callable, takes strings | **tested, no effect** |
+| `SkirmishEventTypes` database | 25 real event names: `SoulAdded`, `SoulDied`, `HitTarget`, `Attack`, `Combo`, `MasterStrike`, … | names are real, triggering them is not |
+| `FactionManager` / `NPCFaction` reflected | `GetFaction`, `GetRelation`, `PlayerReputation` — all queries | read-only |
+| Lua `AI.*` | inert (established earlier) | **no** |
+
+`DebugTriggerEvent` was the strongest candidate and it does nothing observable.
+Triggered `SoulAdded`, `Attack` and `HitTarget` on a live NPC standing next to
+the player; `IsSoulCharged`, `AttackersCount` and `Target` were unchanged after
+each, and the player's own `AttackersCount` stayed 0. The call returns void and
+raises nothing — **exactly the shape of the inert Lua stubs**, and a reminder
+that a reflected method existing says nothing about it working. It presumably
+routes into an already-running skirmish and has no effect on a soul outside one.
+
+### Three ways forward, cheapest first
+
+1. **Make the remote player a genuinely perceptible actor.** The presence layer
+   already spawns ghost NPCs for remote players. If a ghost is a real actor
+   entity rather than a puppet, the local AI perceives it through the game's own
+   perception system and aggro emerges with **no injection at all** — a guard
+   reacts to a hostile ghost the way it reacts to any NPC. This uses zero new
+   API and works with the engine rather than around it. **Recommended.**
+2. **Faction and reputation.** Not reflected, but `C_FactionBase::AddReputation`,
+   `SetParent`, `IsPublicEnemy` and `GetRelationship` *are* exported from
+   `RPGModule.dll`, so they are name-addressable natively. Coarse and social
+   rather than per-encounter, but real and patch-resilient.
+3. **Reverse-engineer `C_PerceptionManager`.** The singleton accessor is
+   exported; its methods are not. This means vtable analysis and hardcoded
+   offsets — precisely the fragile, silently-breaking-after-a-patch work the
+   brief warned about. Last resort.
+
+Option 1 is the only one that does not fight the engine, and it reframes the
+problem usefully: the goal is not to *inject* aggro but to make the other player
+**exist** convincingly enough that the AI aggroes on its own.
+
 ## What the reflection surface does *not* give you
 
 Honest boundaries, because the surface is uneven — Warhorse registered richly
