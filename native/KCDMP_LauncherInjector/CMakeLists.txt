@@ -1,0 +1,2 @@
+add_executable(KCDMP_LauncherInjector main.cpp)
+set_target_properties(KCDMP_LauncherInjector PROPERTIES OUTPUT_NAME "KCDMP_LauncherInjector")
