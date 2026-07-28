@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 namespace kcdmp::rttr {
 
@@ -342,6 +343,7 @@ int read_int_property(const Api& api, const char* type_name, const void* obj,
 static void*          g_player = nullptr;
 static void*          g_combat = nullptr;
 static void*          g_souls  = nullptr;
+static void*          g_rpg    = nullptr;
 static InstanceLayout g_layout = InstanceLayout::TypeTypeData;
 static bool           g_walked = false;
 
@@ -407,6 +409,7 @@ void walk_to_soul() {
         g_player = player;
         g_combat = combat;
         g_souls  = souls;
+        g_rpg    = rpg;
         g_layout = layout;
         g_walked = true;
         return;
@@ -766,6 +769,222 @@ bool read_vec3(const Api& api, Type t, const void* obj, const char* prop,
 }
 
 } // namespace
+
+namespace {
+
+// kcdmp-faction.txt: line 1 the ghost's GUID, line 2 a faction name id.
+//
+// The donor approach is gone. Copying a live NPC's Parent worked, but every
+// faction that is actually hostile to the player has no loaded member to copy
+// from -- "enemies" reports 401 members and lists no leaf souls. GetFaction is
+// reflected and takes the name directly, so the faction can be fetched without
+// needing any NPC to already be in it.
+bool read_faction_config(unsigned char ghost[16], char faction[64]) {
+    char path[MAX_PATH]{};
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&read_faction_config), &self);
+    GetModuleFileNameA(self, path, MAX_PATH);
+    char* slash = std::strrchr(path, '\\');
+    if (!slash) return false;
+    std::strcpy(slash + 1, "kcdmp-faction.txt");
+
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") != 0 || !f) return false;
+    char l1[64]{}, l2[64]{};
+    const bool ok = std::fgets(l1, sizeof(l1), f) && std::fgets(l2, sizeof(l2), f);
+    std::fclose(f);
+    if (!ok) return false;
+
+    unsigned int b[16]{};
+    if (std::sscanf(l1, "%2x%2x%2x%2x-%2x%2x-%2x%2x-%2x%2x-%2x%2x%2x%2x%2x%2x",
+                    &b[0],&b[1],&b[2],&b[3], &b[4],&b[5], &b[6],&b[7],
+                    &b[8],&b[9], &b[10],&b[11],&b[12],&b[13],&b[14],&b[15]) != 16) return false;
+    ghost[0]=(unsigned char)b[3]; ghost[1]=(unsigned char)b[2];
+    ghost[2]=(unsigned char)b[1]; ghost[3]=(unsigned char)b[0];
+    ghost[4]=(unsigned char)b[5]; ghost[5]=(unsigned char)b[4];
+    ghost[6]=(unsigned char)b[7]; ghost[7]=(unsigned char)b[6];
+    for (int i = 8; i < 16; ++i) ghost[i] = (unsigned char)b[i];
+
+    // Trim trailing newline/whitespace from the faction name.
+    size_t n = std::strlen(l2);
+    while (n > 0 && (l2[n-1] == '\n' || l2[n-1] == '\r' || l2[n-1] == ' ')) l2[--n] = '\0';
+    if (n == 0) return false;
+    std::strncpy(faction, l2, 63);
+    return true;
+}
+
+[[maybe_unused]] bool read_faction_pair(unsigned char ghost[16], unsigned char donor[16]) {
+    char path[MAX_PATH]{};
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&read_faction_pair), &self);
+    GetModuleFileNameA(self, path, MAX_PATH);
+    char* slash = std::strrchr(path, '\\');
+    if (!slash) return false;
+    std::strcpy(slash + 1, "kcdmp-faction.txt");
+
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") != 0 || !f) return false;
+    char l1[64]{}, l2[64]{};
+    const bool ok = std::fgets(l1, sizeof(l1), f) && std::fgets(l2, sizeof(l2), f);
+    std::fclose(f);
+    if (!ok) return false;
+
+    auto parse = [](const char* s, unsigned char out[16]) {
+        unsigned int b[16]{};
+        if (std::sscanf(s, "%2x%2x%2x%2x-%2x%2x-%2x%2x-%2x%2x-%2x%2x%2x%2x%2x%2x",
+                        &b[0],&b[1],&b[2],&b[3], &b[4],&b[5], &b[6],&b[7],
+                        &b[8],&b[9], &b[10],&b[11],&b[12],&b[13],&b[14],&b[15]) != 16) return false;
+        out[0]=(unsigned char)b[3]; out[1]=(unsigned char)b[2];
+        out[2]=(unsigned char)b[1]; out[3]=(unsigned char)b[0];
+        out[4]=(unsigned char)b[5]; out[5]=(unsigned char)b[4];
+        out[6]=(unsigned char)b[7]; out[7]=(unsigned char)b[6];
+        for (int i = 8; i < 16; ++i) out[i] = (unsigned char)b[i];
+        return true;
+    };
+    return parse(l1, ghost) && parse(l2, donor);
+}
+
+void call_set_parent(FactionSetParent fn, void* self, const void* sp) {
+    __try { fn(self, sp); } __except (EXCEPTION_EXECUTE_HANDLER) {
+        logf("FACTION: FAULT inside SetParent");
+    }
+}
+
+} // namespace
+
+void probe_faction() {
+    unsigned char ghost_guid[16]{};
+    char faction_name[64]{};
+    if (!read_faction_config(ghost_guid, faction_name)) {
+        logf("FACTION: no kcdmp-faction.txt -- skipping");
+        return;
+    }
+    unsigned char donor_guid[16]{};   // unused now; kept so the scan below compiles
+    logf("FACTION: target faction = \"%s\"", faction_name);
+    if (!g_walked || !g_souls) { logf("FACTION: no SoulList"); return; }
+
+    Api api{};
+    if (!resolve(api)) { logf("FACTION: resolve incomplete"); return; }
+
+    HMODULE rpg = GetModuleHandleA("RPGModule.dll");
+    if (!rpg) { logf("FACTION: RPGModule.dll not loaded"); return; }
+    auto set_parent = reinterpret_cast<FactionSetParent>(
+        find_export(module_exports(rpg), "?SetParent@C_FactionBase@rpgmodule@wh@@"));
+    if (!set_parent) { logf("FACTION: SetParent export not found"); return; }
+    logf("FACTION: SetParent at %p", reinterpret_cast<void*>(set_parent));
+
+    // Locate both souls in one pass over SoulsByGuid.
+    const std::string_view sl_name{"wh::rpgmodule::SoulList"};
+    Type t_sl{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_sl, &sl_name) ||
+        !call_is_valid(api.type_is_valid, &t_sl, &ok) || !ok) return;
+
+    InstanceBuf inst{};
+    inst.build(g_layout, t_sl, g_souls);
+    const std::string_view prop{"SoulsByGuid"};
+    Variant map_v{};
+    if (!call_get_property_value(api.get_property_value, &t_sl, &map_v, &prop, inst.bytes)) return;
+
+    alignas(16) unsigned char view[kViewBufBytes]{};
+    if (!call_create_view(api.create_assoc_view, &map_v, view)) {
+        call_variant_dtor(api.variant_dtor, &map_v); return;
+    }
+    alignas(16) unsigned char it[kIterBufBytes]{}, it_end[kIterBufBytes]{};
+    call_view_begin(api.view_begin, view, it);
+    call_view_end(api.view_end, view, it_end);
+
+    void* ghost_soul = nullptr;
+    void* donor_soul = nullptr;
+    alignas(16) unsigned char pr[kPairBufBytes]{};
+    for (int n = 0; n < 4000; ++n) {
+        bool more = false;
+        if (!call_iter_ne(api.iter_not_equal, it, it_end, &more) || !more) break;
+        if (call_iter_deref(api.iter_deref, it, pr)) {
+            void* ka = nullptr; void* va = nullptr;
+            std::memcpy(&ka, reinterpret_cast<Variant*>(pr)->data, sizeof(ka));
+            std::memcpy(&va, reinterpret_cast<Variant*>(pr + sizeof(Variant))->data, sizeof(va));
+            if (plausible_pointer(ka) && plausible_pointer(va)) {
+                if (std::memcmp(ka, ghost_guid, 16) == 0) std::memcpy(&ghost_soul, va, sizeof(void*));
+                if (std::memcmp(ka, donor_guid, 16) == 0) std::memcpy(&donor_soul, va, sizeof(void*));
+            }
+        }
+        if (ghost_soul) break;
+        if (!call_iter_inc(api.iter_preinc, it)) break;
+    }
+    call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it);
+    call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it_end);
+    call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
+    call_variant_dtor(api.variant_dtor, &map_v);
+
+    logf("FACTION: ghost soul = %p", ghost_soul);
+    if (!plausible_pointer(ghost_soul)) {
+        logf("FACTION: ghost soul not found -- nothing done");
+        return;
+    }
+
+    void* ghost_node = read_object_property(api, "wh::rpgmodule::Soul", ghost_soul,
+                                            "FactionNode", g_layout);
+    logf("FACTION: ghost node=%p", ghost_node);
+    if (!plausible_pointer(ghost_node)) return;
+
+    // FactionManager::GetFaction(string) -> shared_ptr<C_Faction>.
+    // The argument is a std::string: the game is MSVC-built, so our std::string
+    // is layout-identical and can be pointed at directly.
+    void* fmgr = read_object_property(api, "wh::rpgmodule::RPGModule", g_rpg,
+                                      "FactionManager", g_layout);
+    if (!plausible_pointer(fmgr)) { logf("FACTION: FactionManager=%p", fmgr); return; }
+
+    const std::string_view fm_tn{"wh::rpgmodule::C_FactionManager"};
+    Type t_fm{};
+    bool fok = false;
+    if (!call_get_by_name(api.get_by_name, &t_fm, &fm_tn) ||
+        !call_is_valid(api.type_is_valid, &t_fm, &fok) || !fok) {
+        logf("FACTION: C_FactionManager type did not resolve"); return;
+    }
+    const std::string_view gf{"GetFaction"};
+    Method m_gf{};
+    if (!call_get_method(api.get_method, &t_fm, &m_gf, &gf)) return;
+    bool gok = false;
+    call_method_is_valid(api.method_is_valid, &m_gf, &gok);
+    if (!gok) { logf("FACTION: GetFaction did not resolve"); return; }
+
+    static const char* string_names[] = { "string", "std::string", "classstd::string" };
+    Type t_str{};
+    const char* chosen = nullptr;
+    if (!resolve_type(api, string_names, 3, &t_str, &chosen)) {
+        logf("FACTION: no spelling of the string type resolved"); return;
+    }
+    logf("FACTION: string type resolved as \"%s\"", chosen);
+
+    std::string name_arg{faction_name};
+    alignas(8) unsigned char sarg[32];
+    build_argument(sarg, &name_arg, t_str);
+
+    InstanceBuf finst{};
+    finst.build(g_layout, t_fm, fmgr);
+    Variant fac_v{};
+    if (!call_invoke1(api.invoke1, &m_gf, &fac_v, finst.bytes, sarg)) {
+        logf("FACTION: FAULT in GetFaction -- the string argument shape is wrong");
+        return;
+    }
+    void* faction_ptr = nullptr;
+    std::memcpy(&faction_ptr, fac_v.data, sizeof(faction_ptr));
+    logf("FACTION: GetFaction(\"%s\") -> %p", faction_name, faction_ptr);
+
+    if (plausible_pointer(faction_ptr)) {
+        logf("FACTION: calling SetParent(ghost_node, faction)");
+        call_set_parent(set_parent, ghost_node, fac_v.data);
+        logf("FACTION: returned -- verify ghost FactionNode/Parent/Name over HTTP");
+    } else {
+        logf("FACTION: GetFaction returned null -- name not found?");
+    }
+    call_variant_dtor(api.variant_dtor, &fac_v);
+}
 
 void probe_attribution() {
     if (!g_walked || !g_souls) { logf("ATTR: no SoulList; skipping"); return; }

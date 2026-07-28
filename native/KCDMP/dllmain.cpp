@@ -15,6 +15,7 @@ void walk_to_soul();
 void probe_invoke();
 void probe_take_damage();
 void probe_attribution();
+void probe_faction();
 }
 
 namespace {
@@ -57,7 +58,7 @@ DWORD WINAPI plugin_main(LPVOID) {
     const bool ran = kcdmp::main_thread::run_sync([] {
         kcdmp::rttr::walk_to_soul();
         kcdmp::rttr::probe_invoke();
-        kcdmp::rttr::probe_attribution();
+        kcdmp::rttr::probe_faction();
     });
     kcdmp::logf(ran ? "MAIN: probes completed on the main thread"
                     : "MAIN: probes timed out waiting for a frame");

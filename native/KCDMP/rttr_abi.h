@@ -273,4 +273,20 @@ void probe_take_damage();
 // plugin needs for SharedSoulGuid -> Soul* lookup.
 void probe_attribution();
 
+// Attach a ghost's orphan faction node to a real faction, by copying the
+// faction a donor NPC already belongs to. Reads two GUIDs (ghost, donor) from
+// kcdmp-faction.txt beside the DLL; absent means do nothing.
+//
+// Copying a donor's parent avoids having to construct a std::string argument
+// for C_FactionManager::GetFaction -- NPCFaction::Parent is already a reflected
+// shared_ptr<C_Faction>, so the value can be read out and handed straight to
+// SetParent without building any container type by hand.
+void probe_faction();
+
+// void wh::rpgmodule::C_FactionBase::SetParent(std::shared_ptr<C_Faction>)
+// Exported from RPGModule.dll. Virtual (UEAA), so calling the exported address
+// bypasses dispatch -- acceptable only because the result is verified by
+// reading Parent back afterwards.
+using FactionSetParent = void (*)(void* self, const void* shared_ptr_faction);
+
 } // namespace kcdmp::rttr

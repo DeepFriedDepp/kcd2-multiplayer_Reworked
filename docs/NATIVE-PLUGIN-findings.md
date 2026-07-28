@@ -453,8 +453,72 @@ but the evidence first offered for it was wrong.
   `RPGModule.dll`.
 
 So attaching a ghost's faction node to a real faction needs nothing invented.
-That is the next experiment, and it is the one that decides whether option 1
-works at all.
+
+### Faction attachment works
+
+`C_FactionBase::SetParent` was called natively on a ghost's faction node with a
+`shared_ptr<C_Faction>` read out of a donor NPC's reflected `Parent` property.
+Verified over HTTP afterwards:
+
+```
+FACTION: ghost node=0000023E9D723330  donor node=0000023E6A14BD10
+FACTION: donor parent faction = 0000023E59B21600
+FACTION: calling SetParent(ghost_node, donor_parent)
+-> ghost FactionNode/Parent/Name = trosecko_outskirts_poachers_campVidlak
+```
+
+The orphan is now a faction member. **The mechanism is proven.** Copying a
+donor's `Parent` also sidesteps having to construct any container type by hand,
+since `NPCFaction::Parent` is already a reflected `shared_ptr<C_Faction>`.
+
+### But nothing reacted, and the reason is the faction chosen
+
+`C_FactionManager::GetRelation` is reflected, so hostility is checkable
+directly. The poachers are **friendly**:
+
+```
+GetRelation(trosecko_outskirts_poachers_campVidlak, player)
+  -> type="friend" reputation="0.62"
+```
+
+Sweeping all 31 factions against `player` gives only four `enemy` relations:
+**`enemies`**, **`animal`**, **`test_combat_player_enemy`**, and
+**`trosecko_injustice_cuman`**. Everything else is friend or neutral. So the
+null reaction says nothing about perceptibility — the ghost was made a friend.
+
+### The remaining blocker: `GetFaction` takes a CryStringT, not a std::string
+
+Switching from a donor to `C_FactionManager::GetFaction(nameId)` would remove
+the need for any NPC to already be in the target faction — necessary, because
+every hostile faction has **no loaded member to donate from** (`enemies` reports
+401 members and lists no leaf souls).
+
+That attempt faulted, SEH-caught, game unharmed:
+
+```
+FACTION: string type resolved as "string"
+FACTION: FAULT in GetFaction -- the string argument shape is wrong
+```
+
+**HYPOTHESIS, not yet confirmed:** rttr's registered `string` is CryEngine's
+`CryStringT<char>` rather than `std::string`. `CryStringT<char>` appears
+throughout the exported signatures, and unlike `std::string_view` it is *not*
+layout-compatible with anything we can declare for free — it is a
+reference-counted COW string whose single pointer aims past a header. Pointing
+the argument at a `std::string` therefore handed it the wrong shape.
+
+Two ways round it, neither requiring that layout to be reverse-engineered:
+
+1. **Use a wild animal as the donor.** `animal` is one of the four factions
+   hostile to the player, and wild animals are plentiful and loaded — so a hare
+   or deer can donate a genuinely hostile faction with the donor path that
+   already works.
+2. **Read a CryStringT rather than construct one.** Several exported accessors
+   return one by value (`C_FactionBase::GetKey`, `GetId`), so the layout could
+   be learned from a real instance the same way `argument` was learned from its
+   own exported constructor.
+
+Option 1 needs no new machinery at all and should be tried first.
 
 Incidental: destroying the entity does **not** remove its soul from `SoulList`.
 
