@@ -471,18 +471,42 @@ The orphan reads as a faction member immediately afterwards. Copying a donor's
 `Parent` also sidesteps having to construct any container type by hand, since
 `NPCFaction::Parent` is already a reflected `shared_ptr<C_Faction>`.
 
-> **CORRECTION — the write does not persist.** This was first recorded as "the
-> mechanism is proven", on the strength of reading `Parent` back straight after
-> the call. Checked again minutes later, **both** re-parented ghosts report
-> `Parent = (null)`. The value was real when read and was reverted afterwards,
-> so verifying immediately after a write is not enough for anything the game
-> owns and re-derives.
+> **RETRACTED — this call corrupted the game and crashed it. Do not repeat it.**
 >
-> **Likely cause, unconfirmed:** faction membership is two-sided. A faction
-> holds a `Souls` list and `C_FactionBase` exports `AddRelation` alongside
-> `SetParent`, so writing only the child's parent pointer leaves the parent's
-> member list inconsistent and the game reconciles it away. Registering on both
-> sides is the thing to try next.
+> It was first recorded as "the mechanism is proven" because `Parent` read back
+> correctly straight after the call. Later it read `(null)`, which was written
+> up as "the write does not persist", with a guess that faction membership is
+> two-sided and needed registering on both sides. **Both readings were wrong.**
+>
+> **Actual cause:** `SetParent` takes `std::shared_ptr<C_Faction>` **by value**.
+> MSVC passes it by address, but the caller must supply a copy the callee will
+> consume and destroy. What was passed was the address of the shared_ptr living
+> inside the reflected variant, so the callee's destructor ran on a reference it
+> did not own. Repeated attempts drove the refcount to zero and released
+> `animal_wild_enemy_trosecko` outright — the faction disappeared from the
+> manager, its members lost their parent, and the game crashed shortly after,
+> presumably dereferencing the freed object.
+>
+> Nothing was reconciling the value away. The refcount was being destroyed
+> underneath it. The vtable investigation that followed was chasing a cause that
+> did not exist.
+>
+> **Recovered fully by reloading**, which is the one piece of luck here: none of
+> it was on disk, and the faction tree is authored content rebuilt on load.
+>
+> **The general rule this establishes.** Every other write in this plugin passes
+> a **value type** — floats, an enum, a raw object pointer — where pointing at
+> our own storage is correct because the callee copies out. A parameter taken by
+> value that owns a resource (`shared_ptr`, `CryStringT`, any container) is an
+> **ownership transfer**, and a borrowed reference cannot be substituted for it.
+> This is the same wall that stopped `GetFaction`, whose argument is a
+> `CryStringT`; the two should have been treated as one problem rather than
+> routed around.
+>
+> **Immediate read-back is not sufficient verification.** It looked correct
+> every single time. The damage was a refcount, and it surfaced minutes later.
+>
+> The call is disabled in `rttr_abi.cpp` with this reasoning inline.
 
 ### But nothing reacted, and the reason is the faction chosen
 

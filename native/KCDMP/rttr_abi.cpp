@@ -865,6 +865,45 @@ void call_set_parent(FactionSetParent fn, void* self, const void* sp) {
     }
 }
 
+// SetParent is virtual (UEAA in the mangling). Calling the exported
+// C_FactionBase address invokes the BASE implementation and skips whatever
+// C_NPCFactionNode overrides it with -- which is the most likely reason the
+// parent pointer was set and then reconciled away: the base writes one side of
+// a two-sided relationship.
+//
+// C_FactionBase's vtable is itself exported (??_7C_FactionBase@rpgmodule@wh@@6B@),
+// so the slot index can be recovered honestly: find the base SetParent's
+// address inside the base vtable, then call that same index on the object's own
+// vtable. No guessed offsets.
+int find_vtable_index(void* const* vtable, const void* fn, int max_slots = 256) {
+    if (!vtable) return -1;
+    __try {
+        for (int i = 0; i < max_slots; ++i) {
+            if (vtable[i] == fn) return i;
+            if (vtable[i] == nullptr) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { }
+    return -1;
+}
+
+bool call_virtual_set_parent(void* obj, int index, const void* sp) {
+    __try {
+        auto* vt = *reinterpret_cast<void***>(obj);
+        auto fn = reinterpret_cast<FactionSetParent>(vt[index]);
+        fn(obj, sp);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+const void* object_vslot(void* obj, int index) {
+    __try {
+        auto* vt = *reinterpret_cast<void***>(obj);
+        return vt[index];
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
 } // namespace
 
 void probe_faction() {
@@ -967,12 +1006,48 @@ void probe_faction() {
         void* fp = nullptr;
         std::memcpy(&fp, parent_v.data, sizeof(fp));
         logf("FACTION: donor faction = %p", fp);
-        if (plausible_pointer(fp)) {
-            call_set_parent(set_parent, ghost_node, parent_v.data);
-            logf("FACTION: SetParent done -- verify Parent/Name over HTTP");
-        } else {
+        if (!plausible_pointer(fp)) {
             logf("FACTION: donor has a null parent");
+            call_variant_dtor(api.variant_dtor, &parent_v);
+            return;
         }
+
+        // ------------------------------------------------------------------
+        // DISABLED. Calling SetParent from here corrupted the game's faction
+        // tree and ultimately crashed it.
+        //
+        // SetParent takes std::shared_ptr<C_Faction> BY VALUE. MSVC passes it
+        // by address, but the caller must supply a copy the callee will consume
+        // and destroy. What was passed instead was the address of the shared_ptr
+        // living inside the reflected variant, so the callee's destructor ran on
+        // a reference it did not own. Repeated attempts drove the refcount to
+        // zero and released animal_wild_enemy_trosecko outright: the faction
+        // vanished from the manager and its members lost their parent.
+        //
+        // The earlier "the write does not persist" reading was wrong. Nothing
+        // was reconciling the value away -- the refcount was being destroyed
+        // underneath it. The two-sided-registration theory and the vtable work
+        // that followed were both chasing a cause that did not exist.
+        //
+        // Every other write this plugin performs passes a VALUE type -- floats,
+        // an enum, a raw object pointer -- where pointing at our own storage is
+        // correct because the callee copies out. Ownership-transferring
+        // parameters are a different contract, and the same wall blocks
+        // GetFaction, whose argument is a CryStringT.
+        //
+        // DO NOT re-enable until there is a way to construct a genuinely owned
+        // copy of the game's shared_ptr/string types. A read-back straight after
+        // the call looked correct every time; the damage only surfaced later, so
+        // immediate verification does not make this safe.
+        // ------------------------------------------------------------------
+        (void)set_parent;
+        (void)&call_set_parent;
+        (void)&call_virtual_set_parent;
+        (void)&find_vtable_index;
+        (void)&object_vslot;
+        logf("FACTION: SetParent is DISABLED -- shared_ptr is an ownership-transfer "
+             "parameter and passing a borrowed reference corrupted the faction tree. "
+             "See the comment in rttr_abi.cpp.");
         call_variant_dtor(api.variant_dtor, &parent_v);
         return;
     }
