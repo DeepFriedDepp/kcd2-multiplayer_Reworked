@@ -478,7 +478,56 @@ passed indirectly, give it a user-defined copy constructor.
 `std::string_view` is layout-identical, and the disassembly confirms the callee
 reads the data pointer from offset 0.
 
-Remaining risk is concentrated in `rttr::variant`, which is large and has a
-non-trivial destructor. Every `invoke` returns one, and getting its size wrong
-corrupts the stack. Establish its size before calling `invoke` — the destructor
-and constructor exports give the necessary anchors.
+### Milestone 2 — done, the ABI model is validated in-process
+
+Sizes and layouts, all read out of the binary rather than assumed:
+
+| Type | Size | Layout | Evidence |
+|---|---|---|---|
+| `type`, `method`, `property` | 8 | one pointer | `is_valid` does `mov rax,[rbx]`; the pointer-taking wrapper ctors share one thunk at RVA `0x4F530` |
+| `variant` | **24** | `{ char data[16]; void* policy; }` | ctor writes policy to `[this+0x10]`; dtor loads it and tail-calls with op=0; copy-ctor copies it and calls with op=1 |
+| `argument` | **24** | `{ const void* data; uint64 ?; type }` | default ctor zeroes `+0` and `+8` then constructs a member at `+0x10`; `get_type` returns `[this+0x10]` |
+| `instance` | ≥16 | `type` at offset 0 | `get_type` does `mov rax,[rbx]` |
+
+**`argument` is 24 bytes here against upstream's 16.** Vendoring upstream
+headers would have compiled cleanly and corrupted memory at runtime — the worst
+available failure mode, and the reason this was measured rather than assumed.
+
+Every call is wrapped in SEH. An access violation inside the game's process is
+a hard exit with no diagnostic; `__try`/`__except` turns a wrong assumption into
+a log line instead of a vanished game.
+
+The validation is built so a wrong model cannot pass by accident:
+
+```
+ABI: get_by_name("wh::rpgmodule::Soul") -> data=0000021EFF6F7400 is_valid=true
+ABI: get_by_name(<nonexistent>)         -> data=00007FFD46AF8360 is_valid=false
+ABI: wh::rpgmodule::Soul::GetState   sig="GetState( wh::rpgmodule::SoulState )"
+ABI: wh::rpgmodule::Soul::SetState   sig="SetState( wh::rpgmodule::SoulState, float )"
+ABI: wh::rpgmodule::CombatSoul::TakeDamage
+     sig="TakeDamage( float, float, classwh::rpgmodule::I_Soul*, bool, wh::entitymodule::BodyPartData const & )"
+ABI: VALIDATED -- model matches the binary
+```
+
+The **negative control matters most**: a nonexistent type resolves *invalid*.
+Without it, a model that returned plausible-looking garbage would have read as
+success. And those signatures are byte-for-byte what the HTTP reflection browser
+reported hours earlier by a completely independent path — two routes to the same
+strings is strong corroboration that the hand-modelled convention is right.
+
+Game alive throughout.
+
+### What still blocks the first invoke
+
+1. **`argument`'s middle eight bytes** are unidentified. Constructing one is
+   unavoidable — every `invoke` takes them, and the useful templated
+   constructors are header-inline, so they are not in the export table.
+2. **`instance`'s full layout** likewise.
+3. **Getting a live object pointer.** Reflection can name `CombatSoul` but not
+   hand us a soul. The REST browser walks from a root `wh::shared::GameInterface`,
+   so the question is how that root is reached — `type::get_property_value` has a
+   *static* overload for globals, and `type::get_global_method` exists, so
+   enumerating registered globals is the obvious next probe.
+
+Item 3 is the real one. Items 1 and 2 are more prologue decoding of the kind
+already done twice.

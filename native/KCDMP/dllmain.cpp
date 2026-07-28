@@ -10,6 +10,7 @@
 #include <windows.h>
 
 namespace kcdmp { bool probe_rttr(); }
+namespace kcdmp::rttr { bool validate(); }
 
 namespace {
 
@@ -30,7 +31,9 @@ DWORD WINAPI plugin_main(LPVOID) {
         Sleep(250);
     }
 
-    kcdmp::probe_rttr();
+    if (kcdmp::probe_rttr()) {
+        kcdmp::rttr::validate();
+    }
     return 0;
 }
 
