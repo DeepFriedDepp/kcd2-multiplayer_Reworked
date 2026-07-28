@@ -20,12 +20,35 @@ HANDLE              g_pipe = INVALID_HANDLE_VALUE;
 std::thread         g_thread;
 uint8_t             g_seq = 0;
 
+// The pipe is duplex and both directions are in use at once: the serve loop
+// parks in a read while the game thread pushes hits out. On a *synchronous*
+// handle the I/O manager serialises every request against the file object, so
+// that write would queue behind the parked read and never issue -- the read is
+// waiting on the agent, which is waiting on the write. That deadlock is what
+// silently swallowed every outbound LocalHit. Hence FILE_FLAG_OVERLAPPED on the
+// handle and an explicit OVERLAPPED per operation here; a lock is still needed,
+// but only to keep two writers from interleaving their frames.
+struct Op {
+    OVERLAPPED ov{};
+    Op()  { ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr); }
+    ~Op() { if (ov.hEvent) CloseHandle(ov.hEvent); }
+    Op(const Op&) = delete;
+    Op& operator=(const Op&) = delete;
+};
+
 bool write_all(HANDLE h, const void* data, DWORD len) {
     const auto* p = static_cast<const BYTE*>(data);
+    Op op;
+    if (!op.ov.hEvent) return false;
     DWORD done = 0;
     while (done < len) {
         DWORD n = 0;
-        if (!WriteFile(h, p + done, len - done, &n, nullptr) || n == 0) return false;
+        ResetEvent(op.ov.hEvent);
+        if (!WriteFile(h, p + done, len - done, &n, &op.ov)) {
+            if (GetLastError() != ERROR_IO_PENDING) return false;
+            if (!GetOverlappedResult(h, &op.ov, &n, TRUE)) return false;
+        }
+        if (n == 0) return false;
         done += n;
     }
     return true;
@@ -33,23 +56,37 @@ bool write_all(HANDLE h, const void* data, DWORD len) {
 
 bool read_all(HANDLE h, void* data, DWORD len) {
     auto* p = static_cast<BYTE*>(data);
+    Op op;
+    if (!op.ov.hEvent) return false;
     DWORD done = 0;
     while (done < len) {
         DWORD n = 0;
-        if (!ReadFile(h, p + done, len - done, &n, nullptr) || n == 0) return false;
+        ResetEvent(op.ov.hEvent);
+        if (!ReadFile(h, p + done, len - done, &n, &op.ov)) {
+            if (GetLastError() != ERROR_IO_PENDING) return false;
+            if (!GetOverlappedResult(h, &op.ov, &n, TRUE)) return false;
+        }
+        if (n == 0) return false;
         done += n;
     }
     return true;
 }
 
-void send_frame(HANDLE h, uint8_t type, const void* payload, uint16_t len) {
-    BYTE head[3] = { type, static_cast<BYTE>(len & 0xFF), static_cast<BYTE>((len >> 8) & 0xFF) };
-    if (!write_all(h, head, 3)) return;
-    if (len) write_all(h, payload, len);
+// Head and body go out as one write so a frame cannot be split across two I/O
+// operations. Byte-mode pipes do not require it, but it removes the question.
+bool send_frame(HANDLE h, uint8_t type, const void* payload, uint16_t len) {
+    BYTE frame[3 + 1024];
+    if (len > sizeof(frame) - 3) return false;
+    frame[0] = type;
+    frame[1] = static_cast<BYTE>(len & 0xFF);
+    frame[2] = static_cast<BYTE>((len >> 8) & 0xFF);
+    if (len) std::memcpy(frame + 3, payload, len);
+    return write_all(h, frame, 3u + len);
 }
 
-// Outbound hits are pushed from the game thread while the serve loop may be
-// blocked in ReadFile, so writes need their own lock.
+// Two threads write to this pipe -- the serve loop's replies and the game
+// thread's hits -- so the lock keeps their frames from interleaving. It does
+// nothing about read/write concurrency; see the note on Op above for that.
 CRITICAL_SECTION g_write_lock;
 bool             g_write_lock_ready = false;
 
@@ -67,8 +104,12 @@ void send_local_hit(const unsigned char guid[16], float health_delta, bool died)
     std::memcpy(body + 16, &stamina, 4);
     std::memcpy(body + 20, &health_delta, 4);
     EnterCriticalSection(&g_write_lock);
-    send_frame(g_pipe, kLocalHit, body, sizeof(body));
+    const bool sent = send_frame(g_pipe, kLocalHit, body, sizeof(body));
+    const DWORD err = sent ? 0 : GetLastError();
     LeaveCriticalSection(&g_write_lock);
+    // A failed write used to be indistinguishable from a delivered one, which is
+    // how a deadlocked send looked like a working one for so long.
+    if (!sent) logf("PIPE: LocalHit write failed: %lu", err);
 }
 
 void send_result(HANDLE h, bool ok, uint8_t seq) {
@@ -163,7 +204,7 @@ void listen_loop() {
     while (g_running) {
         HANDLE h = CreateNamedPipeA(
             kPipeName,
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             1,               // one agent per game
             64 * 1024, 64 * 1024,
@@ -175,11 +216,26 @@ void listen_loop() {
         }
         g_pipe = h;
 
-        // Blocks until an agent connects, or until stop() breaks it by
-        // connecting to its own pipe.
-        const BOOL ok = ConnectNamedPipe(h, nullptr)
-                        ? TRUE
-                        : (GetLastError() == ERROR_PIPE_CONNECTED);
+        // Waits until an agent connects, or until stop() breaks it by connecting
+        // to its own pipe. Overlapped now, so the wait is on the event rather
+        // than inside the call.
+        Op conn;
+        BOOL ok = FALSE;
+        if (conn.ov.hEvent) {
+            if (ConnectNamedPipe(h, &conn.ov)) {
+                ok = TRUE;
+            } else {
+                const DWORD err = GetLastError();
+                if (err == ERROR_PIPE_CONNECTED) {
+                    ok = TRUE;
+                } else if (err == ERROR_IO_PENDING) {
+                    DWORD ignored = 0;
+                    ok = GetOverlappedResult(h, &conn.ov, &ignored, TRUE);
+                } else {
+                    logf("PIPE: ConnectNamedPipe failed: %lu", err);
+                }
+            }
+        }
         if (ok && g_running) {
             serve(h);
         }

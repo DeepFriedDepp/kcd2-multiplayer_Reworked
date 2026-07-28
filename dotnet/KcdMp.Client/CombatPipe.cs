@@ -169,6 +169,14 @@ public sealed class CombatPipe : IAsyncDisposable
         {
             // Normal on shutdown or if the game exits.
         }
+        catch (Exception ex)
+        {
+            // Anything else would otherwise become an unobserved task exception:
+            // the reader stops and the agent goes quiet with no output at all,
+            // which is indistinguishable from the DLL never writing.
+            Console.WriteLine($"[combat] reader stopped: {ex.GetType().Name}: {ex.Message}");
+        }
+        Console.WriteLine("[combat] pipe reader exited");
     }
 
     private async Task<bool> SendAsync(byte type, byte[] payload, CancellationToken ct)

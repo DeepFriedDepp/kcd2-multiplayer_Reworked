@@ -57,7 +57,9 @@ while (-not $found -and (Get-Date) -lt $deadline) {
     $pkt = Read-Packet $stream
     if ($null -eq $pkt) { break }
     if ($pkt.Type -eq 0x13 -and $pkt.Len -eq 26) {
-        $g  = [Guid]::new($pkt.Payload[1..16])
+        # A PowerShell range index yields Object[], which sends [Guid]::new down
+        # its string overload and throws. The cast picks the byte[] one.
+        $g  = [Guid]::new([byte[]]$pkt.Payload[1..16])
         $hp = [BitConverter]::ToSingle($pkt.Payload, 21)
         Write-Host ("PEER RECEIVED Damage: from ghost {0}, soul {1}, health {2}" -f $pkt.Payload[0], $g, $hp)
         $found = $true

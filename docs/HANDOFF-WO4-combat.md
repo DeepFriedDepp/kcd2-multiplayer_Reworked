@@ -9,50 +9,62 @@ is the operational handover: what works, what does not, and the one open bug.
 
 ## One-line status
 
-Shared combat is **~85% done**. Inbound (a peer's hit lands on my NPC) is proven
-end to end. Outbound (my hit reaches a peer) is proven up to the pipe boundary
-and **stuck there** — one focused bug, described in full below.
+Shared combat replicates **in both directions**, verified end to end on
+2026-07-28. Inbound (a peer's hit lands on my NPC) and outbound (my hit reaches
+a peer) are both green. The pipe bug that blocked outbound is fixed; it is kept
+below because the reasoning generalises.
 
 ---
 
-## THE OPEN BUG — start here
+## THE PIPE DEADLOCK — fixed, and worth understanding
 
-**A frame written by the DLL to `\\.\pipe\kcdmp` is never read by the agent.**
+**Symptom:** a frame written by the DLL to `\\.\pipe\kcdmp` never reached the
+agent. `PIPE: LocalHit 9.00 guid=...` appeared in the DLL log with no
+`[no agent attached, not sent]` suffix, so an agent was attached and
+`send_frame` ran — but `CombatPipe.ReadLoopAsync`, which logs *every* frame,
+printed nothing. Inbound `ApplyDamage`/`Result` worked perfectly the whole time.
 
-Evidence, all reproducible:
+**Cause:** the pipe was created **without `FILE_FLAG_OVERLAPPED`**, making
+`g_pipe` a synchronous handle. Windows serialises every I/O request against a
+synchronous file object. `serve()` parks in `ReadFile` waiting on the agent —
+and there is no keepalive, so it parks indefinitely — and the game thread's
+`WriteFile` in `send_local_hit` then **queues behind that parked read and never
+issues**. The log line prints before the write, which is why detection looked
+healthy while delivery was dead.
 
-- DLL log shows `PIPE: LocalHit 9.00 guid=20DD03E3-...` **with no
-  `[no agent attached, not sent]` suffix**. That suffix is printed when
-  `g_connected` is false, so an agent *was* attached and `send_frame` ran.
-- The agent's `CombatPipe.ReadLoopAsync` logs **every** frame it receives
-  (`[combat] pipe frame 0x..`). It printed nothing at all.
-- The same pipe carries `ApplyDamage`/`Result` in the other direction perfectly
-  — inbound is fully working — so the pipe itself is live and both processes
-  agree on framing.
-- A listening peer therefore times out waiting for `Damage (0x13)`.
+The old code had a `CRITICAL_SECTION` around writes and a comment naming the
+exact race. A user-mode lock cannot do anything about kernel-level handle
+serialisation; it only stops two writers interleaving frames, which is still
+why it is there.
 
-So: DLL writes, agent does not read. Both ends verified independently.
+**Fix** (`pipe_server.cpp`): `FILE_FLAG_OVERLAPPED` on the pipe, an explicit
+`OVERLAPPED` per operation in `read_all`/`write_all` (the `Op` RAII helper),
+and overlapped `ConnectNamedPipe`. `send_frame` also emits head+body as one
+write, and a failed write is now logged instead of silently discarded.
 
-**Untested hypotheses, in the order worth trying:**
+**Also fixed:** `ReadLoopAsync`'s `catch` filter covered only
+`IOException`/`ObjectDisposedException`, so any other throw became an unobserved
+task exception — the reader would stop with no output at all, which is
+indistinguishable from the DLL never writing. It now catches and logs
+everything, and logs on exit.
 
-1. `ReadLoopAsync` throws on its first `ReadAsync` and dies silently. The
-   `catch` filter only covers `IOException`/`ObjectDisposedException`; anything
-   else becomes an unobserved task exception with no output. **Widen the catch
-   and log it** — cheapest first move.
-2. `PipeOptions.Asynchronous` on the C# client against a **synchronous** server
-   handle (the DLL creates the pipe without `FILE_FLAG_OVERLAPPED`). Try
-   `PipeOptions.None`.
-3. `Task.Run(ReadLoopAsync)` is started while `_gate` is held in
-   `EnsureConnectedAsync`. It should not matter — `ReadLoopAsync` never takes
-   `_gate` — but it is worth ruling out.
-4. Server-side buffering: `send_frame` does two `WriteFile` calls (head, then
-   body). Byte-mode pipes should not care, but combining them into one write is
-   trivial and removes the question.
+**Generalisable lessons:**
 
-**Reproduce:** relay + agent + game with DLL injected, then
-`tools\Test-CombatOutbound.ps1`. It damages an NPC by a route the DLL did not
-cause and expects a peer to receive `0x13`. Current failure is the peer's read
-timing out, which is the correct symptom for this state.
+- A duplex pipe used from two threads at once **requires** overlapped I/O on
+  both handles. This is not an optimisation.
+- "The write returned" was never checked. `send_frame` discarded its result, so
+  a blocked or failed write looked exactly like a delivered one. Same class of
+  mistake as an unchecked `variant::is_valid`.
+- A silent catch filter on a background task is a diagnostic dead end. It cost
+  more time here than the deadlock did.
+
+**Verify:** relay + agent + game with the DLL injected, then
+`tools\Test-CombatOutbound.ps1` → `PASS - our hit crossed the relay to a peer`.
+
+> Note: `Test-CombatOutbound.ps1` itself had a bug that masked the first green
+> run — `[Guid]::new($pkt.Payload[1..16])` throws, because a PowerShell range
+> index yields `Object[]` and selects the `string` overload. The peer *had*
+> received the packet. Cast to `[byte[]]` first.
 
 ---
 
@@ -69,7 +81,9 @@ timing out, which is the correct symptom for this state.
 | Soul lookup by GUID from native | `find_soul_by_guid` walks `SoulsByGuid` |
 | Main-thread marshalling | IAT hook on `C_ModulesManager::Update`, 26–79 Hz |
 | Inbound end to end | synthetic peer → relay → agent → pipe → DLL → NPC health dropped |
-| Outbound **detection** | `PIPE: LocalHit 8.00` with the exact delta and right soul |
+| Outbound end to end | local hit → sampler → pipe → agent → relay → peer got `0x13`, same guid, health 9 |
+| Both directions on one connection | outbound and inbound tests pass back to back against a single attached agent |
+| Peer damage is not echoed back | `ApplyDamage health=6.00 -> applied` produced **no** following `LocalHit`; `note_remote_damage` credits it correctly |
 
 ### Not achievable (closed, do not re-derive)
 
@@ -163,7 +177,7 @@ native\build\KCDMP_LauncherInjector\KCDMP_LauncherInjector.exe --pid <pid> --dll
 | `tools\Test-Combat.ps1` | relay forwarding, 14/14 green, no game needed |
 | `tools\Test-Pipe.ps1` | pipe → DLL → NPC, no agent or relay needed |
 | `tools\Test-CombatE2E.ps1` | full inbound chain with a synthetic peer |
-| `tools\Test-CombatOutbound.ps1` | outbound chain — **currently fails, see the bug** |
+| `tools\Test-CombatOutbound.ps1` | outbound chain with a synthetic peer |
 | `tools\Probe-Reflection.ps1` | re-run after any game patch |
 
 `tools\KcdApi.ps1` is the bounded REST client — dot-source it.
@@ -189,6 +203,9 @@ native\build\KCDMP_LauncherInjector\KCDMP_LauncherInjector.exe --pid <pid> --dll
   The faction write read back correctly and was reverted minutes later.
 - **PowerShell variables are case-insensitive.** `$ack` shadows `$ACK`,
   `$pong` shadows `$PONG`. Cost two false failures.
+- **A PowerShell range index returns `Object[]`, not `byte[]`.**
+  `[Guid]::new($bytes[1..16])` picks the `string` overload and throws. Cast
+  explicitly. This made a passing outbound test look like a failing one.
 - **A container read without `?depth=`** serialises the whole object graph — one
   returned 658 MB. Always `?depth=0` or `?depth=1`.
 - **`Soul.Revive()`** undoes a death; `SetState(health, ...)` does not.
@@ -199,11 +216,9 @@ native\build\KCDMP_LauncherInjector\KCDMP_LauncherInjector.exe --pid <pid> --dll
 
 ## Suggested next steps
 
-1. **Fix the pipe read bug** (top of this document). Everything else waits on it.
-2. Then run `Test-CombatOutbound.ps1` for the first green two-way result.
-3. Then: `KCDMP_launcher` still needs wiring to the now-real injector, and the
-   two master-server gaps in `LAUNCHING.md` remain open.
-4. Consider whether the `kdcmp.lua` ghost should keep
+1. `KCDMP_launcher` still needs wiring to the now-real injector, and the two
+   master-server gaps in `LAUNCHING.md` remain open.
+2. Consider whether the `kdcmp.lua` ghost should keep
    `esModularBehaviorTree=""`. A ghost with a behaviour tree genuinely perceives
    (it appears in `PerceptionHistory`), but the empty tree exists deliberately
    so the scheduler does not fight `ForceMount` during horse riding. Real
