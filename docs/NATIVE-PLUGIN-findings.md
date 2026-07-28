@@ -409,6 +409,55 @@ Option 1 is the only one that does not fight the engine, and it reframes the
 problem usefully: the goal is not to *inject* aggro but to make the other player
 **exist** convincingly enough that the AI aggroes on its own.
 
+### Option 1 tested: ghosts get real souls but belong to no faction
+
+Run against the live game with the mod's own `KCD2MP_SpawnGhost` and a direct
+`XGenAIModule.SpawnEntity`.
+
+**What works.** A spawned ghost is a genuine soul: it appears in `SoulsByName`
+with a real ground-snapped position and health 100. The presence layer is not
+puppeting something inert — the game's own RPG systems accept it.
+
+**What does not.** The ghost has no faction membership, and that is why nothing
+reacts. Real NPCs sit in a faction tree; the ghost is an orphan:
+
+| Soul | `FactionNode.Parent` |
+|---|---|
+| `ttkc_man_32` | `trosecko_settlements_troskovice_commonFolk_…_pharmacist` |
+| `pytlakPtacek_poacher_1` | `trosecko_outskirts_poachers_campVidlak` |
+| `PlayerSoul` | `player` |
+| **ghost** | **(none)** |
+
+A node that belongs to nothing has no relationship with anyone, so there is no
+hostility to act on. Spawning with `Properties.esFaction="enemies"` — a real
+faction id read out of the `FactionTree` database rather than invented —
+changed nothing.
+
+The ghost also does not appear among the 184 perceptors in
+`PerceptionHistory.GetRecords()`, consistent with being spawned brainless via
+`esModularBehaviorTree=""`. That shows it cannot *see*; whether it can be *seen*
+remains unmeasured, because those records list perceptors rather than what they
+perceived.
+
+**A reasoning error worth recording.** I first concluded `esFaction` was ignored
+because the ghost's `FactionNode.Name` was its own soul name — then found real
+NPCs do exactly the same. `FactionNode` is a per-soul node whose `Name` is
+always the soul's name; membership lives in `Parent`. The conclusion survived
+but the evidence first offered for it was wrong.
+
+**The fix is reachable**, both halves verified present:
+
+- `C_FactionManager::GetFaction(nameId)` is **reflected** and returns a live
+  `shared_ptr<C_Faction>` — confirmed by fetching `campVidlak`.
+- `C_FactionBase::SetParent(shared_ptr<C_Faction>)` is **exported** from
+  `RPGModule.dll`.
+
+So attaching a ghost's faction node to a real faction needs nothing invented.
+That is the next experiment, and it is the one that decides whether option 1
+works at all.
+
+Incidental: destroying the entity does **not** remove its soul from `SoulList`.
+
 ## What the reflection surface does *not* give you
 
 Honest boundaries, because the surface is uneven — Warhorse registered richly
