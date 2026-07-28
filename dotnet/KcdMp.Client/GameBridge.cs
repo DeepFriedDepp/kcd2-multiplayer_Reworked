@@ -276,6 +276,22 @@ public partial class GameBridge(ClientConfig config)
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(appCt);
 
         // Start background tasks
+        // Outbound combat: the DLL notices a nearby NPC lose health and we put
+        // it on the wire. Never fired for damage we applied on a peer's behalf —
+        // the DLL credits those out — or two clients would echo a hit forever.
+        _combat.OnLocalHit = async (soul, stamina, health) =>
+        {
+            try
+            {
+                await SendLocalHitAsync(stream, soul, stamina, health, suppressHitReaction: true);
+                Console.WriteLine($"[combat] sent hit {health:F1} on {soul}");
+            }
+            catch (Exception ex) { Console.WriteLine($"[combat] hit not sent: {ex.Message}"); }
+        };
+        // Connect now rather than lazily, so the DLL has somewhere to push hits
+        // before the first inbound packet ever arrives.
+        _ = _combat.EnsureConnectedAsync(cts.Token);
+
         var receiveTask  = ReceiveLoopAsync(stream, cts.Token);
         var pingTask     = PingLoopAsync(stream, cts.Token);
 

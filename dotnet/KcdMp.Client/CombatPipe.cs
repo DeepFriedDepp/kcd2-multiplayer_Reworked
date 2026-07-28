@@ -28,9 +28,25 @@ public sealed class CombatPipe : IAsyncDisposable
 
     private const int GuidLen = 16;
 
+    private const byte LocalHit = 0x90;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private NamedPipeClientStream? _pipe;
     private bool _warnedUnavailable;
+
+    // LocalHit arrives unsolicited, interleaved with command replies, so a
+    // single background reader owns the stream and routes frames: replies to
+    // whoever is waiting, hits to the callback. Reading inline per command
+    // would mistake a hit for a reply.
+    private Task? _reader;
+    private readonly SemaphoreSlim _replyReady = new(0);
+    private (byte Type, byte[] Body) _lastReply;
+
+    /// <summary>
+    /// Raised when the DLL reports that a nearby NPC lost health for a reason
+    /// this client did not cause. The handler is expected to put it on the wire.
+    /// </summary>
+    public Func<Guid, float, float, Task>? OnLocalHit { get; set; }
 
     public bool IsConnected => _pipe?.IsConnected == true;
 
@@ -67,6 +83,7 @@ public sealed class CombatPipe : IAsyncDisposable
 
             _warnedUnavailable = false;
             Console.WriteLine("[combat] connected to KCDMP.dll");
+            _reader = Task.Run(ReadLoopAsync);
             return true;
         }
         finally { _gate.Release(); }
@@ -100,8 +117,8 @@ public sealed class CombatPipe : IAsyncDisposable
         try
         {
             await WriteFrameAsync(Ping, [], ct);
-            var (type, _) = await ReadFrameAsync(ct);
-            return type == Pong;
+            if (!await _replyReady.WaitAsync(TimeSpan.FromSeconds(5), ct)) return false;
+            return _lastReply.Type == Pong;
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
@@ -121,6 +138,39 @@ public sealed class CombatPipe : IAsyncDisposable
     private static void WriteSoulGuid(Guid soul, Span<byte> dest) =>
         soul.TryWriteBytes(dest);
 
+    /// <summary>Route frames: replies to the waiting command, hits to the callback.</summary>
+    private async Task ReadLoopAsync()
+    {
+        try
+        {
+            while (_pipe?.IsConnected == true)
+            {
+                var (type, body) = await ReadFrameAsync(CancellationToken.None);
+                Console.WriteLine($"[combat] pipe frame 0x{type:X2} ({body.Length} bytes)");
+                if (type == LocalHit && body.Length >= 24)
+                {
+                    var   soul    = new Guid(body.AsSpan(0, 16));
+                    float stamina = BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(16));
+                    float health  = BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(20));
+                    if (OnLocalHit is { } handler)
+                    {
+                        try { await handler(soul, stamina, health); }
+                        catch (Exception ex) { Console.WriteLine($"[combat] local hit not sent: {ex.Message}"); }
+                    }
+                }
+                else
+                {
+                    _lastReply = (type, body);
+                    _replyReady.Release();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            // Normal on shutdown or if the game exits.
+        }
+    }
+
     private async Task<bool> SendAsync(byte type, byte[] payload, CancellationToken ct)
     {
         if (!await EnsureConnectedAsync(ct)) return false;
@@ -129,7 +179,15 @@ public sealed class CombatPipe : IAsyncDisposable
         try
         {
             await WriteFrameAsync(type, payload, ct);
-            var (rtype, body) = await ReadFrameAsync(ct);
+            // Wait for the reader to hand over a reply. A timeout here means the
+            // DLL is wedged, not that the command failed, so it is reported
+            // distinctly rather than folded into "not applied".
+            if (!await _replyReady.WaitAsync(TimeSpan.FromSeconds(5), ct))
+            {
+                Console.WriteLine("[combat] the DLL did not answer within 5 s");
+                return false;
+            }
+            var (rtype, body) = _lastReply;
             // The DLL answers with the truth after applying on the game thread,
             // so a false here means the soul is not loaded on this client —
             // normal when the peer is somewhere we have not streamed in.
