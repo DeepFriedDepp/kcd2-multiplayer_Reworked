@@ -220,10 +220,23 @@ Next free type byte: **`0x16`**.
 
 ## 7. Still open
 
-- **Launcher → injector wiring.** `KCDMP_launcher` calls
-  `KCDMP_LauncherInjector.exe` with the right arguments, but still launches the
-  **base game**, not Modding Tools, and never starts the agent. Five gaps listed
-  in `LAUNCHING.md`, two of them in the master-server chain.
+- **Launcher end-to-end run.** The wiring itself is **done** — commit `54af330`
+  rewrote `LaunchGame` to start the Modding Tools build, wait for `WHGame.dll`,
+  run the injector, check its exit code, and then start `KcdMpClient.exe`. The
+  master-server chain is closed too (`MasterRegistrationService`, corrected URL
+  and DTO field names, upsert plus `last_seen` on the Python side).
+
+  What remains is **verification**: the launcher has never been run against a
+  real game launch. Its pieces are exercised individually by
+  `tools\Test-CombatOutbound.ps1`, but its own sequencing has only been
+  reviewed. The `WHGame.dll` wait is a reasoned choice, not a measured one. The
+  Python master server has never been executed at all — there is no Python on
+  this machine, so `servers.py` and `models.py` were validated against a stub
+  mimicking the Flask contract. See `LAUNCHING.md`.
+
+  *(This bullet previously claimed the launcher still booted the base game and
+  never started the agent. That was already false when written — `54af330`
+  precedes the commit that added this document.)*
 - **`Protocol.cs` duplication.** Extracting a shared `KcdMp.Protocol` project is
   overdue; the constants are mirrored by hand and a version bump was missed once
   already (caught only by the handshake guard).
