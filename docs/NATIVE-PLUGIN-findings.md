@@ -377,22 +377,47 @@ warned about, and options 1 and 2 both avoid it.
 5. **Then** the outbound hook (§"The outbound problem"), then the wire protocol,
    then wiring `KCDMP_launcher` to the now-real injector.
 
-### How step 4 should be built, and what not to do
+### How step 4 should be built
 
-Calling these functions means honouring MSVC's rules for class-type parameters
-and returns — `string_view` passed indirectly, `rttr::variant` returned through a
-hidden pointer, and so on. **Do not hand-roll those signatures.** Getting one
-wrong produces a crash that reads like a logic bug, and the project has already
-paid for one round of that lesson in Lua.
+**This is a Warhorse fork of RTTR, not upstream, so vendoring upstream headers
+is not an option.** Two independent tells:
 
-The right way is to let the compiler generate the calls:
+- `type::get_by_name` takes **`std::basic_string_view<char>`**. Upstream 0.9.6
+  takes `rttr::string_view`, a class of its own. Different type, different ABI.
+- Classes that do not exist upstream live inside `namespace rttr`:
+  `C_RTTROnScreenDebug`, `C_RTTRDebugUtils`, `C_RTTRRegistrationValidator`,
+  `C_ContainerSerializer`, `E_PropertyMetadata`.
 
-1. `dumpbin /exports CrySystem.dll` → a `.def` → `lib /def:` to synthesise an
-   import library. `dumpbin` and `lib` are both installed now.
-2. Vendor RTTR's public headers at the matching version so the class layouts and
-   calling conventions come from the real declarations.
-3. Link against the synthesised import lib. The linker binds the mangled names,
-   and the ABI is the compiler's problem rather than ours.
+An earlier draft of this document recommended vendoring version-matched headers.
+That was wrong and is withdrawn — there is no upstream version to match.
 
-The RTTR version is not yet identified — that is the first sub-task, and getting
-it wrong is the main risk in this step.
+The ABI was instead recovered **statically**, by decoding function prologues out
+of the DLL. Zero risk, and it needs no running game:
+
+| Function | RCX | RDX | R8 | Returns |
+|---|---|---|---|---|
+| `type::get_by_name` (static) | hidden sret pointer | `&string_view` | — | through RCX |
+| `type::is_valid` (const) | `this` | — | — | `AL` |
+| `property::set_value` (const) | `this` | `&instance` | `&argument` | `AL` |
+
+`type::is_valid` does `mov rax,[rbx]` straight off `this`, so **`rttr::type` is a
+single pointer** — and it is returned indirectly, which means it is *not*
+trivially copyable, consistent with upstream's user-declared copy constructor.
+The same single-pointer shape holds for `method` and `property`; a whole family
+of their pointer-taking constructors share one thunk at RVA `0x4F530`, which is
+what a wrapper that only stores a pointer compiles to.
+
+So the plan is to hand-declare minimal stand-in types whose **size and
+triviality** match the originals, and let MSVC apply its own class-passing rules
+to generate the calls. Same compiler, same rules, same result — without needing
+the real declarations. Where a stand-in must be non-trivially-copyable to be
+passed indirectly, give it a user-defined copy constructor.
+
+`std::string_view` needs no stand-in at all: the game is MSVC-built, so our
+`std::string_view` is layout-identical, and the disassembly confirms the callee
+reads the data pointer from offset 0.
+
+Remaining risk is concentrated in `rttr::variant`, which is large and has a
+non-trivial destructor. Every `invoke` returns one, and getting its size wrong
+corrupts the stack. Establish its size before calling `invoke` — the destructor
+and constructor exports give the necessary anchors.
