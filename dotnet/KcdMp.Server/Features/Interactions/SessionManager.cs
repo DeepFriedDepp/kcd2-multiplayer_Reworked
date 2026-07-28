@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using KcdMp.Farkle;
 using KcdMp.Server.Features.ClientHandling;
 using ILogger = Serilog.ILogger;
 
@@ -48,6 +50,12 @@ public class SessionManager
 		public bool IsActive { get; set; }
 		public DateTime CreatedUtc { get; init; } = DateTime.UtcNow;
 
+		/// <summary>Kind-specific data carried on the Invite, opaque to this layer. Empty for kinds that don't use it.</summary>
+		public byte[] OpenConfig { get; init; } = [];
+
+		/// <summary>The live Farkle engine, once Kind == Dice and the session is Active. Null otherwise.</summary>
+		public FarkleGame? DiceGame { get; set; }
+
 		public bool Involves(ClientSession c) => Initiator == c || Acceptor == c;
 		public ClientSession Other(ClientSession c) => Initiator == c ? Acceptor : Initiator;
 	}
@@ -56,7 +64,7 @@ public class SessionManager
 	/// Handles an Invite. Returns the created session, or null when it was
 	/// refused — in which case the caller has already been told why.
 	/// </summary>
-	public Session? Invite(ClientSession from, byte targetId, InteractionKind kind, ClientHandler clients)
+	public Session? Invite(ClientSession from, byte targetId, InteractionKind kind, ClientHandler clients, byte[] openConfig)
 	{
 		if (!Enum.IsDefined(kind))
 		{
@@ -88,6 +96,7 @@ public class SessionManager
 				Kind = kind,
 				Initiator = from,
 				Acceptor = target,
+				OpenConfig = openConfig,
 			};
 			_sessions[session.Id] = session;
 
@@ -125,6 +134,8 @@ public class SessionManager
 			else
 			{
 				session.IsActive = true;
+				if (session.Kind == InteractionKind.Dice)
+					session.DiceGame = CreateDiceGame(session.OpenConfig);
 			}
 		}
 
@@ -141,6 +152,9 @@ public class SessionManager
 
 		session.Initiator.EnqueueSessionStart(sessionId, session.Acceptor.Id, session.Kind, SessionRole.Initiator);
 		session.Acceptor.EnqueueSessionStart(sessionId, session.Initiator.Id, session.Kind, SessionRole.Acceptor);
+
+		if (session.DiceGame is not null)
+			SendDiceState(session);
 	}
 
 	/// <summary>
@@ -158,6 +172,62 @@ public class SessionManager
 		}
 
 		session.Other(from).EnqueueSessionEvent(sessionId, from.Id, payload);
+	}
+
+	/// <summary>
+	/// Applies a DiceIntent to the session's Farkle engine. Unlike RelayEvent,
+	/// this terminates here rather than forwarding -- the relay is the dice
+	/// authority, so it interprets the intent, mutates its own engine, and
+	/// tells both participants (or just the sender, for a rejection) what the
+	/// result is.
+	/// </summary>
+	public void HandleDiceIntent(ClientSession from, ushort sessionId, DiceIntentType intentType, byte[] data)
+	{
+		Session? session;
+		lock (_lock)
+		{
+			if (!_sessions.TryGetValue(sessionId, out session)) return;
+			if (!session.IsActive || session.DiceGame is null || !session.Involves(from)) return;
+		}
+
+		var game = session.DiceGame;
+		int player = session.Initiator == from ? 0 : 1;
+
+		IntentResult result = intentType switch
+		{
+			DiceIntentType.Roll => game.Roll(player),
+			DiceIntentType.Keep => data.Length >= 1
+				? game.Keep(player, data[0])
+				: IntentResult.Reject(IntentRejectReason.InvalidKeepSelection),
+			DiceIntentType.Bank => game.Bank(player),
+			DiceIntentType.Forfeit => game.Forfeit(player),
+			_ => throw new ArgumentOutOfRangeException(nameof(intentType), intentType,
+				"caller must validate intentType before calling HandleDiceIntent"),
+		};
+
+		if (!result.Accepted)
+		{
+			_logger.Information("[session {Id}] dice intent {Intent} from {Who} rejected: {Reason}",
+				sessionId, intentType, from.Name, result.RejectReason);
+			from.EnqueueDiceError(sessionId, ToWireReason(result.RejectReason));
+			return;
+		}
+
+		if (result.GameEnded)
+		{
+			_logger.Information("[session {Id}] dice match ended: {Outcome}", sessionId, game.Outcome);
+			lock (_lock) _sessions.Remove(sessionId);
+
+			var outcome = game.Outcome == FarkleOutcome.Player0Won ? DiceOutcome.InitiatorWon : DiceOutcome.AcceptorWon;
+			session.Initiator.EnqueueDiceEnd(sessionId, outcome, game.Scores[0], game.Scores[1]);
+			session.Acceptor.EnqueueDiceEnd(sessionId, outcome, game.Scores[0], game.Scores[1]);
+
+			session.Initiator.EnqueueSessionEnd(sessionId, SessionEndReason.Completed);
+			session.Acceptor.EnqueueSessionEnd(sessionId, SessionEndReason.Completed);
+			return;
+		}
+
+		SendDiceState(session);
 	}
 
 	/// <summary>Handles a participant deliberately leaving.</summary>
@@ -239,6 +309,59 @@ public class SessionManager
 	{
 		get { lock (_lock) return _sessions.Count(kv => kv.Value.IsActive); }
 	}
+
+	/// <summary>
+	/// Builds the Farkle engine for a newly-accepted dice session from the
+	/// Invite's opaque config: [targetScore:2 LE][debugSeedOverride:4 LE, optional].
+	/// The seed override only exists in a debug build -- in release, those
+	/// trailing bytes (if a client sends them at all) are simply never read,
+	/// which is what "refuse the override in release" means in practice.
+	/// </summary>
+	private static FarkleGame CreateDiceGame(byte[] openConfig)
+	{
+		int targetScore = Protocol.DefaultDiceTargetScore;
+		if (openConfig.Length >= 2)
+			targetScore = BinaryPrimitives.ReadUInt16LittleEndian(openConfig.AsSpan(0, 2));
+
+		IDiceRng rng = new CryptoDiceRng();
+#if DEBUG
+		if (openConfig.Length >= 6)
+			rng = new SeededDiceRng(BinaryPrimitives.ReadInt32LittleEndian(openConfig.AsSpan(2, 4)));
+#endif
+
+		return new FarkleGame(rng, targetScore);
+	}
+
+	/// <summary>Sends the current Farkle state to both participants, identically -- see DiceState (0x17).</summary>
+	private static void SendDiceState(Session session)
+	{
+		var game = session.DiceGame!;
+		var phase = game.Phase == TurnPhase.AwaitingRoll ? DicePhase.AwaitingRoll : DicePhase.AwaitingKeep;
+		byte[] freeFaces = [.. game.FreeDice.Select(d => d.Face)];
+		byte[] keptFaces = [.. game.KeptDiceThisTurn.Select(d => d.Face)];
+
+		session.Initiator.EnqueueDiceState(session.Id, (byte)game.CurrentPlayer, game.Scores[0], game.Scores[1],
+			game.TurnTotal, game.TargetScore, phase, freeFaces, keptFaces);
+		session.Acceptor.EnqueueDiceState(session.Id, (byte)game.CurrentPlayer, game.Scores[0], game.Scores[1],
+			game.TurnTotal, game.TargetScore, phase, freeFaces, keptFaces);
+	}
+
+	/// <summary>
+	/// Explicit mapping rather than a cast: KcdMp.Farkle.IntentRejectReason is an
+	/// engine-internal enum the wire format should not be coupled to by numeric
+	/// coincidence, the same lesson the duplicated Protocol.cs drift taught.
+	/// </summary>
+	private static DiceRejectReason ToWireReason(IntentRejectReason reason) => reason switch
+	{
+		IntentRejectReason.NotYourTurn => DiceRejectReason.NotYourTurn,
+		IntentRejectReason.WrongPhase => DiceRejectReason.WrongPhase,
+		IntentRejectReason.EmptyKeep => DiceRejectReason.EmptyKeep,
+		IntentRejectReason.KeepIndexOutOfRange => DiceRejectReason.KeepIndexOutOfRange,
+		IntentRejectReason.InvalidKeepSelection => DiceRejectReason.InvalidKeepSelection,
+		IntentRejectReason.NothingToBank => DiceRejectReason.NothingToBank,
+		IntentRejectReason.GameAlreadyOver => DiceRejectReason.GameAlreadyOver,
+		_ => throw new ArgumentOutOfRangeException(nameof(reason), reason, "None should never reach a rejected result"),
+	};
 
 	/// <summary>
 	/// Session ids wrap rather than grow, skipping any still in use. Two players

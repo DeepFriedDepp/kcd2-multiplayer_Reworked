@@ -32,7 +32,7 @@ $P = @{
     Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09
     DamageUp = 0x12; DamageDown = 0x13; DeathUp = 0x14; DeathDown = 0x15
 }
-$PROTOCOL_VERSION = 3
+$PROTOCOL_VERSION = 4
 $SOUL_GUID_LEN = 16
 
 $script:pass = 0

@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
+    <ProjectReference Include="..\KcdMp.Farkle\KcdMp.Farkle.csproj" />
   </ItemGroup>
 
   <ItemGroup>

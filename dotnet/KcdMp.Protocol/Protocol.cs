@@ -24,7 +24,7 @@ namespace KcdMp.Wire;
 /// the other accepts or declines, both enter a session the relay arbitrates,
 /// both leave. Dice (WO-5) and duelling are clients of this rather than
 /// separate protocols.
-/// C→S  0x0A  Invite:         [targetGhostId:1][kind:1]
+/// C→S  0x0A  Invite:         [targetGhostId:1][kind:1][configLen:1][config:configLen]
 /// S→C  0x0B  InviteReceived: [sessionId:2][fromGhostId:1][kind:1]
 /// C→S  0x0C  InviteResponse: [sessionId:2][accept:1]
 /// S→C  0x0D  SessionStart:   [sessionId:2][peerGhostId:1][kind:1][role:1]
@@ -36,6 +36,14 @@ namespace KcdMp.Wire;
 /// Session event payloads are deliberately opaque to this layer. Each
 /// interaction kind defines its own, so dice scoring or duel arbitration can
 /// change without touching the session framing.
+///
+/// [configLen:1][config:configLen] on Invite is new in WO-5 and optional: a
+/// 2-byte Invite (no config) is still valid, matching the WO-2 wire exactly,
+/// so the presence layer and old test scripts needed no changes. It carries
+/// kind-specific open-time settings the same way SessionEvent carries
+/// kind-specific in-play events -- opaque to this layer, interpreted only by
+/// whichever kind reads it. Dice's config is
+/// [targetScore:2 LE][debugSeedOverride:4 LE, optional, debug relay builds only].
 ///
 /// Combat layer (WO-4). Replicates damage and death against shared NPCs.
 /// C→S  0x12  Damage: [targetGuid:16][stamina:4f][health:4f][flags:1]  (25 bytes)
@@ -66,7 +74,30 @@ namespace KcdMp.Wire;
 /// bounce a hit back and forth forever. That is local state, so it is
 /// deliberately not on the wire.
 ///
-/// Free type bytes for new features: 0x16 and up.
+/// Dice layer (WO-5). Unlike SessionEvent, these do not just relay -- the
+/// relay itself is the authority (RNG, turn order, scoring, win detection),
+/// so it terminates and interprets DiceIntent rather than forwarding it, and
+/// DiceState is always the relay's own current snapshot, never a passthrough.
+/// C→S  0x16  DiceIntent: [sessionId:2][intentType:1][data:N]
+///              intentType: 0=Roll (no data), 1=Keep ([mask:1]), 2=Bank
+///              (no data), 3=Forfeit (no data). mask bit i selects the i-th
+///              die in the most recent DiceState's freeDice.
+/// S→C  0x17  DiceState:  [sessionId:2][currentPlayerRole:1][scoreInitiator:4][scoreAcceptor:4]
+///                        [turnTotal:4][targetScore:4][phase:1]
+///                        [freeDiceCount:1][freeDiceFaces:freeDiceCount]
+///                        [keptDiceCount:1][keptDiceFaces:keptDiceCount]
+///              A full snapshot, always -- never a delta. Sent to both
+///              participants identically; each already knows its own role
+///              from SessionStart. phase: 0=AwaitingRoll, 1=AwaitingKeep.
+/// S→C  0x18  DiceError:  [sessionId:2][reason:1]  -- sent to the rejected
+///              sender only. The game state is unchanged; retry with a
+///              corrected intent.
+/// S→C  0x19  DiceEnd:    [sessionId:2][outcome:1][scoreInitiator:4][scoreAcceptor:4]
+///              outcome: 0=Initiator won, 1=Acceptor won. Sent to both
+///              participants, immediately followed by a normal SessionEnd
+///              (Completed) that removes the session.
+///
+/// Free type bytes for new features: 0x1A and up.
 ///
 /// This file lives in the shared KcdMp.Protocol project (net8.0, no
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
@@ -77,13 +108,13 @@ public static class Protocol
     /// <summary>
     /// Protocol version, negotiated in the Handshake.
     ///
-    /// Bumped to 3 for the combat layer. A v2 peer has no damage or death
-    /// packets, and because the relay rejects a mismatch at handshake rather
-    /// than letting it misparse later, an old agent gets a clear refusal instead
-    /// of silently dropping hits — which would present as "damage does not
-    /// replicate" rather than as a version problem.
+    /// Bumped to 4 for the dice layer. The relay refuses any handshake
+    /// version that isn't an exact match, so a peer that is actually
+    /// connected always speaks the relay's own dice vocabulary -- there is no
+    /// separate "does the peer support dice" gate to add on top of that,
+    /// because a peer that didn't would never have gotten past Handshake.
     /// </summary>
-    public const byte Version = 3;
+    public const byte Version = 4;
 
     // C→S
     public const byte Handshake      = 0x00;
@@ -96,6 +127,7 @@ public static class Protocol
     public const byte SessionLeave   = 0x10;
     public const byte DamageUp       = 0x12;
     public const byte DeathUp        = 0x14;
+    public const byte DiceIntent     = 0x16;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -110,6 +142,9 @@ public static class Protocol
     public const byte SessionEnd       = 0x11;
     public const byte DamageDown       = 0x13;
     public const byte DeathDown        = 0x15;
+    public const byte DiceState        = 0x17;
+    public const byte DiceError        = 0x18;
+    public const byte DiceEnd          = 0x19;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -145,6 +180,44 @@ public static class Protocol
     /// invite does not keep the target blocked.
     /// </summary>
     public const int InviteTimeoutSeconds = 30;
+
+    /// <summary>Default Farkle target score, used when the Invite config omits it.</summary>
+    public const int DefaultDiceTargetScore = 4000;
+}
+
+/// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>
+public enum DiceIntentType : byte
+{
+    Roll = 0x00,
+    Keep = 0x01,
+    Bank = 0x02,
+    Forfeit = 0x03,
+}
+
+/// <summary>What a DiceState (0x17) snapshot is currently waiting for.</summary>
+public enum DicePhase : byte
+{
+    AwaitingRoll = 0x00,
+    AwaitingKeep = 0x01,
+}
+
+/// <summary>Why a DiceIntent was rejected. Wire-facing mirror of KcdMp.Farkle's IntentRejectReason.</summary>
+public enum DiceRejectReason : byte
+{
+    NotYourTurn = 0x01,
+    WrongPhase = 0x02,
+    EmptyKeep = 0x03,
+    KeepIndexOutOfRange = 0x04,
+    InvalidKeepSelection = 0x05,
+    NothingToBank = 0x06,
+    GameAlreadyOver = 0x07,
+}
+
+/// <summary>Who won a completed dice match, carried in DiceEnd (0x19).</summary>
+public enum DiceOutcome : byte
+{
+    InitiatorWon = 0x00,
+    AcceptorWon = 0x01,
 }
 
 /// <summary>What kind of interaction a session is running.</summary>

@@ -125,9 +125,10 @@ public class ClientSession
                     continue;
                 }
 
-                // --- Interaction layer (WO-2) ---
+                // --- Interaction layer (WO-2) + dice layer (WO-5) ---
                 if (type is Protocol.Invite or Protocol.InviteResponse
-                         or Protocol.SessionEventUp or Protocol.SessionLeave)
+                         or Protocol.SessionEventUp or Protocol.SessionLeave
+                         or Protocol.DiceIntent)
                 {
                     var body = new byte[payloadLen];
                     await ReadExactAsync(body);
@@ -237,6 +238,50 @@ public class ClientSession
     }
 
     // -------------------------------------------------------------------------
+    // Dice layer (WO-5)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Thread-safe: enqueue a full DiceState snapshot (0x17). See Protocol for the layout.</summary>
+    public void EnqueueDiceState(ushort sessionId, byte currentPlayerRole, int scoreInitiator, int scoreAcceptor,
+        int turnTotal, int targetScore, DicePhase phase, byte[] freeFaces, byte[] keptFaces)
+    {
+        var payload = new byte[2 + 1 + 4 + 4 + 4 + 4 + 1 + 1 + freeFaces.Length + 1 + keptFaces.Length];
+        int o = 0;
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(o), sessionId); o += 2;
+        payload[o++] = currentPlayerRole;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(o), scoreInitiator); o += 4;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(o), scoreAcceptor); o += 4;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(o), turnTotal); o += 4;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(o), targetScore); o += 4;
+        payload[o++] = (byte)phase;
+        payload[o++] = (byte)freeFaces.Length;
+        freeFaces.CopyTo(payload, o); o += freeFaces.Length;
+        payload[o++] = (byte)keptFaces.Length;
+        keptFaces.CopyTo(payload, o); o += keptFaces.Length;
+        EnqueueRaw(BuildPacket(Protocol.DiceState, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a DiceError (0x18) -- sent to the rejected sender only.</summary>
+    public void EnqueueDiceError(ushort sessionId, DiceRejectReason reason)
+    {
+        var payload = new byte[3];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
+        payload[2] = (byte)reason;
+        EnqueueRaw(BuildPacket(Protocol.DiceError, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a DiceEnd (0x19).</summary>
+    public void EnqueueDiceEnd(ushort sessionId, DiceOutcome outcome, int scoreInitiator, int scoreAcceptor)
+    {
+        var payload = new byte[11];
+        BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
+        payload[2] = (byte)outcome;
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(3), scoreInitiator);
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(7), scoreAcceptor);
+        EnqueueRaw(BuildPacket(Protocol.DiceEnd, payload));
+    }
+
+    // -------------------------------------------------------------------------
     // Interaction layer (WO-2)
     // -------------------------------------------------------------------------
 
@@ -252,7 +297,7 @@ public class ClientSession
         switch (type)
         {
             case Protocol.Invite when body.Length >= 2:
-                _sessions.Invite(this, body[0], (InteractionKind)body[1], _clientHandler);
+                _sessions.Invite(this, body[0], (InteractionKind)body[1], _clientHandler, ReadOpenConfig(body));
                 break;
 
             case Protocol.InviteResponse when body.Length >= 3:
@@ -265,6 +310,10 @@ public class ClientSession
 
             case Protocol.SessionLeave when body.Length >= 3:
                 _sessions.Leave(this, ReadUInt16(body, 0), (SessionEndReason)body[2]);
+                break;
+
+            case Protocol.DiceIntent when body.Length >= 3 && Enum.IsDefined((DiceIntentType)body[2]):
+                _sessions.HandleDiceIntent(this, ReadUInt16(body, 0), (DiceIntentType)body[2], body[3..]);
                 break;
 
             default:
@@ -316,6 +365,21 @@ public class ClientSession
 
     private static ushort ReadUInt16(byte[] buf, int offset) =>
         BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(offset));
+
+    /// <summary>
+    /// Extracts an Invite's optional [configLen:1][config:configLen] tail.
+    /// Absent (a bare 2-byte Invite, the pre-WO-5 shape) or truncated both
+    /// yield an empty config rather than throwing -- a short/garbled config
+    /// is the interaction kind's problem to reject, not a reason to drop the
+    /// whole Invite.
+    /// </summary>
+    private static byte[] ReadOpenConfig(byte[] body)
+    {
+        if (body.Length < 3) return [];
+        int configLen = body[2];
+        if (body.Length < 3 + configLen) return [];
+        return body[3..(3 + configLen)];
+    }
 
     /// <summary>Thread-safe: enqueue a Name packet (0x03) to be sent to this client.</summary>
     public void EnqueueName(byte ghostId, string name)
