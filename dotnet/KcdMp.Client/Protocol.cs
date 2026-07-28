@@ -46,6 +46,8 @@ public static class Protocol
     public const byte InviteResponse = 0x0C;
     public const byte SessionEventUp = 0x0E;
     public const byte SessionLeave   = 0x10;
+    public const byte DamageUp       = 0x12;
+    public const byte DeathUp        = 0x14;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -58,6 +60,8 @@ public static class Protocol
     public const byte SessionStart     = 0x0D;
     public const byte SessionEventDown = 0x0F;
     public const byte SessionEnd       = 0x11;
+    public const byte DamageDown       = 0x13;
+    public const byte DeathDown        = 0x15;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -68,6 +72,24 @@ public static class Protocol
 
     /// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
     public const int VoiceFrameLen = 640;
+
+    /// <summary>Length of a SharedSoulGuid on the wire.</summary>
+    public const int SoulGuidLen = 16;
+
+    /// <summary>Exact Damage (0x12) upstream payload length.</summary>
+    public const int DamageUpPayloadLen = SoulGuidLen + 4 + 4 + 1;
+
+    /// <summary>Exact Damage (0x13) downstream payload length.</summary>
+    public const int DamageDownPayloadLen = 1 + DamageUpPayloadLen;
+
+    /// <summary>Exact Death (0x14) upstream payload length.</summary>
+    public const int DeathUpPayloadLen = SoulGuidLen;
+
+    /// <summary>Exact Death (0x15) downstream payload length.</summary>
+    public const int DeathDownPayloadLen = 1 + SoulGuidLen;
+
+    /// <summary>Damage flag: apply without playing a hit reaction.</summary>
+    public const byte DamageFlagSuppressHitReaction = 0x01;
 }
 
 /// <summary>What kind of interaction a session is running.</summary>

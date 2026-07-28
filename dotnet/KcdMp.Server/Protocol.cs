@@ -37,7 +37,36 @@ namespace KcdMp.Server;
 /// interaction kind defines its own, so dice scoring or duel arbitration can
 /// change without touching the session framing.
 ///
-/// Free type bytes for new features: 0x12 and up.
+/// Combat layer (WO-4). Replicates damage and death against shared NPCs.
+/// C→S  0x12  Damage: [targetGuid:16][stamina:4f][health:4f][flags:1]  (25 bytes)
+/// S→C  0x13  Damage: [sourceGhostId:1][targetGuid:16][stamina:4f][health:4f][flags:1]  (26)
+/// C→S  0x14  Death:  [targetGuid:16]  (16 bytes)
+/// S→C  0x15  Death:  [sourceGhostId:1][targetGuid:16]  (17 bytes)
+///                      flags bit 0: suppressHitReaction
+///
+/// targetGuid is the NPC's SharedSoulGuid, in the same 16-byte order the game
+/// stores it. It is authored content shipped in the level data, so it is
+/// byte-identical on every installation — which is what makes a raw GUID a
+/// valid cross-client key at all. Entity ids and pointers are not: the same
+/// soul has different addresses in each process, and a runtime-spawned NPC has
+/// a different GUID per save, so only hand-placed souls may be addressed here.
+///
+/// The relay stays stateless, exactly as for voice: it orders and forwards and
+/// holds no world state. Authority is per-hit and belongs to the client whose
+/// player landed the blow.
+///
+/// Death is a separate packet, NOT inferred from health reaching zero. Two
+/// clients computing "dead" independently from slightly divergent health will
+/// eventually disagree, and disagreement about who is alive does not
+/// self-correct the way a health value does. Receivers must treat Death as
+/// idempotent and ignore a repeat for a soul already dead.
+///
+/// Loop prevention is the receiving client's job: damage applied because a
+/// Damage packet arrived must never itself be broadcast, or two clients will
+/// bounce a hit back and forth forever. That is local state, so it is
+/// deliberately not on the wire.
+///
+/// Free type bytes for new features: 0x16 and up.
 ///
 /// NOTE: this file is duplicated as dotnet/KcdMp.Client/Protocol.cs. The two
 /// projects share no assembly, so the constants are mirrored by hand — change
@@ -49,12 +78,13 @@ public static class Protocol
 	/// <summary>
 	/// Protocol version, negotiated in the Handshake.
 	///
-	/// Bumped to 2 for the interaction layer. A v1 peer has no session packets,
-	/// and because the relay rejects a mismatch at handshake rather than letting
-	/// it misparse later, an old agent gets a clear refusal instead of silently
-	/// ignoring invites.
+	/// Bumped to 3 for the combat layer. A v2 peer has no damage or death
+	/// packets, and because the relay rejects a mismatch at handshake rather
+	/// than letting it misparse later, an old agent gets a clear refusal instead
+	/// of silently dropping hits — which would present as "damage does not
+	/// replicate" rather than as a version problem.
 	/// </summary>
-	public const byte Version = 2;
+	public const byte Version = 3;
 
 	// C→S
 	public const byte Handshake      = 0x00;
@@ -65,6 +95,8 @@ public static class Protocol
 	public const byte InviteResponse = 0x0C;
 	public const byte SessionEventUp = 0x0E;
 	public const byte SessionLeave   = 0x10;
+	public const byte DamageUp       = 0x12;
+	public const byte DeathUp        = 0x14;
 
 	// S→C
 	public const byte Ghost            = 0x02;
@@ -77,6 +109,8 @@ public static class Protocol
 	public const byte SessionStart     = 0x0D;
 	public const byte SessionEventDown = 0x0F;
 	public const byte SessionEnd       = 0x11;
+	public const byte DamageDown       = 0x13;
+	public const byte DeathDown        = 0x15;
 	public const byte Ack              = 0xFF;
 
 	/// <summary>Exact Position (0x01) payload length.</summary>
@@ -84,6 +118,18 @@ public static class Protocol
 
 	/// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
 	public const int VoiceFrameLen = 640;
+
+	/// <summary>Length of a SharedSoulGuid on the wire.</summary>
+	public const int SoulGuidLen = 16;
+
+	/// <summary>Exact Damage (0x12) upstream payload length.</summary>
+	public const int DamageUpPayloadLen = SoulGuidLen + 4 + 4 + 1;
+
+	/// <summary>Exact Death (0x14) upstream payload length.</summary>
+	public const int DeathUpPayloadLen = SoulGuidLen;
+
+	/// <summary>Damage flag: apply without playing a hit reaction.</summary>
+	public const byte DamageFlagSuppressHitReaction = 0x01;
 
 	/// <summary>
 	/// How long an invite waits for a response before the relay expires it.

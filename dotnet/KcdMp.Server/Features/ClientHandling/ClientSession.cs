@@ -135,6 +135,26 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Combat layer (WO-4) ---
+                // Lengths are exact rather than minimum: a damage packet is
+                // fixed-size, and accepting a short one would forward garbage
+                // that the receiving client turns into a call into the game.
+                if (type == Protocol.DamageUp && payloadLen == Protocol.DamageUpPayloadLen)
+                {
+                    var body = new byte[Protocol.DamageUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.BroadcastDamage(this, body);
+                    continue;
+                }
+
+                if (type == Protocol.DeathUp && payloadLen == Protocol.DeathUpPayloadLen)
+                {
+                    var body = new byte[Protocol.DeathUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.BroadcastDeath(this, body);
+                    continue;
+                }
+
                 if (type != Protocol.Position || payloadLen != Protocol.PositionPayloadLen)
                 {
                     // Skip unknown/malformed packet
@@ -193,6 +213,27 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(pcm, 0, payload, 1, pcm.Length);
         EnqueueRaw(BuildPacket(Protocol.VoiceDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a Damage (0x13) packet to be sent to this client.
+    /// The body is the upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueDamage(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.DamageDown, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a Death (0x15) packet to be sent to this client.</summary>
+    public void EnqueueDeath(byte sourceId, byte[] soulGuid)
+    {
+        var payload = new byte[1 + soulGuid.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(soulGuid, 0, payload, 1, soulGuid.Length);
+        EnqueueRaw(BuildPacket(Protocol.DeathDown, payload));
     }
 
     // -------------------------------------------------------------------------

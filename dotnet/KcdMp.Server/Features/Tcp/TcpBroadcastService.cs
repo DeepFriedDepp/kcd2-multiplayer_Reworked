@@ -58,6 +58,30 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a Damage (0x13) event from <paramref name="source"/> to all other
+    /// ready clients.
+    ///
+    /// Deliberately not echoed back to the sender even in echo mode, unlike
+    /// Ghost: the sender's game has already applied the hit locally, and
+    /// returning it would apply the same damage twice.
+    /// </summary>
+    public void BroadcastDamage(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueDamage(source.Id, body);
+    }
+
+    /// <summary>
+    /// Relays a Death (0x15) event from <paramref name="source"/> to all other
+    /// ready clients. Idempotent at the receiver, so a duplicate is harmless.
+    /// </summary>
+    public void BroadcastDeath(ClientSession source, byte[] soulGuid)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueDeath(source.Id, soulGuid);
+    }
+
+    /// <summary>
     /// Broadcasts a Disconnect (0x06) packet to all remaining clients so they can remove the ghost.
     /// </summary>
     public void BroadcastDisconnect(ClientSession disconnected)
