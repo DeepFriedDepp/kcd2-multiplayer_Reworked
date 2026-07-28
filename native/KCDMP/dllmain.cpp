@@ -5,6 +5,7 @@
 
 #include "log.h"
 #include "main_thread.h"
+#include "pipe_server.h"
 
 #include <windows.h>
 
@@ -54,14 +55,17 @@ DWORD WINAPI plugin_main(LPVOID) {
         return 0;
     }
 
-    // Everything below touches game state, so it runs on the game's thread.
+    // The walk caches SoulList/RPGModule pointers that everything else needs,
+    // so it has to happen before the pipe starts accepting commands.
     const bool ran = kcdmp::main_thread::run_sync([] {
         kcdmp::rttr::walk_to_soul();
-        kcdmp::rttr::probe_invoke();
-        kcdmp::rttr::probe_faction();
     });
-    kcdmp::logf(ran ? "MAIN: probes completed on the main thread"
-                    : "MAIN: probes timed out waiting for a frame");
+    if (!ran) {
+        kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");
+        return 0;
+    }
+
+    kcdmp::pipe::start();
     return 0;
 }
 
@@ -72,6 +76,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(module);
         CloseHandle(CreateThread(nullptr, 0, plugin_main, nullptr, 0, nullptr));
     } else if (reason == DLL_PROCESS_DETACH) {
+        kcdmp::pipe::stop();
         kcdmp::main_thread::uninstall();
     }
     return TRUE;

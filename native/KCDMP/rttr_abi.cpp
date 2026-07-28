@@ -74,6 +74,10 @@ bool call_get_property_value(GetPropertyValue fn, const Type* self, Variant* ret
     }
 }
 
+bool call_variant_valid(VariantIsValid fn, const Variant* v, bool* out) {
+    __try { *out = fn(v); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 bool call_variant_dtor(VariantDtor fn, Variant* v) {
     __try {
         fn(v);
@@ -124,6 +128,8 @@ bool resolve(Api& api) {
         find_export(exports, "?get_property_value@type@rttr@@QEBA"));
     api.variant_dtor = reinterpret_cast<VariantDtor>(
         find_export(exports, "??1variant@rttr@@QEAA@XZ"));
+    api.variant_is_valid = reinterpret_cast<VariantIsValid>(
+        find_export(exports, "?is_valid@variant@rttr@@"));
 
     api.get_enumeration = reinterpret_cast<GetEnumeration>(
         find_export(exports, "?get_enumeration@type@rttr@@QEBA"));
@@ -769,6 +775,162 @@ bool read_vec3(const Api& api, Type t, const void* obj, const char* prop,
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Combat application -- what the network layer ultimately calls.
+// All of this must run on the game's main thread; callers post it there.
+// ---------------------------------------------------------------------------
+
+void* find_soul_by_guid(const unsigned char guid[16]) {
+    if (!g_walked || !g_souls) return nullptr;
+    Api api{};
+    if (!resolve(api)) return nullptr;
+
+    const std::string_view sl_name{"wh::rpgmodule::SoulList"};
+    Type t_sl{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_sl, &sl_name) ||
+        !call_is_valid(api.type_is_valid, &t_sl, &ok) || !ok) return nullptr;
+
+    InstanceBuf inst{};
+    inst.build(g_layout, t_sl, g_souls);
+    const std::string_view prop{"SoulsByGuid"};
+    Variant map_v{};
+    if (!call_get_property_value(api.get_property_value, &t_sl, &map_v, &prop, inst.bytes)) {
+        return nullptr;
+    }
+
+    alignas(16) unsigned char view[kViewBufBytes]{};
+    if (!call_create_view(api.create_assoc_view, &map_v, view)) {
+        call_variant_dtor(api.variant_dtor, &map_v);
+        return nullptr;
+    }
+    alignas(16) unsigned char it[kIterBufBytes]{}, it_end[kIterBufBytes]{};
+    call_view_begin(api.view_begin, view, it);
+    call_view_end(api.view_end, view, it_end);
+
+    void* found = nullptr;
+    alignas(16) unsigned char pr[kPairBufBytes]{};
+    for (int n = 0; n < 8000 && !found; ++n) {
+        bool more = false;
+        if (!call_iter_ne(api.iter_not_equal, it, it_end, &more) || !more) break;
+        if (call_iter_deref(api.iter_deref, it, pr)) {
+            void* ka = nullptr; void* va = nullptr;
+            std::memcpy(&ka, reinterpret_cast<Variant*>(pr)->data, sizeof(ka));
+            std::memcpy(&va, reinterpret_cast<Variant*>(pr + sizeof(Variant))->data, sizeof(va));
+            if (plausible_pointer(ka) && plausible_pointer(va) &&
+                std::memcmp(ka, guid, 16) == 0) {
+                std::memcpy(&found, va, sizeof(found));
+            }
+        }
+        if (!call_iter_inc(api.iter_preinc, it)) break;
+    }
+
+    call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it);
+    call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it_end);
+    call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
+    call_variant_dtor(api.variant_dtor, &map_v);
+
+    return plausible_pointer(found) ? found : nullptr;
+}
+
+bool apply_damage(const unsigned char guid[16], float stamina, float health,
+                  bool suppress_hit_reaction) {
+    Api api{};
+    if (!resolve(api)) return false;
+
+    void* soul = find_soul_by_guid(guid);
+    if (!soul) return false;
+
+    void* combat = read_object_property(api, "wh::rpgmodule::Soul", soul, "CombatSoul", g_layout);
+    if (!plausible_pointer(combat)) return false;
+
+    static const char* float_names[] = { "float" };
+    Type t_float{};
+    const char* chosen = nullptr;
+    if (!resolve_type(api, float_names, 1, &t_float, &chosen)) return false;
+
+    const std::string_view cs_name{"wh::rpgmodule::CombatSoul"};
+    Type t_cs{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_cs, &cs_name) ||
+        !call_is_valid(api.type_is_valid, &t_cs, &ok) || !ok) return false;
+
+    const std::string_view td{"TakeDamage"};
+    Method m{};
+    if (!call_get_method(api.get_method, &t_cs, &m, &td)) return false;
+    bool mv = false;
+    call_method_is_valid(api.method_is_valid, &m, &mv);
+    if (!mv) return false;
+
+    // TakeDamage( float Stamina, float Health, I_Soul* Attacker,
+    //             bool SuppressHitReaction, BodyPartData InjureBodypart )
+    //
+    // Only the first two are supplied. Argument THREE is Attacker, not the
+    // suppress flag -- an earlier version passed a bool there, rttr could not
+    // match the signature, and the call silently did nothing while reporting
+    // success. The remaining parameters have defaults.
+    //
+    // suppress_hit_reaction is therefore accepted but not yet honoured: setting
+    // it would mean also supplying an Attacker, which we do not have for a
+    // remote player. Recorded rather than quietly dropped.
+    (void)suppress_hit_reaction;
+
+    // Values must outlive the arguments that point at them.
+    float st = stamina, hp = health;
+    alignas(8) unsigned char a0[32], a1[32];
+    build_argument(a0, &st, t_float);
+    build_argument(a1, &hp, t_float);
+
+    InstanceBuf cinst{};
+    cinst.build(g_layout, t_cs, combat);
+
+    Variant ret{};
+    if (!call_invoke2(api.invoke2, &m, &ret, cinst.bytes, a0, a1)) return false;
+
+    // A fault-free invoke is NOT a successful one: rttr hands back an invalid
+    // variant when the arguments do not match the signature. Checking this is
+    // what turns a silent no-op into a reportable failure.
+    bool valid = false;
+    call_variant_valid(api.variant_is_valid, &ret, &valid);
+    call_variant_dtor(api.variant_dtor, &ret);
+    if (!valid) {
+        logf("COMBAT: TakeDamage returned an invalid variant -- argument mismatch");
+        return false;
+    }
+    return true;
+}
+
+bool apply_death(const unsigned char guid[16]) {
+    Api api{};
+    if (!resolve(api)) return false;
+
+    void* soul = find_soul_by_guid(guid);
+    if (!soul) return false;
+
+    // Idempotent: already dead is success. The relay makes no promises about
+    // duplicates and two clients may both report the same death.
+    const std::string_view soul_tn{"wh::rpgmodule::Soul"};
+    Type t_soul{};
+    bool ok = false;
+    if (!call_get_by_name(api.get_by_name, &t_soul, &soul_tn) ||
+        !call_is_valid(api.type_is_valid, &t_soul, &ok) || !ok) return false;
+
+    InstanceBuf inst{};
+    inst.build(g_layout, t_soul, soul);
+    const std::string_view dead{"IsDead"};
+    Variant v{};
+    if (call_get_property_value(api.get_property_value, &t_soul, &v, &dead, inst.bytes)) {
+        bool is_dead = false;
+        std::memcpy(&is_dead, v.data, sizeof(is_dead));
+        call_variant_dtor(api.variant_dtor, &v);
+        if (is_dead) return true;
+    }
+
+    // GUESS: 100000 is arbitrary, but far above any max health observed (~136),
+    // so it is lethal regardless of the soul.
+    return apply_damage(guid, 0.0f, 100000.0f, true);
+}
 
 namespace {
 

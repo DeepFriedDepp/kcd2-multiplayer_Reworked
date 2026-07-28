@@ -149,6 +149,15 @@ using GetPropertyValue = void* (*)(const Type* self, Variant* ret,
 // rttr::variant::~variant()
 using VariantDtor = void (*)(Variant* self);
 
+// bool rttr::variant::is_valid() const
+//
+// This is how "invoke did not crash" is told apart from "invoke did something".
+// rttr returns an INVALID variant when it cannot match the arguments to the
+// method's signature -- no exception, no fault, just a call that quietly did
+// nothing. Trusting the absence of a fault is precisely the mistake the Lua
+// investigation made with pcall.
+using VariantIsValid = bool (*)(const Variant* self);
+
 // static wh::shared::C_GameInterface* wh::shared::C_GameInterface::GetWritableInstance()
 // Exported from Shared.dll. No hidden pointers, no class params -- result in RAX.
 using GetGameInterface = void* (*)();
@@ -220,6 +229,7 @@ struct Api {
     PropertyIsValid    property_is_valid    = nullptr;
     GetPropertyValue   get_property_value   = nullptr;
     VariantDtor        variant_dtor         = nullptr;
+    VariantIsValid     variant_is_valid     = nullptr;
     GetGameInterface   game_interface       = nullptr;
     GetEnumeration     get_enumeration      = nullptr;
     NameToValue        name_to_value        = nullptr;
@@ -241,7 +251,7 @@ struct Api {
     bool complete() const {
         return get_by_name && type_is_valid && get_method && get_property &&
                method_is_valid && method_get_name && method_get_signature &&
-               property_is_valid && get_property_value && variant_dtor &&
+               property_is_valid && get_property_value && variant_dtor && variant_is_valid &&
                game_interface && get_enumeration && name_to_value &&
                argument_from_variant && invoke1 && invoke3 && invoke2 &&
                create_assoc_view && view_is_valid && view_get_size &&
@@ -282,6 +292,31 @@ void probe_attribution();
 // shared_ptr<C_Faction>, so the value can be read out and handed straight to
 // SetParent without building any container type by hand.
 void probe_faction();
+
+// ---------------------------------------------------------------------------
+// Combat application (WO-4). These are what the network layer ultimately calls.
+//
+// MUST be called on the game's main thread -- post them through
+// main_thread::post/run_sync. They touch the combat system, and the injected
+// thread races it.
+//
+// `guid` is a SharedSoulGuid in the game's in-memory byte order, i.e. the raw
+// 16 bytes of the SoulsByGuid key, not the text form.
+// ---------------------------------------------------------------------------
+
+/// Resolve a soul pointer from its SharedSoulGuid. Null if not loaded here --
+/// a legitimate outcome, since the peer may be somewhere this client has not
+/// streamed in.
+void* find_soul_by_guid(const unsigned char guid[16]);
+
+/// Apply damage attributed to no one. Returns false if the soul is not loaded.
+bool apply_damage(const unsigned char guid[16], float stamina, float health,
+                  bool suppress_hit_reaction);
+
+/// Kill a soul, idempotently: already dead is success, not an error. Death is
+/// its own operation rather than a consequence of health hitting zero, so two
+/// clients cannot disagree about who is alive.
+bool apply_death(const unsigned char guid[16]);
 
 // void wh::rpgmodule::C_FactionBase::SetParent(std::shared_ptr<C_Faction>)
 // Exported from RPGModule.dll. Virtual (UEAA), so calling the exported address
