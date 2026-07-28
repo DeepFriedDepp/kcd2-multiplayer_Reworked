@@ -200,27 +200,86 @@ animals**, which is what I expected to fail.
 **Use `SharedSoulGuid` as the cross-client key.** Fall back to `Name` for
 diagnostics, never to `Guid`.
 
-### The caveat that is not yet closed
+### Closed: the GUIDs are shipped in the level data
 
-A restart reloads *the same save file*, so this proves persistence, not that the
-value is authored content shared between two different players' worlds. The
-remaining test is a **different playline** — `playline0` exists alongside the
-current `playline1`. Load it, snapshot, and check whether an overlapping soul
-name carries the same `SharedSoulGuid`. If it does, the key is authored and the
-question is closed for good.
+The restart only proved persistence within one save. The stronger proof turned
+out to be sitting on disk: **soul GUIDs are authored content in the level XML**,
+so they are byte-identical on every installation of the game. No second save, no
+second machine, no playline comparison needed.
 
-Supporting evidence, short of that: the object database holds 244 authored
-tables (`item`, `skill`, `soul_archetype`, `SoulPool`, `faction_label`, …) and
-**no per-soul-instance table**, so souls come from level data rather than from
-save state — consistent with an authored identity, but not proof.
+`Data/Levels/trosecko/Layers/main/ttkc_troskovice/cemetery/_script/animal/vosycka.lyr`:
 
-### Superseded: my earlier reasoning on identity
+```xml
+<Soul version="7">
+  <SharedSoulGuid>74d93621-d457-4870-9e3e-ecbf41701c6d</SharedSoulGuid>
+  <Guid>ffc6c12f-4d6a-48a1-8ba9-bb3214d4d006</Guid>
+  <EntityGuid>7286bff6-28af-483a</EntityGuid>
+  <Name>ttkc_vosycka</Name>
+</Soul>
+```
 
-I predicted that spawned ambient animals would carry session-minted GUIDs and
-that the soul *name* would be the only stable key, because
-`SpawnedAnimal_Pig_7F983C91_0` looks like a runtime construction. **That was
-wrong**, and it was speculation from a naming convention rather than a
-measurement. The restart diff was cheap and should have come first.
+Both GUIDs match what the running game reports for that soul, exactly. Spot
+checked the same way against live values for `ttkc_woman_6` (generic townsfolk)
+and `ttkc_jezek`. There are **6,443 authored souls** across the three levels:
+trosecko 1,402, kutnohorsko 4,914, klaster 127.
+
+### But only for hand-placed souls — and that distinction matters
+
+Two classes of soul, and only one is authored:
+
+| Class | In level data? | Cross-client key |
+|---|---|---|
+| Hand-placed — named NPCs, guards, soldiers, townsfolk, horses | **yes** | `SharedSoulGuid`, authored, settled |
+| Runtime-spawned — ambient wildlife, some scripted groups | **no** | **unresolved, assume unstable** |
+
+`SpawnedAnimal_Pig_E8D210A1_0` appears nowhere in the level data, and neither
+does its hex key. The generator is a format string in `XGenAIModule.dll`:
+
+```
+SpawnedAnimal_%s_%X_%u        -- class, some 32-bit key, index
+```
+
+Their GUIDs held across the restart because they are **saved**, not because they
+are authored. Whether `%X` derives from an authored spawner or from a
+session-dependent id is **unproven**, and the restart test could not tell the
+difference because both loads read the same save. `rvacka_apprentice_1` — the
+static brawl group that misled an earlier round of testing — is likewise absent
+from level data.
+
+**So my earlier speculation was right for the wrong reason and my correction to
+it was also wrong.** Spawned animals really are the unstable class; the restart
+diff appeared to refute that but could not actually see the distinction. Two
+tests, two misreadings, settled only by going to the shipped data.
+
+### The design consequence, which is a large simplification
+
+The shareable set the goal actually needs — **rank-and-file soldiers at a siege,
+town guards, generic townsfolk** — is exactly the authored, settled class.
+Ambient wildlife is the unsettled class and is the least valuable thing to
+share. So: **share authored souls, treat runtime-spawned entities as private.**
+That sidesteps the open question entirely rather than waiting on it.
+
+Better still, this replaces the runtime name-pattern heuristic in
+`ARCHITECTURE-shared-world.md` ("Classifying an NPC at runtime") with something
+mechanically derivable **offline**. The game's own layer tree is the authors'
+classification:
+
+```
+main/_quest/...            <- 100 of 426 soul-bearing files in trosecko
+main/ttkc_troskovice/...   <- settlement population
+main/ttro_trosky/...
+```
+
+Across all three levels, 473 of 1,561 soul-bearing layer files sit under a
+`_quest` branch. So the allow-list can be **generated from the shipped data and
+audited in advance** — soul GUID, name, entity class, position and layer path
+for every candidate — instead of pattern-matching names at runtime and hoping.
+
+This keeps the existing rule ("allow-list positively, default to private") and
+makes it checkable. It is not a complete classifier on its own: a unique named
+NPC such as a quest-giving blacksmith lives in a settlement layer, not under
+`_quest`, so the unique-vs-generic filter is still needed. But it now runs over
+real authored data rather than string patterns.
 
 `SoulList` carries two indices, `SoulsByGuid` and `SoulsByName`, and every soul
 exposes both `Guid` and `SharedSoulGuid`. Both are addressable:
@@ -365,7 +424,9 @@ warned about, and options 1 and 2 both avoid it.
 
 ## Recommended order
 
-1. ~~Settle identity~~ — **done**, `SharedSoulGuid`. One caveat open (§3).
+1. ~~Settle identity~~ — **done and closed**, `SharedSoulGuid`, proven authored
+   from the shipped level XML. Applies to hand-placed souls only; runtime-spawned
+   wildlife is unresolved and should be treated as private (§3).
 2. ~~Get a C++ toolchain~~ — **done**, VS Build Tools 17.14 / MSVC 19.44,
    with CMake and Ninja. Not on PATH; `native/Build-Native.ps1` finds it.
 3. ~~Injector and DLL skeleton~~ — **done**, injects cleanly, all 15 reflection
