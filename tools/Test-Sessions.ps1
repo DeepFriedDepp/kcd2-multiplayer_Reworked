@@ -37,7 +37,7 @@ $P = @{
     SessionStart = 0x0D; SessionEventUp = 0x0E; SessionEventDown = 0x0F
     SessionLeave = 0x10; SessionEnd = 0x11
 }
-$PROTOCOL_VERSION = 2
+$PROTOCOL_VERSION = 3
 $KIND_DICE = 0x01
 $REASON = @{ 0='Completed'; 1='Declined'; 2='Timeout'; 3='PeerDisconnected'; 4='Left'; 5='TargetBusy'; 6='TargetUnavailable'; 7='ProtocolError' }
 $TYPENAME = @{ 0x0B='InviteReceived'; 0x0D='SessionStart'; 0x0F='SessionEvent'; 0x11='SessionEnd'; 0xFF='Ack' }
