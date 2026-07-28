@@ -2,6 +2,9 @@
 #include "pe_exports.h"
 #include "log.h"
 
+#include <cmath>
+#include <cstdio>
+
 namespace kcdmp::rttr {
 
 namespace {
@@ -135,6 +138,9 @@ bool resolve(Api& api) {
     api.invoke3 = reinterpret_cast<Invoke3>(
         find_export_suffix(exports, "?invoke@method@rttr@@QEBA",
                            "Vinstance@2@Vargument@2@11@Z"));
+    api.invoke2 = reinterpret_cast<Invoke2>(
+        find_export_suffix(exports, "?invoke@method@rttr@@QEBA",
+                           "Vinstance@2@Vargument@2@1@Z"));
 
     api.create_assoc_view = reinterpret_cast<CreateAssocView>(
         find_export(exports, "?create_associative_view@variant@rttr@@"));
@@ -153,6 +159,16 @@ bool resolve(Api& api) {
         find_export(exports, "??Diterator@variant_associative_view@rttr@@QEAA"));
     api.iter_dtor = reinterpret_cast<IterDtor>(
         find_export(exports, "??1iterator@variant_associative_view@rttr@@QEAA@XZ"));
+    api.view_end = reinterpret_cast<ViewEnd>(
+        find_export_suffix(exports, "?end@variant_associative_view@rttr@@QEAA",
+                           "?AViterator@12@XZ"));
+    // Prefix ++ returns iterator&; the postfix form takes an int and returns
+    // by value. Select prefix by its exact suffix.
+    api.iter_preinc = reinterpret_cast<IterPreInc>(
+        find_export_suffix(exports, "??Eiterator@variant_associative_view@rttr@@QEAA",
+                           "AEAV012@XZ"));
+    api.iter_not_equal = reinterpret_cast<IterNotEqual>(
+        find_export(exports, "??9iterator@variant_associative_view@rttr@@QEBA"));
 
     // The root object lives in a different module.
     if (HMODULE shared = GetModuleHandleA("Shared.dll")) {
@@ -566,6 +582,12 @@ bool call_invoke3(Invoke3 fn, const Method* self, Variant* ret, const void* inst
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+bool call_invoke2(Invoke2 fn, const Method* self, Variant* ret, const void* inst,
+                  const void* a0, const void* a1) {
+    __try { fn(self, ret, inst, a0, a1); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 // Resolve the first of several candidate spellings for a type name.
 bool resolve_type(const Api& api, const char* const* names, int count,
                   Type* out, const char** chosen) {
@@ -681,6 +703,67 @@ bool call_view_valid(ViewIsValid fn, const void* view, bool* out) {
 void call_void1(void (*fn)(void*), void* a) {
     __try { fn(a); } __except (EXCEPTION_EXECUTE_HANDLER) { }
 }
+bool call_view_end(ViewEnd fn, void* view, void* out) {
+    __try { fn(view, out); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool call_iter_inc(IterPreInc fn, void* it) {
+    __try { fn(it); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool call_iter_ne(IterNotEqual fn, const void* a, const void* b, bool* out) {
+    __try { *out = fn(a, b); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Optional explicit target, so choosing an NPC does not need a rebuild.
+// Reads "kcdmp-target.txt" beside the DLL: one GUID in the usual text form.
+// Absent or malformed means "scan only, damage nothing", which is the safe
+// default -- a mis-picked target is a damaged NPC in someone's save.
+bool read_target_guid(unsigned char out[16]) {
+    char path[MAX_PATH]{};
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&read_target_guid), &self);
+    GetModuleFileNameA(self, path, MAX_PATH);
+    char* slash = std::strrchr(path, '\\');
+    if (!slash) return false;
+    std::strcpy(slash + 1, "kcdmp-target.txt");
+
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") != 0 || !f) return false;
+    char text[64]{};
+    const bool got = (std::fgets(text, sizeof(text), f) != nullptr);
+    std::fclose(f);
+    if (!got) return false;
+
+    unsigned int b[16]{};
+    const int n = std::sscanf(text,
+        "%2x%2x%2x%2x-%2x%2x-%2x%2x-%2x%2x-%2x%2x%2x%2x%2x%2x",
+        &b[0],&b[1],&b[2],&b[3], &b[4],&b[5], &b[6],&b[7],
+        &b[8],&b[9], &b[10],&b[11],&b[12],&b[13],&b[14],&b[15]);
+    if (n != 16) return false;
+
+    // Text is Windows field order; the key in memory is little-endian for the
+    // first three fields. Undo that so a memcmp against the raw key works.
+    out[0]=(unsigned char)b[3]; out[1]=(unsigned char)b[2];
+    out[2]=(unsigned char)b[1]; out[3]=(unsigned char)b[0];
+    out[4]=(unsigned char)b[5]; out[5]=(unsigned char)b[4];
+    out[6]=(unsigned char)b[7]; out[7]=(unsigned char)b[6];
+    for (int i = 8; i < 16; ++i) out[i] = (unsigned char)b[i];
+    return true;
+}
+
+// Read a Vec3-valued property. 12 bytes, so it lives inline in the variant.
+bool read_vec3(const Api& api, Type t, const void* obj, const char* prop,
+               InstanceLayout layout, float out[3]) {
+    InstanceBuf inst{};
+    inst.build(layout, t, obj);
+    const std::string_view pn{prop};
+    Variant v{};
+    if (!call_get_property_value(api.get_property_value, &t, &v, &pn, inst.bytes)) return false;
+    std::memcpy(out, v.data, sizeof(float) * 3);
+    call_variant_dtor(api.variant_dtor, &v);
+    return true;
+}
 
 } // namespace
 
@@ -728,46 +811,154 @@ void probe_attribution() {
         return;
     }
 
-    alignas(16) unsigned char it[kIterBufBytes]{};
-    if (!call_view_begin(api.view_begin, view, it)) {
-        logf("ATTR: FAULT in begin()");
+    // The soul type, resolved once: this loop runs over every entry and
+    // re-resolving it per soul would dominate the cost.
+    const std::string_view soul_tn{"wh::rpgmodule::Soul"};
+    Type t_soul{};
+    if (!call_get_by_name(api.get_by_name, &t_soul, &soul_tn)) {
         call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
         call_variant_dtor(api.variant_dtor, &map_v);
         return;
     }
 
-    // First entry only. std::pair<variant,variant>: key at +0, value at +24.
+    float player_pos[3]{};
+    if (!read_vec3(api, t_soul, g_player, "Position", g_layout, player_pos)) {
+        logf("ATTR: could not read player position");
+        call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
+        call_variant_dtor(api.variant_dtor, &map_v);
+        return;
+    }
+    logf("ATTR: player at %.1f,%.1f,%.1f", player_pos[0], player_pos[1], player_pos[2]);
+
+    // Identity must be compared by GUID, not by pointer.
+    //
+    // The map stores C_Soul* while SoulList::PlayerSoul hands back an I_Soul*
+    // base subobject, so the SAME soul has two different addresses. A previous
+    // run "found" a distinct soul 0 m away that turned out to be the player,
+    // and damaged them. This is the same reason SharedSoulGuid is the identity
+    // for the shared-world design rather than anything address-shaped.
+    unsigned char player_guid[16]{};
+    bool have_player_guid = false;
+    {
+        InstanceBuf pinst{};
+        pinst.build(g_layout, t_soul, g_player);
+        const std::string_view gp{"Guid"};
+        Variant gv{};
+        if (call_get_property_value(api.get_property_value, &t_soul, &gv, &gp, pinst.bytes)) {
+            std::memcpy(player_guid, gv.data, sizeof(player_guid));
+            call_variant_dtor(api.variant_dtor, &gv);
+            have_player_guid = true;
+        }
+    }
+    if (!have_player_guid) {
+        logf("ATTR: could not read the player's GUID -- refusing to scan without it");
+        call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
+        call_variant_dtor(api.variant_dtor, &map_v);
+        return;
+    }
+
+    alignas(16) unsigned char it[kIterBufBytes]{};
+    alignas(16) unsigned char it_end[kIterBufBytes]{};
+    if (!call_view_begin(api.view_begin, view, it) ||
+        !call_view_end(api.view_end, view, it_end)) {
+        logf("ATTR: FAULT in begin()/end()");
+        call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
+        call_variant_dtor(api.variant_dtor, &map_v);
+        return;
+    }
+
+    // Scan for the nearest SPAWNED soul. A soul at the origin is loaded in the
+    // SoulList but has no entity in the world -- the first entry last time was
+    // exactly that, which is why AttackersCount could not move: there was no
+    // combat entity for an attacker to register on.
     alignas(16) unsigned char pr[kPairBufBytes]{};
-    void* target = nullptr;
-    if (call_iter_deref(api.iter_deref, it, pr)) {
-        // The variants hold POINTERS TO the map node's key and value, not
-        // copies of them. Evidence from the first run: the two payloads were
-        // 0x...3F40 and 0x...3F50, exactly 16 bytes apart -- a 16-byte CryGUID
-        // key followed immediately by an 8-byte C_Soul* value, which is the
-        // node layout. Reading them as inline values yielded a "GUID" that was
-        // really a little-endian pointer, and a "soul" that was really the
-        // address of the soul pointer.
+    void*         target = nullptr;
+    float         best_dist = 1e30f;
+    int           scanned = 0, spawned = 0;
+
+    struct Candidate { float dist2; void* soul; unsigned char key[16]; };
+    constexpr int kMaxCandidates = 8;
+    Candidate cand[kMaxCandidates]{};
+    for (auto& c : cand) { c.dist2 = 1e30f; c.soul = nullptr; }
+
+    // Optional explicit target: a GUID in kcdmp-target.txt next to the DLL.
+    // Without it nothing is damaged -- the scan only reports.
+    unsigned char wanted[16]{};
+    const bool have_wanted = read_target_guid(wanted);
+
+    for (;;) {
+        bool more = false;
+        if (!call_iter_ne(api.iter_not_equal, it, it_end, &more) || !more) break;
+        if (scanned++ > 4000) { logf("ATTR: scan cap hit"); break; }
+
+        if (!call_iter_deref(api.iter_deref, it, pr)) break;
+
         void* key_addr = nullptr;
         void* val_addr = nullptr;
         std::memcpy(&key_addr, reinterpret_cast<Variant*>(pr)->data, sizeof(key_addr));
         std::memcpy(&val_addr, reinterpret_cast<Variant*>(pr + sizeof(Variant))->data,
                     sizeof(val_addr));
-        logf("ATTR: key@%p value@%p (delta %lld)", key_addr, val_addr,
-             static_cast<long long>(reinterpret_cast<char*>(val_addr) -
-                                    reinterpret_cast<char*>(key_addr)));
 
         if (plausible_pointer(key_addr) && plausible_pointer(val_addr)) {
-            const unsigned char* k = reinterpret_cast<const unsigned char*>(key_addr);
-            logf("ATTR: key = %02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-"
-                 "%02X%02X%02X%02X%02X%02X",
-                 k[0],k[1],k[2],k[3], k[4],k[5], k[6],k[7],
-                 k[8],k[9], k[10],k[11],k[12],k[13],k[14],k[15]);
-            std::memcpy(&target, val_addr, sizeof(target));
-            logf("ATTR: soul = %p  (player is %p)", target, g_player);
+            void* soul = nullptr;
+            std::memcpy(&soul, val_addr, sizeof(soul));
+            const bool is_player =
+                std::memcmp(key_addr, player_guid, sizeof(player_guid)) == 0;
+            if (plausible_pointer(soul) && soul != g_player && !is_player) {
+                float p[3]{};
+                if (read_vec3(api, t_soul, soul, "Position", g_layout, p)) {
+                    const bool at_origin = (p[0] == 0.0f && p[1] == 0.0f && p[2] == 0.0f);
+                    if (!at_origin) {
+                        ++spawned;
+                        const float dx = p[0] - player_pos[0];
+                        const float dy = p[1] - player_pos[1];
+                        const float dz = p[2] - player_pos[2];
+                        const float d2 = dx*dx + dy*dy + dz*dz;
+
+                        // Collect the nearest few rather than auto-picking one.
+                        // A distance filter cannot separate the player's own
+                        // co-located proxy soul from an NPC standing right next
+                        // to them -- both are ~0 m away. So report candidates
+                        // and let the operator name the target explicitly.
+                        for (int s = 0; s < kMaxCandidates; ++s) {
+                            if (d2 < cand[s].dist2) {
+                                for (int t = kMaxCandidates - 1; t > s; --t) cand[t] = cand[t-1];
+                                cand[s].dist2 = d2;
+                                cand[s].soul  = soul;
+                                std::memcpy(cand[s].key, key_addr, 16);
+                                break;
+                            }
+                        }
+                        if (d2 < best_dist) { best_dist = d2; }
+                    }
+                }
+            }
         }
-    } else {
-        logf("ATTR: FAULT dereferencing the iterator");
+        if (!call_iter_inc(api.iter_preinc, it)) break;
     }
+
+    logf("ATTR: scanned %d entries, %d spawned", scanned, spawned);
+    for (int s = 0; s < kMaxCandidates; ++s) {
+        if (!cand[s].soul) break;
+        const unsigned char* k = cand[s].key;
+        // Windows GUID field order: uint32 LE, uint16 LE, uint16 LE, 8 bytes.
+        logf("ATTR:  [%d] %6.2f m  %p  %02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-"
+             "%02X%02X%02X%02X%02X%02X",
+             s, sqrtf(cand[s].dist2), cand[s].soul,
+             k[3],k[2],k[1],k[0], k[5],k[4], k[7],k[6],
+             k[8],k[9], k[10],k[11],k[12],k[13],k[14],k[15]);
+        if (have_wanted && std::memcmp(cand[s].key, wanted, 16) == 0) {
+            target = cand[s].soul;
+            logf("ATTR:  ^ matches kcdmp-target.txt -- this one will be damaged");
+        }
+    }
+    if (!have_wanted) {
+        logf("ATTR: no kcdmp-target.txt -- scan only, nothing will be damaged");
+    } else if (!target) {
+        logf("ATTR: kcdmp-target.txt GUID not among the nearest candidates");
+    }
+
+    call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it_end);
 
     call_void1(reinterpret_cast<void(*)(void*)>(api.iter_dtor), it);
     call_void1(reinterpret_cast<void(*)(void*)>(api.view_dtor), view);
@@ -779,9 +970,7 @@ void probe_attribution() {
     }
 
     // That soul's CombatSoul, then damage attributed to the player.
-    const std::string_view soul_name{"wh::rpgmodule::Soul"};
-    Type t_soul{};
-    if (!call_get_by_name(api.get_by_name, &t_soul, &soul_name)) return;
+    // t_soul was already resolved above for the position scan.
     void* target_combat = read_object_property(api, "wh::rpgmodule::Soul", target,
                                                "CombatSoul", g_layout);
     if (!plausible_pointer(target_combat)) {
@@ -824,6 +1013,38 @@ void probe_attribution() {
     }
     call_variant_dtor(api.variant_dtor, &ret);
     logf("ATTR: done -- check that soul's health and AttackersCount over HTTP");
+
+    // Did the attribution actually register?
+    //
+    // AttackersCount staying 0 is suggestive but not conclusive -- it may
+    // simply be the wrong indicator, populated only once a skirmish starts.
+    // HasCombatHistoryWithSoul(attacker, maxTime) asks the question directly,
+    // and it takes an I_Soul* so it can only be called from in-process. This is
+    // read-only.
+    const std::string_view hist_name{"HasCombatHistoryWithSoul"};
+    Method hm{};
+    if (!call_get_method(api.get_method, &t_cs, &hm, &hist_name)) return;
+    bool hmv = false;
+    call_method_is_valid(api.method_is_valid, &hm, &hmv);
+    if (!hmv) { logf("ATTR: HasCombatHistoryWithSoul did not resolve"); return; }
+
+    float max_time = 30.0f;
+    alignas(8) unsigned char h0[32], h1[32];
+    build_argument(h0, &attacker, t_soulptr);
+    build_argument(h1, &max_time, t_float);
+
+    Variant hres{};
+    if (!call_invoke2(api.invoke2, &hm, &hres, cinst.bytes, h0, h1)) {
+        logf("ATTR: FAULT during HasCombatHistoryWithSoul"); return;
+    }
+    bool has_history = false;
+    std::memcpy(&has_history, hres.data, sizeof(has_history));
+    call_variant_dtor(api.variant_dtor, &hres);
+
+    logf("ATTR: HasCombatHistoryWithSoul(player, 30s) = %s   <-- %s",
+         has_history ? "TRUE" : "false",
+         has_history ? "ATTRIBUTION REGISTERED"
+                     : "attribution did NOT register from a bare TakeDamage");
 }
 
 } // namespace kcdmp::rttr

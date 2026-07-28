@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Hand-modelled ABI for the game's RTTR fork.
 //
 // WHY NOT UPSTREAM HEADERS: this is a Warhorse fork, not stock RTTR.
@@ -178,6 +178,8 @@ using Invoke1 = void* (*)(const Method* self, Variant* ret, const void* instance
 // the rest; the compiler handles that from this declaration.
 using Invoke3 = void* (*)(const Method* self, Variant* ret, const void* instance,
                           const void* a0, const void* a1, const void* a2);
+using Invoke2 = void* (*)(const Method* self, Variant* ret, const void* instance,
+                          const void* a0, const void* a1);
 
 // --- associative container traversal ---------------------------------------
 //
@@ -203,6 +205,9 @@ using ViewDtor        = void  (*)(void* view);
 // std::pair<variant,variant> iterator::operator*()
 using IterDeref       = void* (*)(void* iter, void* ret_pair);
 using IterDtor        = void  (*)(void* iter);
+using ViewEnd         = void* (*)(void* view, void* ret_iterator);
+using IterPreInc      = void* (*)(void* iter);                       // ++it
+using IterNotEqual    = bool  (*)(const void* iter, const void* other);
 
 struct Api {
     GetByName          get_by_name          = nullptr;
@@ -221,6 +226,7 @@ struct Api {
     ArgumentFromVariant argument_from_variant = nullptr;
     Invoke1            invoke1              = nullptr;
     Invoke3            invoke3              = nullptr;
+    Invoke2            invoke2              = nullptr;
     CreateAssocView    create_assoc_view    = nullptr;
     ViewIsValid        view_is_valid        = nullptr;
     ViewGetSize        view_get_size        = nullptr;
@@ -228,15 +234,19 @@ struct Api {
     ViewDtor           view_dtor            = nullptr;
     IterDeref          iter_deref           = nullptr;
     IterDtor           iter_dtor            = nullptr;
+    ViewEnd            view_end             = nullptr;
+    IterPreInc         iter_preinc          = nullptr;
+    IterNotEqual       iter_not_equal       = nullptr;
 
     bool complete() const {
         return get_by_name && type_is_valid && get_method && get_property &&
                method_is_valid && method_get_name && method_get_signature &&
                property_is_valid && get_property_value && variant_dtor &&
                game_interface && get_enumeration && name_to_value &&
-               argument_from_variant && invoke1 && invoke3 &&
+               argument_from_variant && invoke1 && invoke3 && invoke2 &&
                create_assoc_view && view_is_valid && view_get_size &&
-               view_begin && view_dtor && iter_deref && iter_dtor;
+               view_begin && view_dtor && iter_deref && iter_dtor &&
+               view_end && iter_preinc && iter_not_equal;
     }
 };
 
