@@ -4,6 +4,7 @@
     rttr_abi.cpp
     main_thread.cpp
     pipe_server.cpp
+    dice_hook.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

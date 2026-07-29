@@ -215,6 +215,53 @@ either proper disassembly tooling (for `array_range`) or an inline hook
 (for `SetPauseWorldTime`) that deserves a deliberate go/no-go rather than
 being attempted live and improvised.
 
+### The `SetPauseWorldTime` hook: installed cleanly, never fired — a real negative result
+
+With the human's explicit go-ahead, built and installed the inline detour
+described above (`native/KCDMP/dice_hook.cpp`). Evidence gathered before
+writing a single byte:
+
+- `PlayerModule.dll` exports the target by name (no hardcoded offset — the
+  address is resolved via `GetProcAddress` at runtime, same discipline as
+  every other export used in this plugin).
+- `dumpbin /disasm` of the first 13 bytes at that address showed four
+  complete, self-contained instructions (`mov [rsp+8],rbx` / `push rdi` /
+  `sub rsp,20h` / `mov rbx,rcx`) with no internal jumps or RIP-relative
+  operands — a clean instruction-boundary hook site, stealable into a
+  trampoline with no address fixup.
+- A few instructions later the function does `mov byte ptr [rbx+0x650],dil`
+  — independent confirmation `this` (captured in `rbx`) is a real, sizeable
+  C++ object with at least one known field offset, not a thin wrapper.
+
+**Installed against the human's live, actively-running game (pid confirmed
+via `tasklist`). No crash, no instability** — `kcdmp-native.log`:
+`DICE: hook installed at 0x...75732D40 (PlayerModule.dll+0x372D40)`.
+
+**Then: zero captures across two real transitions that should plausibly
+trigger a pause/unpause call** — finishing an in-progress game (won,
+got up from the table) and starting a brand-new one (sat down again with the
+hook already live and waiting). Neither produced a
+`DICE: C_Dice instance captured` log line. This is a genuine negative result,
+not a missed timing window — the hook was confirmed installed and live for
+several minutes spanning both transitions.
+
+**Reading of this result:** `wh::playermodule::C_Dice::SetPauseWorldTime`
+almost certainly is **not** part of the ordinary "walk up to an NPC and
+gamble" flow this project needs. It may exist for a different dice context
+entirely — a scripted quest cutscene, a specific narrative dice sequence —
+that never engages during ad-hoc NPC gambling. **This closes this specific
+hook as a route to a live `C_Dice*` instance for the feature this WO actually
+needs.** The class name and its one known field offset (`+0x650`, a bool)
+remain true and recorded, but this was the only concrete lead R2 had toward a
+live instance, and it did not pan out.
+
+**R2 is now genuinely blocked** on the two remaining routes already
+identified above (proper disassembly tooling for `array_range`, or finding a
+*different* hookable call site that actually fires during ordinary NPC
+gambling — the outbound-detection problem again, this time with no confirmed
+call site at all). Recommend taking this to the R-gate rather than
+continuing to improvise further hooks tonight.
+
 ---
 
 ## R-gate: Tier verdict

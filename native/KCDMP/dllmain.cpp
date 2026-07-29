@@ -3,6 +3,7 @@
 // Loaded by KCDMP_LauncherInjector.exe via CreateRemoteThread(LoadLibraryA),
 // which is what KCDMP_launcher's LaunchGame already expects.
 
+#include "dice_hook.h"
 #include "log.h"
 #include "main_thread.h"
 #include "pipe_server.h"
@@ -65,6 +66,13 @@ DWORD WINAPI plugin_main(LPVOID) {
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");
         return 0;
+    }
+
+    // WO-6 R2 research hook: read-only, see dice_hook.cpp for the evidence
+    // behind the patch site. Not gated on pipe/rttr success -- independent
+    // of everything else this DLL does.
+    if (kcdmp::dice::install_pause_hook()) {
+        kcdmp::main_thread::post_repeating(&kcdmp::dice::sample_instance_if_changed);
     }
 
     kcdmp::pipe::start();
