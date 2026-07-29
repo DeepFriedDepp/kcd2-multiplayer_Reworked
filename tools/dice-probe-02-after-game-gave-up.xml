@@ -1,0 +1,944 @@
+﻿<!-- dice probe '02-after-game-gave-up' captured 2026-07-28T20:43:34.2329670-07:00 -->
+<C_UIDice>
+<C_UIDice xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" />
+
+</C_UIDice>
+<PlayerModule>
+<PlayerModule xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<RandomEventManager DisabledEventsInFastTravel="None" IsOnAnyGlobalCooldown="false">
+		<SpawnedEvents>
+			<RandomEvent />
+		</SpawnedEvents>
+		<DisabledEventTagKeys>
+			<Pair Key="NGPriorityEvents_disabled" Value="1" />
+			<Pair Key="rvacka" Value="1" />
+		</DisabledEventTagKeys>
+		<GenericRandomEvents>
+			<GenericRandomEvent />
+			<GenericRandomEvent />
+			<GenericRandomEvent />
+			<GenericRandomEvent />
+			<GenericRandomEvent />
+		</GenericRandomEvents>
+		<EventStartCounts>
+			<Pair Key="brambora::Barbora::random_events::karavanyVeSvete::event_karavany_ve_svete::karavanyVeSvete" Value="2" />
+			<Pair Key="brambora::Barbora::random_events::rvacka::event_rvacka::rvacka" Value="1" />
+		</EventStartCounts>
+		<EventPlacesMap>
+			<Pair Key="tapo_bushySlope">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_forestEdge">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_forestEntry">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_glade">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_nearPassage">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_stream">
+				<Value />
+			</Pair>
+			<Pair Key="tapo_underKasparCamp">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_deepForest">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_meadow">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_onRocks">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_openCrossroad">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_slopeRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_sparseForest">
+				<Value />
+			</Pair>
+			<Pair Key="tbuk_underTree">
+				<Value />
+			</Pair>
+			<Pair Key="tkop_crossroads">
+				<Value />
+			</Pair>
+			<Pair Key="tkop_forestTurn">
+				<Value />
+			</Pair>
+			<Pair Key="tkop_meadow">
+				<Value />
+			</Pair>
+			<Pair Key="tkop_underRocks">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_betweenRocks">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_bridge">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_forestEntry">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_forestRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_riverRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_riverRoad2">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_rockPassage2">
+				<Value />
+			</Pair>
+			<Pair Key="tkrc_swamps">
+				<Value />
+			</Pair>
+			<Pair Key="tneb_millSideRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tneb_road">
+				<Value />
+			</Pair>
+			<Pair Key="tneb_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="tneb_willowTree">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_bigRocks">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_mill">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_riverRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_swampRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_swamps">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_threeRocks">
+				<Value />
+			</Pair>
+			<Pair Key="tpod_underWoodcutters">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place1">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place2">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place3">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place4">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place5">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place6">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path1_place7">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path2_place1">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path2_place2">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path2_place3">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path2_place4">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path2_place5">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path3_place1">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path3_place2">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path3_place3">
+				<Value />
+			</Pair>
+			<Pair Key="troseckoCaravans_path3_place4">
+				<Value />
+			</Pair>
+			<Pair Key="tsem_crossroads">
+				<Value />
+			</Pair>
+			<Pair Key="tsem_nearFortress">
+				<Value />
+			</Pair>
+			<Pair Key="tsem_villageTree">
+				<Value />
+			</Pair>
+			<Pair Key="tsla_bigTree">
+				<Value />
+			</Pair>
+			<Pair Key="tsla_crossroads">
+				<Value />
+			</Pair>
+			<Pair Key="ttac_bigTree">
+				<Value />
+			</Pair>
+			<Pair Key="ttac_bush">
+				<Value />
+			</Pair>
+			<Pair Key="ttac_road">
+				<Value />
+			</Pair>
+			<Pair Key="ttac_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="ttac_villagePub">
+				<Value />
+			</Pair>
+			<Pair Key="ttkc_crossroads">
+				<Value />
+			</Pair>
+			<Pair Key="ttkc_nearCemetery">
+				<Value />
+			</Pair>
+			<Pair Key="ttkc_villageCenter">
+				<Value />
+			</Pair>
+			<Pair Key="ttro_archery">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_bankBushes">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_crossroad">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_romaniRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_sparseForest">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_underCliff">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_wetlandRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tvez_wetlandRoad2">
+				<Value />
+			</Pair>
+			<Pair Key="tvid_roadNearBank">
+				<Value />
+			</Pair>
+			<Pair Key="tvid_underRock">
+				<Value />
+			</Pair>
+			<Pair Key="tvid_vista">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_betweenFarms">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_bridge">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_highRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_riverRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_roadJunction2">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_shrine">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_streamCrossing">
+				<Value />
+			</Pair>
+			<Pair Key="tzda_valleyEntry">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_bridge">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_nearTavern">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_riverRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_road">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_roadJunction">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_rockRoad">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_smallGrove">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_tavernInside">
+				<Value />
+			</Pair>
+			<Pair Key="tzel_village">
+				<Value />
+			</Pair>
+		</EventPlacesMap>
+		<ManualRandomEvents>
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+			<ManualRandomEvent />
+		</ManualRandomEvents>
+	</RandomEventManager>
+	<TutorialManager>
+		<ShowTutorialCooldowns>
+			<Pair Key="AlchemyTutorialPhase0" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase1" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase10" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase11" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase12" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase13" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase14" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase2" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase3" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase4" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase5" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase6" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase8" Value="-1" />
+			<Pair Key="AlchemyTutorialPhase9" Value="-1" />
+			<Pair Key="CombatTutorialPhase0" Value="-1" />
+			<Pair Key="CombatTutorialPhase1" Value="-1" />
+			<Pair Key="CombatTutorialPhase3" Value="-1" />
+			<Pair Key="CombatTutorialPhase4" Value="-1" />
+			<Pair Key="CombatTutorialPhase5" Value="-1" />
+			<Pair Key="CombatTutorialPhase6" Value="-1" />
+			<Pair Key="CombatTutorialPhase7" Value="-1" />
+			<Pair Key="HenryFall" Value="-1" />
+			<Pair Key="M01_T02_StartChat" Value="-1" />
+			<Pair Key="M01_T06_Archetype" Value="-1" />
+			<Pair Key="M01_T07_ChooseArchetype" Value="-1" />
+			<Pair Key="M01_T08_Marker" Value="-1" />
+			<Pair Key="M01_T09_CallDog" Value="-1" />
+			<Pair Key="M01_T10_OpenJournal" Value="-1" />
+			<Pair Key="M01_T11_FeedDog" Value="-1" />
+			<Pair Key="M01_T12_EquipItems" Value="-1" />
+			<Pair Key="M01_T15_Crouch" Value="-1" />
+			<Pair Key="M01_T16_ThrowPebble" Value="-1" />
+			<Pair Key="M01_T17_Sprint" Value="-1" />
+			<Pair Key="M01_T19_LowStamina" Value="-1" />
+			<Pair Key="M01_ThrowPebbleBandits" Value="-1" />
+			<Pair Key="M02_T01_Bleeding" Value="-1" />
+			<Pair Key="M02_T02_Hunger" Value="-1" />
+			<Pair Key="M02_T04_SavingGame" Value="-1" />
+			<Pair Key="M02_T05_OpenMap" Value="-1" />
+			<Pair Key="M02_T06_Compass" Value="-1" />
+			<Pair Key="M02_T07_BuryCorpse" Value="-1" />
+			<Pair Key="M02_T12_AvoidCombat" Value="-1" />
+			<Pair Key="M02_T14_Tiredeness" Value="-1" />
+			<Pair Key="M02_T15_LearnPerk" Value="-1" />
+			<Pair Key="M03_T1_Openworld" Value="-1" />
+			<Pair Key="M30_T01_Movement" Value="-1" />
+			<Pair Key="M30_T06_Attacking" Value="-1" />
+			<Pair Key="M30_T07_Ladder" Value="-1" />
+			<Pair Key="OB_O01_Skillcheck" Value="-1" />
+			<Pair Key="OB_O02_Dice" Value="-1" />
+			<Pair Key="OB_O02_DiceBasic" Value="-1" />
+			<Pair Key="OB_O10_QAM" Value="-1" />
+			<Pair Key="OB_O16_Haggle" Value="-1" />
+			<Pair Key="OB_O17_Shop" Value="-1" />
+			<Pair Key="OB_O20_Inventory" Value="-1" />
+			<Pair Key="OB_T06_Arrest" Value="-1" />
+			<Pair Key="OB_T09_ImprovingReputation" Value="-1" />
+			<Pair Key="OB_T14a_Drunkeness_mood" Value="-1" />
+			<Pair Key="OB_T22_Fasttravel" Value="-1" />
+			<Pair Key="OB_T24_ItemDamage" Value="-1" />
+			<Pair Key="OB_T34_FirstAlchemyTable" Value="-1" />
+			<Pair Key="OB_T37_SkirmishMultipleOpponents" Value="-1" />
+			<Pair Key="crimeIcon_general" Value="-1" />
+			<Pair Key="crimeIcon_investigating" Value="-1" />
+			<Pair Key="crime_surrenderCooldown" Value="-1" />
+			<Pair Key="m01_FireTalk" Value="-1" />
+		</ShowTutorialCooldowns>
+	</TutorialManager>
+</PlayerModule>
+
+</PlayerModule>
+<PlayerSoul>
+<Soul IsDead="false" IsUnconscious="false" IsMounted="false" IsBleeding="false" IsDrunk="false" IsStarving="false" IsExhausted="false" Name="Dude" Guid="4c2dcffb-dea1-6263-72d7-b39f4db2d8b5" SharedSoulGuid="4c2dcffb-dea1-6263-72d7-b39f4db2d8b5" Position="2330.1587,2080.7856,110.48928" BaseClothingPreset="00000000-0000-0000-0000-000000000000" BaseClothingPresetName="" CombatLevel="0" BaseWeaponPreset="00000000-0000-0000-0000-000000000000" BaseWeaponPresetName="" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<Archetype Id="13" Name="Hero" Gender="Male" Race="Human" />
+	<Inventory Name="Dude">
+		<ItemList>
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+			<Item />
+		</ItemList>
+	</Inventory>
+	<CombatSoul IsSoulCharged="false" AttackersCount="0" IsUnarmed="true" HasMeleeWeapon="false" HasMissileWeapon="false">
+		<SkirmishStatistics />
+	</CombatSoul>
+	<CompanionManager />
+	<EquipmentManager>
+		<EquippedArmorsByClassId>
+			<Pair Key="2a169fbe-251a-49f8-85d1-0b9a651f61d1">
+				<Value />
+			</Pair>
+			<Pair Key="73b9efe7-4082-4d5a-a879-4b5c7bdc5ea2">
+				<Value />
+			</Pair>
+			<Pair Key="7da54a04-67c4-4767-8b60-ee9211cc465e">
+				<Value />
+			</Pair>
+			<Pair Key="993d563a-7a0b-46d9-8aba-5a9d689bfa03">
+				<Value />
+			</Pair>
+			<Pair Key="b8df2253-e5c8-4e6c-9303-b4bc84192e67">
+				<Value />
+			</Pair>
+		</EquippedArmorsByClassId>
+		<EquippedWeaponsByClassId>
+			<Pair Key="4cea28a0-0814-405a-bf24-4fd711f7eb63">
+				<Value />
+			</Pair>
+			<Pair Key="b867dd0e-1bfe-40e9-b114-4b126a3ff1b0">
+				<Value />
+			</Pair>
+		</EquippedWeaponsByClassId>
+	</EquipmentManager>
+	<FactionNode PlayerRenown="0.349999994" Name="Dude" UIName="char_26_uiName" NumMembers="1">
+		<Log />
+	</FactionNode>
+	<SoulClass Name="player" />
+	<SocialClass Name="player" />
+	<StaticData CombatLevel="-1">
+		<CharacterBodyDescription />
+	</StaticData>
+	<PersistentData>
+		<RPGStats />
+	</PersistentData>
+	<DerivedStatsByName>
+		<Pair Key="charisma" Value="1.2727288" />
+		<Pair Key="rch" Value="0.0424242951" />
+		<Pair Key="cse" Value="0" />
+		<Pair Key="vib" Value="1.34464288" />
+		<Pair Key="evi" Value="0.357142925" />
+		<Pair Key="con" Value="0.161928579" />
+		<Pair Key="mst" Value="126.666672" />
+		<Pair Key="mhs" Value="126.666672" />
+		<Pair Key="hlt" Value="1" />
+		<Pair Key="sdt" Value="8.66666603" />
+		<Pair Key="fov" Value="90" />
+		<Pair Key="vir" Value="14.6500006" />
+		<Pair Key="tsr" Value="0" />
+		<Pair Key="dtf" Value="0" />
+		<Pair Key="dbf" Value="0" />
+		<Pair Key="pt1" Value="1" />
+		<Pair Key="pt5" Value="1" />
+		<Pair Key="dai" Value="0" />
+		<Pair Key="bnc" Value="0" />
+		<Pair Key="hac" Value="0" />
+		<Pair Key="hde" Value="0" />
+		<Pair Key="lfu" Value="0" />
+		<Pair Key="lio" Value="0" />
+		<Pair Key="cap" Value="140" />
+		<Pair Key="alo" Value="0.0434613526" />
+		<Pair Key="oad" Value="12.6719036" />
+		<Pair Key="owa" Value="46.6309738" />
+		<Pair Key="wud" Value="0.839999974" />
+		<Pair Key="lvl" Value="7.2265625" />
+		<Pair Key="noi" Value="0.219523787" />
+		<Pair Key="fsm" Value="0.430000007" />
+		<Pair Key="nrs" Value="0.83938992" />
+		<Pair Key="rsb" Value="0.932655513" />
+		<Pair Key="nsb" Value="0.975553691" />
+		<Pair Key="rsa" Value="-0.0900000036" />
+		<Pair Key="ble" Value="0" />
+		<Pair Key="ibi" Value="6" />
+		<Pair Key="bow" Value="160" />
+		<Pair Key="cow" Value="177.5" />
+		<Pair Key="aco" Value="17.5" />
+		<Pair Key="caw" Value="31.1000004" />
+		<Pair Key="rcw" Value="0.22214286" />
+		<Pair Key="mor" Value="0.263295591" />
+		<Pair Key="dem" Value="0.263295591" />
+		<Pair Key="mcf" Value="-0.0085333325" />
+		<Pair Key="obe" Value="1" />
+		<Pair Key="psr" Value="0" />
+		<Pair Key="xpm" Value="1" />
+		<Pair Key="osl" Value="0" />
+		<Pair Key="mos" Value="1" />
+		<Pair Key="ore" Value="0" />
+		<Pair Key="caf" Value="0" />
+		<Pair Key="rdq" Value="0.5" />
+		<Pair Key="erq" Value="0.5" />
+		<Pair Key="sle" Value="0" />
+		<Pair Key="coc" Value="1" />
+		<Pair Key="ufo" Value="1.16666663" />
+		<Pair Key="mut" Value="0" />
+		<Pair Key="prb" Value="0" />
+		<Pair Key="fpa" Value="0" />
+		<Pair Key="apa" Value="0" />
+		<Pair Key="cag" Value="0.50222224" />
+		<Pair Key="def" Value="0.297808766" />
+		<Pair Key="dru" Value="0" />
+		<Pair Key="poi" Value="0" />
+		<Pair Key="pos" Value="0" />
+		<Pair Key="ran" Value="0" />
+		<Pair Key="iex" Value="0" />
+		<Pair Key="hcm" Value="1.07000005" />
+		<Pair Key="was" Value="12" />
+		<Pair Key="grm" Value="1" />
+		<Pair Key="brm" Value="1" />
+		<Pair Key="drt" Value="0.541176558" />
+		<Pair Key="sml" Value="0" />
+		<Pair Key="smi" Value="0.5" />
+		<Pair Key="frg" Value="0" />
+		<Pair Key="hko" Value="0" />
+		<Pair Key="enc" Value="0" />
+		<Pair Key="fdm" Value="0.933333337" />
+		<Pair Key="sma" Value="0" />
+		<Pair Key="bma" Value="0" />
+		<Pair Key="hgs" Value="0" />
+		<Pair Key="pds" Value="10" />
+		<Pair Key="sha" Value="0" />
+		<Pair Key="pbm" Value="0" />
+		<Pair Key="rml" Value="0" />
+		<Pair Key="hml" Value="0.00999999978" />
+		<Pair Key="bso" Value="0" />
+		<Pair Key="bld" Value="0" />
+		<Pair Key="bba" Value="12" />
+		<Pair Key="arr" Value="0.126719043" />
+		<Pair Key="jrm" Value="1" />
+		<Pair Key="sur" Value="0" />
+		<Pair Key="imm" Value="0" />
+		<Pair Key="apr" Value="0" />
+		<Pair Key="ppr" Value="0" />
+		<Pair Key="ltp" Value="0" />
+		<Pair Key="upr" Value="0" />
+		<Pair Key="skpr" Value="0" />
+		<Pair Key="kopr" Value="0" />
+		<Pair Key="cds" Value="0.0316957198" />
+		<Pair Key="edm" Value="1" />
+		<Pair Key="prc" Value="0" />
+		<Pair Key="cdw" Value="0" />
+		<Pair Key="eqw" Value="17.5" />
+		<Pair Key="pla" Value="0" />
+		<Pair Key="wbc" Value="18.9094925" />
+		<Pair Key="cbi" Value="0" />
+		<Pair Key="nbi" Value="0" />
+		<Pair Key="alc" Value="0" />
+		<Pair Key="map" Value="0.49777776" />
+		<Pair Key="adm" Value="1" />
+		<Pair Key="alm" Value="0" />
+		<Pair Key="hov" Value="0" />
+		<Pair Key="btw" Value="1" />
+		<Pair Key="owl" Value="0" />
+		<Pair Key="rms" Value="1" />
+		<Pair Key="deb" Value="0" />
+		<Pair Key="ach" Value="0" />
+		<Pair Key="prs" Value="6.65454578" />
+		<Pair Key="imp" Value="2.61818314" />
+		<Pair Key="drd" Value="7.5476799" />
+		<Pair Key="crc" Value="6.65454578" />
+		<Pair Key="dmt" Value="2.61818314" />
+		<Pair Key="mgt" Value="7.89886761" />
+		<Pair Key="bad" Value="0.323220134" />
+		<Pair Key="nrv" Value="0" />
+		<Pair Key="vag" Value="0" />
+		<Pair Key="mag" Value="0" />
+		<Pair Key="aag" Value="0" />
+		<Pair Key="red" Value="0.200000003" />
+		<Pair Key="drv" Value="0" />
+		<Pair Key="pmc" Value="0" />
+		<Pair Key="sdn" Value="0" />
+		<Pair Key="brn" Value="0" />
+		<Pair Key="plr" Value="0" />
+		<Pair Key="bea" Value="0" />
+		<Pair Key="kko" Value="0" />
+		<Pair Key="sse" Value="0" />
+		<Pair Key="ies" Value="0" />
+		<Pair Key="lrm" Value="0.194444463" />
+		<Pair Key="prm" Value="0.194444463" />
+		<Pair Key="uvh" Value="0" />
+		<Pair Key="uva" Value="0" />
+		<Pair Key="StaminaCooldownDefault" Value="0.100000001" />
+		<Pair Key="StaminaCooldownWeaponRaised" Value="0.100000001" />
+		<Pair Key="StaminaCooldownAttack" Value="2.20000005" />
+		<Pair Key="StaminaCooldownDodge" Value="1" />
+		<Pair Key="StaminaCooldownHit" Value="2.5" />
+		<Pair Key="StaminaCooldownBlock" Value="1.75" />
+		<Pair Key="StaminaCooldownBrokenBlock" Value="2.25" />
+		<Pair Key="StaminaCooldownCollisionHit" Value="0.25" />
+		<Pair Key="StaminaCooldownJump" Value="0.5" />
+		<Pair Key="StaminaCooldownFallDamage" Value="2.5" />
+		<Pair Key="StaminaCooldownArcherySelfHarm" Value="0.200000003" />
+		<Pair Key="StaminaCooldownSharpeningDoPedal" Value="0.200000003" />
+		<Pair Key="StaminaCooldownBlacksmithingStroke" Value="0.600000024" />
+		<Pair Key="StaminaCooldownBlacksmithingExhaustingStroke" Value="1.79999995" />
+		<Pair Key="cnp" Value="100" />
+		<Pair Key="cbp" Value="0" />
+		<Pair Key="csp" Value="0" />
+		<Pair Key="slp" Value="0" />
+		<Pair Key="cep" Value="0" />
+		<Pair Key="icp" Value="0" />
+		<Pair Key="crp" Value="1" />
+		<Pair Key="dfe" Value="0" />
+		<Pair Key="csc" Value="0" />
+		<Pair Key="hvp" Value="1" />
+		<Pair Key="pqe" Value="0" />
+		<Pair Key="sks" Value="0" />
+		<Pair Key="sst" Value="0" />
+		<Pair Key="sss" Value="0" />
+		<Pair Key="xst" Value="1" />
+		<Pair Key="xag" Value="1" />
+		<Pair Key="xvi" Value="1" />
+		<Pair Key="xsp" Value="1" />
+		<Pair Key="pxp" Value="1" />
+		<Pair Key="xsw" Value="1" />
+		<Pair Key="xcr" Value="1" />
+		<Pair Key="xsu" Value="1" />
+		<Pair Key="xhw" Value="1" />
+		<Pair Key="xma" Value="1" />
+		<Pair Key="xsc" Value="1" />
+		<Pair Key="srr" Value="0" />
+		<Pair Key="bap" Value="0" />
+		<Pair Key="alp" Value="0" />
+		<Pair Key="atd" Value="1" />
+		<Pair Key="ams" Value="1" />
+		<Pair Key="rcx" Value="0" />
+		<Pair Key="lfb" Value="0" />
+		<Pair Key="tba" Value="0" />
+		<Pair Key="nrw" Value="0" />
+		<Pair Key="fac" Value="0" />
+		<Pair Key="ahe" Value="0" />
+		<Pair Key="apo" Value="0" />
+		<Pair Key="ano" Value="0" />
+		<Pair Key="fpd" Value="0" />
+		<Pair Key="eph" Value="0" />
+		<Pair Key="rpd" Value="1" />
+		<Pair Key="rpr" Value="1" />
+		<Pair Key="rpa" Value="1" />
+		<Pair Key="hla" Value="0" />
+		<Pair Key="rpp" Value="0" />
+		<Pair Key="efd" Value="0" />
+		<Pair Key="aml" Value="0" />
+		<Pair Key="bmr" Value="0" />
+		<Pair Key="lgp" Value="0" />
+		<Pair Key="bbn" Value="0" />
+		<Pair Key="shd" Value="1" />
+		<Pair Key="atp" Value="0" />
+		<Pair Key="hlm" Value="1" />
+		<Pair Key="dip" Value="0" />
+		<Pair Key="hcd" Value="0" />
+		<Pair Key="fba" Value="0" />
+		<Pair Key="lip" Value="0" />
+		<Pair Key="sxm" Value="1" />
+		<Pair Key="fvh" Value="0" />
+		<Pair Key="plg" Value="0" />
+	</DerivedStatsByName>
+	<Buffs>
+		<string>has_damaged_armor</string>
+		<string>has_damaged_weapon</string>
+		<string>actor_illuminance_meter</string>
+		<string>perk_player_fader_protection</string>
+		<string>closed_visor_debuff</string>
+	</Buffs>
+	<Roles>
+		<string>ALCHYMIE_BLIN_JE_NAMLETY</string>
+		<string>ALCHYMIE_BLIN_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_BLIN_JE_NENAMLETY</string>
+		<string>ALCHYMIE_BLIN_JE_PREVARENY</string>
+		<string>ALCHYMIE_BLIN_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_BLIN_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_BLINU_BYLO_MALO</string>
+		<string>ALCHYMIE_BLINU_BYLO_MOC</string>
+		<string>ALCHYMIE_BODLAK_JE_NAMLETY</string>
+		<string>ALCHYMIE_BODLAK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_BODLAK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_BODLAK_JE_PREVARENY</string>
+		<string>ALCHYMIE_BODLAK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_BODLAK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_BODLAKU_BYLO_MALO</string>
+		<string>ALCHYMIE_BODLAKU_BYLO_MOC</string>
+		<string>ALCHYMIE_HERMANEK_JE_NAMLETY</string>
+		<string>ALCHYMIE_HERMANEK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_HERMANEK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_HERMANEK_JE_PREVARENY</string>
+		<string>ALCHYMIE_HERMANEK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_HERMANEK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_HERMANKU_BYLO_MALO</string>
+		<string>ALCHYMIE_HERMANKU_BYLO_MOC</string>
+		<string>ALCHYMIE_KOPRIVA_JE_NAMLETA</string>
+		<string>ALCHYMIE_KOPRIVA_JE_NEDOVARENA</string>
+		<string>ALCHYMIE_KOPRIVA_JE_NENAMLETA</string>
+		<string>ALCHYMIE_KOPRIVA_JE_PREVARENA</string>
+		<string>ALCHYMIE_KOPRIVA_SE_VARILA_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_KOPRIVA_SE_VARILA_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_KOPRIVY_BYLO_MALO</string>
+		<string>ALCHYMIE_KOPRIVY_BYLO_MOC</string>
+		<string>ALCHYMIE_KOSTIVAL_JE_NAMLETY</string>
+		<string>ALCHYMIE_KOSTIVAL_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_KOSTIVAL_JE_NENAMLETY</string>
+		<string>ALCHYMIE_KOSTIVAL_JE_PREVARENY</string>
+		<string>ALCHYMIE_KOSTIVAL_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_KOSTIVAL_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_KOSTIVALU_BYLO_MALO</string>
+		<string>ALCHYMIE_KOSTIVALU_BYLO_MOC</string>
+		<string>ALCHYMIE_KOZLIK_JE_NAMLETY</string>
+		<string>ALCHYMIE_KOZLIK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_KOZLIK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_KOZLIK_JE_PREVARENY</string>
+		<string>ALCHYMIE_KOZLIK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_KOZLIK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_KOZLIKU_BYLO_MALO</string>
+		<string>ALCHYMIE_KOZLIKU_BYLO_MOC</string>
+		<string>ALCHYMIE_MATA_JE_NAMLETA</string>
+		<string>ALCHYMIE_MATA_JE_NEDOVARENA</string>
+		<string>ALCHYMIE_MATA_JE_NENAMLETA</string>
+		<string>ALCHYMIE_MATA_JE_PREVARENA</string>
+		<string>ALCHYMIE_MATA_SE_VARILA_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_MATA_SE_VARILA_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_MATAA_SE_VARILA_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_MATY_BYLO_MALO</string>
+		<string>ALCHYMIE_MATY_BYLO_MOC</string>
+		<string>ALCHYMIE_MESICEK_JE_NAMLETY</string>
+		<string>ALCHYMIE_MESICEK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_MESICEK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_MESICEK_JE_PREVARENY</string>
+		<string>ALCHYMIE_MESICEK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_MESICEK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_MESICKU_BYLO_MALO</string>
+		<string>ALCHYMIE_MESICKU_BYLO_MOC</string>
+		<string>ALCHYMIE_NEDESTILOVANY_LEKTVAR</string>
+		<string>ALCHYMIE_NEDOVARENA_INGREDIENCE</string>
+		<string>ALCHYMIE_NEKVALITNI_BYLINKY</string>
+		<string>ALCHYMIE_NENAMLETA_BYLINKA</string>
+		<string>ALCHYMIE_NESPRAVNE_DESTIOLAVNY_LEKTVAR</string>
+		<string>ALCHYMIE_PAMPELISKA_JE_NAMLETA</string>
+		<string>ALCHYMIE_PAMPELISKA_JE_NEDOVARENA</string>
+		<string>ALCHYMIE_PAMPELISKA_JE_NENAMLETA</string>
+		<string>ALCHYMIE_PAMPELISKA_JE_PREVARENA</string>
+		<string>ALCHYMIE_PAMPELISKA_SE_VARILA_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_PAMPELISKA_SE_VARILA_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_PAMPELISKY_BYLO_MALO</string>
+		<string>ALCHYMIE_PAMPELISKY_BYLO_MOC</string>
+		<string>ALCHYMIE_PELYNEK_JE_NAMLETY</string>
+		<string>ALCHYMIE_PELYNEK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_PELYNEK_SE_NEVARIL_DOST_DLOUHO</string>
+		<string>ALCHYMIE_PELYNEK_SE_VARIL_MOC_DLOUHO</string>
+		<string>ALCHYMIE_PELYNEK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_PELYNEK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_PELYNKU_BYLO_MALO</string>
+		<string>ALCHYMIE_PELYNKU_BYLO_MOC</string>
+		<string>ALCHYMIE_PREVARENA_INGREDIENCE</string>
+		<string>ALCHYMIE_PRILIS_MNOHO_POKAZENYCH_KROKU</string>
+		<string>ALCHYMIE_RULIK_JE_NAMLETY</string>
+		<string>ALCHYMIE_RULIK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_RULIK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_RULIK_JE_PREVARENY</string>
+		<string>ALCHYMIE_RULIK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_RULIK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_RULIKU_BYLO_MALO</string>
+		<string>ALCHYMIE_RULIKU_BYLO_MOC</string>
+		<string>ALCHYMIE_SALVEJ_JE_NAMLETA</string>
+		<string>ALCHYMIE_SALVEJ_JE_NEDOVARENA</string>
+		<string>ALCHYMIE_SALVEJ_JE_NENAMLETA</string>
+		<string>ALCHYMIE_SALVEJ_JE_PREVARENA</string>
+		<string>ALCHYMIE_SALVEJ_SE_VARILA_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_SALVEJ_SE_VARILA_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_SALVEJE_BYLO_MALO</string>
+		<string>ALCHYMIE_SALVEJE_BYLO_MOC</string>
+		<string>ALCHYMIE_SPATNE_INGREDIENCE</string>
+		<string>ALCHYMIE_SPATNE_NAMLETA_BYLINKA</string>
+		<string>ALCHYMIE_SPATNY_ZAKLAD</string>
+		<string>ALCHYMIE_SVETLIK_JE_NAMLETY</string>
+		<string>ALCHYMIE_SVETLIK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_SVETLIK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_SVETLIK_JE_PREVARENY</string>
+		<string>ALCHYMIE_SVETLIK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_SVETLIK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_SVETLIKU_BYLO_MALO</string>
+		<string>ALCHYMIE_SVETLIKU_BYLO_MOC</string>
+		<string>ALCHYMIE_TREZALKA_JE_NAMLETA</string>
+		<string>ALCHYMIE_TREZALKA_JE_NEDOVARENA</string>
+		<string>ALCHYMIE_TREZALKA_JE_NENAMLETA</string>
+		<string>ALCHYMIE_TREZALKA_JE_PREVARENA</string>
+		<string>ALCHYMIE_TREZALKA_SE_VARILA_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_TREZALKA_SE_VARILA_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_TREZALKY_BYLO_MALO</string>
+		<string>ALCHYMIE_TREZALKY_BYLO_MOC</string>
+		<string>ALCHYMIE_VLCI_MAK_JE_NAMLETY</string>
+		<string>ALCHYMIE_VLCI_MAK_JE_NEDOVARENY</string>
+		<string>ALCHYMIE_VLCI_MAK_JE_NENAMLETY</string>
+		<string>ALCHYMIE_VLCI_MAK_PREVARENY</string>
+		<string>ALCHYMIE_VLCI_MAK_SE_VARIL_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_VLCI_MAK_SE_VARIL_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_VLCIHO_MAKU_BYLO_MALO</string>
+		<string>ALCHYMIE_VLCIHO_MAKU_BYLO_MOC</string>
+		<string>ALCHYMIE_VRANI_OKO_JE_NAMLETE</string>
+		<string>ALCHYMIE_VRANI_OKO_JE_NEDOVARENE</string>
+		<string>ALCHYMIE_VRANI_OKO_JE_NENAMLETE</string>
+		<string>ALCHYMIE_VRANI_OKO_JE_PREVARENE</string>
+		<string>ALCHYMIE_VRANI_OKO_SE_VARILO_NA_MALEM_OHNI</string>
+		<string>ALCHYMIE_VRANI_OKO_SE_VARILO_NA_VELKEM_OHNI</string>
+		<string>ALCHYMIE_VRANIHO_OKA_BYLO_MALO</string>
+		<string>ALCHYMIE_VRANIHO_OKA_BYLO_MOC</string>
+		<string>BLACKSMITHING_ALMOST_BROKEN_WORKPIECE</string>
+		<string>BLACKSMITHING_ALMOST_FINISHED_WORKPIECE</string>
+		<string>BLACKSMITHING_BROKEN_WORKPIECE</string>
+		<string>BLACKSMITHING_COLD_WORKPIECE</string>
+		<string>BLACKSMITHING_EXHAUSTING_STROKE</string>
+		<string>BLACKSMITHING_FINISHING_WORKPIECE</string>
+		<string>BLACKSMITHING_HALF_FINISHED_WORKPIECE</string>
+		<string>BLACKSMITHING_INEFFECTIVE_STROKING</string>
+		<string>BLACKSMITHING_OVERHEATING_WORKPIECE</string>
+		<string>BOJ_HEKANI_PLAYER</string>
+		<string>BROUSENI_PERFEKTNI_ZACATEK</string>
+		<string>BROUSENI_VSECHNY_ZONY_NABROUSENY</string>
+		<string>COMBAT_SHOUT_OPPONENT</string>
+		<string>COMBAT_SHOUT_SOURCE</string>
+		<string>HEKANI_PRI_POHYBU_PLAYER</string>
+		<string>HEKANI_V_CLINCHI_PLAYER</string>
+		<string>HENRY</string>
+		<string>HRAC</string>
+		<string>HRAC_HLAD_BARK</string>
+		<string>HRAC_HLAD_ZVUK</string>
+		<string>HRAC_KUN_BONDING</string>
+		<string>HRAC_KUN_DOCHAZI_STAMINA</string>
+		<string>HRAC_KUN_FORCED_REARING</string>
+		<string>HRAC_KUN_POBIDKY</string>
+		<string>HRAC_KUN_QUICK_START</string>
+		<string>HRAC_KUN_SHOZENI</string>
+		<string>HRAC_KUN_SPEEDING</string>
+		<string>HRAC_KUN_ZASTAVENI</string>
+		<string>HRAC_NEMA_LOPATU</string>
+		<string>HRAC_OPAKOVANE_NARAZENI</string>
+		<string>HRAC_PES_HLEDANI_KONEC</string>
+		<string>HRAC_PES_HLEDANI_ZACATEK</string>
+		<string>HRAC_PES_KE_MNE</string>
+		<string>HRAC_PES_NEPOSLOUCHA1</string>
+		<string>HRAC_PES_ODLAKANI</string>
+		<string>HRAC_PES_PRINES</string>
+		<string>HRAC_PES_SE_ZABEHL1</string>
+		<string>HRAC_PES_STOPOVANI_MIMO_OBLAST</string>
+		<string>HRAC_PES_STOPOVANI_NEVYSLA_SYNCHROANIMACE</string>
+		<string>HRAC_PES_UTOK</string>
+		<string>HRAC_POCHVALA_PSA</string>
+		<string>HRAC_SE_PROBOUZI_Z_BEZVEDOMI</string>
+		<string>HRAC_SE_PROBOUZI_Z_BEZVEDOMI_A_BYL_OKRADEN</string>
+		<string>HRAC_SE_PROBOUZI_Z_BEZVEDOMI_A_BYL_VYHOZEN</string>
+		<string>HRAC_SE_PROBOUZI_Z_BEZVEDOMI_PO_KNOCKOUTU</string>
+		<string>HRAC_SPURRING</string>
+		<string>HRAC_UNAVA_BARK</string>
+		<string>HRAC_UNAVA_ZVUK</string>
+		<string>HRAC_UZ_NEMUZE_JIST_Z_KOTLIKU_HRAC_JE_PLNY</string>
+		<string>HRAC_UZ_NEMUZE_JIST_Z_KOTLIKU_KOTLIK_JE_PRAZDNY</string>
+		<string>HRAC_VYPNUL_PHOTOMODE</string>
+		<string>JINDRICH_BAD_BACK</string>
+		<string>JINDRICH_NEMUZE_DO_HLUBOKE_VODY</string>
+		<string>JINDRICH_NEMUZE_Z_MAPY</string>
+		<string>JINDRICH_PO_ALKO_TELEPORTU</string>
+		<string>JINDRICH_PO_ALKO_TELEPORTU_BEZ_BOT</string>
+		<string>JINDRICH_PO_ALKO_TELEPORTU_NECO_ZISKAL</string>
+		<string>JINDRICH_ROZEBIRA_ZED</string>
+		<string>JINDRICH_SETKANI_BARIERA</string>
+		<string>LOCKPICKING_FAIL</string>
+		<string>PROTISTRANA</string>
+		<string>ZASAH_ZBRANI_SILNY_PLAYER</string>
+		<string>ZASAH_ZBRANI_SLABY_PLAYER</string>
+	</Roles>
+	<StormDebug>
+		<MatchedRules>
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+			<rule />
+		</MatchedRules>
+	</StormDebug>
+</Soul>
+
+</PlayerSoul>
+
