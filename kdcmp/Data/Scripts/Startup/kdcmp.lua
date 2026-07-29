@@ -342,7 +342,11 @@ KCD2MP.dice = {
     -- HideTutorial(id) then ShowTutorial(id, ...); pushing twice without the
     -- hide leaves the second push waiting behind the first. Found the hard way.
     panelId   = "kcd2mp_dice",
-    panelMs   = 3600000,       -- long enough never to expire mid-match
+    -- Safety net, not the intended lifetime: every state change re-pushes, so
+    -- the board is normally refreshed long before this. Deliberately not an hour
+    -- -- if this code ever stops refreshing, a shorter expiry means the panel
+    -- clears itself instead of sitting there.
+    panelMs   = 120000,
 
     -- Glyphs VERIFIED renderable in this panel's font library. Everything else
     -- tried came back a tofu box: the Unicode die faces, every box-drawing
@@ -589,9 +593,26 @@ end
 
 -- ===== pushing it ===========================================================
 
--- ShowTutorial QUEUES. Pushing an update without hiding first leaves it waiting
--- behind the current one and the board silently stops tracking the match --
--- this was observed directly before it was understood. Always hide, then show.
+-- ShowTutorial is a NOTIFICATION QUEUE, not a panel you can update in place.
+-- Two rounds of learning here, both from watching the real thing:
+--
+--   1. Pushing an update without hiding leaves it waiting BEHIND the current
+--      entry, so the board silently stops tracking the match.
+--   2. HideTutorial(id) only dismisses the entry being DISPLAYED -- it advances
+--      the queue rather than clearing it. Sixteen pushes across one demo match
+--      therefore left sixteen queued entries, each asking for a long duration,
+--      and the game cycled through them: fade out, fade in, next. On screen that
+--      reads as the board flickering and looping forever, long after the match
+--      has ended.
+--
+-- So every push flushes the WHOLE queue first. HideAllTutorials is a blunt
+-- instrument -- it will also drop a genuine game tutorial that happens to be
+-- showing -- which is accepted only because this runs solely during a PvP dice
+-- match the player deliberately started.
+--
+-- panelMs is a safety net, not the intended lifetime: if this code ever stops
+-- refreshing (agent dies, script error), the board expires by itself instead of
+-- sitting on screen forever.
 function KCD2MP_DiceRender()
     if not D.open then return end
     local ok, html = pcall(buildHtml)
@@ -599,11 +620,19 @@ function KCD2MP_DiceRender()
         mp_log("DICE render error: " .. tostring(html))
         return
     end
-    pcall(function() UIAction.CallFunction("hud", -1, "HideTutorial", D.panelId) end)
+    KCD2MP_DiceFlush()
     pcall(function()
         UIAction.CallFunction("hud", -1, "ShowTutorial",
             D.panelId, html, D.panelMs, false, 9, 0, false, "")
     end)
+end
+
+-- Drops every queued and displayed tutorial. Also exposed as mp_dice_flush, so
+-- a stuck or flickering panel is always one command away from being cleared.
+function KCD2MP_DiceFlush()
+    pcall(function() UIAction.CallFunction("hud", -1, "HideAllTutorials") end)
+    pcall(function() UIAction.CallFunction("hud", -1, "HideCurrentTutorial") end)
+    pcall(function() UIAction.CallFunction("hud", -1, "HideTutorial", D.panelId) end)
 end
 
 local function say(text)
@@ -672,9 +701,11 @@ function KCD2MP_DiceOpen(role, peer, target)
 end
 
 function KCD2MP_DiceClose()
-    if not D.open then return end
     D.open, D.rolling, D.hold = false, nil, nil
-    pcall(function() UIAction.CallFunction("hud", -1, "HideTutorial", D.panelId) end)
+    -- Flush rather than hide one entry: anything still queued would otherwise
+    -- keep surfacing after the match is over. Runs even if the board was already
+    -- closed, so mp_dice_close doubles as "clear whatever is stuck on screen".
+    KCD2MP_DiceFlush()
     mp_log("DICE overlay closed")
 end
 
@@ -3183,6 +3214,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice_close",  "KCD2MP_DiceClose()",         "Dismiss the dice board")
     System.AddCCommand("mp_dice_table",  "KCD2MP_ReportDiceTable()",   "Report the nearest dice table, for verifying table detection")
     System.AddCCommand("mp_dice_redraw", "KCD2MP_DiceRender()",        "Force the board to re-push (use if it ever goes stale)")
+    System.AddCCommand("mp_dice_flush",  "KCD2MP_DiceFlush()",         "Clear every queued/shown tutorial panel -- fixes a stuck or flickering board")
     System.AddCCommand("mp_dice_demo",   "KCD2MP_DiceDemo()",          "Open the board with fake state, to review the visuals without a second player")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
