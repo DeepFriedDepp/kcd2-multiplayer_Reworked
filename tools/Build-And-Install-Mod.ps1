@@ -75,6 +75,32 @@ foreach ($rel in $Files) {
     }
 }
 
+# --- refuse to pack a Lua file with a BOM -----------------------------------
+#
+# Lua 5.1 cannot parse a UTF-8 byte order mark. A BOM'd kdcmp.lua fails to load
+# ENTIRELY -- every console command silently disappears and the only evidence is
+# one line in kcd.log:
+#   [Lua Error] Failed to execute file @scripts/startup/kdcmp.lua:
+#     scripts/startup/kdcmp.lua:1: unexpected symbol near '<?>'
+#
+# This is easy to reintroduce: PowerShell 5.1's Set-Content/Out-File -Encoding
+# utf8 writes a BOM, so any tool-assisted rewrite of the file can add one.
+# Checked here because this is the last gate before the bytes reach the game.
+foreach ($rel in $Files) {
+    if ($rel -notlike '*.lua') { continue }
+    $full = Join-Path $SrcRoot $rel
+    $head = [byte[]](Get-Content $full -Encoding Byte -TotalCount 3)
+    if ($head.Length -ge 3 -and $head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF) {
+        Write-Host "FAILED: $rel starts with a UTF-8 BOM." -ForegroundColor Red
+        Write-Host '  Lua 5.1 cannot parse it and the whole script will fail to load.'
+        Write-Host '  Rewrite it without a BOM, e.g.:'
+        Write-Host '    $u=New-Object System.Text.UTF8Encoding($false)'
+        Write-Host ('    $s=[IO.File]::ReadAllText("' + $full + '",[Text.Encoding]::UTF8).TrimStart([char]0xFEFF)')
+        Write-Host ('    [IO.File]::WriteAllText("' + $full + '",$s,$u)')
+        exit 1
+    }
+}
+
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 

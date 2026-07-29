@@ -1,4 +1,4 @@
-﻿-- KCD2 Multiplayer - Mod Init Script
+-- KCD2 Multiplayer - Mod Init Script
 System.LogAlways("[KCD2-MP] === MOD INIT ===")
 
 KCD2MP = {}
@@ -6,10 +6,10 @@ KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
-KCD2MP.ghostNames = {}          -- id â†’ steam name (received via 0x03 Name packet from server)
-KCD2MP.labelCache = {}          -- id â†’ {x,y,z,size,name}  updated by interp, drawn by render loop
+KCD2MP.ghostNames = {}          -- id → steam name (received via 0x03 Name packet from server)
+KCD2MP.labelCache = {}          -- id → {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
-KCD2MP.horseGhosts = {}         -- id â†’ {entity, entityId} horse ghost per player
+KCD2MP.horseGhosts = {}         -- id → {entity, entityId} horse ghost per player
 KCD2MP.workingClass = "AnimObject"
 KCD2MP.playerSneaking = false   -- set by OnAction hook when sneak key pressed
 KCD2MP.isRiding = false         -- updated each interp tick (player on horse detection)
@@ -168,7 +168,7 @@ end
 
 -- ===== Outbound Events (WO-2) =====
 -- A second line type on the same log channel, for discrete things the player
--- did rather than continuous state. Accepting an invite has to travel game â†’
+-- did rather than continuous state. Accepting an invite has to travel game →
 -- agent, and the log tail is the only outbound path (no sockets, no io), so it
 -- rides here instead of resurrecting the sv_servername CVar hack.
 --
@@ -1120,7 +1120,7 @@ function KCD2MP_SetGhostName(id, name)
     KCD2MP.ghostNames[id] = name
     local ghost = KCD2MP.ghosts[id]
     if ghost and ghost.entity then
-        -- Ghost already alive when name packet arrives â€” apply after 300ms
+        -- Ghost already alive when name packet arrives — apply after 300ms
         local captId = id
         local captName = name
         Script.SetTimer(300, function()
@@ -1140,7 +1140,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     local pos = {x=x, y=y, z=z}
     local horseName = "kcd2mp_horse_" .. id
 
-    -- Use System.SpawnEntity only (XGenAIModule is async â†’ creates orphan second entity)
+    -- Use System.SpawnEntity only (XGenAIModule is async → creates orphan second entity)
     local horse = nil
     local ok2, h2 = pcall(System.SpawnEntity, {
         class = "Horse", position = {x=x, y=y, z=z},
@@ -1272,7 +1272,7 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     istate.lastPacketY = y
 
     -- Log large target jumps; reset velocity on teleport/fast-travel
-    -- Jump detection: XY only â€” Z changes from terrain must NOT reset velocity
+    -- Jump detection: XY only — Z changes from terrain must NOT reset velocity
     local jumpDist = math.sqrt(ddx*ddx + ddy*ddy)
     if jumpDist > 5.0 then
         istate.vx = 0
@@ -1482,7 +1482,7 @@ local HORSE_ENTITY_WALK_ANIMS = {
     "horse_walk", "horse_trot", "walk", "trot",
 }
 local HORSE_ENTITY_GALLOP_ANIMS = {
-    -- Fastest gaits first â€” confirmed on KCD2 horse entities:
+    -- Fastest gaits first — confirmed on KCD2 horse entities:
     "relaxed_gallop", "relaxed_canter", "relaxed_run",
     -- Other candidates:
     "gallop", "canter", "run",
@@ -1755,7 +1755,7 @@ function KCD2MP_InterpTick()
 
                 if istate.isRiding then
                     -- One-time riding diagnostic when interp tick first sees this ghost riding.
-                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms â†’ only even counts seen)
+                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms → only even counts seen)
                     if not istate._rideFirstTick then
                         istate._rideFirstTick = true
                         local hd = KCD2MP.horseGhosts[id]
@@ -1775,7 +1775,7 @@ function KCD2MP_InterpTick()
                     end
 
                     -- Engine sync auto-assigns idle rider anim at ForceMount time.
-                    -- For gallop we must set it explicitly â€” engine does NOT auto-update.
+                    -- For gallop we must set it explicitly — engine does NOT auto-update.
                     -- ridingFallback: engine failed to mount, set all anims manually.
                     local isGallop = rendSpeed > 3.0
                     if istate.nativeMounted then
@@ -1843,8 +1843,8 @@ function KCD2MP_InterpTick()
                         horseData.renderR = hr
 
                         -- Play horse entity animation based on speed.
-                        -- relaxed_idle â†’ engine sync assigns matching rider idle.
-                        -- relaxed_gallop â†’ we explicitly set rider gallop above.
+                        -- relaxed_idle → engine sync assigns matching rider idle.
+                        -- relaxed_gallop → we explicitly set rider gallop above.
                         local horseAnim
                         if spd > 3.0 then
                             horseAnim = KCD2MP._horseEntityGallopAnim or KCD2MP._horseEntityWalkAnim
@@ -1982,7 +1982,7 @@ function KCD2MP_RemoveGhost(id)
     KCD2MP.labelCache[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
-    -- wrong (false). Re-probe on next riding ghost (free NPC â†’ correct results).
+    -- wrong (false). Re-probe on next riding ghost (free NPC → correct results).
     KCD2MP._ridingIdleAnim = nil
     KCD2MP._ridingGallopAnim = nil
 end
@@ -3196,7 +3196,7 @@ end
 -- ===== Sneak action handler (shared, installed by both hook paths) =====
 
 -- Toggle-style sneak actions (each press flips state).
--- NOTE: chat_init_with_focus is NOT sneak â€“ it's the focus/chat key (triggered by Tab/V).
+-- NOTE: chat_init_with_focus is NOT sneak – it's the focus/chat key (triggered by Tab/V).
 -- Stance is detected via player:GetStance() polling in KCD2MP_Exchange (reliable fallback).
 local SNEAK_TOGGLE_ACTIONS = {
     sneak_toggle=true, toggle_sneak=true,
