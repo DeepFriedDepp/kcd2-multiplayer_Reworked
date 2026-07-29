@@ -552,3 +552,36 @@ Do not start any of this before the runbook above has been run against the
 shipped pak â€” the text board is what exists, and it should be verified working
 before it is replaced.
 
+
+### Trap: a UTF-8 BOM silently kills the entire mod script
+
+Found on the first real play test of the shipped pak. Every `mp_*` console
+command reported "unknown command". The only evidence anywhere:
+
+```
+Loading and executing script file 'Scripts/Startup/kdcmp.lua'...
+[Warning] Validator: [Lua Error] Failed to execute file @scripts/startup/kdcmp.lua:
+  scripts/startup/kdcmp.lua:1: unexpected symbol near '<?>'
+[Error] Load of startup script file 'Scripts\Startup\kdcmp.lua' has failed
+```
+
+**Lua 5.1 cannot parse a UTF-8 byte order mark.** One BOM on line 1 means the
+whole file fails to compile: no mod init, no commands, no `[KCD2-MP]` lines at
+all. Nothing crashes and nothing else is logged, so from in-game it looks
+exactly like "the mod isn't installed".
+
+**How it got there:** PowerShell 5.1's `Set-Content`/`Out-File -Encoding utf8`
+writes a BOM. Any tool-assisted rewrite of `kdcmp.lua` can add one. The same
+operation also mojibaked existing comments, because `Get-Content` read the UTF-8
+source as ANSI before re-encoding it — arrows and em-dashes became `â†’` style
+sequences. Harmless to Lua (comments only) but it is real corruption, reversed
+with a cp1252 → UTF-8 round trip.
+
+**Guarded now:** `tools\Build-And-Install-Mod.ps1` refuses to pack a `.lua` that
+starts with a BOM and prints the fix. Always write Lua with
+`New-Object System.Text.UTF8Encoding($false)`, never `Set-Content -Encoding utf8`.
+
+**Diagnostic habit this reinforces:** when the mod appears absent in game, grep
+`kcd.log` for `Startup/kdcmp` *before* anything else. The load line and its error
+are always there, and they are decisive. The generic "no `[KCD2-MP]` lines" check
+is what surfaced it here.
