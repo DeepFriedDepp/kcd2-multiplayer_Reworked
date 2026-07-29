@@ -273,7 +273,7 @@ namespace KCDMP_launcher.Pages
             servers = fetchedServers;
             StateHasChanged();
 
-            var tasks = servers.Select(async server =>
+            var tasks = servers.Concat(customServers).Select(async server =>
             {
                 server.Ping = await NetService.SendPingServerAsync(server.Ip);
 
