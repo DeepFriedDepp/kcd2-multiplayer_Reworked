@@ -262,8 +262,95 @@ gambling — the outbound-detection problem again, this time with no confirmed
 call site at all). Recommend taking this to the R-gate rather than
 continuing to improvise further hooks tonight.
 
+### Ghidra brought in, `array_range<T>` recovered, and a clean, final negative on `C_Dice`
+
+With the human's help (installed Ghidra 12.1.2 + a Temurin JDK 21, both from
+official sources), ran headless auto-analysis
+(`support/analyzeHeadless -analysisTimeoutPerFile`) against `CrySystem.dll`
+(212 s) and wrote a Java `GhidraScript`
+(`DumpArrayRangeFuncs.java`) to decompile every function whose name matched
+`get_methods`/`get_properties`/`array_range`/`SetPauseWorldTime`. This is the
+proper version of the technique this project already used for `variant`,
+`argument` and `instance` — reading the ABI out of real disassembly instead
+of guessing — just with a real disassembler instead of `dumpbin`.
+
+**Result: `array_range<T>`'s layout is settled**, not guessed. Decompiling
+`rttr::type::get_methods()`/`get_properties()` (both overloads) shows the
+hidden sret buffer's first two 8-byte slots written directly as a raw
+`{begin, end}` pointer pair into a contiguous array of 8-byte elements —
+each element directly usable as a `Method::data` / `Property::data` value,
+no extra indirection. Everything past offset 0x10 belongs to an embedded,
+never-populated `default_predicate` functor (only relevant to the filtered
+overload, which this project never calls). Implemented as
+`kArrayRangeBufBytes` (96-byte over-allocated buffer, same rule as the
+associative-view buffers) plus a plain begin/end read in
+`rttr_abi.h`/`rttr_abi.cpp`, with `GetMethods`/`GetProperties` resolved by
+exact-suffix export matching (`@2@XZ` selects the no-filter overload out of
+each pair) and a new `probe_dice_class()` that asks rttr directly, by name,
+for every method and property `wh::playermodule::C_Dice` has — no
+name-guessing anywhere in this path.
+
+**Result of actually running it, live, against the game: `is_valid` is
+false.** `get_by_name("wh::playermodule::C_Dice")` resolves without
+faulting, but the type is **not RTTR-registered at all**
+(`kcdmp-native.log`: `DICECLS: wh::playermodule::C_Dice is NOT
+rttr-registered`). This is a clean negative, not a bug in the new code — the
+same shape of negative control this project already trusts elsewhere (a
+deliberately-bogus type name resolving invalid is how `ABI: validate()`
+proves the model isn't rubber-stamping garbage). `array_range` enumeration
+itself was never exercised against a real populated result because there was
+nothing to enumerate.
+
+**This closes the entire reflection-based path for `C_Dice`, definitively.**
+The class is real (proven by its one exported method) but was, deliberately
+or incidentally, never registered with rttr — meaning no amount of further
+`get_methods`/`get_properties`/`get_property_value` work can ever read it,
+regardless of tooling. Combined with the `SetPauseWorldTime` hook never
+firing during ordinary NPC gambling, the likeliest reading is that `C_Dice`
+belongs to a **different dice context than the one this project needs** — a
+scripted quest/narrative dice sequence (the `dice_gameLevel`/`dice_betType`/
+`SpokeWithDicePlayers`/`DicePlayersAreDead`-shaped enums found earlier in the
+static dump read like flowgraph glue for exactly that) — not the "walk up to
+any NPC and gamble" interaction the mod needs to support.
+
+**What Ghidra *did* deliver, and remains available for a future session:**
+a working headless pipeline (Ghidra + Temurin JDK 21, both installed) that
+can decompile arbitrary functions in any of these DLLs on demand. The next
+useful move with it, if this thread is picked back up, is not more work on
+`C_Dice` — it's finding what actually *does* run during ordinary NPC
+gambling, by locating and decompiling whatever code calls the reflected
+`C_UIDice::ShowDiceScore` (R1's presentation-only sink). That caller is the
+real target; `C_Dice` was a plausible-looking lead that this session's
+evidence now closes.
+
 ---
 
 ## R-gate: Tier verdict
 
-Not reached. Gates all builds above Tier II per the WO.
+**R2 (find the logical dice): exhausted for this session, without success.**
+Every avenue tried — pull-based reflection across every reachable root
+(R1), the one concrete hookable call site found (`SetPauseWorldTime`), and
+full RTTR method/property enumeration once a real disassembler was
+available — reached a clean negative. Read `docs/WO-6-native-dice-findings.md`
+in full for the evidence trail; nothing here is a guess or an absence of
+trying.
+
+**Tier I and Tier II are unaffected and unblocked.** Neither depends on
+reading the native minigame's state: Tier I is invite/accept/teleport
+plumbing on the existing session framework, Tier II is a fully
+relay-authoritative overlay match using WO-5's already-proven engine and
+wire protocol, rendered by this mod's own code. Both can be built now.
+
+**Tier III+ is not proven unreachable, but is not reachable by anything
+tried this session.** The one live, evidence-backed idea for a next attempt
+is decompiling the real caller of `C_UIDice::ShowDiceScore` (see above) with
+the now-working Ghidra pipeline, rather than continuing to chase `C_Dice`.
+That is genuinely open-ended reverse-engineering work, not a bounded task —
+recommend treating Tier III+ as a distinct, separately-scoped follow-up
+rather than a blocker for shipping Tier I/II.
+
+**Human decision needed:** build Tier I/II now (this session or next), and
+treat Tier III+ research as its own follow-up whenever there's appetite for
+more reverse engineering — or keep pushing on `ShowDiceScore`'s caller
+tonight. Per the WO's own instruction, stopping here rather than building
+past Tier II without that decision.

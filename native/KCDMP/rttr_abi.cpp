@@ -96,6 +96,32 @@ bool call_game_interface(GetGameInterface fn, void** out) {
     }
 }
 
+bool call_get_methods(GetMethods fn, const Type* self, void* ret) {
+    __try {
+        fn(self, ret);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool call_get_properties(GetProperties fn, const Type* self, void* ret) {
+    __try {
+        fn(self, ret);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool call_property_is_valid(PropertyIsValid fn, const Property* self, bool* out) {
+    __try { *out = fn(self); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool call_property_name(PropertyGetName fn, const Property* self, std::string_view* out) {
+    __try { fn(self, out); return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 // A heap/static pointer in this process. Rejects null, small integers and
 // non-canonical addresses -- enough to tell "the layout was wrong and we read
 // a type handle or a float" from "this is an object".
@@ -176,6 +202,16 @@ bool resolve(Api& api) {
                            "AEAV012@XZ"));
     api.iter_not_equal = reinterpret_cast<IterNotEqual>(
         find_export(exports, "??9iterator@variant_associative_view@rttr@@QEBA"));
+
+    // Two overloads each (no-filter / with enum_flags<filter_item>); select
+    // the no-filter one by its exact suffix -- the with-filter overload ends
+    // "...@2@V?$enum_flags@...@@Z" instead.
+    api.get_methods = reinterpret_cast<GetMethods>(
+        find_export_suffix(exports, "?get_methods@type@rttr@@", "@2@XZ"));
+    api.get_properties = reinterpret_cast<GetProperties>(
+        find_export_suffix(exports, "?get_properties@type@rttr@@", "@2@XZ"));
+    api.property_get_name = reinterpret_cast<PropertyGetName>(
+        find_export(exports, "?get_name@property@rttr@@"));
 
     // The root object lives in a different module.
     if (HMODULE shared = GetModuleHandleA("Shared.dll")) {
@@ -1523,6 +1559,74 @@ void probe_method_wrapper() {
             if (!exec) break;   // past the end of the vtable
         }
     }
+}
+
+void probe_dice_class() {
+    Api api{};
+    if (!resolve(api)) { logf("DICECLS: resolve incomplete"); return; }
+
+    const std::string_view name{"wh::playermodule::C_Dice"};
+    Type t{};
+    if (!call_get_by_name(api.get_by_name, &t, &name)) {
+        logf("DICECLS: FAULT in get_by_name"); return;
+    }
+    bool valid = false;
+    if (!call_is_valid(api.type_is_valid, &t, &valid) || !valid) {
+        logf("DICECLS: wh::playermodule::C_Dice is NOT rttr-registered "
+             "(get_by_name resolved but is_valid=false, or faulted) -- "
+             "this class is real (proven via its exported SetPauseWorldTime) "
+             "but not reachable through rttr at all");
+        return;
+    }
+    logf("DICECLS: wh::playermodule::C_Dice IS rttr-registered");
+
+    auto dump = [&](const char* label, bool is_method) {
+        alignas(16) unsigned char buf[kArrayRangeBufBytes]{};
+        bool ok = is_method
+            ? call_get_methods(api.get_methods, &t, buf)
+            : call_get_properties(api.get_properties, &t, buf);
+        if (!ok) { logf("DICECLS: FAULT calling get_%s", label); return; }
+
+        void* begin = nullptr; void* end = nullptr;
+        std::memcpy(&begin, buf, 8);
+        std::memcpy(&end,   buf + 8, 8);
+        if (!begin || !end || begin > end) {
+            logf("DICECLS: get_%s returned an implausible range begin=%p end=%p",
+                 label, begin, end);
+            return;
+        }
+        const size_t count = (reinterpret_cast<unsigned char*>(end) -
+                              reinterpret_cast<unsigned char*>(begin)) / 8;
+        logf("DICECLS: %zu %s(s):", count, label);
+
+        for (auto* p = reinterpret_cast<unsigned char*>(begin); p < end; p += 8) {
+            void* data = nullptr;
+            std::memcpy(&data, p, 8);
+            if (is_method) {
+                Method m{data};
+                bool mv = false;
+                call_method_is_valid(api.method_is_valid, &m, &mv);
+                if (!mv) { logf("DICECLS:   (invalid method entry)"); continue; }
+                std::string_view mname{}, msig{};
+                call_method_string(api.method_get_name, &m, &mname);
+                call_method_string(reinterpret_cast<MethodGetName>(api.method_get_signature), &m, &msig);
+                logf("DICECLS:   method %.*s   sig=\"%.*s\"",
+                     static_cast<int>(mname.size()), mname.data(),
+                     static_cast<int>(msig.size()),  msig.data());
+            } else {
+                Property pr{data};
+                bool pv = false;
+                call_property_is_valid(api.property_is_valid, &pr, &pv);
+                if (!pv) { logf("DICECLS:   (invalid property entry)"); continue; }
+                std::string_view pname{};
+                call_property_name(api.property_get_name, &pr, &pname);
+                logf("DICECLS:   property %.*s", static_cast<int>(pname.size()), pname.data());
+            }
+        }
+    };
+
+    dump("method", true);
+    dump("property", false);
 }
 
 void probe_attribution() {

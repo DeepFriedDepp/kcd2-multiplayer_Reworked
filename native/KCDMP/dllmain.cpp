@@ -19,6 +19,7 @@ void probe_take_damage();
 void probe_attribution();
 void probe_faction();
 void probe_method_wrapper();
+void probe_dice_class();
 }
 
 namespace {
@@ -62,6 +63,7 @@ DWORD WINAPI plugin_main(LPVOID) {
     const bool ran = kcdmp::main_thread::run_sync([] {
         kcdmp::rttr::walk_to_soul();
         kcdmp::rttr::probe_method_wrapper();
+        kcdmp::rttr::probe_dice_class();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");

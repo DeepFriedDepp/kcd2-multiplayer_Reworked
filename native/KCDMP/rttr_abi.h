@@ -141,6 +141,9 @@ using MethodGetSignature = void* (*)(const Method* self, std::string_view* ret);
 // bool rttr::property::is_valid() const
 using PropertyIsValid = bool (*)(const Property* self);
 
+// std::string_view rttr::property::get_name() const
+using PropertyGetName = void* (*)(const Property* self, std::string_view* ret);
+
 // rttr::variant rttr::type::get_property_value(std::string_view, rttr::instance) const
 // Member returning a class in memory: RCX=this, RDX=&ret, R8=&name, R9=&instance.
 using GetPropertyValue = void* (*)(const Type* self, Variant* ret,
@@ -189,6 +192,37 @@ using Invoke3 = void* (*)(const Method* self, Variant* ret, const void* instance
                           const void* a0, const void* a1, const void* a2);
 using Invoke2 = void* (*)(const Method* self, Variant* ret, const void* instance,
                           const void* a0, const void* a1);
+
+// rttr::array_range<rttr::method>, rttr::array_range<rttr::property> --
+// NOT modelled as a full type; only the first 16 bytes are used.
+//
+// Evidence: rttr::type::get_methods() / get_properties(), decompiled with
+// Ghidra 12.1.2 against CrySystem.dll. Both write their hidden sret buffer
+// the same way:
+//   ret[0] = lVar1;                                  // begin
+//   ret[1] = lVar1 + ((lVar2 - lVar1) >> 3) * 8;      // end
+// where lVar1/lVar2 are a std::vector-shaped {begin,end} pair read out of
+// the type's own internal data (vtable slot 0xB8, then offsets 0x68/0x70 for
+// methods or 0x50/0x58 for properties). The array in [begin,end) holds one
+// 8-byte element per entry -- exactly the single-pointer shape already
+// established for Method/Property, so each element can be read directly as
+// a Method::data / Property::data value, no extra indirection.
+//
+// Bytes past offset 0x10 belong to an embedded default_predicate functor
+// (a small-buffer std::function-like object) plus a trailing field at
+// offset 0x48 -- both are filter-related, both are never populated because
+// this project only ever calls the no-filter overload, and neither is read.
+// The buffer just needs to be big enough for the callee to write into
+// safely, over-allocated per the same rule as the associative-view buffers
+// below: bigger than needed is always safe, smaller is the only failure mode.
+constexpr size_t kArrayRangeBufBytes = 96;   // >= 0x50 touched, rounded up
+
+// rttr::array_range<rttr::method> rttr::type::get_methods() const
+// rttr::array_range<rttr::property> rttr::type::get_properties() const
+// Member returning a class in memory: RCX=this, RDX=&ret (the no-filter
+// overload takes no other arguments).
+using GetMethods    = void* (*)(const Type* self, void* ret);
+using GetProperties = void* (*)(const Type* self, void* ret);
 
 // --- associative container traversal ---------------------------------------
 //
@@ -247,6 +281,9 @@ struct Api {
     ViewEnd            view_end             = nullptr;
     IterPreInc         iter_preinc          = nullptr;
     IterNotEqual       iter_not_equal       = nullptr;
+    GetMethods         get_methods          = nullptr;
+    GetProperties      get_properties       = nullptr;
+    PropertyGetName    property_get_name    = nullptr;
 
     bool complete() const {
         return get_by_name && type_is_valid && get_method && get_property &&
@@ -256,7 +293,8 @@ struct Api {
                argument_from_variant && invoke1 && invoke3 && invoke2 &&
                create_assoc_view && view_is_valid && view_get_size &&
                view_begin && view_dtor && iter_deref && iter_dtor &&
-               view_end && iter_preinc && iter_not_equal;
+               view_end && iter_preinc && iter_not_equal &&
+               get_methods && get_properties && property_get_name;
     }
 };
 
@@ -298,6 +336,13 @@ void probe_faction();
 /// exported, so this is the route to an address we can detour for the OUTBOUND
 /// direction -- detecting a hit our own player landed. Read-only.
 void probe_method_wrapper();
+
+/// WO-6 R2: enumerate every rttr-registered method and property of
+/// wh::playermodule::C_Dice by name, via type::get_methods()/get_properties()
+/// -- no name-guessing, no hooking, just asking rttr what is actually there.
+/// Read-only. Logs everything found, including a negative "not
+/// rttr-registered" result if get_by_name fails.
+void probe_dice_class();
 
 // ---------------------------------------------------------------------------
 // Outbound detection (WO-4).
