@@ -588,6 +588,46 @@ public partial class GameBridge(ClientConfig config)
                 break;
             }
 
+            case "dice_intent":
+            {
+                // The in-game board asked for something (WO-6). Before this the
+                // only way to send an intent was the launcher window over IPC;
+                // now the game itself is the input surface, so intents ride the
+                // same log-tail event channel invite_accept already uses.
+                //
+                // Nothing here validates the request: the relay owns the
+                // FarkleGame and answers with a snapshot or a DiceError. Sending
+                // an illegal intent is safe by design.
+                var dice = Dice;
+                var session = interactions.Current;
+                if (dice is null || session is null || session.Kind != InteractionKind.Dice)
+                {
+                    Console.WriteLine("[dice] ignoring intent with no dice session in play");
+                    break;
+                }
+
+                var bits = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var verb = bits.Length > 0 ? bits[0].ToLowerInvariant() : "";
+                switch (verb)
+                {
+                    case "roll":    _ = dice.RollAsync(session.SessionId); break;
+                    case "bank":    _ = dice.BankAsync(session.SessionId); break;
+                    case "forfeit": _ = dice.ForfeitAsync(session.SessionId); break;
+                    case "keep":
+                        // "keep <mask>" -- a 6-bit selection over the snapshot's
+                        // FreeFaces, built by the board from the player's marks.
+                        if (bits.Length > 1 && byte.TryParse(bits[1], out byte mask))
+                            _ = dice.KeepAsync(session.SessionId, mask);
+                        else
+                            Console.WriteLine($"[dice] malformed keep mask '{arg}'");
+                        break;
+                    default:
+                        Console.WriteLine($"[dice] unknown intent '{arg}'");
+                        break;
+                }
+                break;
+            }
+
             default:
                 Console.WriteLine($"[event] ignoring unknown game event '{name}'");
                 break;
@@ -608,17 +648,28 @@ public partial class GameBridge(ClientConfig config)
             string who = _ghostNames.TryGetValue(invite.FromGhostId, out var n) ? n : $"player {invite.FromGhostId}";
             Console.WriteLine($"[interaction] {who} invites you to {invite.Kind} (session {invite.SessionId})");
 
-            // Dice presentation is a launcher window, not Scaleform (settled,
-            // see NATIVE-PLUGIN-findings.md) -- DiceIpcState surfaces this
-            // invite to the launcher instead. Other kinds keep the in-game prompt.
-            if (invite.Kind != InteractionKind.Dice)
-                _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\") end");
+            // Every kind now prompts in game. Dice used to be excluded here
+            // because its UI lived in the launcher window; that window is
+            // retired (WO-6), so there is no longer anywhere else for a dice
+            // invite to appear.
+            _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\") end");
         };
 
         interactions.SessionStarted += session =>
         {
             Console.WriteLine($"[interaction] {session.Kind} session {session.SessionId} started as {session.Role}");
             _ = ExecLuaAsync($"if KCD2MP_HideInvite then KCD2MP_HideInvite() end");
+
+            if (session.Kind == InteractionKind.Dice)
+            {
+                // Open the board now so the panel is already on screen when the
+                // first snapshot lands, rather than popping in with it. Role and
+                // peer name are session facts and are not carried on DiceState;
+                // the target score arrives with the first snapshot and corrects
+                // the placeholder.
+                string peer = _ghostNames.TryGetValue(session.PeerGhostId, out var pn) ? pn : "opponent";
+                _ = ExecLuaAsync($"if KCD2MP_DiceOpen then KCD2MP_DiceOpen({(byte)session.Role},\"{Escape(peer)}\",0) end");
+            }
         };
 
         interactions.SessionEnded += (sid, reason) =>
@@ -627,18 +678,27 @@ public partial class GameBridge(ClientConfig config)
             _ = ExecLuaAsync($"if KCD2MP_HideInvite then KCD2MP_HideInvite() end");
             _ = ExecLuaAsync($"if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"{reason}\") end");
 
-            // Harmless no-op if this wasn't a dice session -- the in-game hint
-            // is already unset in that case.
+            // Harmless no-ops if this wasn't a dice session. DiceEnd already
+            // ran for a match that finished normally, so this is what closes the
+            // board after a decline, a timeout or a peer disconnect.
             _ = ExecLuaAsync("if KCD2MP_ShowDiceTurn then KCD2MP_ShowDiceTurn(nil) end");
+            _ = ExecLuaAsync("if KCD2MP_DiceClose then KCD2MP_DiceClose() end");
         };
     }
 
     /// <summary>
-    /// Optional in-game "whose turn" hint for dice (WO-5) -- the launcher
-    /// window is the actual dice UI (settled: presentation is a launcher
-    /// window, not Scaleform), so this is only a glance-without-alt-tabbing
-    /// convenience, kept separate from <see cref="WireInteractionFeedback"/>
-    /// since it is specific to one interaction kind rather than the whole layer.
+    /// Feeds the in-game dice board (WO-6).
+    ///
+    /// This replaced a one-line "whose turn" hint: the launcher's DiceWindow was
+    /// the dice UI until WO-6 retired it, and the board drawn by kdcmp.lua is
+    /// now the whole presentation. What changed is only how much of the snapshot
+    /// gets forwarded -- this class still holds no dice state of its own and
+    /// still never decides anything, exactly as before.
+    ///
+    /// Cost per update: one queued Lua statement of roughly 90 bytes, batched
+    /// onto the same ExecuteString flush ghost positions already ride. A Farkle
+    /// turn produces a handful of snapshots, so at 2-4 players this is far below
+    /// the noise floor of the position stream (50 Hz per ghost).
     /// </summary>
     private void WireDiceFeedback(DiceClient dice, InteractionClient interactions)
     {
@@ -647,18 +707,56 @@ public partial class GameBridge(ClientConfig config)
             var session = interactions.Current;
             if (session is null || session.Kind != InteractionKind.Dice) return;
 
-            bool myTurn = (session.Role == SessionRole.Initiator && snapshot.CurrentPlayerRole == 0)
-                       || (session.Role == SessionRole.Acceptor && snapshot.CurrentPlayerRole == 1);
-            string peer = _ghostNames.TryGetValue(session.PeerGhostId, out var n) ? n : "opponent";
-            string text = myTurn ? "Dice: your turn" : $"Dice: {peer}'s turn";
-            _ = ExecLuaAsync($"if KCD2MP_ShowDiceTurn then KCD2MP_ShowDiceTurn(\"{Escape(text)}\") end");
+            // Faces go over as CSV rather than a Lua table literal: it keeps the
+            // statement short for the batcher and the Lua side parses it with one
+            // gmatch. Empty string means no dice in that row.
+            string free = string.Join(",", snapshot.FreeFaces);
+            string kept = string.Join(",", snapshot.KeptFaces);
+
+            _ = ExecLuaAsync(
+                $"if KCD2MP_DiceState then KCD2MP_DiceState({snapshot.CurrentPlayerRole}," +
+                $"{snapshot.ScoreInitiator},{snapshot.ScoreAcceptor},{snapshot.TurnTotal}," +
+                $"{snapshot.TargetScore},{(byte)snapshot.Phase},\"{free}\",\"{kept}\") end");
+        };
+
+        dice.IntentRejected += rejection =>
+        {
+            // The relay refused something this player asked for. The board says
+            // why and shakes; state is unchanged, so nothing else to do.
+            Console.WriteLine($"[dice] intent rejected: {rejection.Reason}");
+            _ = ExecLuaAsync($"if KCD2MP_DiceError then KCD2MP_DiceError(\"{Escape(Humanise(rejection.Reason))}\") end");
         };
 
         dice.MatchEnded += result =>
         {
             _ = ExecLuaAsync("if KCD2MP_ShowDiceTurn then KCD2MP_ShowDiceTurn(nil) end");
+
+            var session = interactions.Current;
+            bool won = session is not null
+                && ((session.Role == SessionRole.Initiator && result.Outcome == DiceOutcome.InitiatorWon)
+                 || (session.Role == SessionRole.Acceptor  && result.Outcome == DiceOutcome.AcceptorWon));
+
+            _ = ExecLuaAsync(
+                $"if KCD2MP_DiceEnd then KCD2MP_DiceEnd(\"{(won ? "win" : "lose")}\"," +
+                $"{result.ScoreInitiator},{result.ScoreAcceptor}) end");
         };
     }
+
+    /// <summary>
+    /// A reject reason in words the board can show. Kept here rather than in
+    /// <see cref="DiceClient"/> so that class stays presentation-free.
+    /// </summary>
+    private static string Humanise(DiceRejectReason reason) => reason switch
+    {
+        DiceRejectReason.NotYourTurn          => "not thy turn",
+        DiceRejectReason.WrongPhase           => "not now",
+        DiceRejectReason.EmptyKeep            => "set aside at least one die",
+        DiceRejectReason.KeepIndexOutOfRange  => "no such die",
+        DiceRejectReason.InvalidKeepSelection => "those dice score nothing",
+        DiceRejectReason.NothingToBank        => "nothing to bank",
+        DiceRejectReason.GameAlreadyOver      => "the match is done",
+        _                                     => "not allowed",
+    };
 
     /// <summary>Escapes a string for embedding in a double-quoted Lua literal.</summary>
     private static string Escape(string s) =>

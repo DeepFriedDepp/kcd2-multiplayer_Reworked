@@ -83,6 +83,12 @@ namespace KCDMP_launcher.Models
         // Where the locally-running agent's dice IPC listener binds (see
         // dotnet/KcdMp.Client/DiceIpcServer.cs). Local-machine only, unlike
         // ServerInfoPort -- there is no per-relay value to guess here.
+        //
+        // WO-6 retired the launcher's dice window: dice is played in game now,
+        // and nothing in this process reads this any more. Kept as a settings
+        // field so an existing settings.json still round-trips unchanged, and
+        // because the agent-side endpoint itself is still there as a debug
+        // mirror -- see docs/WO-6-progress.md for that decision.
         public int DiceIpcPort { get; set; } = 5901;
 
         public string Language { get; set; } = "en";

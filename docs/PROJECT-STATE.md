@@ -89,13 +89,40 @@ fight *"is not achievable on the current transport."*
 The no-push-channel problem is solved twice: log-tail out (WO-1) and the DLL
 named pipe (shared combat). Any new feature should assume a push channel exists.
 
-### §5.1 "Dice" presentation options — decided and built
+### §5.1 "Dice" presentation options — REVERSED in WO-6
 
-Recommendation (b), the launcher window, is what got built (`WO-5-dice.md`).
-The native plugin still does **not** make Scaleform (c) any more tractable —
-the GUI module's reflected surface was never examined. A one-line `DrawText`
-turn hint (a) also exists, but only as a glance-without-alt-tabbing
-convenience alongside the launcher window, not as the dice UI itself.
+Recommendation (b), the launcher window, is what WO-5 built (`WO-5-dice.md`).
+**WO-6 retired it.** `DiceWindow.razor` and the launcher's IPC client are
+deleted; the dice UI is now an in-game overlay drawn by `kdcmp.lua`, and the
+launcher is only a launcher. The agent-side `DiceIpcServer` survives as a
+documented headless-test surface, not as a UI channel.
+
+This document previously said the native plugin "does not make Scaleform (c)
+any more tractable — the GUI module's reflected surface was never examined."
+**That statement was about reflection, and it conflated two different
+questions.** Corrected:
+
+- *Reading* the native dice minigame's live state is closed, with strong
+  evidence (`WO-6-native-dice-findings.md`). Unchanged.
+- *Pushing* our own values into the game's UI is **wide open, and cheaper than
+  anything this project guessed.** CryEngine's Flash UI system is intact and
+  reachable from our Lua sandbox: `UIAction.CallFunction`, `SetVariable`,
+  `SetArray`, `SetPos`/`Scale`/`Alpha`/`Visible`, `GotoAndPlay` and
+  `RegisterElementListener` are all live (verified in game, 2026-07-29). The
+  game's own `hud` element already exposes `ShowDiceScore`, `AddDiceSelector`,
+  `ShowTutorial` (HTML), `ShowInfoText` and `ShowSkillCheckResult`, and
+  `ApseModalDialog` exposes a real yes/no modal with callbacks.
+
+Full evidence and the effort/risk of each route: `WO-6-visual-capability.md`.
+
+**The single most useful thing found in WO-6, for any future work:** the
+Modding Tools ship **Warhorse's own Lua scriptbind reference** at
+`Tools/modding/docs/script_bind/script_bind.zip` (dated 2025-01-14, 5,014
+pages). It is authoritative for every `System.*`, `UIAction.*`, `Script.*` and
+entity binding, and this project had never opened it. Look there **first**
+before probing or guessing an API — but still confirm against the DLL's own
+scriptbind registration strings, because the docs describe a source tree and
+list at least one method (`System.DrawTriStrip`) this build does not register.
 
 ---
 
@@ -251,14 +278,25 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   *(This bullet previously claimed the launcher still booted the base game and
   never started the agent. That was already false when written — `54af330`
   precedes the commit that added this document.)*
-- **Dice (WO-5) real-game verification.** The relay/protocol/engine layers are
-  proven headless (`Test-Dice.ps1`, the Farkle xUnit suite), and the agent-side
-  IPC bridge to the launcher was verified with two real `KcdMpClient.exe`
-  processes and a synthetic wire peer. Not verified: the actual Blazor
-  rendering (no way to drive Photino's webview headlessly), the in-game
-  keybind (action names are unverified guesses — same caveat WO-2's
-  accept/decline already carried), and a real two-human match at real
-  latency. See `WO-5-dice.md`.
+- **Dice (WO-5/WO-6) real-game verification.** The relay/protocol/engine layers
+  are proven headless (`Test-Dice.ps1`, the Farkle xUnit suite), and the
+  agent-side IPC was verified with two real `KcdMpClient.exe` processes and a
+  synthetic wire peer. The Blazor-rendering gap is now moot — that window is
+  deleted (WO-6). Still not verified: **how the in-game overlay actually looks
+  on screen** (`mp_dice_demo` drives a full scripted match for exactly this
+  review — see the "NEEDS THE GAME" runbook at the end of `WO-6-progress.md`),
+  which of the native KCD2 panels render when pushed from outside their normal
+  context (`tools/Probe-Visual.ps1`), the in-game keybinds (action names are
+  unverified guesses, same caveat as WO-2's accept/decline — but now gated on
+  the board being open, so a wrong guess is a dead key rather than a stray
+  action), and a real two-human match at real latency. See `WO-5-dice.md`,
+  `WO-6-overlay-design.md`, `WO-6-visual-capability.md`.
+
+- **Dice tables are identifiable — this one is CLOSED, not open.** Entity class
+  `DiceInteractor` (registered by `Scripts.pak`'s `Entities/DiceInteractor.ent`).
+  `System.GetEntitiesByClass("DiceInteractor")` returned nine world tables with
+  the player standing 1.2 m from one and the next 512.9 m away. No proximity
+  heuristic and no config-flag fallback was needed.
 - **Ghost behaviour-tree trade-off.** `KCD2MP_SpawnGhost` passes
   `esModularBehaviorTree=""` deliberately so the scheduler does not fight
   `ForceMount` during riding. A ghost *with* a tree genuinely perceives (it

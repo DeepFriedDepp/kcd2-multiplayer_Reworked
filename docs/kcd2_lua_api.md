@@ -183,12 +183,96 @@ player.soul:GetSkillLevel("thievery")
 
 ---
 
-## UIAction
+## UIAction — CryEngine's Flash UI, and it is fully live
+
+> **Look here first for any Lua API question:** the KCD2 Modding Tools ship
+> Warhorse's own generated scriptbind reference at
+> `Tools/modding/docs/script_bind/script_bind.zip` (5,014 pages, dated
+> 2025-01-14). It is authoritative for `System.*`, `UIAction.*`, `Script.*` and
+> the entity bindings. Still cross-check against the shipping DLL's scriptbind
+> registration strings — the docs describe a source tree and list at least one
+> method (`System.DrawTriStrip`) this build does not register.
+
+Verified present in the mod's Lua sandbox, 2026-07-29:
 
 ```lua
-UIAction.RegisterElementListener(state, element, -1, "OnShow"/"OnHide", "callbackName")
--- Known elements: "Menu", "ApseModalDialog"
+UIAction.CallFunction( elementName, instanceID, functionName, [arg1], [arg2], ... )
+UIAction.ShowElement( elementName, instanceID )
+UIAction.HideElement( elementName, instanceID )
+UIAction.SetVariable( elementName, instanceID, varName, value )
+UIAction.SetArray( elementName, instanceID, arrayName, luaTable )
+UIAction.SetPos( elementName, instanceID, movieClipName, vec3 )
+UIAction.SetScale / SetRotation / SetAlpha / SetVisible   -- same shape
+UIAction.GotoAndPlay( elementName, instanceID, movieClipName, frame )
+UIAction.RegisterElementListener( table, elementName, instanceID, eventName, callbackName )
+-- callback form: Callback(elementName, instanceId, eventName, argTable)
+UIAction.UnregisterElementListener( table, elementName )
 ```
+
+`instanceID` is `-1` for all instances; an id that does not exist is created.
+
+**Elements and their functions are declared in `Libs/UI/UIElements/*.xml`**
+inside `Data/IPL_GameData.pak` — 28 of them, each binding named functions to a
+`.gfx`. That is the list of everything callable.
+
+**Trap:** `HUD.xml` declares `<UIElement name="hud">` — **lowercase**. Passing
+`"HUD"` is a silent no-op, not an error.
+
+Useful ones (from `HUD.xml` / `ApseModalDialog.xml`):
+
+```lua
+UIAction.CallFunction("hud", -1, "ShowInfoText", text, priority, durationMs, background)
+UIAction.CallFunction("hud", -1, "ShowNotification", text)
+UIAction.CallFunction("hud", -1, "ShowTutorial", id, htmlText, durationMs, inDialogue, priority, layout, actionHint, overlayLink)
+UIAction.CallFunction("hud", -1, "ShowSkillCheckResult", name, result)  -- 0 fail, 1 success
+UIAction.CallFunction("hud", -1, "ShowDiceScore", target, playerName, curP, totP, selP,
+                      badgePName, badgePCur, badgePTot, curN, totN, selN, badgeNName, badgeNCur, badgeNTot)
+UIAction.CallFunction("hud", -1, "AddDiceSelector", id, x, y, isPlayer)   -- x,y in 1920x1080 space
+UIAction.CallFunction("ApseModalDialog", -1, "OpenQuestionDialog", question, actionConfirm, actionCancel, hintConfirm, hintCancel)
+```
+
+Whether any of these render when pushed from **outside** their normal game
+context is a separate question — see `docs/WO-6-visual-capability.md`.
+
+Older note, still true: `UIAction.RegisterElementListener(state, element, -1,
+"OnShow"/"OnHide", "callbackName")`, elements `"Menu"`, `"ApseModalDialog"`.
+
+## Drawing from Lua
+
+Registered by `CScriptBind_System` in this build (checked against
+`CryScriptSystem.dll`'s own registration table, then confirmed live):
+
+```lua
+System.DrawText( x, y, text, font, size, r, g, b )     -- screen space
+System.DrawLabel( vPos, fSize, text, r, g, b, alpha )  -- world space
+System.Draw2DLine( p1x, p1y, p2x, p2y, r, g, b, alpha )
+System.DrawLine( p1, p2, r, g, b, alpha )              -- world space
+System.SetScissor( x, y, w, h )
+System.ProjectToScreen( point )
+System.GetViewport()   -- returns a TABLE {x, y, width, height} -- NOT four values
+```
+
+- **There is no image / sprite / texture draw primitive.** Confirmed negative.
+- **`System.DrawTriStrip` is documented but not registered** — returns `nil`.
+- Fonts live in `Engine/Engine.pak` under `Fonts/`: `default`, `hud`, `console`
+  (all VeraMono) and **`subtitles`, which is `AlexanderQuill.ttf`** — the game's
+  medieval quill hand, with a built-in drop-shadow pass. Pass `"subtitles"` as
+  the `font` argument.
+- `System.DrawText`'s arity in this build is **unverified**: `kdcmp.lua`
+  historically called the 4-argument form `(x, y, text, size)`, which under the
+  documented signature would put that number in the `font` slot.
+
+## Dice tables
+
+```lua
+System.GetEntitiesByClass("DiceInteractor")                    -- every loaded table
+System.GetEntitiesInSphereByClass(pos, radius, "DiceInteractor")
+System.GetNearestEntityByClass(pos, radius, className)
+```
+
+`DiceInteractor` is the in-world dice board (registered by `Scripts.pak`'s
+`Entities/DiceInteractor.ent`); instances are named
+`Table/table_diceN_<guid>`. `DiceMinigameCup` is the cup. Verified live.
 
 ---
 

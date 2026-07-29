@@ -4,8 +4,25 @@ using System.Text.Json;
 namespace KcdMp.Client;
 
 /// <summary>
-/// The only channel between this agent and KCDMP_launcher. Nothing connected
-/// them before WO-5: the launcher starts the agent as a bare subprocess and
+/// A localhost debug mirror of this agent's dice state.
+///
+/// WO-6 NOTE ON ITS ROLE. This was built as the channel to KCDMP_launcher's
+/// dice window; that window is gone (dice is played in game now, see
+/// docs/WO-6-overlay-design.md) and nothing in the launcher polls this any
+/// more. It is deliberately KEPT rather than deleted, for one concrete reason:
+/// it is the only way to observe a real agent's dice state without a running
+/// game, and that is exactly how WO-5 verified the agent-side dice code with
+/// two real KcdMpClient processes and a synthetic wire peer (WO-5-dice.md,
+/// "What was verified"). Deleting it would delete a proven headless test
+/// surface to save an idle HttpListener on loopback.
+///
+/// So: not half-wired, deliberately unwired on the launcher side. If it ever
+/// needs to go, the WO-5 IPC smoke test goes with it.
+///
+/// The original rationale for the shape below, unchanged:
+///
+/// Nothing connected the two processes before WO-5: the launcher starts the
+/// agent as a bare subprocess and
 /// never reads or writes anything from it afterward, and the two are meant to
 /// work when started completely independently too ("a manually started
 /// launcher beside a manually started agent"), which rules out anything
