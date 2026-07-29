@@ -283,3 +283,14 @@ netsh advfirewall firewall delete rule name="KCD2MP Relay 7778"
 ## Dev Notes
 
 To rebuild the mod pak after editing Lua scripts, use [KCD2-PAK](https://github.com/7H3LaughingMan/KCD2-PAK).
+
+## License and Provenance
+
+Licensed under the [GNU General Public License v3.0](LICENSE).
+
+This repository is a fork of `marczukmichal/kcd2-multiplayer`, continued here
+with the original developer's permission, including permission to upstream
+changes back if the two projects converge. The upstream repository currently
+carries no license of its own — that is a fact about the upstream project,
+not a claim that it is itself GPL-licensed. This fork's own code, from the
+point of forking onward, is licensed under GPLv3 as stated above.
