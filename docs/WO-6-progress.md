@@ -394,3 +394,161 @@ produces.
 - **The frame cost of ~300 `Draw2DLine` calls per tick.** Reasoned, not measured.
   `KCD2MP.dice.groundStep` is the knob if it ever shows up.
 
+
+---
+
+## Session 2, part 2 â€” the vector renderer failed; the game's own panel shipped
+
+Appended after the first live review. The runbook above is superseded in one
+respect: `mp_dice_demo` is still the right entry point, but the board is no
+longer drawn by us.
+
+### What the human saw, and what it proved
+
+First live run: **nothing rendered at all.** Diagnosed from the log rather than
+guessed â€” `labelRunning=false` while `diceOpen=true`. The board's draw loop was
+hung off `KCD2MP_LabelTick`, which only starts when the agent calls
+`KCD2MP_StartInterp`; with no agent running, the state machine ran perfectly and
+painted nothing. My bug. `KCD2MP_DiceClose` had the same dependency, so the board
+also could not close. Both fixed: the board owns its own lifecycle.
+
+Second live run, with a render loop forced on: **only text appeared.** That
+turned out not to be a bug at all â€”
+
+**`System.Draw2DLine` renders nothing from Lua in this build.** Registered,
+callable, silent; `r_enableAuxGeom` and `r_AuxGeom` both already `1`; a red
+pixel-space box and a green 0..1-space box drawn together in a live 28 fps loop
+produced neither, while `DrawText` in the same frames rendered fine. The entire
+vector design â€” frame, dice, pips, rules, and most of the motion table in
+`WO-6-overlay-design.md` â€” was built on a primitive that does not work.
+
+Third instance of "registered but inert" in this project, after `DrawTriStrip`
+and Lua writes. **A scriptbind entry proves nothing; only observed effect does.**
+
+### What replaced it, and why it is better
+
+The board is now HTML pushed into the game's own tutorial panel:
+`UIAction.CallFunction("hud", -1, "ShowTutorial", id, html, ...)`. A gilded
+gothic frame around illuminated parchment, rendered by the game, with full
+control of colour, weight, size and typeface â€” including `Manuscript`, a real
+blackletter hand. We supply markup; Warhorse supplies the art. This is a better
+outcome than the panel I designed, and it cost less.
+
+Full capability table, verified negatives, the 774-codepoint glyph inventory
+extracted from `gfxfontlib_glyphs.gfx`, and every trap are in the CORRECTION
+section of `docs/WO-6-visual-capability.md`. The headline traps:
+
+- `ShowTutorial` **queues, it does not replace** â€” always `HideTutorial(id)` first.
+- `hud.ShowDiceScore` is **inert** outside the native minigame.
+- `<img src='img://...'>` parses but **never resolves** in this field, including a
+  path copied verbatim out of `hud.gfx` â€” the text field has no image loader.
+- ASCII `|` is in the font's CodeTable and renders as **nothing**.
+- Roman numerals, `â– `, and the private-use glyphs are in the CodeTable and are
+  **tofu**. In the table does not mean it has a glyph.
+- Unicode die faces, box-drawing, block elements and `â—` are all absent, which is
+  why dice are pip grids of `â€¢` and non-breaking space (self-aligning by
+  construction in a proportional font).
+
+### Iteration from the human's review
+
+Three rounds of live screenshots produced concrete fixes, all in the source:
+
+- Rules shortened from 13 em dashes to 9 â€” at 13 they wrapped and left a row of
+  orphaned dashes after every divider.
+- Dice gap widened to three spaces â€” at one the dice ran together into an
+  undifferentiated field of dots.
+- A numbered row added under the board dice, so `mp_dice_mark 3` is unambiguous
+  instead of requiring the player to count pip clusters. This was most of what
+  made the controls feel confusing.
+- The action strip now lists **only the console commands that actually work**. It
+  previously advertised `[E]`/`[1-6]`/`[B]`/`[X]` keybinds that are unverified
+  guesses and probably dead, which read as broken rather than as a hint.
+- `tallyRow` sized its leader dots with `#score`, but the score is groschen-
+  formatted markup containing `&nbsp;` entities, so a 4-digit score counted as
+  10+ characters and the leaders collapsed on every row. Now sized from the digit
+  count.
+
+### Two mistakes of mine worth recording
+
+- **Lua 5.1 has no `\u` escape.** I used `'` for quotes inside Lua strings
+  twice; it produces the literal text `u0027`, which invalidated every HTML
+  attribute and rendered an empty panel. Only affected live-preview scaffolding,
+  never the source file, but it cost two review cycles.
+- **The console silently drops oversized chunks.** A ~1.6 KB string assignment
+  vanished with no output and no error â€” the exact trap `probe_transport.lua`'s
+  own header documents. Build long strings by appending ~150-character pieces.
+
+### Images: closed, with the art sitting right there
+
+The game ships exactly the right assets â€” `Libs/UI/Textures/Dynamic/dice_0.dds`
+through `dice_5.dds`, `dice_dot.dds`, `dice_frame.dds`, `dice_frame_yellow.dds`,
+plus `dice_sides.dds` (almost certainly the outlined dice on the in-game rules
+screen) â€” and `hud.gfx` itself references images as `img://Libs/UI/Textures/...`,
+so the protocol is the game's own. It still cannot be used: the tutorial panel's
+text field has no image loader, proven with a path lifted verbatim from
+`hud.gfx`. **This is a display-surface problem, not an asset problem** â€” art from
+Nexus, or art drawn by hand, hits the identical wall.
+
+Searched Nexus and GitHub for prior art: every KCD2 dice mod is either an XML
+balance tweak ([Farkle Improved - PTF](https://www.nexusmods.com/kingdomcomedeliverance2/mods/2830),
+[Better Dice Players](https://www.nexusmods.com/kingdomcomedeliverance2/mods/2724),
+[Easy Dice AI](https://www.nexusmods.com/kingdomcomedeliverance2/mods/244)) or an
+external web tool ([Dice Optimizer](https://www.nexusmods.com/kingdomcomedeliverance2/mods/588)).
+**No mod ships in-game dice UI art.** KCD2 UI modding is universally *replacing*
+`hud.gfx` and its textures, and such mods are mutually incompatible by
+construction. Routes 1 and 2 here touch neither, so this overlay is compatible
+with every HUD mod on Nexus â€” a real, non-obvious argument for the approach.
+
+---
+
+## NEXT WO â€” a real custom overlay
+
+The human's closing idea, and it is the right next question: rather than living
+inside the tutorial panel, give both players a **large custom overlay with custom
+art** once a match starts. Recorded here as the recommended next work order,
+with honest costs, because it is exactly what the "every bell and whistle" brief
+wanted and the tutorial panel is a ceiling on it.
+
+Three routes, in increasing order of both cost and payoff:
+
+1. **Reuse a bigger existing UIElement.** 28 exist; only `hud` and one
+   `ApseModalDialog` call were ever tested. `GeneralBook` is the standout
+   candidate: a 1024x1024 element that declares **both** a `Texts` and an
+   `Images` array (`g_TextsA` / `g_ImagesA`), i.e. a declared image channel the
+   tutorial panel lacks. `ItemSelection` and `ApseModalDialog.OpenRandomEventDialog`
+   (which takes an `IconId`) are also untested. **Status: probe started and
+   inconclusive** â€” the game entered a level load mid-probe. Cheap to retry and
+   should be the first thing tried.
+   Caveat: `GeneralBook`'s constraint is `mode="fixdyntexsize"`, so it may render
+   into a dynamic texture consumed by a book mesh rather than straight to screen.
+   Unverified either way.
+2. **Ship our own `.gfx` UIElement.** Full control: any size, any art, our own
+   image loader. This is Route 3 from the capability doc, deferred at session
+   start for reasons that still hold: `.gfx` is compiled Scaleform, authoring
+   needs tooling we do not have (JPEXS can read and edit but round-tripping a
+   newly authored file with working ActionScript is unreliable), and it is
+   **unverified whether a mod pak registers a new `Libs/UI/UIElements/*.xml` at
+   all**. Two independent unknowns; a session that can end with nothing.
+3. **Draw from the native plugin.** `KCDMP.dll` is already injected with proven
+   main-thread marshalling. Hooking the D3D12 present chain and rendering our own
+   overlay gives unlimited size, custom textures and full art direction, and
+   touches **no** game asset, so it conflicts with nothing.
+   [`xiaoxiao921/KCD2ModLoader`](https://github.com/xiaoxiao921/KCD2ModLoader)
+   is an off-the-shelf MIT-licensed implementation of exactly this, with Dear
+   ImGui bound into Lua. It was declined in session 2 on the grounds that ImGui
+   looks like a debug tool â€” but that objection is weaker than it appeared:
+   ImGui's draw list renders arbitrary textured quads (`AddImage`), so the dice
+   art could be our own `.dds` files with no ImGui chrome visible at all.
+   Cost: real native work, plus either a dependency or our own swapchain hook.
+   MIT is GPLv3-compatible.
+
+**Recommendation:** try route 1 first (an afternoon, might just work), and if it
+does not, treat route 3 as the real answer â€” it is the only one with no ceiling,
+and this project has already demonstrated the native capability it needs. Route 2
+is the worst of the three: as much work as 3 with a harder toolchain and a
+conflict surface.
+
+Do not start any of this before the runbook above has been run against the
+shipped pak â€” the text board is what exists, and it should be verified working
+before it is replaced.
+

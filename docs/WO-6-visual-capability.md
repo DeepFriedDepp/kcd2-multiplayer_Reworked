@@ -527,6 +527,100 @@ short statement, it worked immediately. **Keep probe blocks small.**
 
 ---
 
+## CORRECTION — what actually happened when this ran (2026-07-29)
+
+Everything above survived contact with the game **except the renderer choice**,
+which failed outright. Recording it here rather than editing the prediction away,
+because the failure is the useful part.
+
+### `System.Draw2DLine` renders nothing. The vector tier does not exist.
+
+The plan was a hand-drawn panel: frame, dice, pips, rules, all
+`Draw2DLine`. Against a real game it draws **nothing at all**:
+
+- `type(System.Draw2DLine)` is `function` — it is registered.
+- Calling it neither throws nor logs.
+- `r_enableAuxGeom` is already `1`, `r_AuxGeom` is `1` — not a CVar gate.
+- A red box in pixel coordinates and a green box in 0..1 coordinates, drawn
+  simultaneously from a live 8 ms loop at ~28 fps: **neither appeared**, while
+  `System.DrawText` labels drawn in the same loop, in the same frames, rendered
+  fine.
+
+**`System.DrawText` is the only screen-space primitive that actually draws from
+Lua in this build.** That makes "registered, callable, silent" the third
+instance of this pattern in the project, after `DrawTriStrip` and the whole
+Lua-writes-are-inert finding. **Presence in a scriptbind table proves nothing.**
+
+### And a bug of mine on top of it
+
+The first board hung its draw loop off `KCD2MP_LabelTick`, which only starts
+when the *agent* connects (`KCD2MP_StartInterp`). With no agent running the state
+machine executed perfectly and rendered nothing, silently — `labelRunning=false`
+while `diceOpen=true`. `KCD2MP_DiceClose` also only completed inside the draw, so
+the board additionally got stuck open. Both fixed; the board now owns its own
+lifecycle and needs no per-frame loop at all.
+
+## The renderer that shipped: the game's own tutorial panel
+
+`UIAction.CallFunction("hud", -1, "ShowTutorial", id, html, ...)` renders a
+gilded gothic frame around illuminated parchment — real Warhorse art — and takes
+HTML. We supply markup, the game supplies the art. It is unambiguously better
+than the vector panel would have been.
+
+**Verified working** *(PROVEN-INGAME)*:
+
+| Capability | Notes |
+|---|---|
+| The panel itself | gilded frame, parchment ground, its own entry animation |
+| `<font color>` `<b>` `size` | full colour, weight and size control |
+| `<font face>` | `DefaultFont`, `LightFont`, `Manuscript` (real blackletter), `DisplayFont` |
+| `<p align='right'>` | right-aligned column, on its own line |
+| `<br/>` | multi-line |
+| Whitespace preservation | `&nbsp;` and plain spaces both preserved |
+| Glyph grids self-align | a grid of only `•` and space lines up vertically |
+| `hud.ShowInfoText` | centre-screen announcement, game-styled |
+
+**Verified NOT working** *(NEGATIVE, in game)*:
+
+| Thing | Result |
+|---|---|
+| `hud.ShowDiceScore` | **inert** outside the native minigame. Consistent with session 1's read that this UI family is presentation-only and context-gated. Not used. |
+| `<img src='img://...'>` | tag parses and Scaleform reserves an image box, but **every** path resolves to the missing-texture placeholder — including `img://Libs/UI/Textures/Icons/Fancy/prestige_icon.dds`, copied verbatim out of `hud.gfx`. The tutorial text field has no image loader attached. |
+| `hud` element name `"HUD"` | silent no-op. `HUD.xml` declares `<UIElement name="hud">`, lowercase. |
+
+**Behavioural trap:** `ShowTutorial` **queues, it does not replace.** A second
+push with the same id waits behind the first, so the board silently stops
+tracking the match. Every update must be `HideTutorial(id)` then
+`ShowTutorial(id, ...)`. This was observed as "my new content never appeared"
+before it was understood.
+
+### The glyph inventory, extracted from the font library
+
+`Libs/UI/gfxfontlib_glyphs.gfx` is a CFX (zlib SWF). Parsing its DefineFont2/3
+CodeTables gives the exact coverage: **774 distinct codepoints**, ~644 per face
+(`Kingdom Come Regular`, `Kingdom Light Regular`, `Warhorse Manuscript`,
+`Kingdom Come Display`). Tool: `native/../scratch` script recorded in the
+progress log; re-runnable after a patch.
+
+**Renders** *(confirmed on screen)*: all ASCII punctuation; the Latin-1 symbol
+block `¡¢£¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿`; `– — ― ' ' " " „ † ‡ • … ‰ ′ ″ ‹ › ‽ ⁂ ⁄`;
+arrows `← ↑ → ↓ ↖ ↗ ↘ ↙`; math `∂ ∏ ∑ √ ∞ ∫ ≠ ≤ ≥`; `◇` (U+25C7).
+
+**Tofu, despite being in the CodeTable**: `■` (U+25A0), the Roman numerals
+`Ⅰ–Ⅻ`, and the private-use glyphs U+E000–E133. **In the CodeTable ≠ has a
+glyph** — verify visually before relying on any character.
+
+**Tofu, absent entirely**: the Unicode die faces `⚀–⚅`, every box-drawing
+character, every block element, `●`, `▪`, `○`, all card suits.
+
+**Worst trap:** plain ASCII `|` (U+007C) is in the CodeTable and renders as
+**nothing at all** — no glyph, no space, no tofu. It silently ate alignment
+markers for a while. Use `¦` (U+00A6) instead.
+
+Consequence for the design: dice are drawn as pip grids built **only** from `•`
+and non-breaking space, which is what makes them self-aligning in a proportional
+font. Mixing glyph widths inside a grid will drift.
+
 ## Chosen visual tier
 
 **Decided: hybrid, built floor-first.** The A2 run above strengthens this rather

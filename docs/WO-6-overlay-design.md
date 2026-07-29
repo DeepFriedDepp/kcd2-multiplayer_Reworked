@@ -1,3 +1,32 @@
+> ## SUPERSEDED IN PART — read this first
+>
+> This document specified a panel **drawn by us** with `System.DrawText` and
+> `System.Draw2DLine`. Against the real game, **`Draw2DLine` renders nothing**
+> (registered, callable, silent, and not CVar-gated — see the CORRECTION section
+> of `docs/WO-6-visual-capability.md`). Everything here that depends on drawing
+> lines is therefore dead: the oak frame, the bevels, the nailheads, the laid
+> ground, the leader rules, the vector dice, and most of the motion table in §4
+> (shake, flash, expanding frame, per-die travel).
+>
+> **What shipped instead:** HTML pushed into the game's own tutorial panel via
+> `hud.ShowTutorial` — a gilded gothic frame around illuminated parchment,
+> rendered by the game. See `WO-6-visual-capability.md` for the capability table.
+>
+> **What survives here and is still authoritative:** §1's diegetic language
+> ("The Wager", "on the board", "set aside", groschen framing), §2's palette
+> (re-expressed as HTML `<font color>` hex, which works), §5's state model in
+> full, §6's fall-back-by-default rule for native panels, and §7's input feel.
+>
+> **What changed in §3 (type):** the panel uses Scaleform's embedded font
+> library, not the CryFont `subtitles`/AlexanderQuill. `Manuscript` is a real
+> blackletter face and is available via `<font face>`. The tofu warning about
+> Unicode die faces was correct and now applies to far more characters — the
+> verified glyph inventory is in the capability doc.
+>
+> **What changed in §4 (motion):** motion is now a small number of deliberate
+> re-pushes (the cast tumbles over ~450 ms) plus `hud.ShowInfoText` for the
+> moments that want to punch. Coarser than an 8 ms redraw, and honest about it.
+
 # WO-6 — in-game dice overlay: art direction and state model
 
 The design the overlay is built to. Settled before writing it, per the WO's

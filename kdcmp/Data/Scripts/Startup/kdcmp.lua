@@ -1,4 +1,4 @@
--- KCD2 Multiplayer - Mod Init Script
+﻿-- KCD2 Multiplayer - Mod Init Script
 System.LogAlways("[KCD2-MP] === MOD INIT ===")
 
 KCD2MP = {}
@@ -6,10 +6,10 @@ KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
-KCD2MP.ghostNames = {}          -- id → steam name (received via 0x03 Name packet from server)
-KCD2MP.labelCache = {}          -- id → {x,y,z,size,name}  updated by interp, drawn by render loop
+KCD2MP.ghostNames = {}          -- id â†’ steam name (received via 0x03 Name packet from server)
+KCD2MP.labelCache = {}          -- id â†’ {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
-KCD2MP.horseGhosts = {}         -- id → {entity, entityId} horse ghost per player
+KCD2MP.horseGhosts = {}         -- id â†’ {entity, entityId} horse ghost per player
 KCD2MP.workingClass = "AnimObject"
 KCD2MP.playerSneaking = false   -- set by OnAction hook when sneak key pressed
 KCD2MP.isRiding = false         -- updated each interp tick (player on horse detection)
@@ -168,7 +168,7 @@ end
 
 -- ===== Outbound Events (WO-2) =====
 -- A second line type on the same log channel, for discrete things the player
--- did rather than continuous state. Accepting an invite has to travel game →
+-- did rather than continuous state. Accepting an invite has to travel game â†’
 -- agent, and the log tail is the only outbound path (no sockets, no io), so it
 -- rides here instead of resurrecting the sv_servername CVar hack.
 --
@@ -312,51 +312,57 @@ end
 -- computed here; the agent pushes a full DiceState snapshot and this draws it.
 -- Same rule DiceClient.cs follows on the C# side.
 --
--- Drawn with System.DrawText (glyphs) and System.Draw2DLine (everything else:
--- frame, rules, dice, pips). There is no image/sprite primitive on System in
--- this build -- confirmed against the shipped CryScriptSystem.dll's own
--- scriptbind registration table, see docs/WO-6-visual-capability.md. So the
--- panel is vector art, and it is authored to look like one: an oak wager-board
--- with a parchment slip, lit from above-left.
+-- The board is HTML pushed into the game's own tutorial panel via
+-- UIAction.CallFunction("hud", -1, "ShowTutorial", ...) -- a gilded gothic
+-- frame around illuminated parchment, rendered by the game. We supply the
+-- markup; Warhorse supplies the art.
 --
--- Art direction, palette, motion table and the state model are specified in
--- docs/WO-6-overlay-design.md. Read that before changing any number here.
+-- Art direction, palette and the state model are in docs/WO-6-overlay-design.md;
+-- what can and cannot be rendered, with the evidence, is in
+-- docs/WO-6-visual-capability.md. Read both before changing anything here --
+-- most of the obvious ideas have already been tried against the real game and
+-- do not work.
 
 KCD2MP.dice = {
     open      = false,
 
-    -- --- capability switches, all set from the A2 probe, never guessed -------
-    -- Warhorse's own scriptbind docs give DrawText as
-    -- (x, y, text, font, size, r, g, b), but kdcmp.lua has always called the
-    -- 4-arg form, so this build's real arity is unconfirmed. true uses the
-    -- documented form (game's medieval AlexanderQuill hand, in colour); false
-    -- falls back to the legacy call. Layout and every dice face are unaffected
-    -- either way -- those are Draw2DLine, which takes RGBA unconditionally.
-    richText  = true,
-    font      = "subtitles",   -- CryFont bound to Fonts/AlexanderQuill.ttf
-
-    -- Screen space these coordinates live in. CryEngine has used a virtual
-    -- 800x600 for 2D labels in some builds and real back-buffer pixels in
-    -- others; kdcmp.lua's existing draws all sit near the top-left where the
-    -- two agree, so they have never told them apart.
+    -- --- how it renders, all established against the real game --------------
     --
-    -- PROVEN in game: System.GetViewport() returns the real back-buffer
-    -- ({x=0, y=0, width=1920, height=1080} on the test machine), so the default
-    -- is viewport-derived and resolution-independent. Whether DrawText/
-    -- Draw2DLine actually address that space is what Probe-Visual.ps1's
-    -- drawtext_space block confirms; if it turns out to be the fixed virtual
-    -- one, `mp_dice_space 800 600` switches over and the whole panel moves
-    -- together, because all layout below is normalised 0..1 through sx()/sy().
-    space     = { w = 1920, h = 1080 },
-    spaceAuto = true,          -- re-read GetViewport when the board opens
-    -- Draw2DLine's own space, which need not match: false = same as `space`,
-    -- true = normalised 0..1.
-    lineNorm  = false,
+    -- The board is an HTML page pushed into the game's own tutorial panel
+    -- (hud.ShowTutorial): a gilded gothic frame around illuminated parchment,
+    -- rendered by the game itself.
+    --
+    -- This is the SECOND renderer. The first drew its own panel with
+    -- System.Draw2DLine and it rendered NOTHING -- that call is registered,
+    -- callable, returns cleanly, and r_enableAuxGeom is already 1, but no line
+    -- ever reaches the screen. Only System.DrawText works in screen space, and
+    -- plain text was the whole complaint. See docs/WO-6-visual-capability.md
+    -- for the full evidence; do not reintroduce Draw2DLine here.
+    -- Element id. ShowTutorial QUEUES rather than replaces, so every update is
+    -- HideTutorial(id) then ShowTutorial(id, ...); pushing twice without the
+    -- hide leaves the second push waiting behind the first. Found the hard way.
+    panelId   = "kcd2mp_dice",
+    panelMs   = 3600000,       -- long enough never to expire mid-match
 
-    -- Native KCD2 panels layered on top of the drawn ones. Each is an optional
-    -- upgrade over something already working, so every one defaults OFF until
-    -- the probe proves it. Nothing ships enabled on a guess.
-    native    = { modal = false, infotext = false, sting = false, score = false },
+    -- Glyphs VERIFIED renderable in this panel's font library. Everything else
+    -- tried came back a tofu box: the Unicode die faces, every box-drawing
+    -- character, and all geometric shapes including U+25CF. Worse, a plain
+    -- ASCII '|' renders as NOTHING AT ALL -- hence the broken bar.
+    pip       = "\226\128\162",   -- U+2022 BULLET
+    rule      = "\226\128\148",   -- U+2014 EM DASH
+    turnMark  = "\194\187",       -- U+00BB
+    sep       = "\194\166",       -- U+00A6 BROKEN BAR
+    leader    = "\194\183",       -- U+00B7 MIDDLE DOT
+
+    -- Faces the panel's font library exposes (Libs/UI/fontconfig.xml).
+    faceTitle = "DisplayFont",    -- Kingdom Come Display
+    faceHand  = "Manuscript",     -- Warhorse Manuscript, a real blackletter hand
+    faceBody  = "LightFont",
+
+    -- Transient announcements that suit a line rather than the board.
+    -- hud.ShowInfoText is confirmed rendering. hud.ShowDiceScore is confirmed
+    -- INERT outside the native minigame, so it is not used at all.
+    native    = { modal = false, infotext = true, sting = false },
 
     -- --- authoritative state, straight off the wire -------------------------
     role      = 0,             -- OUR SessionRole: 0 initiator, 1 acceptor
@@ -371,507 +377,282 @@ KCD2MP.dice = {
 
     -- --- local, non-authoritative -------------------------------------------
     sel       = {},            -- which free dice the player has marked
-    shown     = { [0] = 0, [1] = 0 },   -- animated, lags scores
-    shownTurn = 0,
-    anim      = {},            -- {kind = {t0 = clock, ...}}
-    dieAnim   = {},            -- per-die travel/settle state
+    rolling   = nil,           -- {n} while the cast is still tumbling
     hold      = nil,           -- {action, t0} for hold-to-confirm
     outcome   = nil,           -- nil | "win" | "lose"
-    err       = nil,           -- {text, t0} from a DiceError
-
-    -- Redraw cost knob. The ground is drawn as laid-paper rules rather than a
-    -- solid fill: one line every N design-space pixels. That is most of the
-    -- draw call count, so raising this is the first thing to try if the overlay
-    -- ever costs measurable frame time.
-    groundStep = 4,
+    err       = nil,           -- {text} from a DiceError
+    seenState = false,         -- has any snapshot landed yet
 }
 
 local D = KCD2MP.dice
 
--- Palette. Linear 0..1 RGB, exactly as the draw calls take it. Light comes from
--- above-left throughout: lit bevels on top/left edges, shadow on bottom/right.
--- That one rule is what makes flat lines read as a carved object.
-local C = {
-    shadow     = {0.06, 0.05, 0.04},
-    oak        = {0.34, 0.24, 0.14},
-    oakLit     = {0.52, 0.38, 0.22},
-    iron       = {0.42, 0.41, 0.39},
-    parchment  = {0.86, 0.79, 0.63},
-    ink        = {0.13, 0.10, 0.07},
-    gold       = {0.85, 0.68, 0.30},
-    goldBright = {1.00, 0.86, 0.45},
-    blood      = {0.62, 0.13, 0.11},
-    dim        = {0.38, 0.34, 0.28},
+-- Palette, as HTML colours against the panel's parchment. Pulled to KCD2's own
+-- register: iron-gall ink, faded ink, candle gold, dried blood.
+local COL = {
+    ink   = "#2a2018",
+    dim   = "#7a6a4f",
+    gold  = "#c8a13c",
+    bright= "#e8c25c",
+    blood = "#8a1f14",
 }
 
--- Panel box, normalised. Low and centre, where a real board would sit if you
--- were at the table -- deliberately not a HUD corner.
-local PANEL = { x1 = 0.24, y1 = 0.46, x2 = 0.76, y2 = 0.95 }
+-- ===== html helpers =========================================================
 
--- ===== draw primitives ======================================================
+local NBSP = "&nbsp;"
 
-local function sx(u) return u * D.space.w end
-local function sy(v) return v * D.space.h end
-
--- One line, in normalised coordinates, translated to whatever space the engine
--- turned out to want. dx/dy are a normalised offset applied to everything, so
--- the bust shake can move the whole panel without touching any layout constant.
-local function ln(u1, v1, u2, v2, col, a)
-    local ox, oy = D._ox or 0, D._oy or 0
-    u1, u2, v1, v2 = u1 + ox, u2 + ox, v1 + oy, v2 + oy
-    if D.lineNorm then
-        System.Draw2DLine(u1, v1, u2, v2, col[1], col[2], col[3], a or 1)
-    else
-        System.Draw2DLine(sx(u1), sy(v1), sx(u2), sy(v2), col[1], col[2], col[3], a or 1)
-    end
+local function fnt(s, colour, size, face)
+    local a = ""
+    if face   then a = a .. " face='" .. face .. "'" end
+    if size   then a = a .. " size='" .. tostring(size) .. "'" end
+    if colour then a = a .. " color='" .. colour .. "'" end
+    return "<font" .. a .. ">" .. s .. "</font>"
 end
 
--- Text. Falls back to the legacy 4-arg call when richText is off, losing the
--- font and colour but never the position.
---
--- DrawText's documented signature ends at (…, size, r, g, b) -- there is no
--- alpha parameter, unlike Draw2DLine. So a fade is applied by scaling the
--- colour toward black instead. That is not true transparency, but every piece
--- of text on this panel sits on a near-black ground, so it reads the same.
-local function txt(u, v, s, size, col, a)
-    local ox, oy = D._ox or 0, D._oy or 0
-    local x, y = sx(u + ox), sy(v + oy)
-    if D.richText then
-        col = col or C.parchment
-        a = a or 1
-        System.DrawText(x, y, s, D.font, size, col[1] * a, col[2] * a, col[3] * a)
-    else
-        System.DrawText(x, y, s, size)
-    end
+local function rep(s, n)
+    local out = ""
+    for _ = 1, (n or 0) do out = out .. s end
+    return out
 end
 
--- An unfilled rectangle.
-local function box(u1, v1, u2, v2, col, a)
-    ln(u1, v1, u2, v1, col, a); ln(u2, v1, u2, v2, col, a)
-    ln(u2, v2, u1, v2, col, a); ln(u1, v2, u1, v1, col, a)
-end
-
--- A bevelled rectangle: lit on top/left, shadowed on bottom/right.
-local function bevel(u1, v1, u2, v2, lit, dark, a)
-    ln(u1, v1, u2, v1, lit,  a); ln(u1, v1, u1, v2, lit,  a)
-    ln(u2, v1, u2, v2, dark, a); ln(u1, v2, u2, v2, dark, a)
-end
-
--- Horizontal rules at `step` design-space pixels. Used instead of a solid fill:
--- far cheaper, and at low alpha it reads as laid parchment rather than a slab.
-local function ground(u1, v1, u2, v2, col, a, step)
-    local dv = (step or D.groundStep) / D.space.h
-    local v = v1
-    while v <= v2 do
-        ln(u1, v, u2, v, col, a)
-        v = v + dv
-    end
-end
-
--- Picks up the real back-buffer size. GetViewport returns a TABLE
--- ({x, y, width, height}), not four values -- verified in game, and worth
--- stating because the obvious multiple-return reading is wrong.
-function KCD2MP_DiceSyncSpace()
-    if not D.spaceAuto then return end
-    pcall(function()
-        local vp = System.GetViewport()
-        if vp and vp.width and vp.height and vp.width > 0 and vp.height > 0 then
-            D.space.w, D.space.h = vp.width, vp.height
-        end
-    end)
-end
-
--- Escape hatch for the one thing the probe still has to settle: if 2-D draws
--- turn out to address a fixed virtual space rather than the back buffer,
--- `mp_dice_space 800 600` pins it and the panel lands correctly.
-function KCD2MP_DiceSetSpace(line)
-    local w, h = tostring(line or ""):match("(%d+)%s+(%d+)")
-    if not w then
-        mp_log("DICE space is " .. D.space.w .. "x" .. D.space.h ..
-               " (auto=" .. tostring(D.spaceAuto) .. ")")
-        return false
-    end
-    D.spaceAuto = false
-    D.space.w, D.space.h = tonumber(w), tonumber(h)
-    mp_log("DICE space pinned to " .. D.space.w .. "x" .. D.space.h)
-    return true
-end
-
--- ===== small helpers ========================================================
-
-local function easeOut(t) if t > 1 then t = 1 end return 1 - (1 - t) ^ 3 end
-
-local function since(kind)
-    local a = D.anim[kind]
-    if not a then return nil end
-    return os.clock() - a.t0
-end
-
-local function fire(kind, payload)
-    payload = payload or {}
-    payload.t0 = os.clock()
-    D.anim[kind] = payload
-end
-
--- "2 500" -- a thin-space thousands separator, the way a tally board would.
+-- "2 500" -- thousands separated the way a tally board would.
 local function groschen(n)
-    local s = tostring(math.floor(n or 0))
+    local s = tostring(math.floor(tonumber(n) or 0))
     local out, c = "", 0
     for i = #s, 1, -1 do
         out = s:sub(i, i) .. out
         c = c + 1
-        if c % 3 == 0 and i > 1 then out = " " .. out end
+        if c % 3 == 0 and i > 1 then out = NBSP .. out end
     end
     return out
 end
 
--- Counts a displayed number toward its real value so scores tick rather than
--- jump. Returns the value to draw and whether it is still moving.
-local function tick_to(shown, actual, dt)
-    if shown == actual then return actual, false end
-    local step = (actual - shown) * math.min(1, dt * 6)
-    if math.abs(actual - shown) < 1 then return actual, false end
-    return shown + step, true
+-- 9, not 13: at 13 the rule wrapped onto a second line and the board grew a
+-- row of orphaned dashes after every divider. The panel is narrower than it
+-- looks, and its font is proportional, so this is measured against the real
+-- thing rather than calculated.
+local function ruleLine()
+    return fnt(rep(D.rule, 9), COL.dim)
 end
 
--- ===== dice ================================================================
+-- A name/score row with leader dots between. The panel's font is PROPORTIONAL
+-- (verified: "1234567890" and "ABCDEFGHIJ" end at different widths), so the
+-- dots cannot align a column exactly -- but leaders are precisely the device
+-- that makes an approximate right edge read as intentional.
+-- `score` is a NUMBER here, not pre-formatted markup. It used to take the
+-- groschen() output and size the leaders with #score -- but that string contains
+-- "&nbsp;" entities, so a 4-digit score counted as 10+ characters and the
+-- leaders collapsed to the minimum on every row.
+local function tallyRow(mark, name, score, colour)
+    local digits = #tostring(math.floor(tonumber(score) or 0))
+    local budget = 20 - #name - digits
+    if budget < 2 then budget = 2 end
+    return fnt(mark .. " " .. name .. " " .. rep(D.leader, budget)
+               .. " " .. groschen(score), colour)
+end
 
--- Pip positions per face, on a 3x3 grid of the die's own box.
-local PIPS = {
-    [1] = {{2,2}},
-    [2] = {{1,1},{3,3}},
-    [3] = {{1,1},{2,2},{3,3}},
-    [4] = {{1,1},{3,1},{1,3},{3,3}},
-    [5] = {{1,1},{3,1},{2,2},{1,3},{3,3}},
-    [6] = {{1,1},{3,1},{1,2},{3,2},{1,3},{3,3}},
-}
-local PIP_U = {0.28, 0.50, 0.72}
-local PIP_V = {0.26, 0.50, 0.74}
+-- ===== dice =================================================================
 
-local DIE_W = 0.038   -- normalised, of the design space
-local DIE_H = 0.052
-
--- One die. `face` 1..6, `marked` draws the player's pending keep selection,
--- `glow` 0..1 is the lock-in flash.
+-- Which of the 3x3 cells carry a pip, per face. Built from BULLET and
+-- non-breaking space only: every row of every die uses the same two characters
+-- in the same slots, which is what makes the grid line up vertically despite
+-- the proportional font (verified in game with a 5 and a 2 side by side).
 --
--- NOTE: deliberately NOT the Unicode die glyphs U+2680..2685 -- AlexanderQuill
--- has no such glyphs and they would render as tofu. Dice are always vector.
-local function die(u, v, face, marked, glow)
-    local u2, v2 = u + DIE_W, v + DIE_H
-    ground(u + 0.002, v + 0.003, u2 - 0.002, v2 - 0.003, C.parchment, 0.90, 2)
-    bevel(u, v, u2, v2, C.parchment, C.shadow, 1)
-    box(u, v, u2, v2, C.iron, 1)
+-- NOT the Unicode die faces U+2680..2685 -- those are tofu in this font, as are
+-- all box-drawing and geometric shapes. Bullet is what survives.
+local PIPCELLS = {
+    [1] = { {0,0,0}, {0,1,0}, {0,0,0} },
+    [2] = { {1,0,0}, {0,0,0}, {0,0,1} },
+    [3] = { {1,0,0}, {0,1,0}, {0,0,1} },
+    [4] = { {1,0,1}, {0,0,0}, {1,0,1} },
+    [5] = { {1,0,1}, {0,1,0}, {1,0,1} },
+    [6] = { {1,0,1}, {1,0,1}, {1,0,1} },
+}
 
-    if marked then
-        box(u - 0.004, v - 0.005, u2 + 0.004, v2 + 0.005, C.gold, 0.95)
-    end
-    if glow and glow > 0.01 then
-        box(u - 0.007, v - 0.009, u2 + 0.007, v2 + 0.009, C.goldBright, glow)
-    end
+-- Three lines of HTML rendering a row of dice side by side.
+-- faces: array of 1..6. colours: parallel array of hex, or nil for ink.
+--
+-- GAP is three spaces, not one. At one the dice ran together into an
+-- undifferentiated field of dots and you could not tell where one die ended.
+local GAP = NBSP .. NBSP .. NBSP
 
-    local pips = PIPS[face]
-    if not pips then return end
-    for _, p in ipairs(pips) do
-        local pu = u + PIP_U[p[1]] * DIE_W
-        local pv = v + PIP_V[p[2]] * DIE_H
-        -- A pip is three short stacked rules -- round enough at this size, and
-        -- a third of the cost of a filled circle.
-        local r = 0.0055
-        ln(pu - r * 0.7, pv - r, pu + r * 0.7, pv - r, C.ink, 1)
-        ln(pu - r,       pv,     pu + r,       pv,     C.ink, 1)
-        ln(pu - r * 0.7, pv + r, pu + r * 0.7, pv + r, C.ink, 1)
-    end
-end
-
--- ===== the panel ============================================================
-
--- Two stacked rows, not two columns side by side. Farkle's six dice can end up
--- entirely in one row (hot dice sets all six aside), and a side-by-side layout
--- would have run the set-aside row off the right edge of the panel in exactly
--- that case. Stacked, either row can hold all six.
-local ROW_FREE_V = 0.695
-local ROW_KEPT_V = 0.777
-local DIE_U0     = 0.300
-local DIE_GAP    = 0.047
-
--- Vertical rhythm, top to bottom. Named so the draw functions read as a layout
--- rather than a pile of magic numbers.
-local V_TITLE   = 0.476
-local V_RULE1   = 0.535
-local V_ROW_A   = 0.560   -- opponent
-local V_ROW_B   = 0.600   -- us
-local V_TARGET  = 0.632
-local V_RULE2   = 0.660
-local V_CAP_A   = 0.673   -- "ON THE BOARD"
-local V_CAP_B   = 0.755   -- "SET ASIDE"
-local V_HAND    = 0.845
-local V_RULE3   = 0.872
-local V_ACTIONS = 0.895
-
-local function freeSlot(i) return DIE_U0 + (i - 1) * DIE_GAP end
-local function keptSlot(i) return DIE_U0 + (i - 1) * DIE_GAP end
-
-local function drawFrame(alpha)
-    local p = PANEL
-    -- ground first, then the frame on top of it
-    ground(p.x1, p.y1, p.x2, p.y2, C.shadow, 0.72 * alpha)
-    ground(p.x1, p.y1, p.x2, p.y2, C.oak,    0.10 * alpha, D.groundStep * 3)
-
-    bevel(p.x1, p.y1, p.x2, p.y2, C.oakLit, C.shadow, alpha)
-    box(p.x1 + 0.006, p.y1 + 0.008, p.x2 - 0.006, p.y2 - 0.008, C.oak, alpha)
-
-    -- iron nailheads at the corners: three crossing strokes each
-    local n = 0.008
-    for _, cn in ipairs({ {p.x1 + 0.014, p.y1 + 0.018}, {p.x2 - 0.014, p.y1 + 0.018},
-                          {p.x1 + 0.014, p.y2 - 0.018}, {p.x2 - 0.014, p.y2 - 0.018} }) do
-        ln(cn[1] - n, cn[2], cn[1] + n, cn[2], C.iron, alpha)
-        ln(cn[1], cn[2] - n * 1.3, cn[1], cn[2] + n * 1.3, C.iron, alpha)
-        ln(cn[1] - n * 0.6, cn[2] - n * 0.8, cn[1] + n * 0.6, cn[2] + n * 0.8, C.iron, alpha * 0.7)
-    end
-end
-
-local function rule(v, alpha)
-    local p = PANEL
-    ln(p.x1 + 0.03, v, p.x2 - 0.03, v, C.gold, 0.55 * alpha)
-    ln(p.x1 + 0.03, v + 0.0018, p.x2 - 0.03, v + 0.0018, C.shadow, 0.5 * alpha)
-end
-
--- Leader dots between a name and its score, the way a tally board runs them.
-local function leaders(u1, u2, v, alpha)
-    local u = u1
-    while u < u2 do
-        ln(u, v, u + 0.004, v, C.dim, 0.8 * alpha)
-        u = u + 0.011
-    end
-end
-
-local function drawScoreSlip(alpha)
-    local p = PANEL
-    local rows = {
-        { role = 1 - D.role, name = D.peer, v = V_ROW_A },
-        { role = D.role,     name = "Thou", v = V_ROW_B },
-    }
-    for _, r in ipairs(rows) do
-        local active = (r.role == D.turnRole) and (D.outcome == nil)
-        local col = active and C.gold or C.parchment
-        if D.outcome and D.outcome == "win" and r.role == D.role then col = C.goldBright end
-        if D.outcome and D.outcome == "lose" and r.role == D.role then col = C.dim end
-
-        if active then
-            -- turn marker: a small chevron, so whose turn it is reads without
-            -- relying on colour alone
-            local mu, mv = p.x1 + 0.032, r.v - 0.004
-            ln(mu, mv - 0.008, mu + 0.010, mv, C.gold, alpha)
-            ln(mu + 0.010, mv, mu, mv + 0.008, C.gold, alpha)
-        end
-        txt(p.x1 + 0.052, r.v - 0.014, r.name, 2.0, col, alpha)
-        leaders(p.x1 + 0.052 + 0.145, p.x2 - 0.135, r.v, alpha)
-        txt(p.x2 - 0.125, r.v - 0.016, groschen(D.shown[r.role]), 2.4, col, alpha)
-    end
-    txt(p.x2 - 0.125, V_TARGET, "of " .. groschen(D.target), 1.4, C.dim, alpha)
-end
-
-local function drawDice(alpha)
-    local p = PANEL
-    txt(p.x1 + 0.032, V_CAP_A, "ON THE BOARD", 1.4, C.dim, alpha)
-    txt(p.x1 + 0.032, V_CAP_B, "SET ASIDE",    1.4, C.dim, alpha)
-
-    local now = os.clock()
-    local rolling = since("cast")
-    -- Last die lands at 0.25 + 5*0.07; drop the record once they all have, so
-    -- the anim table does not accumulate entries across a long match.
-    if rolling and rolling > 0.75 then D.anim.cast = nil; rolling = nil end
-
-    for i, face in ipairs(D.free) do
-        local u, v = freeSlot(i), ROW_FREE_V
-        local shownFace = face
-        local hop = 0
-        if rolling then
-            -- staggered settle: die i lands at 250ms + 70ms per die, flickering
-            -- through random faces until it does
-            local landAt = 0.25 + (i - 1) * 0.07
-            if rolling < landAt then
-                shownFace = math.random(1, 6)
-                local t = rolling / landAt
-                hop = -0.020 * (1 - t) * math.abs(math.sin(rolling * 40))
+local function diceRows(faces, colours)
+    local out = { "", "", "" }
+    for r = 1, 3 do
+        for i, f in ipairs(faces) do
+            local cells = PIPCELLS[f] or PIPCELLS[1]
+            local s = ""
+            for c = 1, 3 do
+                s = s .. ((cells[r][c] == 1) and D.pip or NBSP)
             end
+            out[r] = out[r] .. fnt(s, (colours and colours[i]) or COL.ink)
+            if i < #faces then out[r] = out[r] .. GAP end
         end
-        local a = D.dieAnim[i]
-        local glow = 0
-        if a and a.kind == "unkeep" then
-            local t = (now - a.t0) / 0.22
-            if t < 1 then
-                u = a.fromU + (u - a.fromU) * easeOut(t)
-                v = a.fromV + (v - a.fromV) * easeOut(t)
-            else
-                D.dieAnim[i] = nil
-            end
-        end
-        die(u, v + hop, shownFace, D.sel[i] == true, glow)
     end
-
-    for i, face in ipairs(D.kept) do
-        local u, v = keptSlot(i), ROW_KEPT_V
-        local glow = 0
-        local a = D.dieAnim["k" .. i]
-        if a then
-            local t = (now - a.t0) / 0.22
-            if t < 1 then
-                u = a.fromU + (u - a.fromU) * easeOut(t)
-                v = a.fromV + (v - a.fromV) * easeOut(t)
-                glow = 1 - t
-            else
-                D.dieAnim["k" .. i] = nil
-            end
-        end
-        die(u, v, face, false, glow)
-    end
-
-    txt(p.x1 + 0.032, V_HAND, "this hand", 1.4, C.dim, alpha)
-    local turnCol = (D.shownTurn > 0) and C.goldBright or C.dim
-    txt(p.x1 + 0.115, V_HAND - 0.007, groschen(D.shownTurn), 2.0, turnCol, alpha)
+    return out
 end
 
-local function drawActions(alpha)
-    local p = PANEL
-    local mine = (D.turnRole == D.role) and (D.outcome == nil)
-    local col  = mine and C.parchment or C.dim
-    local keyc = mine and C.gold or C.dim
-
-    local v = V_ACTIONS
-    local u = p.x1 + 0.032
-    local function hint(key, label)
-        txt(u, v, "[" .. key .. "]", 1.6, keyc, alpha)
-        txt(u + 0.030, v, label, 1.6, col, alpha)
-        u = u + 0.038 + #label * 0.0072
+-- A row of 1..6 under the dice, so "mp_dice_mark 3" is unambiguous about which
+-- die it means. Without this the player has to count pip clusters left to right
+-- and hope -- which is most of why the controls read as confusing.
+local function indexRow(n)
+    local s = ""
+    for i = 1, n do
+        s = s .. NBSP .. tostring(i) .. NBSP
+        if i < n then s = s .. GAP end
     end
+    return fnt(s, COL.dim, 14)
+end
+
+local function diceBlock(faces, colours, numbered)
+    if #faces == 0 then
+        return fnt(NBSP .. D.leader .. " none " .. D.leader, COL.dim, 16)
+    end
+    local r = diceRows(faces, colours)
+    local h = fnt(r[1] .. "<br/>" .. r[2] .. "<br/>" .. r[3], nil, 18)
+    if numbered then h = h .. "<br/>" .. indexRow(#faces) end
+    return h
+end
+
+-- ===== the board ============================================================
+
+local function buildHtml()
+    local mine   = (D.turnRole == D.role) and (D.outcome == nil)
+    local myCol  = mine and COL.gold or COL.ink
+    local opCol  = (not mine and D.outcome == nil) and COL.gold or COL.ink
+
+    local title = "The Wager"
+    if D.outcome == "win"  then title = "Thine!" end
+    if D.outcome == "lose" then title = D.peer .. " takes it" end
+
+    local h = fnt(title, (D.outcome == "win") and COL.bright or COL.gold, 26, D.faceTitle)
+              .. "<br/>" .. ruleLine() .. "<br/>"
+
+    -- score slip: opponent above, us below, target underneath
+    h = h .. tallyRow(mine and NBSP or D.turnMark, D.peer, D.scores[1 - D.role], opCol) .. "<br/>"
+    h = h .. tallyRow(mine and D.turnMark or NBSP, "Thou",  D.scores[D.role],     myCol) .. "<br/>"
+    h = h .. "<p align='right'>" .. fnt("of " .. groschen(D.target), COL.dim, 16) .. "</p>"
 
     if D.outcome then
-        txt(u, v, "the match is done  --  mp_dice_close", 1.6, C.dim, alpha)
+        h = h .. ruleLine() .. "<br/>"
+        h = h .. fnt("The wager is settled.", COL.dim, 18) .. "<br/>"
+        h = h .. fnt("mp_dice_close", COL.dim, 16)
+        return h
+    end
+
+    h = h .. ruleLine() .. "<br/>"
+
+    -- the board: free dice, marked ones in bright gold so a pending keep is
+    -- obviously reversible before it is sent
+    local faces, cols = {}, {}
+    for i, f in ipairs(D.free) do
+        faces[i] = D.rolling and math.random(1, 6) or f
+        cols[i]  = D.sel[i] and COL.bright or COL.ink
+    end
+    h = h .. fnt("On the board", COL.dim, 16) .. "<br/>"
+    h = h .. diceBlock(faces, cols, true) .. "<br/>"
+
+    -- set aside, in gold: these are locked in and scoring. Not numbered --
+    -- there is no command that takes a set-aside die's index, so numbering them
+    -- would only invite a keystroke that does nothing.
+    local kf, kc = {}, {}
+    for i, f in ipairs(D.kept) do kf[i] = f; kc[i] = COL.gold end
+    h = h .. fnt("Set aside", COL.dim, 16) .. "<br/>"
+    h = h .. diceBlock(kf, kc, false) .. "<br/>"
+
+    h = h .. fnt("This hand ", COL.dim, 18)
+          .. fnt(groschen(D.turnTotal), (D.turnTotal > 0) and COL.bright or COL.dim, 20) .. "<br/>"
+    h = h .. ruleLine() .. "<br/>"
+
+    -- The action strip lists ONLY what actually works today. It used to
+    -- advertise [E]/[1-6]/[B]/[X] keybinds that were unverified guesses and
+    -- almost certainly dead, which read as broken rather than as a hint.
+    if D.err then
+        h = h .. fnt(D.err.text, COL.blood, 18) .. "<br/>"
+    end
+    if mine then
+        if D.phase == 1 then
+            h = h .. fnt("mp_dice_mark 1-6", COL.ink, 16) .. "<br/>"
+            h = h .. fnt("mp_dice_cast", COL.gold, 16)
+                  .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
+                  .. fnt("mp_dice_bank", COL.ink, 16)
+        else
+            h = h .. fnt("mp_dice_cast", COL.gold, 16)
+                  .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
+                  .. fnt("mp_dice_bank", COL.ink, 16)
+        end
+    else
+        h = h .. fnt(D.peer .. " is casting" .. D.leader .. D.leader .. D.leader, COL.dim, 18)
+    end
+
+    return h
+end
+
+-- ===== pushing it ===========================================================
+
+-- ShowTutorial QUEUES. Pushing an update without hiding first leaves it waiting
+-- behind the current one and the board silently stops tracking the match --
+-- this was observed directly before it was understood. Always hide, then show.
+function KCD2MP_DiceRender()
+    if not D.open then return end
+    local ok, html = pcall(buildHtml)
+    if not ok then
+        mp_log("DICE render error: " .. tostring(html))
         return
     end
-    if D.phase == 1 then hint("E", "set aside") else hint("E", "cast") end
-    hint("1-6", "mark")
-    hint("B", "bank")
-    hint("X", "yield")
-
-    -- hold-to-confirm arc: a filling rule under the strip, so a deliberate
-    -- action visibly takes time rather than firing on a twitch
-    if D.hold then
-        local need = (D.hold.action == "forfeit") and 1.2 or 0.6
-        local t = math.min(1, (os.clock() - D.hold.t0) / need)
-        local x1 = p.x1 + 0.032
-        local x2 = x1 + (p.x2 - 0.032 - x1) * t
-        ln(x1, v + 0.028, x2, v + 0.028, C.goldBright, alpha)
-        ln(x1, v + 0.031, x2, v + 0.031, C.gold, 0.6 * alpha)
-    end
+    pcall(function() UIAction.CallFunction("hud", -1, "HideTutorial", D.panelId) end)
+    pcall(function()
+        UIAction.CallFunction("hud", -1, "ShowTutorial",
+            D.panelId, html, D.panelMs, false, 9, 0, false, "")
+    end)
 end
 
-local function drawBanner(alpha)
-    local t = since("banner")
-    if not t then return end
-    local a = D.anim.banner
-    if t > 1.8 then D.anim.banner = nil; return end
-    -- slide in from the left, hold, fade out
-    local slide = easeOut(math.min(1, t / 0.28))
-    local fade  = (t > 1.3) and (1 - (t - 1.3) / 0.5) or 1
-    local u = PANEL.x1 - 0.10 + 0.14 * slide
-    txt(u, PANEL.y1 - 0.055, a.text, 3.0, C.gold, alpha * fade)
+local function say(text)
+    if not D.native.infotext then return end
+    pcall(function()
+        UIAction.CallFunction("hud", -1, "ShowInfoText", text, 10, 2200, true)
+    end)
+end
+KCD2MP_DiceSay = say
+
+-- ===== motion ===============================================================
+--
+-- The first design animated at 8 ms against its own drawn canvas. That canvas
+-- does not exist any more, and re-pushing a Scaleform panel at 8 ms would be
+-- absurd, so motion is now a small number of deliberate re-pushes: the dice
+-- visibly tumble before they settle, and the panel's own entry animation
+-- carries the rest. Announcements that want to punch ride ShowInfoText.
+--
+-- UNVERIFIED: whether a hide/show cycle at this cadence reads as a smooth
+-- tumble or as a flicker. KCD2MP.dice.castSteps / castMs are the knobs; set
+-- castSteps to 0 to land the dice instantly with no tumble at all.
+KCD2MP.dice.castSteps = 3
+KCD2MP.dice.castMs    = 150
+
+local function castStep()
+    if not D.open or not D.rolling then return end
+    D.rolling.n = D.rolling.n + 1
+    if D.rolling.n > D.castSteps then
+        D.rolling = nil
+        KCD2MP_DiceRender()
+        return
+    end
+    KCD2MP_DiceRender()
+    Script.SetTimer(D.castMs, castStep)
 end
 
-local function drawStings(alpha)
-    local t = since("bust")
-    if t then
-        if t > 0.7 then
-            D.anim.bust = nil
-        else
-            local k = 1 - t / 0.7
-            ground(PANEL.x1, PANEL.y1, PANEL.x2, PANEL.y2, C.blood, 0.5 * k, D.groundStep * 2)
-            txt(0.36, ROW_FREE_V + 0.010, "F A R K L E", 3.0, C.blood, alpha)
-            -- struck through the board row, the way a tally is scratched out
-            ln(PANEL.x1 + 0.04, ROW_FREE_V + 0.026, PANEL.x2 - 0.04, ROW_FREE_V + 0.026, C.blood, k)
-        end
-    end
-
-    local w = since("win")
-    if w then
-        if w > 1.4 then
-            D.anim.win = nil
-        else
-            local k = easeOut(w / 1.4)
-            local g = 0.02 * k
-            box(PANEL.x1 - g, PANEL.y1 - g, PANEL.x2 + g, PANEL.y2 + g, C.goldBright, (1 - k) * alpha)
-            box(PANEL.x1 - g * 0.5, PANEL.y1 - g * 0.5, PANEL.x2 + g * 0.5, PANEL.y2 + g * 0.5,
-                C.gold, (1 - k) * 0.7 * alpha)
-        end
-    end
+local function startCast()
+    if (D.castSteps or 0) <= 0 or #D.free == 0 then return end
+    D.rolling = { n = 0 }
+    castStep()
 end
 
--- ===== the tick =============================================================
-
-KCD2MP._diceLast = nil
-
--- Called from the 8 ms label loop. Everything animated is derived from
--- os.clock() deltas, so there is no extra timer and no new failure mode.
-function KCD2MP_DiceDraw()
-    if not D.open then return end
-
-    local now = os.clock()
-    local dt  = (KCD2MP._diceLast and (now - KCD2MP._diceLast)) or 0.016
-    KCD2MP._diceLast = now
-
-    -- open/close ramp
-    local alpha = 1
-    local o = since("open")
-    if o then
-        if o < 0.30 then alpha = o / 0.30 else D.anim.open = nil end
-    end
-    local cl = since("close")
-    if cl then
-        if cl < 0.30 then
-            alpha = 1 - cl / 0.30
-        else
-            D.anim.close = nil
-            D.open = false
-            return
-        end
-    end
-
-    -- panel offset: rises on open, shakes on bust
-    D._ox, D._oy = 0, 0
-    if o and o < 0.30 then D._oy = 0.04 * (1 - easeOut(o / 0.30)) end
-    local b = since("bust")
-    if b and b < 0.7 then
-        local k = 1 - b / 0.7
-        D._ox = 0.008 * k * math.sin(b * 55)
-        D._oy = 0.004 * k * math.sin(b * 71)
-    end
-
-    -- scores count rather than jump
-    D.shown[0]  = select(1, tick_to(D.shown[0],  D.scores[0],  dt))
-    D.shown[1]  = select(1, tick_to(D.shown[1],  D.scores[1],  dt))
-    D.shownTurn = select(1, tick_to(D.shownTurn, D.turnTotal, dt))
-
-    drawFrame(alpha)
-    txt(0.44, V_TITLE, "THE WAGER", 2.6, C.gold, alpha)
-    rule(V_RULE1, alpha)
-    drawScoreSlip(alpha)
-    rule(V_RULE2, alpha)
-    drawDice(alpha)
-    rule(V_RULE3, alpha)
-    drawActions(alpha)
-    drawStings(alpha)
-    drawBanner(alpha)
-
-    -- a rejected intent: say why, briefly, just above the action strip
-    if D.err then
-        if now - D.err.t0 > 2.5 then
-            D.err = nil
-        else
-            txt(PANEL.x1 + 0.032, V_RULE3 - 0.012, D.err.text, 1.6, C.blood, alpha)
-        end
-    end
+-- Hold-to-confirm needs a light tick, and only while a key is actually held.
+local function holdTick()
+    if not D.hold then return end
+    Script.SetTimer(100, holdTick)
+    KCD2MP_DiceHoldTick()
 end
+KCD2MP_DiceHoldPump = holdTick
 
 -- ===== inbound: called by the agent =========================================
 
@@ -881,21 +662,20 @@ function KCD2MP_DiceOpen(role, peer, target)
     D.peer      = tostring(peer or "opponent")
     D.target    = tonumber(target) or 4000
     D.scores    = { [0] = 0, [1] = 0 }
-    D.shown     = { [0] = 0, [1] = 0 }
-    D.turnTotal, D.shownTurn = 0, 0
+    D.turnTotal = 0
     D.free, D.kept, D.sel = {}, {}, {}
-    D.dieAnim, D.anim = {}, {}
-    D.outcome, D.err, D.hold = nil, nil, nil
+    D.outcome, D.err, D.hold, D.rolling = nil, nil, nil, nil
     D.seenState = false
     D.open = true
-    KCD2MP_DiceSyncSpace()   -- resolution can change between matches
-    fire("open")
+    KCD2MP_DiceRender()
     mp_log("DICE overlay open vs " .. D.peer .. " to " .. tostring(D.target))
 end
 
 function KCD2MP_DiceClose()
     if not D.open then return end
-    fire("close")
+    D.open, D.rolling, D.hold = false, nil, nil
+    pcall(function() UIAction.CallFunction("hud", -1, "HideTutorial", D.panelId) end)
+    mp_log("DICE overlay closed")
 end
 
 -- A full authoritative snapshot. freeCsv/keptCsv are comma-separated faces
@@ -934,18 +714,10 @@ function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, k
     -- Which moment does this snapshot represent? The relay does not label its
     -- snapshots, so infer from what changed -- and only ever to decide an
     -- ANIMATION, never to decide state.
-    if #D.kept > #prevKept then
-        -- dice were set aside: fly them in from where they sat on the board
-        for i = #prevKept + 1, #D.kept do
-            D.dieAnim["k" .. i] = { fromU = freeSlot(i), fromV = ROW_FREE_V, t0 = os.clock() }
-        end
-    elseif #D.free > #prevFree or (#prevFree == 0 and #D.free > 0) then
-        fire("cast")
-    end
+    local cast = (#D.free > #prevFree) or (#prevFree == 0 and #D.free > 0)
 
     if D.turnRole ~= prevTurn then
         local mine = (D.turnRole == D.role)
-        fire("banner", { text = mine and "Thy cast" or (D.peer .. " casts") })
 
         -- Bust vs. bank. The relay does not label its snapshots, so this is
         -- inferred -- but ONLY to pick an animation, never to decide state.
@@ -957,33 +729,29 @@ function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, k
         -- Skipped on the very first snapshot: there is no previous turn to have
         -- busted, and both scores are legitimately 0 then, which would otherwise
         -- read as a bust the instant the match opens.
-        if D.seenState and (D.scores[prevTurn] or 0) == prevScore then
-            fire("bust")
-        end
-        if D.native.infotext then
-            pcall(function()
-                UIAction.CallFunction("hud", -1, "ShowInfoText",
-                    mine and "Thy cast" or (D.peer .. " casts"), 8, 1600, true)
-            end)
+        local busted = D.seenState and (D.scores[prevTurn] or 0) == prevScore
+
+        -- The turn hand-off and the bust are the two moments that want to
+        -- punch, and a line across the middle of the screen punches harder
+        -- than a change inside the panel. This is what ShowInfoText is for.
+        if busted then
+            say((prevTurn == D.role) and "Farkle. Nothing scored."
+                                      or (D.peer .. " farkles."))
+        else
+            say(mine and "Thy cast." or (D.peer .. " casts."))
         end
     end
 
-    if D.native.score then
-        pcall(function()
-            UIAction.CallFunction("hud", -1, "ShowDiceScore",
-                D.target, 0, D.turnTotal, D.scores[D.role], 0, "", 0, 0,
-                0, D.scores[1 - D.role], 0, "", 0, 0)
-        end)
-    end
-
+    D.err = nil
     D.seenState = true
+
+    if cast then startCast() else KCD2MP_DiceRender() end
 end
 
--- The relay rejected an intent. State did not change; say why and shake.
+-- The relay rejected an intent. State did not change; the board says why.
 function KCD2MP_DiceError(reason)
-    D.err = { text = tostring(reason or "not allowed"), t0 = os.clock() }
-    fire("bust")
-    D.anim.bust.t0 = os.clock() - 0.45   -- a short sting, not the full bust
+    D.err = { text = tostring(reason or "not allowed") }
+    KCD2MP_DiceRender()
 end
 
 -- outcome: "win" or "lose".
@@ -991,19 +759,10 @@ function KCD2MP_DiceEnd(outcome, s0, s1)
     D.scores[0] = tonumber(s0) or D.scores[0]
     D.scores[1] = tonumber(s1) or D.scores[1]
     D.outcome   = tostring(outcome or "lose")
-    D.sel, D.hold = {}, nil
-    if D.outcome == "win" then
-        fire("win")
-        fire("banner", { text = "The wager is thine" })
-    else
-        fire("banner", { text = D.peer .. " takes the pot" })
-    end
-    if D.native.sting then
-        pcall(function()
-            UIAction.CallFunction("hud", -1, "ShowSkillCheckResult",
-                "Dice", (D.outcome == "win") and 1 or 0)
-        end)
-    end
+    D.sel, D.hold, D.rolling, D.err = {}, nil, nil, nil
+    say((D.outcome == "win") and "The wager is thine."
+                              or (D.peer .. " takes the pot."))
+    KCD2MP_DiceRender()
     mp_log("DICE match ended: " .. D.outcome)
 end
 
@@ -1091,15 +850,13 @@ function KCD2MP_DiceMark(i)
     i = tonumber(i)
     if not D.open or not i or not D.free[i] then return false end
     if D.turnRole ~= D.role then
-        D.err = { text = "not thy turn", t0 = os.clock() }
+        D.err = { text = "not thy turn" }
+        KCD2MP_DiceRender()
         return false
     end
-    if D.sel[i] then
-        D.sel[i] = nil
-        D.dieAnim[i] = { kind = "unkeep", fromU = freeSlot(i), fromV = ROW_FREE_V - 0.012, t0 = os.clock() }
-    else
-        D.sel[i] = true
-    end
+    if D.sel[i] then D.sel[i] = nil else D.sel[i] = true end
+    D.err = nil
+    KCD2MP_DiceRender()     -- marks are gold on the board, so this must redraw
     return true
 end
 
@@ -1111,7 +868,8 @@ function KCD2MP_DiceConfirm()
         local mask = 0
         for i = 1, 6 do if D.sel[i] then mask = mask + 2 ^ (i - 1) end end
         if mask == 0 then
-            D.err = { text = "mark thy dice first", t0 = os.clock() }
+            D.err = { text = "mark thy dice first" }
+            KCD2MP_DiceRender()
             return false
         end
         return intent("keep " .. tostring(math.floor(mask)))
@@ -1124,10 +882,13 @@ function KCD2MP_DiceForfeit() return intent("forfeit", true) end
 
 -- Hold-to-confirm. Bank and forfeit are irreversible, so they are deliberately
 -- not on a single press: begin on key-down, fire only if the key survives long
--- enough, cancel on key-up. Driven from the label tick.
+-- enough, cancel on key-up. Pumped by its own short-lived timer, which only
+-- runs while a key is actually down.
 function KCD2MP_DiceHoldBegin(action)
     if not D.open or D.outcome then return end
+    if D.hold then return end
     D.hold = { action = action, t0 = os.clock() }
+    KCD2MP_DiceHoldPump()
 end
 
 function KCD2MP_DiceHoldEnd()
@@ -1359,7 +1120,7 @@ function KCD2MP_SetGhostName(id, name)
     KCD2MP.ghostNames[id] = name
     local ghost = KCD2MP.ghosts[id]
     if ghost and ghost.entity then
-        -- Ghost already alive when name packet arrives — apply after 300ms
+        -- Ghost already alive when name packet arrives â€” apply after 300ms
         local captId = id
         local captName = name
         Script.SetTimer(300, function()
@@ -1379,7 +1140,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     local pos = {x=x, y=y, z=z}
     local horseName = "kcd2mp_horse_" .. id
 
-    -- Use System.SpawnEntity only (XGenAIModule is async → creates orphan second entity)
+    -- Use System.SpawnEntity only (XGenAIModule is async â†’ creates orphan second entity)
     local horse = nil
     local ok2, h2 = pcall(System.SpawnEntity, {
         class = "Horse", position = {x=x, y=y, z=z},
@@ -1511,7 +1272,7 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     istate.lastPacketY = y
 
     -- Log large target jumps; reset velocity on teleport/fast-travel
-    -- Jump detection: XY only — Z changes from terrain must NOT reset velocity
+    -- Jump detection: XY only â€” Z changes from terrain must NOT reset velocity
     local jumpDist = math.sqrt(ddx*ddx + ddy*ddy)
     if jumpDist > 5.0 then
         istate.vx = 0
@@ -1634,17 +1395,12 @@ function KCD2MP_LabelTick()
     -- Interaction prompt (WO-2) shares this loop rather than adding a timer.
     pcall(KCD2MP_DrawInteractionUI)
 
-    -- Dice overlay (WO-6) rides the same loop for the same reason: 8 ms beats a
-    -- 16.7 ms frame, so nothing flickers, and every animation is derived from
-    -- os.clock() deltas rather than needing a timer of its own.
-    --
-    -- Cost: roughly 300 Draw2DLine calls per tick while a match is open (about
-    -- 90 for the panel ground, ~30 per die, the rest frame and rules), and zero
-    -- when it is not -- KCD2MP_DiceDraw returns immediately if the board is
-    -- closed, which is every tick outside a PvP match. UNVERIFIED against a real
-    -- frame budget; if it ever shows up, raise KCD2MP.dice.groundStep first.
-    pcall(KCD2MP_DiceHoldTick)
-    pcall(KCD2MP_DiceDraw)
+    -- NOTE: the dice board deliberately does NOT ride this loop. This loop only
+    -- starts when the agent connects and calls KCD2MP_StartInterp, so hanging
+    -- the board off it meant the board silently never rendered with no agent
+    -- running -- verified: labelRunning=false while diceOpen=true. The board is
+    -- pushed into the game's own UI on state change instead, so it needs no
+    -- per-frame loop at all.
 end
 
 -- ===== Animation Update =====
@@ -1726,7 +1482,7 @@ local HORSE_ENTITY_WALK_ANIMS = {
     "horse_walk", "horse_trot", "walk", "trot",
 }
 local HORSE_ENTITY_GALLOP_ANIMS = {
-    -- Fastest gaits first — confirmed on KCD2 horse entities:
+    -- Fastest gaits first â€” confirmed on KCD2 horse entities:
     "relaxed_gallop", "relaxed_canter", "relaxed_run",
     -- Other candidates:
     "gallop", "canter", "run",
@@ -1999,7 +1755,7 @@ function KCD2MP_InterpTick()
 
                 if istate.isRiding then
                     -- One-time riding diagnostic when interp tick first sees this ghost riding.
-                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms → only even counts seen)
+                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms â†’ only even counts seen)
                     if not istate._rideFirstTick then
                         istate._rideFirstTick = true
                         local hd = KCD2MP.horseGhosts[id]
@@ -2019,7 +1775,7 @@ function KCD2MP_InterpTick()
                     end
 
                     -- Engine sync auto-assigns idle rider anim at ForceMount time.
-                    -- For gallop we must set it explicitly — engine does NOT auto-update.
+                    -- For gallop we must set it explicitly â€” engine does NOT auto-update.
                     -- ridingFallback: engine failed to mount, set all anims manually.
                     local isGallop = rendSpeed > 3.0
                     if istate.nativeMounted then
@@ -2087,8 +1843,8 @@ function KCD2MP_InterpTick()
                         horseData.renderR = hr
 
                         -- Play horse entity animation based on speed.
-                        -- relaxed_idle → engine sync assigns matching rider idle.
-                        -- relaxed_gallop → we explicitly set rider gallop above.
+                        -- relaxed_idle â†’ engine sync assigns matching rider idle.
+                        -- relaxed_gallop â†’ we explicitly set rider gallop above.
                         local horseAnim
                         if spd > 3.0 then
                             horseAnim = KCD2MP._horseEntityGallopAnim or KCD2MP._horseEntityWalkAnim
@@ -2226,7 +1982,7 @@ function KCD2MP_RemoveGhost(id)
     KCD2MP.labelCache[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
-    -- wrong (false). Re-probe on next riding ghost (free NPC → correct results).
+    -- wrong (false). Re-probe on next riding ghost (free NPC â†’ correct results).
     KCD2MP._ridingIdleAnim = nil
     KCD2MP._ridingGallopAnim = nil
 end
@@ -3426,7 +3182,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice_yield",  "KCD2MP_DiceForfeit()",       "Yield the match")
     System.AddCCommand("mp_dice_close",  "KCD2MP_DiceClose()",         "Dismiss the dice board")
     System.AddCCommand("mp_dice_table",  "KCD2MP_ReportDiceTable()",   "Report the nearest dice table, for verifying table detection")
-    System.AddCCommand("mp_dice_space",  'KCD2MP_DiceSetSpace("%LINE")', "Pin the board's 2D coordinate space: mp_dice_space 800 600 (no args = report)")
+    System.AddCCommand("mp_dice_redraw", "KCD2MP_DiceRender()",        "Force the board to re-push (use if it ever goes stale)")
     System.AddCCommand("mp_dice_demo",   "KCD2MP_DiceDemo()",          "Open the board with fake state, to review the visuals without a second player")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
@@ -3440,7 +3196,7 @@ end
 -- ===== Sneak action handler (shared, installed by both hook paths) =====
 
 -- Toggle-style sneak actions (each press flips state).
--- NOTE: chat_init_with_focus is NOT sneak – it's the focus/chat key (triggered by Tab/V).
+-- NOTE: chat_init_with_focus is NOT sneak â€“ it's the focus/chat key (triggered by Tab/V).
 -- Stance is detected via player:GetStance() polling in KCD2MP_Exchange (reliable fallback).
 local SNEAK_TOGGLE_ACTIONS = {
     sneak_toggle=true, toggle_sneak=true,

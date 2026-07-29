@@ -115,6 +115,17 @@ questions.** Corrected:
 
 Full evidence and the effort/risk of each route: `WO-6-visual-capability.md`.
 
+**But narrow that down further, because WO-6 also found the limits.** What works
+is *pushing text* into an existing element: `hud.ShowTutorial` (HTML, and it is
+the gilded parchment panel the dice board now uses) and `hud.ShowInfoText`. What
+does **not** work: `hud.ShowDiceScore` is inert outside the native minigame, and
+`<img src='img://...'>` never resolves in a tutorial text field even with a path
+copied verbatim out of `hud.gfx`. **No images, and no `System.Draw2DLine` at
+all** — that call is registered, callable, silent, and not CVar-gated, which
+makes it the third "registered but inert" surface in this project after
+`DrawTriStrip` and Lua writes. `System.DrawText` is the only screen-space draw
+primitive that works from Lua.
+
 **The single most useful thing found in WO-6, for any future work:** the
 Modding Tools ship **Warhorse's own Lua scriptbind reference** at
 `Tools/modding/docs/script_bind/script_bind.zip` (dated 2025-01-14, 5,014
