@@ -43,7 +43,9 @@ $Manifest = Join-Path $RepoRoot 'kdcmp\mod.manifest'
 # Paths inside the pak, relative to kdcmp\Data.
 $Files = @(
     'Scripts\Startup\kdcmp.lua',
-    'Libs\Tables\item\clothing_preset__kdcmp.xml'
+    'Libs\Tables\item\clothing_preset__kdcmp.xml',
+    'Libs\Config\keybindSuperactions.xml',
+    'Libs\Config\defaultProfile.xml'
 )
 
 Write-Host '=== KCD2-MP build and install ===' -ForegroundColor Cyan

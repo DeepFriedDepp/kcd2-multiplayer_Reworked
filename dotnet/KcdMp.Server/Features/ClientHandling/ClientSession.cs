@@ -243,9 +243,9 @@ public class ClientSession
 
     /// <summary>Thread-safe: enqueue a full DiceState snapshot (0x17). See Protocol for the layout.</summary>
     public void EnqueueDiceState(ushort sessionId, byte currentPlayerRole, int scoreInitiator, int scoreAcceptor,
-        int turnTotal, int targetScore, DicePhase phase, byte[] freeFaces, byte[] keptFaces)
+        int turnTotal, int targetScore, DicePhase phase, byte[] freeFaces, byte[] keptFaces, byte[] bustedFaces)
     {
-        var payload = new byte[2 + 1 + 4 + 4 + 4 + 4 + 1 + 1 + freeFaces.Length + 1 + keptFaces.Length];
+        var payload = new byte[2 + 1 + 4 + 4 + 4 + 4 + 1 + 1 + freeFaces.Length + 1 + keptFaces.Length + 1 + bustedFaces.Length];
         int o = 0;
         BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(o), sessionId); o += 2;
         payload[o++] = currentPlayerRole;
@@ -258,6 +258,12 @@ public class ClientSession
         freeFaces.CopyTo(payload, o); o += freeFaces.Length;
         payload[o++] = (byte)keptFaces.Length;
         keptFaces.CopyTo(payload, o); o += keptFaces.Length;
+        // Trailing, appended after WO-5 shipped: empty except on the one
+        // snapshot immediately after a bust, so old parsers that stop after
+        // keptFaces (Test-Dice.ps1, Bot-DiceOpponent.ps1) are unaffected --
+        // the wire framing is length-prefixed, so ignoring a trailer is safe.
+        payload[o++] = (byte)bustedFaces.Length;
+        bustedFaces.CopyTo(payload, o); o += bustedFaces.Length;
         EnqueueRaw(BuildPacket(Protocol.DiceState, payload));
     }
 

@@ -1,0 +1,1857 @@
+<profile version="0">
+
+	<!-- priorities - string alias for order of action maps priorities  -->
+	<priorities>
+		<priority name="pure_include" value="0"/>
+		<priority name="default" value="1"/>
+		<priority name="noninteractive" value="2"/>
+		<priority name="gameplay" value="3"/>
+		<priority name="minigames_ignore_weapon" value="4"/>
+		<priority name="minigames" value="5"/>
+		<priority name="minigames_over" value="6"/>
+		<priority name="apse_base" value="7"/>
+		<priority name="apse" value="8"/>
+		<priority name="modal_dialog" value="9"/>
+		<priority name="cutscenes" value="10"/>
+		<priority name="menu" value="11"/>
+		<priority name="overlays" value="12"/>
+		<priority name="cheats" value="13"/>
+		<priority name="cheats_haste" value="14"/>
+		<priority name="fader" value="15"/>
+		<priority name="platform_interrupt" value="16"/>
+		<priority name="platform_interrupt_active" value="17"/>
+	</priorities>
+
+	<!-- platforms - Used to define which keys to map for each action based on the platform that is in use -->
+	<platforms>
+		<PC keyboard="1" xboxpad="1" pspad="1"/>
+		<XboxOne keyboard="1" xboxpad="1" pspad="0"/>
+		<PS4 keyboard="1" xboxpad="0" pspad="1"/>
+	</platforms>
+
+	<!-- pure_include -->
+	<actionmap name="movement_x" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="moveleft" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="moveright" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="xi_movex" retriggerable="1" xboxpad="xi_thumblx" pspad="pad_sticklx"/>
+	</actionmap>
+
+	<actionmap name="movement_y" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="moveforward" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="moveback" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="xi_movey" retriggerable="1" xboxpad="xi_thumbly" pspad="pad_stickly"/>
+	</actionmap>
+
+	<actionmap name="sprint" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="sprint" onPress="1" onRelease="1" onHold="1" retriggerable="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl" pspad="pad_l3" />
+	</actionmap>
+
+	<actionmap name="movement" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="sprint" />
+		<action name="jump" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle"/>
+		<action name="toggle_run" onRelease="1" keyboard="_keybinds_ref_" />
+	</actionmap>
+
+	<actionmap name="camera_keyboard_mouse" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="rotateyaw" keyboard="maxis_x" />
+		<action name="rotatepitch" keyboard="maxis_y" />
+		<action name="rotateleft" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" />
+		<action name="rotateright" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" />
+	</actionmap>
+
+	<actionmap name="camera_pad" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="xi_rotateyaw" retriggerable="1" xboxpad="xi_thumbrx" pspad="pad_stickrx"/>
+		<action name="xi_rotatepitch" retriggerable="1" xboxpad="xi_thumbry" pspad="pad_stickry"/>
+	</actionmap>
+
+	<actionmap name="camera" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="camera_keyboard_mouse" />
+		<include actionmap="camera_pad" />
+	</actionmap>
+
+	<actionmap name="interaction_talk" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="talk" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="qam_init" priority="pure_include" exclusivity="0">
+		<action name="open_qam_both" onPress="1" onRelease="1" noModifiers="1" keyboard="_keybinds_ref_" />
+		<action name="open_qam_weapon" onPress="1" onRelease="1" xboxpad="xi_dpad_left" pspad="pad_left" noModifiers="1" />
+		<action name="open_qam_food" onPress="1" onRelease="1" xboxpad="xi_dpad_right" pspad="pad_right" noModifiers="1" />
+		<action name="activate_qam_weapon" onPress="1" onRelease="1" xboxpad="xi_dpad_left" pspad="pad_left" noModifiers="1" />
+		<action name="activate_qam_food" onPress="1" onRelease="1" xboxpad="xi_dpad_right" pspad="pad_right" noModifiers="1" />
+		<action name="toggle_holster_qam_weapon" onPress="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_left" pspad="pad_left" noModifiers="1" />
+		<action name="toggle_holster_qam_weapon_2" onPress="1" xboxpad="xi_x" pspad="pad_square" noModifiers="1" />
+		<action name="consume_qam_food" onPress="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="0" onRelease="1" xboxpad="xi_dpad_right" pspad="pad_right" noModifiers="1" />
+
+		<action name="action_qam_1" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_2" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_3" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_4" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_5" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_6" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_7" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_8" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_5_hold" onPress="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_6_hold" onPress="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_7_hold" onPress="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="action_qam_8_hold" onPress="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="call" priority="pure_include" exclusivity="0"> <!-- only for include -->
+		<action name="call" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+	</actionmap>
+	
+	<actionmap name="script_trigger" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="trigger_use" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="trigger_use_hold" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="interaction" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="interaction_talk" />
+		<include actionmap="qam_init" />
+		<include actionmap="script_trigger" />
+		<action name="use" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="mount_horse" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="companion_bond" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_thumbr" pspad="pad_r3" />
+		<action name="use_bed_sit" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="use_bed_sleep" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="use_other" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="use_horse" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="pickpocketing" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="butcher" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" holdTriggerDelay="0.25" holdRepeatDelay="-1" />
+		<include actionmap="call" />
+		<!-- KCD2MP (WO-6): dice board input. keybindSuperactions.xml (this mod's
+		     own pak) supplies the actual key for each of these via
+		     keyboard="_keybinds_ref_": an action declared there with no
+		     matching entry HERE is never registered with the live action-map
+		     system at all, which is why the first attempt produced total
+		     silence (not even a rejected/ignored press) until this was added.
+		     bank/yield need onRelease too: KCD2MP_DiceHoldBegin/End (Lua) key
+		     off the press/release pair to run hold-to-confirm. -->
+		<action name="kcd2mp_dice_mark_1" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_mark_2" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_mark_3" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_mark_4" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_mark_5" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_mark_6" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_cast" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_bank" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_yield" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="kcd2mp_dice_cancel" onPress="1" keyboard="_keybinds_ref_" />
+	</actionmap>
+
+	<actionmap name="toggle_helmet" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="toggle_helmet" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="xi_toggle_helmet" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" xboxpad="xi_dpad_up" pspad="pad_up" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="draw_holster_torch" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="toggle_torch" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="xi_toggle_torch" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" xboxpad="xi_dpad_down" pspad="pad_down" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="minigame_exit" priority="pure_include" exclusivity="0">		<!-- used only as include -->
+		<action name="minigame_exit" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="navigation_left" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="left" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_dpad_left"/>
+				<inputdata input="xi_thumbl_left" />
+				<inputdata input="xi_thumbr_left" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_left"/>
+				<inputdata input="pad_stickl_left" />
+				<inputdata input="pad_stickr_left" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="navigation_right" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="right" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_dpad_right"/>
+				<inputdata input="xi_thumbl_right" />
+				<inputdata input="xi_thumbr_right" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_right"/>
+				<inputdata input="pad_stickl_right" />
+				<inputdata input="pad_stickr_right" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="navigation_up" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="scroll_up" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="up" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_dpad_up"/>
+				<inputdata input="xi_thumbl_up" />
+				<inputdata input="xi_thumbr_up" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_up"/>
+				<inputdata input="pad_stickl_up" />
+				<inputdata input="pad_stickr_up" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="navigation_down" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="scroll_down" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="down" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_dpad_down"/>
+				<inputdata input="xi_thumbl_down" />
+				<inputdata input="xi_thumbr_down" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_down"/>
+				<inputdata input="pad_stickl_down" />
+				<inputdata input="pad_stickr_down" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="navigation_prev" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="navigation_left" />
+		<include actionmap="navigation_up" />
+	</actionmap>
+
+	<actionmap name="navigation_next" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="navigation_right" />
+		<include actionmap="navigation_down" />
+	</actionmap>
+
+	<actionmap name="navigation" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="navigation_prev" />
+		<include actionmap="navigation_next" />
+	</actionmap>
+
+	<actionmap name="sitting" priority="pure_include" exclusivity="0">
+		<include actionmap="camera" />
+		<include actionmap="interaction_talk" />
+		<include actionmap="script_trigger" />
+		<action name="sitting_exit_left" onPress="1" onRelease="1"  keyboard="_keybinds_ref_" xboxpad="xi_thumbl_left" pspad="pad_stickl_left" />
+		<action name="sitting_exit_right" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl_right" pspad="pad_stickl_right" />
+		<action name="sitting_exit_up" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl_up" pspad="pad_stickl_up" />
+		<action name="sitting_exit_down" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl_down" pspad="pad_stickl_down" />
+	</actionmap>
+
+	<actionmap name="apse_close" priority="pure_include" exclusivity="0">
+		<action name="close" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="apse_move_horizontal" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="move_left" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl_left" pspad="pad_stickl_left" />
+		<action name="move_right" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl_right" pspad="pad_stickl_right" />
+	</actionmap>
+
+	<actionmap name="apse_tabs" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="tab_prev" onPress="1" onRelease="1" xboxpad="xi_shoulderl" pspad="pad_l1" />
+		<action name="tab_next" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1"/>
+	</actionmap>
+
+	<actionmap name="apse_sort" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="sort_prev" onPress="1" onRelease="1" xboxpad="xi_dpad_left" pspad="pad_left"/>
+		<action name="sort_next" onPress="1" onRelease="1" xboxpad="xi_dpad_right" pspad="pad_right"/>
+	</actionmap>
+
+	<actionmap name="apse_focus" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="focus_prev" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" holdTriggerDelay="0.25" holdRepeatDelay="0.15">
+			<xboxpad>
+				<inputdata input="xi_dpad_up" />
+				<inputdata input="xi_thumbl_up" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_up" />
+				<inputdata input="pad_stickl_up" />
+			</pspad>
+		</action>
+		<action name="focus_next" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" holdTriggerDelay="0.25" holdRepeatDelay="0.15">
+			<xboxpad>
+				<inputdata input="xi_dpad_down" />
+				<inputdata input="xi_thumbl_down" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_down" />
+				<inputdata input="pad_stickl_down" />
+			</pspad>
+		</action>
+		<action name="toggle_expand" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="apse_scroll" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="scroll" onPress="1" onRelease="1" xboxpad="xi_thumbry" pspad="pad_stickry" />
+	</actionmap>
+
+	<actionmap name="apse_character_rotate" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="rotate" onPress="1" onRelease="1" xboxpad="xi_thumbrx" pspad="pad_stickrx" />
+		<action name="rotate_left" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="rotate_right" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+	</actionmap>
+
+	<actionmap name="apse_toggle_info" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="toggle_info" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+	</actionmap>
+
+	<actionmap name="apse_toggle_category" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="toggle_category" onPress="1" onRelease="1" xboxpad="xi_thumbl" pspad="pad_l3" />
+	</actionmap>
+
+	<actionmap name="apse_confirm" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="confirm" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+	</actionmap>
+
+	<actionmap name="apse_action" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="action" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="apse_item_actions" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="apse_action" />
+		<action name="secondary_action" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="move_item" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<action name="drop_item" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+	</actionmap>
+
+	<actionmap name="apse_selection" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="toggle_selection" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="apse_selection_all" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="toggle_selection_all" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="apse_transfer" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="transfer_item" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="transfer_item_all" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="inventory_base" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_sort" />
+		<include actionmap="apse_focus" />
+	</actionmap>
+
+	<actionmap name="open_menu" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="open_menu" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" xboxpad="xi_start" pspad="pad_start"/>
+	</actionmap>
+
+	<actionmap name="open_pause_menu" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="open_pause_menu" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" xboxpad="xi_start" pspad="pad_start"/>
+	</actionmap>
+
+	<actionmap name="open_apse_keyboard" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="open_apse_inventory_keyboard" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="open_apse_player" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="open_apse_questlog" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="open_apse_map_keyboard" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="open_apse_codex" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+	</actionmap>
+
+	<actionmap name="open_apse_controller" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="open_apse_inventory_controller" onPress="1" onRelease="1" xboxpad="xi_dpad_down" pspad="pad_down" noModifiers="1" />
+		<action name="open_apse_map_controller" onPress="1" onRelease="1" xboxpad="xi_dpad_up" pspad="pad_up" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="open_apse" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="open_apse_keyboard" />
+		<include actionmap="open_apse_controller" />
+	</actionmap>
+
+	<actionmap name="open_skiptime" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="open_skiptime" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_back" pspad="pad_touch" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="open_ui" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="open_menu" />
+		<include actionmap="open_apse" />
+		<include actionmap="open_skiptime" />
+	</actionmap>
+
+	<actionmap name="combat_base" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="prepare_to_attack" onPress="1" onRelease="0" onHold="0">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="attack_primary" onPress="0" onRelease="1" onHold="0">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="attack_primary_mouse" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_" />
+		<action name="block" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2"/>
+		<action name="attack_abort" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+
+		<action name="stealth_kill" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" holdTriggerDelay="0.25" holdRepeatDelay="-1" />		
+		<action name="knock_out" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" holdTriggerDelay="0.25" holdRepeatDelay="-1" />
+		<action name="horse_pulldown" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" holdTriggerDelay="0.25" holdRepeatDelay="-1" />
+		<action name="mercy_kill" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" holdTriggerDelay="0.25" holdRepeatDelay="-1" />
+	</actionmap>
+
+	<actionmap name="combat_zone_mouse" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="combat_zone_mouse_x" onPress="0" onRelease="0" onHold="0" keyboard="maxis_x" />
+		<action name="combat_zone_mouse_y" onPress="0" onRelease="0" onHold="0" keyboard="maxis_y" />
+	</actionmap>
+
+	<actionmap name="reading_base" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="read_prev" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+		<action name="read_next" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1"/>
+	</actionmap>
+
+	<actionmap name="open_web" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<action name="open_web" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_x" pspad="pad_square" />
+	</actionmap>
+
+	<actionmap name="dialog_minigame_move" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="apse_focus" />
+		<action name="scroll_up" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="scroll_down" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="dialog_move_prev" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" noModifiers="1" />
+		<action name="dialog_move_next" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerr_btn" pspad="pad_r2" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="dialog_minigame" priority="pure_include" exclusivity="0">		<!-- only for include -->
+		<include actionmap="dialog_minigame_move" />
+		<include actionmap="help_dialog" />    <!-- Because we need override class in defaultActionHelp.xml -->
+		<action name="confirm" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5"  keyboard="_keybinds_ref_" holdRepeatDelay="-1" xboxpad="xi_x" pspad="pad_square" />
+		<action name="cancel" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" keyboard="_keybinds_ref_" holdRepeatDelay="-1" xboxpad="xi_b" pspad="pad_circle" />
+		<action name="next_step" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="next_step_mouse" keyboard="_keybinds_ref_" onPress="1" onRelease="1" />
+	</actionmap>
+
+	<actionmap name="forge_builder" priority="pure_include" exclusivity="0">
+    	<include actionmap="dialog_minigame_move" />
+		<action name="dialog_move_prev_alt" onPress="1" onRelease="1" xboxpad="xi_thumbl_left" pspad="pad_stickl_left" noModifiers="1" />
+		<action name="dialog_move_next_alt" onPress="1" onRelease="1" xboxpad="xi_thumbl_right" pspad="pad_stickl_right" noModifiers="1" />
+    	<include actionmap="help_dialog" />    <!-- Because we need override class in defaultActionHelp.xml -->
+	</actionmap>
+
+	<!-- default -->
+	<actionmap name="player" priority="default" exclusivity="0">
+		<include actionmap="movement" />
+		<include actionmap="camera" />
+		<include actionmap="interaction" />
+		<include actionmap="draw_holster_torch" />
+		<include actionmap="toggle_helmet" />
+		<include actionmap="open_ui" />
+		<action name="toggle_crouch" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbr" pspad="pad_r3" />
+		<action name="grab_body" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+	</actionmap>
+
+	<!-- combat controls -->
+	<actionmap name="combat" priority="default" exclusivity="0">
+		<include actionmap="combat_base" />
+		<include actionmap="combat_zone_mouse" />
+		<action name="opponent_lock" onPress="1" onRelease="0" onHold="0" keyboard="_keybinds_ref_" xboxpad="xi_thumbr" pspad="pad_r3"/>
+		<action name="combat_unlock_mouse" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1" />
+		<action name="combat_switch_opp_next" keyboard="_keybinds_ref_" />
+		<action name="combat_switch_opp_prev" keyboard="_keybinds_ref_" />
+	</actionmap>
+
+	<actionmap name="combat_locked" priority="default" exclusivity="0">
+		<action name="attack_special" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" holdTriggerDelay="0.25" holdRepeatDelay="-1" />
+	</actionmap>
+
+	<actionmap name="combat_stealth_attack" priority="default" exclusivity="0">
+		<action name="stealth_kill_attack" onPress="1" onRelease="1" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="combat_stealth_silent_attack" priority="default" exclusivity="0">
+		<action name="stealth_kill_silent_attack" onPress="1" onRelease="1" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="combat_stealth" priority="default" exclusivity="0">
+		<action name="combat_stealth_pick_up_body" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+		<action name="combat_stealth_drop_body" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1" />
+	</actionmap>
+
+	<!-- interaction -->
+	<actionmap name="dog" priority="default" exclusivity="0">
+		<action name="request_dog" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="combat_request_dog" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="cancel_dog" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+	</actionmap>
+
+	<actionmap name="custom_quest_call_horse" priority="default" exclusivity="0">
+		<action name="custom_quest_call_horse_action" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle"/>
+	</actionmap>
+
+	<actionmap name="noninteractive" priority="noninteractive" exclusivity="1">
+		<include actionmap="camera" />
+		<include actionmap="open_menu" />
+	</actionmap>
+
+	<actionmap name="crouch" priority="default" exclusivity="0">
+		<action name="distract_init" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1"/>
+	</actionmap>
+
+	<!-- gameplay -->
+	<actionmap name="photomode_enable" priority="minigames" exclusivity="0">
+		<action name="photomode_enable" onPress="1" onRelease="1" keyboard="_keybinds_ref_"/>
+		<action name="photomode_enable_l3" onPress="1" onRelease="1" xboxpad="xi_back" pspad="pad_touch"/>
+		<action name="photomode_enable_r3" onPress="1" onRelease="1" xboxpad="xi_start" pspad="pad_start"/>
+	</actionmap>
+
+	<actionmap name="sitting_chair" priority="gameplay" exclusivity="1">
+		<include actionmap="sitting" />
+		<include actionmap="open_ui" />
+	</actionmap>
+
+	<actionmap name="sitting_bed" priority="gameplay" exclusivity="1">
+		<include actionmap="sitting" />
+		<include actionmap="open_ui" />
+		<action name="sitting_sleep" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="unstance" priority="gameplay" exclusivity="1">
+		<include actionmap="camera" />
+		<action name="unstance_end" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="carry_corpse_manipulation" priority="gameplay" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<include actionmap="call" />
+	</actionmap>
+
+	<actionmap name="carry_corpse_carrying" priority="gameplay" exclusivity="1">
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="camera" />
+		<include actionmap="open_ui" />
+		<include actionmap="call" />
+		<include actionmap="script_trigger" />
+		<include actionmap="draw_holster_torch" />
+		<action name="put_corpse" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="carry_item" priority="gameplay" exclusivity="1">
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="camera" />
+		<include actionmap="open_ui" />
+		<include actionmap="call" />
+		<action name="deposit_item" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="put_item" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="carry_item_manipulation" priority="minigames" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<include actionmap="call" />
+	</actionmap>
+
+	<actionmap name="horse_mounting" priority="minigames" exclusivity="1">
+		<include actionmap="movement" />
+		<include actionmap="camera" />
+		<include actionmap="open_ui" />
+		<action name="horse_slowdown" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbr" pspad="pad_r3"/>
+	</actionmap>
+
+	<actionmap name="horse_dismounting" priority="minigames" exclusivity="1">
+		<include actionmap="camera" />
+	</actionmap>
+
+	<actionmap name="horse_mounted" priority="gameplay" exclusivity="1">
+		<action name="horse_dismount" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="horse_magnetism_activate" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="horse_magnetism_deactivate" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="horse_saddle_bond" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbr" pspad="pad_r3"/>
+		<action name="horse_perk_no_rest_for_the_wicked" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbl" pspad="pad_l3"/>
+		<include actionmap="combat_base" />
+		<include actionmap="draw_holster_torch" />
+		<include actionmap="toggle_helmet" />
+		<include actionmap="qam_init" />
+		<include actionmap="interaction_talk" />
+		<include actionmap="horse_mounting" />
+	</actionmap>
+
+	<actionmap name="cart_action" priority="gameplay" exclusivity="1">
+		<include actionmap="open_ui" />
+	</actionmap>
+
+	<actionmap name="cart" priority="gameplay" exclusivity="1">
+		<include actionmap="camera" />
+		<include actionmap="open_ui" />
+		<action name="cart_dismount" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle"/>
+	</actionmap>
+
+	<actionmap name="infinite_hold_interaction_init" priority="gameplay" exclusivity="0">
+		<action name="infinite_hold_interaction_init_press" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+	</actionmap>
+
+	<actionmap name="infinite_hold_interaction_inprogress" priority="minigames" exclusivity="1">
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="camera" />
+		<action name="infinite_hold_interaction_inprogress_release" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+	</actionmap>
+
+	<actionmap name="open_codex" priority="gameplay" exclusivity="0">
+		<action name="open_codex_new_entry" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_down" pspad="pad_down" />
+	</actionmap>
+
+	<actionmap name="close_tutorial" priority="minigames" exclusivity="0">
+		<action name="close_tutorial" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_back" pspad="pad_touch" />
+	</actionmap>
+
+	<actionmap name="reset_tutorials" priority="gameplay" exclusivity="0">
+		<action name="reset_tutorials_action" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle"/>
+	</actionmap>
+
+	<actionmap name="ledge" priority="gameplay" exclusivity="1">
+		<include actionmap="camera" />
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="sprint" />
+	</actionmap>
+
+	<actionmap name="chat_init_interactor" priority="gameplay" exclusivity="0">
+		<action name="chat_init_interactor_press" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1" />
+		<action name="chat_init_with_focus" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+	</actionmap>
+
+	<actionmap name="chat_init" priority="gameplay" exclusivity="0">
+		<action name="chat_init_press" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1" />
+		<action name="chat_init_release" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1" />
+	</actionmap>
+
+	<actionmap name="focus_follow_init_interactor" priority="gameplay" exclusivity="0">
+		<action name="focus_follow_init_interactor_press" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+	</actionmap>
+
+	<actionmap name="chat_focus_follow_init" priority="gameplay" exclusivity="0">
+		<action name="chat_focus_follow_init_press" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+		<action name="chat_focus_follow_init_release" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderl" pspad="pad_l1" />
+	</actionmap>
+
+	<actionmap name="chat_interaction" priority="minigames" exclusivity="1">
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="open_apse_keyboard" />
+		<include actionmap="open_menu" />
+		<include actionmap="open_skiptime" />
+		<include actionmap="chat_focus_follow_init" />
+		<include actionmap="camera" />
+		<include actionmap="combat_zone_mouse" />
+
+		<action name="chat_interaction_release" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1" />
+		<action name="chat_first" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="chat_second" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="chat_third" onPress="1" keyboard="_keybinds_ref_" />
+		<action name="chat_fourth" onPress="1" keyboard="_keybinds_ref_" />
+
+		<action name="chat_first_controller" onPress="1" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="chat_second_controller" onPress="1" xboxpad="xi_b" pspad="pad_circle" />
+		<action name="chat_third_controller" onPress="1" xboxpad="xi_x" pspad="pad_square" />
+		<action name="chat_fourth_controller" onPress="1" xboxpad="xi_y" pspad="pad_triangle" />
+
+		<action name="chat_down" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_dpad_down" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_down" />
+			</pspad>
+		</action>
+
+		<action name="chat_up" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_dpad_up" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_up" />
+			</pspad>
+		</action>
+		
+		<action name="chat_confirm" onPress="1" onRelease="1" xboxpad="xi_a" pspad="pad_cross" keyboard="_keybinds_ref_" />
+		<action name="chat_confirm_mouse" keyboard="_keybinds_ref_" onPress="1" onRelease="1" />
+		<action name="chat_cancel" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<!-- minigames -->
+
+	<!-- 	we have missiles action maps in minigame priority because batle_archery. 
+			The system (C_MissileWeaponPlayerController) is responsible to active/deactive one of these action maps when you have weapon in hands, so you really can shoot.
+	-->
+	<actionmap name="combat_bow" priority="minigames_ignore_weapon" exclusivity="0">
+		<action name="bow_primary" onPress="1" onRelease="0" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="bow_primary_release" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="bow_secondary" onPress="1" onRelease="0" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerl" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_ltrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="bow_secondary_release" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerl" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_ltrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="combat_crossbow" priority="minigames_ignore_weapon" exclusivity="0">
+		<action name="crossbow_prepare" onPress="1" onRelease="0" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerl" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" /> <!-- analogCompareVal must be same as abort action -->
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_ltrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="crossbow_abort" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerl" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_ltrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="crossbow_execute" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.6" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.6" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="combat_gun" priority="minigames_ignore_weapon" exclusivity="0">
+		<action name="gun_prepare" onPress="1" onRelease="0" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerl" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_ltrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="gun_abort" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerl" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_ltrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="gun_execute" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+	</actionmap>
+
+	<actionmap name="dialog" priority="minigames" exclusivity="1">
+		<include actionmap="navigation"/>
+		<include actionmap="open_pause_menu" />
+		<action name="dialog_confirm" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.5" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="dialog_confirm_mouse" keyboard="_keybinds_ref_" onPress="1" onRelease="1" />
+		<action name="dialog_skip" keyboard="_keybinds_ref_" onRelease="1" onPress="1" holdTriggerDelay="0.25" xboxpad="xi_b" pspad="pad_circle" />
+		<action name="dialog_cancel" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="dialog_crime_list_open" priority="minigames" exclusivity="0">
+		<action name="open_crime_list" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_y" pspad="pad_triangle"/>
+	</actionmap>
+
+	<actionmap name="horse_inspect" priority="minigames" exclusivity="1">		<!-- set only from C_UIHorseInspect -->
+		<action name="horse_inspect_close" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle"/>
+	</actionmap>
+
+	<actionmap name="help_dialog" priority="minigames_over" exclusivity="0">		<!-- set only from C_UIHelpOverlay -->
+		<action name="open_help_screen" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_back" pspad="pad_touch" noModifiers="1"/>
+	</actionmap>
+
+	<actionmap name="minigame" priority="minigames" exclusivity="1">		<!-- used only as include -->
+		<include actionmap="open_pause_menu" />
+		<include actionmap="help_dialog" />
+		<include actionmap="minigame_exit"/>
+	</actionmap>
+
+	<actionmap name="herb_gathering" priority="minigames" exclusivity="1">		<!-- set only from C_HerbGathering -->
+		<include actionmap="open_pause_menu" />
+	</actionmap>
+
+	<actionmap name="pickpocketing" priority="minigames" exclusivity="1">		<!-- set only from C_Pickpocketing -->
+		<action name="charge" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<include actionmap="camera"/>
+		<include actionmap="movement"/>
+	</actionmap>
+
+	<actionmap name="pickpocketing_ui" priority="minigames" exclusivity="1">		<!-- set only from C_Pickpocketing -->
+		<include actionmap="navigation"/>
+		<action name="pickpocketing_uncover" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="pickpocketing_close" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="pickpocketing_take" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="lockpicking" priority="minigames" exclusivity="1">
+		<include actionmap="minigame" />
+
+		<action name="lock_cursor_x" keyboard="maxis_x" />
+		<action name="lock_cursor_y" keyboard="maxis_y" />
+		<action name="xi_lock_cursor_x" onPress="1" onRelease="1" xboxpad="xi_thumbrx" pspad="pad_stickrx"/>
+		<action name="xi_lock_cursor_y" onPress="1" onRelease="1" xboxpad="xi_thumbry" pspad="pad_stickry"/>
+		<action name="lock_dir_fwd" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" />
+	</actionmap>
+
+	<actionmap name="sharpening" priority="minigames" exclusivity="1">
+		<include actionmap="minigame" />
+		<action name="xi_pedaling" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" />
+		<action name="xi_sword_position_r" onPress="1" onRelease="1" xboxpad="xi_thumbrx" pspad="pad_stickrx" />
+		<action name="xi_sword_position_l" onPress="1" onRelease="1" xboxpad="xi_thumblx" pspad="pad_sticklx" />
+		<action name="xi_sword_rotation" onPress="1" onRelease="1" xboxpad="xi_thumbry" pspad="pad_stickry" />
+
+		<action name="sword_position_left" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" />
+		<action name="sword_position_right" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" />
+		<action name="sword_rotation_up" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" />
+		<action name="sword_rotation_down" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" />
+		<action name="sword_position" keyboard="maxis_x" />
+		<action name="sword_rotation" keyboard="maxis_y" />
+
+		<action name="toggle_preview" onPress="1" onRelease="1" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="reading" priority="minigames" exclusivity="1">
+		<include actionmap="minigame" />
+		<include actionmap="reading_base" />
+		<action name="read_use" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="reading_prototype" priority="minigames" exclusivity="1">
+		<include actionmap="minigame" />
+		<include actionmap="camera" />
+		<include actionmap="movement" />
+	</actionmap>
+
+	<actionmap name="dice_waiting" priority="minigames" exclusivity="1">
+		<include actionmap="camera"/>
+		<include actionmap="minigame" />
+	</actionmap>
+
+	<actionmap name="dice_interaction" priority="minigames" exclusivity="1">
+		<include actionmap="minigame" />
+		<action name="dice_analog_x" onPress="1" onRelease="1" xboxpad="xi_thumblx" pspad="pad_sticklx"/>
+		<action name="dice_analog_y" onPress="1" onRelease="1" xboxpad="xi_thumbly" pspad="pad_stickly" />
+		<action name="dice_up" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_up" pspad="pad_up" />
+		<action name="dice_down" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_down" pspad="pad_down" />
+		<action name="dice_left" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_left" pspad="pad_left" />
+		<action name="dice_right" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_right" pspad="pad_right" />
+
+		<action name="dice_hold" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="dice_score" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<action name="dice_pass" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="dice_end" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+
+		<action name="dice_badge_use" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2" />
+		<action name="dice_exit_badge_effect" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerr_btn" pspad="pad_r2" />
+	</actionmap>
+
+	<actionmap name="alchemy" priority="minigames" exclusivity="1">
+		<include actionmap="camera"/>
+		<include actionmap="minigame" />
+		<action name="alch_back" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle"/>
+		<action name="alch_use" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="alch_reset" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<action name="alch_use_bag" onPress="1" xboxpad="xi_triggerl_btn" keyboard="_keybinds_ref_" pspad="pad_l2"/>
+		<action name="alch_use_sandglass" onPress="1" onRelease="1" xboxpad="xi_triggerr_btn" keyboard="_keybinds_ref_" pspad="pad_r2"/>
+		<action name="alch_open_inventory" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_dpad_down" pspad="pad_down" noModifiers="1" />
+		<action name="alch_move_pot" onPress="1" onRelease="1" xboxpad="xi_dpad_up" keyboard="_keybinds_ref_" pspad="pad_up"/>
+	</actionmap>
+
+	<actionmap name="book_transcription" priority="minigames" exclusivity="1">
+		<action name="transcription_skip" onPress="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="ui_mouse_wheel_down" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="ui_mouse_wheel_up" onPress="1" onRelease="1" keyboard="_keybinds_ref_" />
+		<action name="ui_mouse_left" keyboard="_keybinds_ref_" onPress="1" onRelease="1" />
+		<action name="ui_mouse_right" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" />
+	</actionmap>
+
+	<actionmap name="hole_digging" priority="minigames" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+	</actionmap>
+
+	<actionmap name="distract" priority="minigames" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="camera" />
+
+		<action name="decoy_throw" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_shoulderr" pspad="pad_r1"/>
+		<action name="decoy_abort" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross"/>
+	</actionmap>
+
+	<actionmap name="blacksmithing_move" priority="minigames" exclusivity="1">
+		<action name="blacksmith_mouse_x" onPress="0" onRelease="0" onHold="0" keyboard="maxis_x" />
+		<action name="blacksmith_mouse_y" onPress="0" onRelease="0" onHold="0" keyboard="maxis_y" />
+		<action name="blacksmith_gamepad_x" onPress="0" onRelease="0" onHold="0" xboxpad="xi_thumblx" pspad="pad_sticklx" />
+		<action name="blacksmith_gamepad_y" onPress="0" onRelease="0" onHold="0" xboxpad="xi_thumbly" pspad="pad_stickly" />
+	</actionmap>
+	
+	<actionmap name="blacksmithing" priority="minigames" exclusivity="1">
+		<include actionmap="minigame" />
+	</actionmap>
+
+	<actionmap name="blacksmithing_forge_basic" priority="minigames" exclusivity="1">
+		<include actionmap="blacksmithing" />
+		<action name="blacksmith_to_anvil" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross"/>
+		<action name="blacksmith_inspection" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square"/>
+		<action name="blacksmith_use_forgebag" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerr_btn" pspad="pad_r2"/>
+	</actionmap>
+
+	<actionmap name="blacksmithing_forge" priority="minigames" exclusivity="1">
+		<include actionmap="blacksmithing" />
+		<include actionmap="blacksmithing_move" />
+		<action name="blacksmith_to_anvil" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross"/>
+		<action name="blacksmith_inspection" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square"/>
+		<action name="blacksmith_use_forgebag" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerr_btn" pspad="pad_r2"/>
+	</actionmap>
+
+	<actionmap name="blacksmithing_anvil" priority="minigames" exclusivity="1">
+		<include actionmap="blacksmithing" />
+		<include actionmap="blacksmithing_move" />
+		<action name="blacksmith_stroke" onPress="1" onRelease="1" onHold="0" keyboard="_keybinds_ref_">
+			<xboxpad>
+				<inputdata input="xi_triggerr_btn" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_rtrigger" useAnalogCompare="1" analogCompareVal="0.4" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="blacksmith_to_forge" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross"/>
+		<action name="blacksmith_swap_workpiece" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square"/>
+	</actionmap>
+
+	<actionmap name="blacksmithing_inspection" priority="minigames" exclusivity="1">
+		<action name="blacksmith_inspection_stop" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square"/>
+	</actionmap>
+
+	<actionmap name="blacksmithing_confirmation" priority="minigames" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<action name="blacksmith_confirmation" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross"/>
+	</actionmap>
+
+	<actionmap name="blacksmithing_hardening" priority="minigames" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+	</actionmap>
+
+	<actionmap name="stone_throwing" priority="minigames" exclusivity="1">
+		<include actionmap="camera"/>
+		<include actionmap="movement_x"/>
+		<include actionmap="minigame"/>
+		<include actionmap="toggle_helmet" />
+		<action name="throw" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="stone_throwing_non_interactive" priority="minigames" exclusivity="1">
+		<include actionmap="camera"/>
+		<include actionmap="toggle_helmet" />
+		<include actionmap="open_pause_menu" />
+	</actionmap>
+
+	<actionmap name="butchering" priority="minigames" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+	</actionmap>
+
+	<actionmap name="battle_archery" priority="minigames_ignore_weapon" exclusivity="1">
+		<include actionmap="camera"/>
+		<include actionmap="open_apse"/>
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="sprint" />
+		<include actionmap="open_pause_menu" />
+		<include actionmap="qam_init"/>
+		<include actionmap="toggle_helmet" />
+	</actionmap>
+
+	<actionmap name="forge_builder_slots" priority="minigames" exclusivity="1">
+		<include actionmap="forge_builder" />
+		<include actionmap="minigame_exit"/>
+		<action name="edit" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+	
+	<actionmap name="forge_builder_assets" priority="minigames_over" exclusivity="1">
+		<include actionmap="forge_builder" />
+		<action name="equipp" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="buy" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.5" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="back" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle"/>
+	</actionmap>
+	
+	<!-- minigames_over -->
+	<actionmap name="alchemy_reading" priority="minigames_over" exclusivity="1">
+		<include actionmap="reading_base" />
+		<include actionmap="minigame" />
+		<action name="read_select" onPress="1" onRelease="1" onHold="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="read_toggle" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="read_back" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="dialog_crime_list" priority="minigames_over" exclusivity="1">
+		<include actionmap="navigation_up" />
+		<include actionmap="navigation_down" />
+		<action name="close_crime_list" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle"/>
+		<action name="close_crime_list_alt" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_y" pspad="pad_triangle"/>
+	</actionmap>
+
+	<actionmap name="skip_time" priority="minigames_over" exclusivity="1">		<!-- set only from C_SkipTime -->
+		<include actionmap="navigation"/>
+		<action name="skip_time_confirm" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.5" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="skip_time_cancel" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle"/>
+	</actionmap>
+
+	<actionmap name="skip_time_skipping" priority="minigames_over" exclusivity="1">		<!-- set only from C_SkipTime -->
+		<action name="skip_time_skipping_cancel" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle"/>
+	</actionmap>
+
+	<actionmap name="barber_interaction" priority="minigames_over" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<include actionmap="dialog_minigame" />
+		<action name="mouse_looking_x" keyboard="maxis_x" />
+		<action name="mouse_looking_y" keyboard="maxis_y" />
+		<action name="xi_looking_x" xboxpad="xi_thumbrx" pspad="pad_stickrx"/>
+		<action name="xi_looking_y" xboxpad="xi_thumbry" pspad="pad_stickry"/>
+	</actionmap>
+
+	<actionmap name="shield_painting_interaction" priority="minigames_over" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<include actionmap="dialog_minigame" />
+	</actionmap>
+
+	<!-- qam -->
+	<actionmap name="qam_interaction" priority="pure_include" exclusivity="0">
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+		<include actionmap="sprint" />
+		<include actionmap="camera" />
+		<include actionmap="open_apse" />
+		<action name="left_qam" onPress="1" onRelease="1" xboxpad="xi_dpad_left" pspad="pad_left" noModifiers="1" />
+		<action name="right_qam" onPress="1" onRelease="1" xboxpad="xi_dpad_right" pspad="pad_right" noModifiers="1" />
+		<action name="close_qam" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="qam_interaction_weapon" priority="minigames_over" exclusivity="1">
+		<include actionmap="qam_interaction" />
+		<action name="action_qam_weapon" onPress="1" onRelease="1" xboxpad="xi_a" pspad="pad_cross" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="qam_interaction_food" priority="minigames_over" exclusivity="1">
+		<include actionmap="qam_interaction" />
+		<action name="action_qam_food" onPress="1" onHold="1" onRelease="1" xboxpad="xi_a" pspad="pad_cross" noModifiers="1" />
+		<action name="action_qam_food_pad" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" xboxpad="xi_dpad_right" pspad="pad_right" noModifiers="1" />
+	</actionmap>
+
+	<!-- apse -->
+
+	<actionmap name="apse" priority="apse_base" exclusivity="1">
+		<include actionmap="help_dialog" /> <!-- Because we need override class in defaultActionHelp.xml -->
+		<include actionmap="apse_move_horizontal" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_close" />
+
+		<action name="move_prev" onPress="1" onRelease="1" xboxpad="xi_triggerl_btn" pspad="pad_l2" noModifiers="1" />
+		<action name="move_next" onPress="1" onRelease="1" xboxpad="xi_triggerr_btn" pspad="pad_r2" noModifiers="1" />
+
+		<action name="move_inventory" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="move_player" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="move_questlog" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="move_map" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="move_codex" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="move_crafting" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		
+		<action name="move_inventory_btn" onPress="1" onRelease="1" keyboard="_no_key_" noModifiers="1" />
+		<action name="move_player_btn" onPress="1" onRelease="1" keyboard="_no_key_" noModifiers="1" />
+		<action name="move_questlog_btn" onPress="1" onRelease="1" keyboard="_no_key_" noModifiers="1" />
+		<action name="move_map_btn" onPress="1" onRelease="1" keyboard="_no_key_" noModifiers="1" />
+		<action name="move_codex_btn" onPress="1" onRelease="1" keyboard="_no_key_" noModifiers="1" />
+		<action name="move_crafting_btn" onPress="1" onRelease="1" keyboard="_no_key_" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="apse_minigame" priority="apse" exclusivity="1">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="apse_qam_slots" priority="apse" exclusivity="0">
+		<action name="weapon_slot_prev" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" >
+			<xboxpad>
+				<inputdata input="xi_thumbry" useAnalogCompare="1" analogCompareVal="0.5" analogCompareOp="GREATERTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_stickry" useAnalogCompare="1" analogCompareVal="0.5" analogCompareOp="GREATERTHAN" />
+			</pspad>
+		</action>
+		<action name="weapon_slot_next" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.5" holdRepeatDelay="0.15" >
+			<xboxpad>
+				<inputdata input="xi_thumbry" useAnalogCompare="1" analogCompareVal="-0.5" analogCompareOp="LESSTHAN" />
+			</xboxpad>
+			<pspad>
+				<inputdata input="pad_stickry" useAnalogCompare="1" analogCompareVal="-0.5" analogCompareOp="LESSTHAN" />
+			</pspad>
+		</action>
+		<action name="food_slot_next" onPress="1" onRelease="1" xboxpad="xi_thumbr" pspad="pad_r3" />
+		<action name="weapon_slot_1" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="weapon_slot_2" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="weapon_slot_3" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="weapon_slot_4" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="food_slot_1" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="food_slot_2" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="food_slot_3" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="food_slot_4" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+	</actionmap>
+
+	<actionmap name="apse_inventory" priority="apse" exclusivity="0">
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_sort" />
+		<include actionmap="apse_focus" />
+		<include actionmap="apse_item_actions" />
+		<include actionmap="apse_toggle_category" />
+		<include actionmap="apse_character_rotate" />
+	</actionmap>
+
+	<actionmap name="apse_player" priority="apse" exclusivity="0">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_focus" />
+		<include actionmap="apse_character_rotate" />
+	</actionmap>
+
+	<actionmap name="apse_change_outfit" priority="apse" exclusivity="0">
+		<action name="next_outfit" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle"/>
+	</actionmap>
+
+	<actionmap name="apse_codex" priority="apse" exclusivity="0">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_focus" />
+	</actionmap>
+
+	<actionmap name="apse_map_legend" priority="apse" exclusivity="0">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_focus" />
+		<action name="toggle_track_poi" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<action name="toggle_track_poi_all" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+	</actionmap>
+
+	<actionmap name="apse_map_move" priority="apse" exclusivity="0">
+		<action name="map_zoom_down" onPress="1" onRelease="1" keyboard="_keybinds_ref_"/>
+		<action name="map_zoom_up" onPress="1" onRelease="1" keyboard="_keybinds_ref_"/>
+		<action name="map_move_x_analog" retriggerable="1" xboxpad="xi_thumbrx" pspad="pad_stickrx" />
+		<action name="map_move_y_analog" retriggerable="1" xboxpad="xi_thumbry" pspad="pad_stickry" />
+	</actionmap>
+
+	<actionmap name="apse_map_zoom_gamepad" priority="apse" exclusivity="0">
+		<action name="map_zoom_down" onPress="1" onRelease="1" xboxpad="xi_shoulderl" pspad="pad_l1"/>
+		<action name="map_zoom_up" onPress="1" onRelease="1" xboxpad="xi_shoulderr" pspad="pad_r1"/>
+	</actionmap>
+
+	<actionmap name="apse_map_checkpoint" priority="apse" exclusivity="0">
+		<action name="checkpoint" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+		<action name="map_center" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_thumbr" pspad="pad_r3" />
+	</actionmap>
+
+	<actionmap name="apse_map_interaction" priority="apse" exclusivity="0">
+		<action name="start_fast_travel" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+
+	<actionmap name="apse_questlog" priority="apse" exclusivity="0">
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_sort" />
+		<include actionmap="apse_focus" />
+		<include actionmap="apse_scroll" />
+		<include actionmap="apse_toggle_category" />
+		<action name="toggle_track_quest" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+	</actionmap>
+
+	<actionmap name="apse_questlog_map" priority="apse" exclusivity="0">
+		<action name="map_focus_objective" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="apse_crafting" priority="apse" exclusivity="0">
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_sort" />
+		<include actionmap="apse_focus" />
+	</actionmap>
+
+	<actionmap name="shop" priority="apse" exclusivity="1">
+		<include actionmap="help_dialog" /> <!-- Because we need override class in defaultActionHelp.xml -->
+		<include actionmap="apse_move_horizontal" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_character_rotate" />
+
+		<action name="move_prev" onPress="1" onRelease="1" xboxpad="xi_triggerl_btn" pspad="pad_l2" noModifiers="1" />
+		<action name="move_next" onPress="1" onRelease="1" xboxpad="xi_triggerr_btn" pspad="pad_r2" noModifiers="1" />
+
+		<action name="move_shop_inventory_btn" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+		<action name="move_shop_trader_btn" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" />
+
+		<action name="close_deal" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<action name="haggle" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+	</actionmap>
+
+	<actionmap name="shop_inventory" priority="apse" exclusivity="1">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_sort" />
+		<include actionmap="apse_focus" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="shop_trader" priority="apse" exclusivity="1">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_tabs" />
+		<include actionmap="apse_sort" />
+		<include actionmap="apse_focus" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_selection_filter" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_selection" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_selection_wash" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_selection" />
+		<include actionmap="apse_selection_all" />
+		<include actionmap="apse_confirm" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_selection_repair" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_selection" />
+		<include actionmap="apse_selection_all" />
+		<include actionmap="apse_confirm" />
+		<action name="haggle" onPress="1" onHold="1" onRelease="1" holdTriggerDelay="0.25" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_selection_quest_delivery" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_selection" />
+		<include actionmap="apse_selection_all" />
+		<include actionmap="apse_confirm" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_selection_multiselect" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_selection" />
+		<include actionmap="apse_selection_all" />
+		<include actionmap="apse_confirm" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_selection_minigame" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_selection" />
+		<include actionmap="apse_confirm" />
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_transfer_base" priority="apse" exclusivity="1">
+		<include actionmap="apse_close" />
+		<include actionmap="apse_toggle_info" />
+		<include actionmap="apse_move_horizontal" />
+	</actionmap>
+
+	<actionmap name="item_transfer_first" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_transfer" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<actionmap name="item_transfer_second" priority="apse" exclusivity="1">
+		<include actionmap="inventory_base" />
+		<include actionmap="apse_transfer" />
+		<include actionmap="apse_toggle_category" />
+	</actionmap>
+
+	<!-- modal_dialog -->
+	<actionmap name="modal_dialog_info" priority="modal_dialog" exclusivity="1">
+		<include actionmap="apse_action" />
+	</actionmap>
+
+	<actionmap name="modal_dialog_question" priority="modal_dialog" exclusivity="1">
+		<include actionmap="apse_action" />
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="modal_dialog_amount" priority="modal_dialog" exclusivity="1">
+		<include actionmap="navigation" />
+		<include actionmap="apse_action" />
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="modal_dialog_healing" priority="modal_dialog" exclusivity="1">
+		<include actionmap="navigation" />
+		<include actionmap="apse_action" />
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="modal_dialog_combine" priority="modal_dialog" exclusivity="1">
+		<include actionmap="navigation_up" />
+		<include actionmap="navigation_down" />
+		<include actionmap="apse_action" />
+		<include actionmap="apse_confirm" />
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="modal_dialog_item" priority="modal_dialog" exclusivity="1">
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="apse_inventory_qam" priority="modal_dialog" exclusivity="1">
+		<include actionmap="navigation_left" />
+		<include actionmap="navigation_right" />
+		<include actionmap="navigation_up" />
+		<include actionmap="navigation_down" />
+		<include actionmap="apse_action" />
+		<include actionmap="apse_close" />
+	</actionmap>
+
+	<actionmap name="apse_fast_travel_running" priority="modal_dialog" exclusivity="1">
+	</actionmap>
+
+	<actionmap name="modal_dialog_random_event" priority="modal_dialog" exclusivity="1">
+		<action name="choice_1" onPress="1" onRelease="1"  keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="choice_2" onPress="1" onRelease="1"  keyboard="_keybinds_ref_" xboxpad="xi_b" pspad="pad_circle" />
+		<action name="choice_3" onPress="1" onRelease="1"  keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square" />
+		<action name="choice_4" onPress="1" onRelease="1"  keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle" />
+	</actionmap>
+
+	<!-- cutscenes -->
+	<actionmap name="cutscene" priority="cutscenes" exclusivity="1">
+		<include actionmap="open_pause_menu" />
+		<action name="cutscene_skip" keyboard="_keybinds_ref_" onRelease="1" onPress="1" xboxpad="xi_b" pspad="pad_circle" />
+		<action name="cutscene_abort" keyboard="_keybinds_ref_" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.25" xboxpad="xi_b" pspad="pad_circle"/>
+	</actionmap>
+	
+	<actionmap name="text_cutscene" priority="cutscenes" exclusivity="1">
+	</actionmap>
+
+	<!-- menu -->
+	<actionmap name="menu" priority="menu" exclusivity="1">		<!-- set only from C_UIMenu -->
+		<include actionmap="navigation" />
+		<include actionmap="open_web" />
+		<action name="menu_accept" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.5" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="menu_back" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle"/>
+		<action name="menu_confirm" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="1" holdRepeatDelay="-1" keyboard="_keybinds_ref_" xboxpad="xi_y" pspad="pad_triangle"/>
+		<action name="menu_reset" onPress="1" onRelease="1" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.5" keyboard="_keybinds_ref_" xboxpad="xi_x" pspad="pad_square"/>
+		<action name="menu_reset_keybind" keyboard="_keybinds_ref_" onPress="1" onRelease="1"/>
+		<action name="menu_clear" keyboard="_keybinds_ref_" onPress="1" onRelease="1"/>
+		<action name="menu_pros" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" xboxpad="xi_start" pspad="pad_start"/>
+		<action name="menu_support" onPress="1" onRelease="1" keyboard="_keybinds_ref_" noModifiers="1" xboxpad="xi_start" pspad="pad_start"/>
+	</actionmap>
+
+	<actionmap name="game_over" priority="menu" exclusivity="1">		<!-- set only from C_UIGameOver -->
+		<action name="accept_game_over" onPress="1" onRelease="1" keyboard="_keybinds_ref_" xboxpad="xi_a" pspad="pad_cross"/>
+	</actionmap>
+
+	<!-- overlays -->
+	<actionmap name="loading" priority="overlays" exclusivity="1">		<!-- set only from C_UILoadingScreen -->
+		<action name="loading_video_esc" onPress="1" onRelease="1" keyboard="_keybinds_ref_"/>
+		<action name="loading_video_skip" keyboard="_keybinds_ref_" onRelease="1" onPress="1" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="helpscreen" priority="overlays" exclusivity="1">		<!-- set only from C_UIHelpOverlay -->
+		<include actionmap="navigation"/>
+		<action name="close_help_screen" keyboard="_keybinds_ref_" holdTriggerDelay="0.25" onPress="1" onHold="1" onRelease="1" xboxpad="xi_back" pspad="pad_touch" />
+	</actionmap>
+
+	<actionmap name="first_time_overlay" priority="overlays" exclusivity="1">		<!-- set only from C_UIHelpOverlay -->
+		<include actionmap="open_web" />
+		<action name="first_time_overlay_confirm" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="first_time_overlay_decline" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="photomode_base" priority="overlays" exclusivity="1">		<!-- set only from C_PhotomodeManager -->
+		<action name="take_screenshot" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_a" pspad="pad_cross" />
+		<action name="toggle_hints_visibility" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_x" pspad="pad_square" />
+		<action name="toggle_mode" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_start" pspad="pad_start" />
+		<action name="close_photomode" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_b" pspad="pad_circle" />
+	</actionmap>
+
+	<actionmap name="photomode_camera" priority="overlays" exclusivity="1">		<!-- set only from C_PhotomodeManager -->
+		<action name="photomode_moveleft" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="photomode_moveright" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="photomode_xi_movex" retriggerable="1" xboxpad="xi_thumblx" pspad="pad_sticklx"/>
+		<action name="photomode_moveforward" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="photomode_moveback" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" />
+		<action name="photomode_moveup" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerl_btn" pspad="pad_l2"/>
+		<action name="photomode_movedown" onPress="1" onRelease="1" retriggerable="1" keyboard="_keybinds_ref_" xboxpad="xi_triggerr_btn" pspad="pad_r2" />
+		<action name="photomode_xi_movey" retriggerable="1" xboxpad="xi_thumbly" pspad="pad_stickly"/>
+		<action name="photomode_rotateyaw" keyboard="maxis_x" />
+		<action name="photomode_rotatepitch" keyboard="maxis_y" />
+		<action name="photomode_xi_rotateyaw" retriggerable="1" xboxpad="xi_thumbrx" pspad="pad_stickrx"/>
+		<action name="photomode_xi_rotatepitch" retriggerable="1" xboxpad="xi_thumbry" pspad="pad_stickry"/>
+		<action name="fast_movement" keyboard="_keybinds_ref_" onPress="1" onRelease="1" />
+	</actionmap>
+
+	<actionmap name="photomode_menu" priority="overlays" exclusivity="1">		<!-- set only from C_PhotomodeManager -->
+		<include actionmap="navigation" />
+		<action name="photomode_reset_menu" keyboard="_keybinds_ref_" onPress="1" onRelease="1" xboxpad="xi_y" pspad="pad_triangle" />
+	</actionmap>
+
+	<!-- cheats -->
+	<!--<actionmap name="tobii" priority="cheats" exclusivity="0">
+		<action name="tobii_enable" onPress="1" keyboard="_keybinds_ref_" />
+	</actionmap>-->
+
+	<actionmap name="debug" priority="cheats" exclusivity="0">
+		<!-- debug keys - move to debug when we can switch devmode -->
+		<action name="flymode" onPress="1" noModifiers="1" keyboard="f3" />
+		<action name="godmode" onPress="1" noModifiers="1" keyboard="f4" />
+		<action name="toggleaidebugdraw" onPress="1" noModifiers="1" keyboard="f11" />
+		<action name="togglepdrawhelpers" onPress="1" noModifiers="1" keyboard="f10" />
+		<action name="debug" onPress="1" keyboard="7" />
+		<!-- debug keys - end -->
+		<!-- handled only by player script -->
+		<action name="cheat_engine_start" onPress="0" onRelease="1" keyboard="f8" />
+		<!-- handled only by player script -->
+		<action name="mannequin_debugai" onPress="1" noModifiers="1" keyboard="np_multiply" />
+		<action name="ai_DebugCenterViewAgent" onPress="1" noModifiers="1" keyboard="np_divide" />
+		<action name="mannequin_debugplayer" onPress="1" noModifiers="1" keyboard="np_0" />
+		<action name="goto_checkpoint" onPress="1" onRelease="0" keyboard="j" />
+		<action name="flymode_speed_increase" onPress="1" onRelease="0" xboxpad="xi_shoulderr" pspad="pad_r1" keyboard="mwheel_up" />
+		<action name="flymode_speed_decrease" onPress="1" onRelease="0" xboxpad="xi_shoulderl" pspad="pad_l1" keyboard="mwheel_down" />
+		<action name="moveup" onPress="1" onRelease="1" retriggerable="1" keyboard="space"/>
+		<action name="movedown" onPress="1" onRelease="1" retriggerable="1" keyboard="c"/>
+		<action name="xi_moveup" xboxpad="xi_triggerr" pspad="pad_rtrigger"/>
+		<action name="xi_movedown" xboxpad="xi_triggerl" pspad="pad_ltrigger"/>
+	</actionmap>
+
+	<actionmap name="cheat_engine" priority="cheats" exclusivity="0">
+		<action name="cheat_money" onPress="1" onRelease="1" keyboard="np_1" />
+		<action name="cheat_addstat" onPress="1" onRelease="1" keyboard="np_2" />
+		<action name="cheat_addskill" onPress="1" onRelease="1" keyboard="np_3" />
+		<action name="cheat_gear" onPress="1" onRelease="1" keyboard="np_4" />
+		<action name="cheat_fastertime" onPress="1" onRelease="1" keyboard="np_5" />
+		<action name="cheat_logCombat" onPress="1" onRelease="1" keyboard="np_6" />
+		<action name="cheat_heal" onPress="1" onRelease="1" keyboard="np_7" />
+		<action name="cheat_survive" onPress="1" onRelease="1" keyboard="np_8" />
+		<action name="cheat_animal" onPress="1" onRelease="1" keyboard="np_9" />
+	</actionmap>
+
+	<actionmap name="cheat_engine_stat" priority="cheats" exclusivity="0">
+		<action name="cheat_stat_close" onPress="1" onRelease="0" keyboard="f8" />
+		<action name="cheat_stat_str" onPress="1" onRelease="1" keyboard="np_1" />
+		<action name="cheat_stat_agi" onPress="1" onRelease="1" keyboard="np_2" />
+		<action name="cheat_stat_spc" onPress="1" onRelease="1" keyboard="np_3" />
+		<action name="cheat_stat_vit" onPress="1" onRelease="1" keyboard="np_4" />
+	</actionmap>
+
+	<actionmap name="cheat_engine_animal" priority="cheats" exclusivity="0">
+		<action name="cheat_animal_close" onPress="1" onRelease="0" keyboard="f8" />
+		<action name="cheat_animal_separationUp" onPress="1" onRelease="1" keyboard="1" />
+		<action name="cheat_animal_separationDown" onPress="1" onRelease="1" keyboard="np_1" />
+		<action name="cheat_animal_alignUp" onPress="1" onRelease="1" keyboard="2" />
+		<action name="cheat_animal_alignDown" onPress="1" onRelease="1" keyboard="np_2" />
+		<action name="cheat_animal_cohesionUp" onPress="1" onRelease="1" keyboard="3" />
+		<action name="cheat_animal_cohesionDown" onPress="1" onRelease="1" keyboard="np_3" />
+		<action name="cheat_animal_threatUp" onPress="1" onRelease="1" keyboard="4" />
+		<action name="cheat_animal_threatDown" onPress="1" onRelease="1" keyboard="np_4" />
+		<action name="cheat_animal_herdUp" onPress="1" onRelease="1" keyboard="5" />
+		<action name="cheat_animal_herdDown" onPress="1" onRelease="1" keyboard="np_5" />
+		<action name="cheat_animal_targetUp" onPress="1" onRelease="1" keyboard="6" />
+		<action name="cheat_animal_targetDown" onPress="1" onRelease="1" keyboard="np_6" />
+		<action name="cheat_animal_maxUp" onPress="1" onRelease="1" keyboard="7" />
+		<action name="cheat_animal_maxDown" onPress="1" onRelease="1" keyboard="np_7" />
+		<action name="cheat_animal_safeUp" onPress="1" onRelease="1" keyboard="8" />
+		<action name="cheat_animal_safeDown" onPress="1" onRelease="1" keyboard="np_8" />
+		<action name="cheat_animal_activationUp" onPress="1" onRelease="1" keyboard="9" />
+		<action name="cheat_animal_activationDown" onPress="1" onRelease="1" keyboard="np_9" />
+		<action name="cheat_animal_deactivationUp" onPress="1" onRelease="1" keyboard="0" />
+		<action name="cheat_animal_deactivationDown" onPress="1" onRelease="1" keyboard="np_0" />
+		<action name="cheat_animal_thresholdUp" onPress="1" onRelease="1" keyboard="f6" />
+		<action name="cheat_animal_thresholdDown" onPress="1" onRelease="1" keyboard="f7" />
+		<action name="cheat_animal_print" onPress="1" onRelease="1" keyboard="f5" />
+	</actionmap>
+
+	<actionmap name="cheat_engine_skill" priority="cheats" exclusivity="0">
+		<action name="cheat_skill_close" onPress="1" onRelease="0" keyboard="f8" />
+		<action name="cheat_skill_archery" onPress="1" onRelease="1" keyboard="np_1" />
+		<action name="cheat_skill_alchemy" onPress="1" onRelease="1" keyboard="np_2" />
+		<action name="cheat_skill_lockpick" onPress="1" onRelease="1" keyboard="np_3" />
+		<action name="cheat_skill_defense" onPress="1" onRelease="1" keyboard="np_4" />
+		<action name="cheat_skill_longsword" onPress="1" onRelease="1" keyboard="np_5" />
+		<action name="cheat_skill_reading" onPress="1" onRelease="1" keyboard="np_6" />
+		<action name="cheat_skill_horse" onPress="1" onRelease="1" keyboard="np_7" />
+	</actionmap>
+
+	<actionmap name="cheat_engine_gear" priority="cheats" exclusivity="0">
+		<action name="cheat_gear_close" onPress="1" onRelease="0" keyboard="f8" />
+		<action name="cheat_gear_longsword" onPress="1" onRelease="1" keyboard="np_1" />
+		<action name="cheat_gear_shortsword_shield" onPress="1" onRelease="1" keyboard="np_2" />
+		<action name="cheat_gear_axe_shield" onPress="1" onRelease="1" keyboard="np_3" />
+		<action name="cheat_gear_shield_only" onPress="1" onRelease="1" keyboard="np_4" />
+		<action name="cheat_gear_clothes" onPress="1" onRelease="1" keyboard="np_5" />
+		<action name="cheat_gear_armor_light" onPress="1" onRelease="1" keyboard="np_7" />
+		<action name="cheat_gear_armor_medium" onPress="1" onRelease="1" keyboard="np_8" />
+		<action name="cheat_gear_armor_heavy" onPress="1" onRelease="1" keyboard="np_9" />
+	</actionmap>
+
+	<actionmap name="cheat_engine_jump" priority="cheats" exclusivity="0">
+		<action name="cheat_jump_close" onPress="0" onRelease="1" keyboard="f8" />
+		<action name="cheat_jump_cave" onPress="1" onRelease="1" keyboard="1" />
+		<action name="cheat_jump_mill" onPress="1" onRelease="1" keyboard="2" />
+		<action name="cheat_jump_campMach" onPress="1" onRelease="1" keyboard="3" />
+		<action name="cheat_jump_campNoMach" onPress="1" onRelease="1" keyboard="4" />
+		<action name="cheat_jump_battleBridge" onPress="1" onRelease="1" keyboard="5" />
+		<action name="cheat_jump_afterBattleBurntFarm" onPress="1" onRelease="1" keyboard="6" />
+		<action name="cheat_jump_afterBattleFarmOK" onPress="1" onRelease="1" keyboard="7" />
+	</actionmap>
+
+	<actionmap name="haste" priority="cheats_haste" exclusivity="1">
+		<action name="haste_key0" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key1" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key2" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key3" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key4" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key5" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key6" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key7" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key8" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_key9" onPress="1" noModifiers="1" onRelease="0" keyboard="_keybinds_ref_" />
+		<action name="haste_keya" onPress="1" noModifiers="1" onRelease="0" keyboard="a" />
+		<action name="haste_keyb" onPress="1" noModifiers="1" onRelease="0" keyboard="b" />
+		<action name="haste_keyc" onPress="1" noModifiers="1" onRelease="0" keyboard="c" />
+		<action name="haste_keyd" onPress="1" noModifiers="1" onRelease="0" keyboard="d" />
+		<action name="haste_keye" onPress="1" noModifiers="1" onRelease="0" keyboard="e" />
+		<action name="haste_keyf" onPress="1" noModifiers="1" onRelease="0" keyboard="f" />
+		<action name="haste_keyg" onPress="1" noModifiers="1" onRelease="0" keyboard="g" />
+		<action name="haste_keyh" onPress="1" noModifiers="1" onRelease="0" keyboard="h" />
+		<action name="haste_keyi" onPress="1" noModifiers="1" onRelease="0" keyboard="i" />
+		<action name="haste_keyj" onPress="1" noModifiers="1" onRelease="0" keyboard="j" />
+		<action name="haste_keyk" onPress="1" noModifiers="1" onRelease="0" keyboard="k" />
+		<action name="haste_keyl" onPress="1" noModifiers="1" onRelease="0" keyboard="l" />
+		<action name="haste_keym" onPress="1" noModifiers="1" onRelease="0" keyboard="m" />
+		<action name="haste_keyn" onPress="1" noModifiers="1" onRelease="0" keyboard="n" />
+		<action name="haste_keyo" onPress="1" noModifiers="1" onRelease="0" keyboard="o" />
+		<action name="haste_keyp" onPress="1" noModifiers="1" onRelease="0" keyboard="p" />
+		<action name="haste_keyq" onPress="1" noModifiers="1" onRelease="0" keyboard="q" />
+		<action name="haste_keyr" onPress="1" noModifiers="1" onRelease="0" keyboard="r" />
+		<action name="haste_keys" onPress="1" noModifiers="1" onRelease="0" keyboard="s" />
+		<action name="haste_keyt" onPress="1" noModifiers="1" onRelease="0" keyboard="t" />
+		<action name="haste_keyu" onPress="1" noModifiers="1" onRelease="0" keyboard="u" />
+		<action name="haste_keyv" onPress="1" noModifiers="1" onRelease="0" keyboard="v" />
+		<action name="haste_keyw" onPress="1" noModifiers="1" onRelease="0" keyboard="w" />
+		<action name="haste_keyx" onPress="1" noModifiers="1" onRelease="0" keyboard="x" />
+		<action name="haste_keyy" onPress="1" noModifiers="1" onRelease="0" keyboard="y" />
+		<action name="haste_keyz" onPress="1" noModifiers="1" onRelease="0" keyboard="z" />
+		<action name="haste_key_" onPress="1" noModifiers="0" onRelease="0" keyboard="minus" />
+		<action name="haste_key_alternate_" onPress="1" noModifiers="0" onRelease="0" keyboard="slash" />
+		<action name="haste_space_key" onPress="1" noModifiers="1" onRelease="0" keyboard="space" />
+		<action name="haste_delete_key" onPress="1" noModifiers="1" onRelease="0" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.1" keyboard="backspace" />
+		<action name="haste_up" onPress="1" noModifiers="1" onRelease="0" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.1" keyboard="up" xboxpad="xi_dpad_up" pspad="pad_up" />
+		<action name="haste_down" onPress="1" noModifiers="1" onRelease="0" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.1" keyboard="down" xboxpad="xi_dpad_down" pspad="pad_down" />
+		<action name="haste_left" onPress="1" noModifiers="1" onRelease="0" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.1" keyboard="left" xboxpad="xi_dpad_left" pspad="pad_left" />
+		<action name="haste_right" onPress="1" noModifiers="1" onRelease="0" onHold="1" holdTriggerDelay="0.5" holdRepeatDelay="0.1" keyboard="right" xboxpad="xi_dpad_right" pspad="pad_right" />
+		<action name="haste_back" onPress="1" noModifiers="1" onRelease="0" keyboard="escape" xboxpad="xi_b" pspad="pad_circle" />
+		<action name="haste_confirm" onPress="1" noModifiers="1" onRelease="0" keyboard="enter" xboxpad="xi_a" pspad="pad_cross" />
+	</actionmap>
+
+	<actionmap name="haste_start" priority="cheats_haste" exclusivity="0">
+		<action name="haste_activate" onPress="1" noModifiers="1" onRelease="0" keyboard="h" />
+		<action name="haste_controller_modifier" onPress="1" onRelease="1" onHold="0" xboxpad="xi_shoulderr" pspad="pad_l1" />
+		<action name="haste_controller_activate" onPress="1" noModifiers="1" onRelease="0" xboxpad="xi_shoulderl" pspad="pad_r1" />
+	</actionmap>
+
+	<!-- fader -->
+	<actionmap name="fader" priority="fader" exclusivity="1">
+	</actionmap>
+
+	<actionmap name="fader_fading" priority="fader" exclusivity="1">
+		<include actionmap="movement_x" />
+		<include actionmap="movement_y" />
+	</actionmap>
+
+	<actionmap name="no_input" priority="fader" exclusivity="1" />
+
+	<!-- platform_interrupt -->
+	<actionmap name="game_interrupt_start" priority="platform_interrupt" exclusivity="0">
+		<action name="interrupt" onPress="1" pspad="pad_ps_btn" />
+	</actionmap>
+
+	<actionmap name="game_interrupt_active" priority="platform_interrupt_active" exclusivity="1">
+		<action name="cancel_interrupt" onPress="1" pspad="pad_ps_btn" />
+	</actionmap>
+	<!-- end platform_interrupt -->
+
+	<actionfilter name="no_horse">
+		<action name="call"/>
+	</actionfilter>
+
+	<actionfilter name="no_menu">
+		<action name="open_menu" />
+	</actionfilter>
+
+	<actionfilter name="no_jump">
+		<action name="jump" />
+	</actionfilter>
+
+	<actionfilter name="no_move">
+		<action name="moveleft" />
+		<action name="moveright" />
+		<action name="xi_movex" />
+		<action name="moveforward" />
+		<action name="moveback" />
+		<action name="xi_movey" />
+		<action name="jump" />
+		<action name="sprint" />
+		<action name="toggle_run" />
+	</actionfilter>
+
+	<actionfilter name="no_standUp">
+		<action name="sitting_exit_left" />
+		<action name="sitting_exit_right" />
+		<action name="sitting_exit_up" />
+		<action name="sitting_exit_down" />
+	</actionfilter>
+
+	<actionfilter name="no_camera">
+		<action name="rotateyaw" />
+		<action name="rotatepitch" />
+		<action name="rotateleft" />
+		<action name="rotateright" />
+		<action name="xi_rotateyaw" />
+		<action name="xi_rotatepitch" />
+	</actionfilter>
+
+	<actionfilter name="no_horizontal_camera">
+		<action name="rotateyaw" />
+		<action name="rotateleft" />
+		<action name="rotateright" />
+		<action name="xi_rotateyaw" />
+	</actionfilter>
+
+	<actionfilter name="no_attack">
+		<action name="attack_primary" />
+		<action name="attack_primary_mouse" />
+		<action name="attack_special" />
+		<action name="bow_primary" />
+		<action name="bow_primary_release" />
+		<action name="bow_secondary" />
+		<action name="bow_secondary_release" />
+		<action name="crossbow_prepare" />
+		<action name="crossbow_abort" />
+		<action name="crossbow_execute" />
+		<action name="gun_prepare" />
+		<action name="gun_abort" />
+		<action name="gun_execute" />
+	</actionfilter>
+
+	<actionfilter name="no_inventory">
+
+		<action name="open_apse_inventory_keyboard" />
+		<action name="open_apse_inventory_controller" />
+		<action name="open_apse_player" />
+		<action name="open_apse_questlog" />
+		<action name="open_apse_map_keyboard" />
+		<action name="open_apse_map_controller" />
+		<action name="open_apse_codex" />
+		<action name="open_codex_new_entry" />
+	</actionfilter>
+
+	<actionfilter name="no_apse_controller">
+		<action name="open_apse_inventory_controller" />
+		<action name="open_apse_map_controller" />
+	</actionfilter>
+
+	<actionfilter name="no_horse_dismount">
+		<action name="horse_dismount" />
+	</actionfilter>
+
+	<actionfilter name="no_horse_mount">
+		<action name="mount_horse" />
+	</actionfilter>
+
+	<actionfilter name="no_horse_slowdown">
+		<action name="horse_slowdown" />
+	</actionfilter>
+
+	<actionfilter name="no_horse_inspect">
+		<action name="use_horse" />
+	</actionfilter>
+
+	<actionfilter name="no_horse_saddle_bond">
+		<action name="horse_saddle_bond" />
+	</actionfilter>
+
+	<actionfilter name="no_cart_dismount">
+		<action name="cart_dismount" />
+	</actionfilter>
+
+	<actionfilter name="no_distract">
+		<action name="distract_init" />
+	</actionfilter>
+
+	<actionfilter name="no_dog">
+		<action name="request_dog" />
+		<action name="combat_request_dog"/>
+		<action name="cancel_dog" />
+	</actionfilter>
+	
+	<actionfilter name="setkaniVRatbori1_restriction">
+		<action name="jump" />
+		<action name="sprint"  />
+	</actionfilter>	
+
+	<actionfilter name="magickySip_restriction">
+		<action name="use" />
+		<action name="grab_body" />
+		<action name="open_pause_menu" />
+	</actionfilter>	
+	
+	<actionfilter name="no_open_skiptime">
+		<action name="open_skiptime" />
+	</actionfilter>
+
+	<actionfilter name="no_carryitem_put">
+		<action name="put_item"/>
+	</actionfilter>
+
+	<actionfilter name="no_qam_weapons">
+		<action name="action_qam_1"/>
+		<action name="action_qam_2"/>
+		<action name="action_qam_3"/>
+		<action name="action_qam_4"/>
+		<action name="open_qam_weapon" />
+		<action name="activate_qam_weapon" />
+		<action name="action_qam_weapon" />
+		<action name="toggle_holster_qam_weapon" />
+	</actionfilter>
+
+	<actionfilter name="no_companion_bond">
+		<action name="companion_bond" />
+	</actionfilter>
+
+	<actionfilter name="no_follow">
+		<action name="focus_follow_init_press" />
+		<action name="focus_follow_init_interactor_press" />
+	</actionfilter>
+
+	<actionfilter name="no_focus">
+		<action name="chat_init_press" />
+		<action name="chat_focus_follow_init_press" />
+	</actionfilter>
+
+	<actionfilter name="no_fast_travel">
+		<action name="start_fast_travel" />
+	</actionfilter>
+
+	<actionfilter name="no_drop_item">
+		<action name="drop_item" />
+		<action name="move_item" />
+	</actionfilter>
+
+	<actionfilter name="no_grab_body">
+		<action name="grab_body" />
+	</actionfilter>
+
+	<actionfilter name="no_knock_out">
+		<action name="knock_out" />
+		<action name="stealth_kill" />
+	</actionfilter>
+
+	<actionfilter name="no_stealth_kill">
+		<action name="stealth_kill" />
+	</actionfilter>
+
+	<actionfilter name="no_torch">
+		<action name="toggle_torch" />
+		<action name="xi_toggle_torch" />
+	</actionfilter>
+	
+	<actionfilter name="no_crouch">
+		<action name="toggle_crouch" />
+	</actionfilter>
+
+	<actionfilter name="no_horse_magnetism_activate">
+		<action name="horse_magnetism_activate" />
+	</actionfilter>
+
+	<actionfilter name="no_interaction">
+		<action name="use" />
+		<action name="use_bed_sit" />
+		<action name="use_bed_sleep" />
+		<action name="use_other" />
+		<action name="use_horse" />
+		<action name="pickpocketing" />
+		<action name="talk" />
+		<action name="trigger_use" />
+		<action name="trigger_use_hold" />
+	</actionfilter>
+
+	<controllerlayouts>
+		<layout name="buttonlayout_default" file="buttonlayout_default.xml"/>
+		<layout name="buttonlayout_alt" file="buttonlayout_alt.xml"/>
+		<layout name="buttonlayout_altlefty" file="buttonlayout_altlefty.xml"/>
+		<layout name="buttonlayout_lefty" file="buttonlayout_lefty.xml"/>
+		<layout name="sticklayout_default" file="sticklayout_default.xml"/>
+		<layout name="sticklayout_lefty" file="sticklayout_lefty.xml"/>
+		<layout name="sticklayout_legacy" file="sticklayout_legacy.xml"/>
+		<layout name="sticklayout_legacylefty" file="sticklayout_legacylefty.xml"/>
+	</controllerlayouts>
+</profile>

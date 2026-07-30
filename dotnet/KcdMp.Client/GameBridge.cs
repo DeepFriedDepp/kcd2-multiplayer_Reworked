@@ -710,13 +710,14 @@ public partial class GameBridge(ClientConfig config)
             // Faces go over as CSV rather than a Lua table literal: it keeps the
             // statement short for the batcher and the Lua side parses it with one
             // gmatch. Empty string means no dice in that row.
-            string free = string.Join(",", snapshot.FreeFaces);
-            string kept = string.Join(",", snapshot.KeptFaces);
+            string free   = string.Join(",", snapshot.FreeFaces);
+            string kept   = string.Join(",", snapshot.KeptFaces);
+            string busted = string.Join(",", snapshot.BustedFaces);
 
             _ = ExecLuaAsync(
                 $"if KCD2MP_DiceState then KCD2MP_DiceState({snapshot.CurrentPlayerRole}," +
                 $"{snapshot.ScoreInitiator},{snapshot.ScoreAcceptor},{snapshot.TurnTotal}," +
-                $"{snapshot.TargetScore},{(byte)snapshot.Phase},\"{free}\",\"{kept}\") end");
+                $"{snapshot.TargetScore},{(byte)snapshot.Phase},\"{free}\",\"{kept}\",\"{busted}\") end");
         };
 
         dice.IntentRejected += rejection =>

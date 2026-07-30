@@ -339,11 +339,12 @@ public class SessionManager
 		var phase = game.Phase == TurnPhase.AwaitingRoll ? DicePhase.AwaitingRoll : DicePhase.AwaitingKeep;
 		byte[] freeFaces = [.. game.FreeDice.Select(d => d.Face)];
 		byte[] keptFaces = [.. game.KeptDiceThisTurn.Select(d => d.Face)];
+		byte[] bustedFaces = [.. game.LastBustedDice.Select(d => d.Face)];
 
 		session.Initiator.EnqueueDiceState(session.Id, (byte)game.CurrentPlayer, game.Scores[0], game.Scores[1],
-			game.TurnTotal, game.TargetScore, phase, freeFaces, keptFaces);
+			game.TurnTotal, game.TargetScore, phase, freeFaces, keptFaces, bustedFaces);
 		session.Acceptor.EnqueueDiceState(session.Id, (byte)game.CurrentPlayer, game.Scores[0], game.Scores[1],
-			game.TurnTotal, game.TargetScore, phase, freeFaces, keptFaces);
+			game.TurnTotal, game.TargetScore, phase, freeFaces, keptFaces, bustedFaces);
 	}
 
 	/// <summary>

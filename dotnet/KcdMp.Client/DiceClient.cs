@@ -2,10 +2,14 @@ using System.Buffers.Binary;
 
 namespace KcdMp.Client;
 
-/// <summary>A full Farkle snapshot, as the relay sees it. Never a delta.</summary>
+/// <summary>
+/// A full Farkle snapshot, as the relay sees it. Never a delta. BustedFaces is
+/// the roll that just busted -- non-empty only on the one snapshot immediately
+/// after a bust, since FreeFaces is already empty by then.
+/// </summary>
 public sealed record DiceSnapshot(
     ushort SessionId, byte CurrentPlayerRole, int ScoreInitiator, int ScoreAcceptor,
-    int TurnTotal, int TargetScore, DicePhase Phase, byte[] FreeFaces, byte[] KeptFaces);
+    int TurnTotal, int TargetScore, DicePhase Phase, byte[] FreeFaces, byte[] KeptFaces, byte[] BustedFaces);
 
 /// <summary>An intent this agent sent was rejected. The game state did not change.</summary>
 public sealed record DiceRejection(ushort SessionId, DiceRejectReason Reason);
@@ -96,8 +100,20 @@ public sealed class DiceClient(Func<byte, byte[], CancellationToken, Task> sendP
             }
             byte[] keptFaces = payload.AsSpan(o + 1, keptCount).ToArray();
 
+            // Appended after the original WO-5 layout. Defaults to empty for
+            // a shorter payload rather than dropping the whole packet --
+            // everything before this point is still perfectly usable.
+            o = o + 1 + keptCount;
+            byte[] bustedFaces = [];
+            if (payload.Length > o)
+            {
+                int bustedCount = payload[o];
+                if (payload.Length >= o + 1 + bustedCount)
+                    bustedFaces = payload.AsSpan(o + 1, bustedCount).ToArray();
+            }
+
             StateChanged?.Invoke(new DiceSnapshot(sessionId, role, scoreInitiator, scoreAcceptor,
-                turnTotal, targetScore, phase, freeFaces, keptFaces));
+                turnTotal, targetScore, phase, freeFaces, keptFaces, bustedFaces));
             return true;
         }
 

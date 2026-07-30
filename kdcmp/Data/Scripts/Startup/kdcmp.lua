@@ -342,15 +342,24 @@ KCD2MP.dice = {
     -- HideTutorial(id) then ShowTutorial(id, ...); pushing twice without the
     -- hide leaves the second push waiting behind the first. Found the hard way.
     panelId   = "kcd2mp_dice",
-    -- The parchment panel is now reserved for match start and match end only.
-    -- Hosting the live board in it meant ~24 hide/show cycles per match, each
-    -- replaying its fade animation -- unwatchable. See KCD2MP_DiceRender.
+    -- The parchment panel IS the whole live board (score, dice, marks) --
+    -- see KCD2MP_DiceRender and scheduleRender for how pushes are kept rare
+    -- enough not to flicker: immediate on relay-driven state (open, a new
+    -- DiceState, error, end), debounced on local rapid-fire input (marking).
     usePanel  = true,
+    -- Marks/roll pushes ride the same debounce window so a burst of presses
+    -- coalesces into one push instead of one each. See scheduleRender.
+    renderDebounceMs = 250,
     -- Safety net, not the intended lifetime: every state change re-pushes, so
-    -- the board is normally refreshed long before this. Deliberately not an hour
-    -- -- if this code ever stops refreshing, a shorter expiry means the panel
-    -- clears itself instead of sitting there.
-    panelMs   = 120000,
+    -- the board is normally refreshed long before this expires. Was 120000 (2
+    -- minutes) -- too short in practice: a live match hit a real stretch with
+    -- no new relay-driven state (the seated-R bug meant no roll was ever sent),
+    -- and the card visibly vanished mid-match while the session was still very
+    -- much alive on the relay. 30 minutes is generous enough not to intrude on
+    -- a legitimately slow human turn while still self-clearing eventually if
+    -- this code ever truly stops refreshing. mp_dice_close/mp_dice_flush are
+    -- the manual escape hatches if it's ever stuck sooner than that.
+    panelMs   = 1800000,
 
     -- Glyphs VERIFIED renderable in this panel's font library. Everything else
     -- tried came back a tofu box: the Unicode die faces, every box-drawing
@@ -385,11 +394,9 @@ KCD2MP.dice = {
 
     -- --- local, non-authoritative -------------------------------------------
     sel       = {},            -- which free dice the player has marked
-    rolling   = nil,           -- {n} while the cast is still tumbling
     hold      = nil,           -- {action, t0} for hold-to-confirm
     outcome   = nil,           -- nil | "win" | "lose"
     err       = nil,           -- {text} from a DiceError
-    seenState = false,         -- has any snapshot landed yet
 }
 
 local D = KCD2MP.dice
@@ -400,8 +407,16 @@ local COL = {
     ink   = "#2a2018",
     dim   = "#7a6a4f",
     gold  = "#c8a13c",
-    bright= "#e8c25c",
+    -- Was #e8c25c -- too close to the parchment's own lightness to read at a
+    -- glance (the live turn total, selected-die marks). Darkened for contrast;
+    -- still reads as gold, just no longer washes out against the paper.
+    bright= "#96691a",
     blood = "#8a1f14",
+    -- Close to the parchment itself -- an "unlit" pip slot. First guess, not
+    -- colour-picked from the real texture (no tooling for that); confirm
+    -- against a live screenshot and adjust if it reads as too visible or too
+    -- invisible.
+    faint = "#c9b98f",
 }
 
 -- ===== html helpers =========================================================
@@ -479,45 +494,76 @@ local PIPCELLS = {
 -- Three lines of HTML rendering a row of dice side by side.
 -- faces: array of 1..6. colours: parallel array of hex, or nil for ink.
 --
--- GAP is three spaces, not one. At one the dice ran together into an
--- undifferentiated field of dots and you could not tell where one die ended.
-local GAP = NBSP .. NBSP .. NBSP
+-- Every cell renders D.pip -- never NBSP. An "unlit" cell is a bullet coloured
+-- COL.faint instead of blank space, so every die's row is always exactly three
+-- BULLET glyphs wide, whatever the face. Blank space (NBSP) does not render at
+-- the same width as a bullet in this proportional font, so a die's rendered
+-- width used to depend on how many pips it had (a 1 much narrower than a 6),
+-- which is what made the index row drift out from under its die -- no fixed
+-- gap can compensate for a per-die width that keeps changing.
+--
+-- A thin divider (D.sep, the broken bar already proven renderable in the
+-- action strip) between dice reads as an actual boundary between two dice,
+-- rather than blank space that six 2-character F-key labels (F2..F8) no
+-- longer had room for anyway -- fixed a line-wrap the wide all-NBSP gap
+-- caused once labels stopped being a single digit.
+local GAP = NBSP .. D.sep .. NBSP
 
 local function diceRows(faces, colours)
     local out = { "", "", "" }
     for r = 1, 3 do
         for i, f in ipairs(faces) do
             local cells = PIPCELLS[f] or PIPCELLS[1]
+            local dieColour = (colours and colours[i]) or COL.ink
             local s = ""
             for c = 1, 3 do
-                s = s .. ((cells[r][c] == 1) and D.pip or NBSP)
+                local lit = cells[r][c] == 1
+                s = s .. fnt(D.pip, lit and dieColour or COL.faint)
             end
-            out[r] = out[r] .. fnt(s, (colours and colours[i]) or COL.ink)
+            out[r] = out[r] .. s
             if i < #faces then out[r] = out[r] .. GAP end
         end
     end
     return out
 end
 
--- A row of 1..6 under the dice, so "mp_dice_mark 3" is unambiguous about which
--- die it means. Without this the player has to count pip clusters left to right
--- and hope -- which is most of why the controls read as confusing.
-local function indexRow(n)
+-- A row under the dice naming the key that marks each one, so the player never
+-- has to remember an arbitrary mapping. Shows the real key rather than a plain
+-- 1..6 die index now that marking has real keybinds (WO-6) -- the mapping is
+-- F2, F4-F8 (F3/F1/F10 are engine debug toggles, skipped), not a clean range,
+-- so spelling it out here matters more than it used to. mp_dice_mark still
+-- takes the die's POSITION (1-6, left to right), for the console fallback.
+--
+-- sel (optional) marks a die as selected: its label goes in brackets and gold,
+-- matching the gold pips diceRows already gives a selected die above it. No
+-- circle/X glyph is used -- the capability doc's verified-renderable set has
+-- none (every geometric shape tried came back tofu) -- but '[' ']' are proven
+-- safe, they are already used by the action-strip key() labels below.
+local DICE_MARK_KEYS = { "F2", "F4", "F5", "F6", "F7", "F8" }
+
+local function indexRow(n, sel)
     local s = ""
     for i = 1, n do
-        s = s .. NBSP .. tostring(i) .. NBSP
+        local marked = sel and sel[i]
+        local keyLabel = DICE_MARK_KEYS[i] or tostring(i)
+        local label = marked and ("[" .. keyLabel .. "]") or (NBSP .. keyLabel .. NBSP)
+        s = s .. fnt(label, marked and COL.bright or COL.dim, 12)
         if i < n then s = s .. GAP end
     end
-    return fnt(s, COL.dim, 14)
+    return s
 end
 
-local function diceBlock(faces, colours, numbered)
+-- Sizes trimmed from 18/14 -- this panel stacks a lot of rows (title, tally,
+-- three pip rows, index row, set-aside, hand total, rules, action strip) and
+-- the line spacing scales with font size, so shaving a couple of points off
+-- the busiest block buys back real vertical room.
+local function diceBlock(faces, colours, numbered, sel)
     if #faces == 0 then
         return fnt(NBSP .. D.leader .. " none " .. D.leader, COL.dim, 16)
     end
     local r = diceRows(faces, colours)
-    local h = fnt(r[1] .. "<br/>" .. r[2] .. "<br/>" .. r[3], nil, 18)
-    if numbered then h = h .. "<br/>" .. indexRow(#faces) end
+    local h = fnt(r[1] .. "<br/>" .. r[2] .. "<br/>" .. r[3], nil, 15)
+    if numbered then h = h .. "<br/>" .. indexRow(#faces, sel) end
     return h
 end
 
@@ -550,14 +596,16 @@ local function buildHtml()
     h = h .. ruleLine() .. "<br/>"
 
     -- the board: free dice, marked ones in bright gold so a pending keep is
-    -- obviously reversible before it is sent
+    -- obviously reversible before it is sent. No tumble/reveal animation --
+    -- a fresh roll just appears with its real faces, per the human's own call
+    -- once the panel replaced DrawText: nothing fancy needed for a reroll.
     local faces, cols = {}, {}
     for i, f in ipairs(D.free) do
-        faces[i] = D.rolling and math.random(1, 6) or f
+        faces[i] = f
         cols[i]  = D.sel[i] and COL.bright or COL.ink
     end
     h = h .. fnt("On the board", COL.dim, 16) .. "<br/>"
-    h = h .. diceBlock(faces, cols, true) .. "<br/>"
+    h = h .. diceBlock(faces, cols, true, D.sel) .. "<br/>"
 
     -- set aside, in gold: these are locked in and scoring. Not numbered --
     -- there is no command that takes a set-aside die's index, so numbering them
@@ -588,13 +636,14 @@ local function buildHtml()
 
     if mine then
         if D.phase == 1 then
-            h = h .. key("1-6", "mark", true) .. fnt("  ", nil, 16)
-                  .. key("R", "set aside", true) .. "<br/>"
+            h = h .. fnt("key below", COL.gold, 16) .. fnt(" to mark, then ", COL.dim, 16)
+                  .. key("F9", "set aside", true) .. "<br/>"
+            h = h .. key("U", "clear marks", false) .. "<br/>"
         else
-            h = h .. key("R", "cast", true) .. "<br/>"
+            h = h .. key("F9", "cast", true) .. "<br/>"
         end
-        h = h .. key("hold F", "bank", true) .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
-              .. key("hold X", "yield", false)
+        h = h .. key("hold F11", "bank", true) .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
+              .. key("hold F12", "yield", false)
     else
         h = h .. fnt(D.peer .. " is casting" .. D.leader .. D.leader .. D.leader, COL.dim, 18)
     end
@@ -629,14 +678,15 @@ end
 -- panel replays its full fade-out/fade-in every time. That is the "flickering
 -- horribly" -- not a loop, and not something queue management can fix.
 --
--- ShowTutorial is a NOTIFICATION CARD. There is no in-place text update, so a
--- board whose dice change on every roll and every keep will always flicker.
--- Trying to host live state in it was the wrong call.
---
--- So the panel is now reserved for the handful of moments that genuinely warrant
--- an animated card -- match start and match end -- and the live board is drawn
--- with System.DrawText, which renders every frame with no animation at all.
--- Plainer, but readable and completely steady, which is what play testing needs.
+-- ShowTutorial is a NOTIFICATION CARD. There is no in-place text update, so
+-- rapid repeated pushes flicker -- but not EVERY push is rapid. A relay-driven
+-- DiceState (a roll/keep/bank result) is naturally paced by however long a
+-- turn takes; the thing that actually flickered was pushing once per LOCAL
+-- mark press too, which can happen several times a second while choosing a
+-- keep. So the fix is not "never push the panel", it's "don't push once per
+-- keystroke": KCD2MP_DiceRender still pushes immediately for state that's
+-- already paced (open, DiceState, DiceError, end); scheduleRender below is
+-- what marking uses instead, coalescing a burst of presses into one push.
 function KCD2MP_DiceRender()
     if not D.open then return end
     if not D.usePanel then return end
@@ -652,91 +702,21 @@ function KCD2MP_DiceRender()
     end)
 end
 
--- ===== the live board: System.DrawText, once per frame ======================
---
--- Text only. Draw2DLine renders nothing in this build (see the header), so
--- there is no frame and no vector dice -- pips are spelled out per die instead.
--- Ugly next to the parchment panel, and completely stable, which beats pretty
--- and unreadable.
-
-local TEXT_X, TEXT_Y, TEXT_LH = 40, 240, 22
-
-local function pipRowsPlain(face)
-    local c = PIPCELLS[face] or PIPCELLS[1]
-    local out = {}
-    for r = 1, 3 do
-        local s = ""
-        for k = 1, 3 do s = s .. ((c[r][k] == 1) and "o " or "  ") end
-        out[r] = s
-    end
-    return out
-end
-
-function KCD2MP_DiceDrawText()
-    if not D.open then return end
-    local y = TEXT_Y
-    local function line(s, size)
-        System.DrawText(TEXT_X, y, s, size or 1.8)
-        y = y + TEXT_LH
-    end
-
-    local mine = (D.turnRole == D.role) and (D.outcome == nil)
-
-    line("== THE WAGER ==", 2.2)
-    line(string.format("%s %-14s %d", (not mine) and ">" or " ", D.peer, D.scores[1 - D.role]))
-    line(string.format("%s %-14s %d", mine and ">" or " ", "You", D.scores[D.role]))
-    line("target " .. D.target .. "   this hand " .. D.turnTotal)
-
-    if D.outcome then
-        line(D.outcome == "win" and "YOU WIN -- mp_dice_close" or "You lose -- mp_dice_close")
-        return
-    end
-
-    -- dice as three stacked rows, all six across, marked ones flagged
-    local rows = { "", "", "" }
-    local idx  = ""
-    for i, f in ipairs(D.free) do
-        local face = D.rolling and math.random(1, 6) or f
-        local p = pipRowsPlain(face)
-        for r = 1, 3 do rows[r] = rows[r] .. p[r] .. "  " end
-        idx = idx .. (D.sel[i] and (" *" .. i .. "*  ") or ("  " .. i .. "   "))
-    end
-    line("on the board:", 1.5)
-    for r = 1, 3 do line(rows[r]) end
-    line(idx, 1.5)
-
-    if #D.kept > 0 then
-        local k = ""
-        for _, f in ipairs(D.kept) do k = k .. f .. " " end
-        line("set aside: " .. k, 1.5)
-    end
-
-    if D.err then line("! " .. D.err.text, 1.6) end
-
-    if mine then
-        if D.phase == 1 then line("[1-6] mark   [R] set aside   [hold F] bank", 1.5)
-        else                  line("[R] cast   [hold F] bank   [hold X] yield", 1.5) end
-    else
-        line(D.peer .. " is casting...", 1.6)
-    end
-end
-
--- The live board needs a per-frame loop; the panel does not. Runs only while a
--- match is open, so the cost outside one is zero.
-KCD2MP.dice.tickMs = 16
-KCD2MP.dice.ticking = false
-
-function KCD2MP_DiceTick()
-    if not D.ticking then return end
-    Script.SetTimer(D.tickMs, KCD2MP_DiceTick)   -- reschedule FIRST
-    pcall(KCD2MP_DiceHoldTick)
-    pcall(KCD2MP_DiceDrawText)
-end
-
-function KCD2MP_DiceStartTick()
-    if D.ticking then return end
-    D.ticking = true
-    Script.SetTimer(D.tickMs, KCD2MP_DiceTick)
+-- Coalesces bursty local input (marking dice) into one push instead of one
+-- per press. Leading-edge: the first call after a quiet period schedules a
+-- render renderDebounceMs later; any calls that land inside that window are
+-- no-ops, because by the time the scheduled render actually runs it reads
+-- whatever D.sel etc. looks like THEN -- which already includes them, since
+-- Lua here is single-threaded and D.sel was mutated synchronously by the
+-- caller before scheduleRender was ever called.
+local renderScheduled = false
+local function scheduleRender()
+    if renderScheduled then return end
+    renderScheduled = true
+    Script.SetTimer(D.renderDebounceMs or 250, function()
+        renderScheduled = false
+        KCD2MP_DiceRender()
+    end)
 end
 
 -- Drops every queued and displayed tutorial. Also exposed as mp_dice_flush, so
@@ -754,38 +734,6 @@ local function say(text)
     end)
 end
 KCD2MP_DiceSay = say
-
--- ===== motion ===============================================================
---
--- The first design animated at 8 ms against its own drawn canvas. That canvas
--- does not exist any more, and re-pushing a Scaleform panel at 8 ms would be
--- absurd, so motion is now a small number of deliberate re-pushes: the dice
--- visibly tumble before they settle, and the panel's own entry animation
--- carries the rest. Announcements that want to punch ride ShowInfoText.
---
--- UNVERIFIED: whether a hide/show cycle at this cadence reads as a smooth
--- tumble or as a flicker. KCD2MP.dice.castSteps / castMs are the knobs; set
--- castSteps to 0 to land the dice instantly with no tumble at all.
-KCD2MP.dice.castSteps = 3
-KCD2MP.dice.castMs    = 150
-
-local function castStep()
-    if not D.open or not D.rolling then return end
-    D.rolling.n = D.rolling.n + 1
-    if D.rolling.n > D.castSteps then
-        D.rolling = nil
-        KCD2MP_DiceRender()
-        return
-    end
-    KCD2MP_DiceRender()
-    Script.SetTimer(D.castMs, castStep)
-end
-
-local function startCast()
-    if (D.castSteps or 0) <= 0 or #D.free == 0 then return end
-    D.rolling = { n = 0 }
-    castStep()
-end
 
 -- Hold-to-confirm needs a light tick, and only while a key is actually held.
 local function holdTick()
@@ -805,16 +753,14 @@ function KCD2MP_DiceOpen(role, peer, target)
     D.scores    = { [0] = 0, [1] = 0 }
     D.turnTotal = 0
     D.free, D.kept, D.sel = {}, {}, {}
-    D.outcome, D.err, D.hold, D.rolling = nil, nil, nil, nil
-    D.seenState = false
+    D.outcome, D.err, D.hold = nil, nil, nil
     D.open = true
-    KCD2MP_DiceStartTick()   -- the live DrawText board
-    KCD2MP_DiceRender()      -- one parchment card announcing the match
+    KCD2MP_DiceRender()      -- the parchment card announcing the match
     mp_log("DICE overlay open vs " .. D.peer .. " to " .. tostring(D.target))
 end
 
 function KCD2MP_DiceClose()
-    D.open, D.rolling, D.hold, D.ticking = false, nil, nil, false
+    D.open, D.hold = false, nil
     -- Flush rather than hide one entry: anything still queued would otherwise
     -- keep surfacing after the match is over. Runs even if the board was already
     -- closed, so mp_dice_close doubles as "clear whatever is stuck on screen".
@@ -822,10 +768,13 @@ function KCD2MP_DiceClose()
     mp_log("DICE overlay closed")
 end
 
--- A full authoritative snapshot. freeCsv/keptCsv are comma-separated faces
--- ("3,1,5,6"); empty string means none. Never a delta -- the relay always sends
--- the whole board, so this can replace state wholesale without reconciling.
-function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, keptCsv)
+-- A full authoritative snapshot. freeCsv/keptCsv/bustedCsv are comma-separated
+-- faces ("3,1,5,6"); empty string means none. Never a delta -- the relay
+-- always sends the whole board, so this can replace state wholesale without
+-- reconciling. bustedCsv is the roll that just busted (added after WO-5
+-- shipped): FreeDice is already cleared by the time a bust reaches the wire,
+-- so this is the only place the actual rolled faces ever appear.
+function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, keptCsv, bustedCsv)
     local function parse(csv)
         local t = {}
         for m in tostring(csv or ""):gmatch("[^,]+") do
@@ -841,9 +790,7 @@ function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, k
     -- snapshot would wipe the very state this call is delivering.
     if not D.open then KCD2MP_DiceOpen(D.role, D.peer, tonumber(target) or D.target) end
 
-    local prevTurn  = D.turnRole
-    local prevFree, prevKept = D.free, D.kept
-    local prevScore = D.scores[prevTurn] or 0
+    local prevTurn = D.turnRole
 
     D.turnRole  = tonumber(turnRole) or 0
     D.scores[0] = tonumber(s0) or 0
@@ -855,44 +802,34 @@ function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, k
     D.kept      = parse(keptCsv)
     D.sel       = {}          -- a new snapshot always clears a pending mark
 
-    -- Which moment does this snapshot represent? The relay does not label its
-    -- snapshots, so infer from what changed -- and only ever to decide an
-    -- ANIMATION, never to decide state.
-    local cast = (#D.free > #prevFree) or (#prevFree == 0 and #D.free > 0)
+    local bustedFaces = parse(bustedCsv)
 
     if D.turnRole ~= prevTurn then
         local mine = (D.turnRole == D.role)
 
-        -- Bust vs. bank. The relay does not label its snapshots, so this is
-        -- inferred -- but ONLY to pick an animation, never to decide state.
-        -- The test that actually distinguishes them is whether the player who
-        -- just finished BANKED anything: a bank raises their score, a bust ends
-        -- the turn with it unchanged. (Turn total returning to 0 does not
-        -- distinguish them at all -- it happens either way.)
-        --
-        -- Skipped on the very first snapshot: there is no previous turn to have
-        -- busted, and both scores are legitimately 0 then, which would otherwise
-        -- read as a bust the instant the match opens.
-        local busted = D.seenState and (D.scores[prevTurn] or 0) == prevScore
+        -- Used to be inferred from whether the score moved -- the relay did
+        -- not label its snapshots at all. Now it does (bustedFaces), so this
+        -- reads real state instead of guessing from a side effect of it.
+        local busted = #bustedFaces > 0
 
         -- The turn hand-off and the bust are the two moments that want to
         -- punch, and a line across the middle of the screen punches harder
         -- than a change inside the panel. This is what ShowInfoText is for.
         if busted then
-            say((prevTurn == D.role) and "Farkle. Nothing scored."
-                                      or (D.peer .. " farkles."))
+            local rolled = table.concat(bustedFaces, ", ")
+            say((prevTurn == D.role) and ("Bust! Rolled " .. rolled .. " -- nothing scored.")
+                                      or (D.peer .. " busts on " .. rolled .. "."))
         else
             say(mine and "Thy cast." or (D.peer .. " casts."))
         end
     end
 
     D.err = nil
-    D.seenState = true
 
-    -- No panel push here. The live board is DrawText and redraws itself every
-    -- frame; pushing the parchment card on every snapshot is exactly what made
-    -- it flicker. `cast` is still tracked so the DrawText dice can tumble.
-    if cast then startCast() end
+    -- Immediate, not debounced: this is a relay-confirmed result, already
+    -- paced by however long the turn took -- it is local rapid-fire input
+    -- (marking) that needs coalescing, not this.
+    KCD2MP_DiceRender()
 end
 
 -- The relay rejected an intent. State did not change; the board says why.
@@ -906,7 +843,7 @@ function KCD2MP_DiceEnd(outcome, s0, s1)
     D.scores[0] = tonumber(s0) or D.scores[0]
     D.scores[1] = tonumber(s1) or D.scores[1]
     D.outcome   = tostring(outcome or "lose")
-    D.sel, D.hold, D.rolling, D.err = {}, nil, nil, nil
+    D.sel, D.hold, D.err = {}, nil, nil
     say((D.outcome == "win") and "The wager is thine."
                               or (D.peer .. " takes the pot."))
     KCD2MP_DiceRender()
@@ -936,8 +873,9 @@ local DEMO = {
     {1.6, function() KCD2MP_DiceState(0, 0,    0, 100, 2500, 1, "2,5,4,1,6",   "1") end},
     {1.8, function() KCD2MP_DiceState(0, 0,    0, 250, 2500, 0, "2,4,6",       "1,5,1") end},
     {1.6, function() KCD2MP_DiceState(0, 0,    0, 250, 2500, 1, "3,3,2",       "1,5,1") end},
-    -- bust: turn passes and our banked score did NOT move
-    {2.0, function() KCD2MP_DiceState(1, 0,    0,   0, 2500, 0, "",            "") end},
+    -- bust: turn passes and our banked score did NOT move. bustedCsv fabricates
+    -- what the roll was -- 2,3,4,6 has no 1, no 5 and no triple, a real bust.
+    {2.0, function() KCD2MP_DiceState(1, 0,    0,   0, 2500, 0, "",            "", "2,3,4,6") end},
     {2.4, function() KCD2MP_DiceState(1, 0,    0, 450, 2500, 1, "4,4,4,2",     "5,5") end},
     -- opponent banks: their score moves, so no bust sting
     {2.0, function() KCD2MP_DiceState(0, 0,  450,   0, 2500, 0, "",            "") end},
@@ -998,12 +936,27 @@ function KCD2MP_DiceMark(i)
     if not D.open or not i or not D.free[i] then return false end
     if D.turnRole ~= D.role then
         D.err = { text = "not thy turn" }
-        KCD2MP_DiceRender()
+        scheduleRender()
         return false
     end
     if D.sel[i] then D.sel[i] = nil else D.sel[i] = true end
     D.err = nil
-    KCD2MP_DiceRender()     -- marks are gold on the board, so this must redraw
+    -- Debounced, not immediate: marking can fire several times a second while
+    -- choosing a keep, and pushing the panel once per press is the flicker
+    -- this design already fixed once.
+    scheduleRender()
+    return true
+end
+
+-- Clears every pending mark without touching the roll itself, so a player who
+-- marked, say, two 5s and then noticed a third can start over on the SAME
+-- free dice instead of committing a suboptimal keep. Purely local, like
+-- marking itself -- nothing is sent to the relay until KCD2MP_DiceConfirm.
+function KCD2MP_DiceUnmarkAll()
+    if not D.open or D.phase ~= 1 then return false end
+    D.sel = {}
+    D.err = nil
+    scheduleRender()
     return true
 end
 
@@ -3467,6 +3420,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice",        "KCD2MP_InviteDiceAtTable()", "Challenge the nearest player to dice -- only at a real dice table")
     System.AddCCommand("mp_dice_cast",   "KCD2MP_DiceConfirm()",       "Cast, or set aside the marked dice (depends on phase)")
     System.AddCCommand("mp_dice_mark",   'KCD2MP_DiceMark("%LINE")',   "Mark/unmark a die on the board: mp_dice_mark 1..6")
+    System.AddCCommand("mp_dice_unmark_all", "KCD2MP_DiceUnmarkAll()", "Clear every pending mark without rerolling")
     System.AddCCommand("mp_dice_bank",   "KCD2MP_DiceBank()",          "Bank this hand and end thy turn")
     System.AddCCommand("mp_dice_yield",  "KCD2MP_DiceForfeit()",       "Yield the match")
     System.AddCCommand("mp_dice_close",  "KCD2MP_DiceClose()",         "Dismiss the dice board")
@@ -3531,35 +3485,71 @@ local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = tr
 
 -- Dice overlay keys (WO-6).
 --
--- DISCOVERED, not guessed: captured with KCD2MP.logActions = true against a real
--- game, pressing each candidate key and reading the ACT lines out of kcd.log.
+-- Second design. The first tried R/F/X/1-6 -- keys the game's OWN action map
+-- already binds to something (toggle_torch, knock_out, call, action_qam_N) --
+-- on the reasoning that our OnAction hook runs alongside the game's handler
+-- and cannot consume input, so the key's normal side effect had to be
+-- tolerable. Two things broke that plan in real play:
+--   1. 1-6 also fires action_qam_N's WEAPON/food slot select, not just a
+--      cosmetic toggle -- a live match drew a sword mid-game.
+--   2. R (toggle_torch) turned out unreliable while seated -- exactly the
+--      position this feature is for.
 --
---   R  -> toggle_torch                      (one clean action)
---   F  -> knock_out, stealth_kill, mercy_kill, butcher, grab_body, horse_pulldown
---   X  -> call, use_horse
---   1-6 -> action_qam_1 .. action_qam_6     (also *_hold variants for 5 and 6)
---   E  -> use, talk, pickpocketing, trigger_use, mount_horse, use_bed_*, ...
+-- keybindSuperactions.xml (Libs/Config/, shipped in this mod's own pak) is
+-- the actual fix: it is a plain, moddable XML action-map config, not
+-- hardcoded, and a key can carry MULTIPLE named actions across different
+-- `map=` contexts simultaneously. So instead of reusing an existing action
+-- and hoping its side effect is harmless, this ships brand-new action names
+-- (kcd2mp_dice_mark_1..6, kcd2mp_dice_cast, kcd2mp_dice_bank,
+-- kcd2mp_dice_yield) on physical keys confirmed to have NOTHING else bound
+-- to them anywhere in the file, so there is no side effect to tolerate at
+-- all. map="interaction" was chosen because it was directly observed still
+-- firing (use/talk/trigger_use) immediately after sitting down, unlike
+-- "sitting"-shadowed actions.
 --
--- THE CONSTRAINT THAT DECIDED THESE: our hook runs IN ADDITION to the game's
--- handler and cannot consume the input, so whichever key is bound still does its
--- normal job as well. That rules out E, the obvious choice for "cast" -- `use`
--- at a dice table triggers the table's own "Play dice" interaction and would
--- launch the NPC minigame underneath our board.
+-- Keys: F2, F4, F5, F6, F7, F8 mark dice 1-6 (see DICE_MARK_KEYS in the
+-- panel code); F9 casts/sets aside; hold F11 banks; hold F12 yields; U
+-- clears every pending mark without rerolling (KCD2MP_DiceUnmarkAll).
 --
--- So the picks below are keys whose normal behaviour is harmless while sitting
--- at a board: toggling a torch, whistling for a horse, and a takedown that does
--- nothing without a valid target.
+-- Four traps paid for finding these, none visible from this file alone:
+--   1. Numpad 1-6 checked clean here (nothing else in this XML claims them)
+--      but wasn't -- action_qam_N's weapon_slot_N sibling lives under
+--      apse_qam_slots, which turned out to stay active during ordinary
+--      play, not just with a menu open. Adding our own action to a key
+--      never suppresses whatever else is already bound there.
+--   2. The Numpad operator keys (*, +, -) and F1/F3/F10 are bound to
+--      engine-level debug toggles (photo mode, flight mode, AI/animation
+--      debug draw) entirely OUTSIDE this XML -- invisible to any check of
+--      this file's contents. Numpad / is worse: it CRASHED the game.
+--   3. H is also "clean" by this file's contents and is not safe either --
+--      it opens a Modding Tools debug menu, same invisible-to-this-file
+--      shape as trap 2. Every key actually used below was pressed live,
+--      one at a time, and watched for anything happening at all -- that is
+--      the only real proof; this file's contents are not enough on their
+--      own, and neither is "nothing obviously bad happened" (Numpad 1-6).
+--   4. Numpad . is a DIFFERENT kind of failure: not dangerous, just a dead
+--      binding. "np_decimal" is not a control name this engine's action-map
+--      recognises at all, so the whole entry silently never registers --
+--      no crash, no debug menu, just nothing, indistinguishable at a glance
+--      from a key that works but has nothing to do yet. Moved to U, which
+--      is both unclaimed AND confirmed to actually fire once wired up.
 --
--- All of these are gated on KCD2MP.dice.open, so none can fire outside a match.
--- The mp_dice_* console commands remain and always work.
-local DICE_CONFIRM_ACTIONS = { ["toggle_torch"] = true }              -- R
-local DICE_BANK_ACTIONS    = { ["knock_out"]    = true }              -- F, held
-local DICE_YIELD_ACTIONS   = { ["call"]         = true }              -- X, held
+-- Bank/yield tried U/Y briefly (to leave F11/F12 free for a future
+-- invite-accept/decline bind) -- U/Y worked, but simplicity won: back on
+-- F11/F12, which were already proven end-to-end, and U repurposed for
+-- cancel instead of adding a fifth key family to the set.
+--
+-- All of these are gated on KCD2MP.dice.open, so none can fire outside a
+-- match. The mp_dice_* console commands remain and always work.
+local DICE_CONFIRM_ACTIONS = { ["kcd2mp_dice_cast"]  = true, ["toggle_torch"] = true }
+local DICE_BANK_ACTIONS    = { ["kcd2mp_dice_bank"]  = true, ["knock_out"]    = true }  -- held
+local DICE_YIELD_ACTIONS   = { ["kcd2mp_dice_yield"] = true, ["call"]         = true }  -- held
+local DICE_CANCEL_ACTIONS  = { ["kcd2mp_dice_cancel"] = true }
 
--- Marking a die. action_qam_1..6 is the number row; the trailing digit is the
--- die index, which lines up with the numbered row drawn under the dice.
+-- Marking a die. kcd2mp_dice_mark_N's trailing digit is the die index, which
+-- lines up with the numbered row drawn under the dice.
 local function diceMarkIndex(action)
-    local n = action:match("^action_qam_(%d)$")
+    local n = action:match("^kcd2mp_dice_mark_(%d)$")
     if n then
         local i = tonumber(n)
         if i and i >= 1 and i <= 6 then return i end
@@ -3595,6 +3585,7 @@ local function handleAction(action, activation, value)
             local mark = diceMarkIndex(action)
             if mark then pcall(KCD2MP_DiceMark, mark); return end
             if DICE_CONFIRM_ACTIONS[action] then pcall(KCD2MP_DiceConfirm); return end
+            if DICE_CANCEL_ACTIONS[action] then pcall(KCD2MP_DiceUnmarkAll); return end
             -- Bank and yield are irreversible, so they are hold-to-confirm:
             -- start the timer on press, and only KCD2MP_DiceHoldTick fires them.
             if DICE_BANK_ACTIONS[action]  then pcall(KCD2MP_DiceHoldBegin, "bank");    return end

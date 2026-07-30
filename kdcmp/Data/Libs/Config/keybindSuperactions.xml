@@ -1,0 +1,1014 @@
+<keybinds>
+	<!--=============== ui groups =================================================-->
+	<ui_group name="general" ui_label="ui_keybinds_group_general" />
+	<ui_group name="movement" ui_label="ui_keybinds_group_movement"/>
+	<ui_group name="combat" ui_label="ui_keybinds_group_combat" />
+	<ui_group name="chat" ui_label="ui_keybinds_group_chat"/>
+	<ui_group name="qam" ui_label="ui_keybinds_group_qam"/>
+	<ui_group name="gui" ui_label="ui_keybinds_group_inventory" />
+	<ui_group name="photomode" ui_label="ui_keybinds_group_photomode"/>
+	<ui_group name="other" ui_label="ui_keybinds_group_other"/>
+
+	<!--============= superactions ================================================-->
+	<!-- GENERAL -->
+	<superaction name="left" ui_group="general" ui_name="ui_keybinds_left" ui_tooltip="" keyboard="writeable">
+		<action name="moveleft" map="movement_x" />
+		<action name="photomode_moveleft" map="photomode_camera" />
+		<action name="left" map="navigation_left" />
+		<action name="move_left" map="apse_move_horizontal" />
+		<action name="sword_position_left" map="sharpening" />
+		<action name="read_prev" map="reading_base" />
+		<action name="dice_left" map="dice_interaction" />
+		<action name="sitting_exit_left" map="sitting" />
+		<action name="dialog_move_prev" map="dialog_minigame_move" />
+
+		<control input="a" controller="keyboard" />
+		<control input="left" controller="keyboard" />
+	</superaction>
+
+	<superaction name="right" ui_group="general" ui_name="ui_keybinds_right" ui_tooltip="" keyboard="writeable">
+		<action name="moveright" map="movement_x" />
+		<action name="photomode_moveright" map="photomode_camera" />
+		<action name="right" map="navigation_right" />
+		<action name="move_right" map="apse_move_horizontal" />
+		<action name="sword_position_right" map="sharpening" />
+		<action name="read_next" map="reading_base" />
+		<action name="dice_right" map="dice_interaction" />
+		<action name="lock_dir_fwd" map="lockpicking" />
+		<action name="sitting_exit_right" map="sitting" />
+		<action name="dialog_move_next" map="dialog_minigame_move" />
+
+		<control input="d" controller="keyboard" />
+		<control input="right" controller="keyboard" />
+	</superaction>
+
+	<superaction name="up" ui_group="general" ui_name="ui_keybinds_up" ui_tooltip="" keyboard="writeable">
+		<action name="moveforward" map="movement_y" />
+		<action name="photomode_moveforward" map="photomode_camera" />
+		<action name="up" map="navigation_up" />
+		<action name="focus_prev" map="apse_focus" />
+		<action name="sword_rotation_up" map="sharpening" />
+		<action name="dice_up" map="dice_interaction" />
+		<action name="sitting_exit_up" map="sitting" />
+
+		<control input="w" controller="keyboard" />
+		<control input="up" controller="keyboard" />
+	</superaction>
+
+	<superaction name="down" ui_group="general" ui_name="ui_keybinds_down" ui_tooltip="" keyboard="writeable">
+		<action name="moveback" map="movement_y" />
+		<action name="photomode_moveback" map="photomode_camera" />
+		<action name="down" map="navigation_down" />
+		<action name="focus_next" map="apse_focus" />
+		<action name="sword_rotation_down" map="sharpening" />
+		<action name="horse_deccelerate" map="horse_mounting" />
+		<action name="dice_down" map="dice_interaction" />
+		<action name="sitting_exit_down" map="sitting" />
+
+		<control input="s" controller="keyboard" />
+		<control input="down" controller="keyboard" />
+	</superaction>
+
+	<superaction name="primary_action" ui_group="general" ui_name="ui_keybinds_primary_action" ui_tooltip="" keyboard="writeable">
+		<action name="horse_magnetism_activate" map="horse_mounted" />
+		<action name="horse_magnetism_deactivate" map="horse_mounted" />
+		<action name="use" map="interaction" />
+		<action name="talk" map="interaction" />
+		<action name="talk" map="horse_mounting" />
+		<action name="talk" map="sitting" />
+		<action name="trigger_use" map="script_trigger" />
+		<action name="trigger_use_hold" map="script_trigger" />
+		<action name="use_bed_sit" map="interaction" />
+		<action name="use_bed_sleep" map="interaction" />
+		<action name="use_other" map="interaction" />
+		<action name="pickpocketing" map="interaction" />
+		<action name="read_use" map="reading" />
+		<action name="dice_hold" map="dice_interaction" />
+		<action name="alch_use" map="alchemy" />
+		<action name="transcription_skip" map="book_transcription" />
+		<action name="put_corpse" map="carry_corpse_carrying" />
+		<action name="deposit_item" map="carry_item" />
+		<action name="put_item" map="carry_item" />
+		<action name="menu_accept" map="menu" />
+		<action name="dialog_confirm" map="dialog" />
+		<action name="chat_confirm" map="chat_interaction" />
+		<action name="skip_time_confirm" map="skip_time" />
+		<action name="sitting_sleep" map="sitting_bed" />
+		<action name="accept_game_over" map="game_over" />
+		<action name="read_select" map="alchemy_reading" />
+		<action name="charge" map="pickpocketing" />
+		<action name="pickpocketing_uncover" map="pickpocketing_ui" />
+		<action name="pickpocketing_close" map="pickpocketing_ui" />
+		<action name="pickpocketing_take" map="pickpocketing_ui" />
+		<action name="throw" map="stone_throwing" />
+		<action name="blacksmith_confirmation" map="blacksmithing_confirmation" />
+		<action name="toggle_expand" map="apse_focus" />
+		<action name="toggle_selection" map="apse_selection" />
+		<action name="toggle_selection_all" map="apse_selection_all" />
+		<action name="transfer_item" map="apse_transfer" />
+		<action name="transfer_item_all" map="apse_transfer" />
+		<action name="action" map="apse_action" />
+		<action name="secondary_action" map="apse_item_actions" />
+		<action name="mount_horse" map="interaction" />
+		<action name="start_fast_travel" map="apse_map_interaction" />
+		<action name="take_screenshot" map="photomode_base" />
+		<action name="map_focus_objective" map="apse_questlog_map" />
+		<action name="first_time_overlay_confirm" map="first_time_overlay" />
+		<action name="next_step" map="dialog_minigame" />
+		<action name="buy" map="forge_builder_assets" />
+		<action name="edit" map="forge_builder_slots" />
+		<action name="equipp" map="forge_builder_assets" />
+
+		<control input="e" controller="keyboard" />
+		<control input="enter" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="distract" ui_group="general" ui_name="ui_keybinds_distract_init_throw" ui_tooltip="" keyboard="writeable">
+		<action name="distract_init" map="crouch" />
+		<action name="decoy_throw" map="distract" />
+		<control input="g" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="companion_bond" ui_group="general" ui_name="ui_keybinds_companion_bond" ui_tooltip="" keyboard="writeable">
+		<action name="companion_bond" map="interaction" />
+		<action name="horse_saddle_bond" map="horse_mounted" />
+		<control input="v" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="torch" ui_group="general" ui_name="ui_keybinds_torch" ui_tooltip="" keyboard="writeable">
+		<action name="toggle_torch" map="draw_holster_torch" />
+		<action name="reset_tutorials_action" map="reset_tutorials" />
+		<control input="r" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="helmet_action" ui_group="general" ui_name="ui_keybinds_helmet_action" ui_tooltip="" keyboard="writeable">
+		<action name="toggle_helmet" map="toggle_helmet" />
+		<control input="z" controller="keyboard" />
+	</superaction>
+
+	<superaction name="skip_dialog" ui_group="general" ui_name="ui_keybinds_skip_dialog" ui_tooltip="ui_keybinds_skip_dialog_desc" keyboard="writeable">
+		<action name="cutscene_skip" map="cutscene" />
+		<action name="dialog_skip" map="dialog" />
+		<action name="chat_cancel" map="chat_interaction" />
+		<action name="cutscene_abort" map="cutscene" />
+		<action name="loading_video_skip" map="loading" />
+
+		<control input="space" controller="keyboard" />
+		<control input="mouse2" controller="keyboard" />
+	</superaction>
+
+	<superaction name="back" ui_group="general" ui_name="ui_keybinds_back" ui_tooltip="" keyboard="readable">
+		<action name="open_menu" map="open_menu" />
+		<action name="menu_back" map="menu" />
+		<action name="skip_time_cancel" map="skip_time" />
+		<action name="skip_time_skipping_cancel" map="skip_time_skipping" />
+		<action name="horse_inspect_close" map="horse_inspect" />
+		<action name="close" map="apse_close" />
+		<action name="close_help_screen" map="helpscreen" />
+		<action name="open_pause_menu" map="open_pause_menu" />
+		<action name="unstance_end" map="unstance" />
+		<action name="minigame_exit" map="minigame_exit" />
+		<action name="loading_video_esc" map="loading" />
+		<action name="close_crime_list" map="dialog_crime_list" />
+		<action name="close_photomode" map="photomode_base" />
+		<action name="close_tutorial" map="close_tutorial" />
+		<action name="first_time_overlay_decline" map="first_time_overlay" />
+		<action name="dialog_cancel" map="dialog" /><!-- enabled/disabled only from C_DialogInteraction::AddHaggleOption -->
+		<action name="cancel" map="dialog_minigame" />
+		<action name="back" map="forge_builder_assets" />
+
+		<control input="escape" controller="keyboard" />
+		<control input="backspace" controller="keyboard" />
+	</superaction>
+
+	<!-- MOVEMENT -->
+	<superaction name="jump" ui_group="movement" ui_name="ui_keybinds_jump" ui_tooltip="" keyboard="writeable">
+		<action name="jump" map="movement" />
+		<action name="xi_pedaling" map="sharpening" />
+		<action name="photomode_moveup" map="photomode_camera" />
+		<control input="space" controller="keyboard" />
+	</superaction>
+
+	<superaction name="sprint" ui_group="movement" ui_name="ui_keybinds_sprint" ui_tooltip="ui_keybinds_sprint_desc" keyboard="writeable">
+		<action name="horse_sprint" map="horse_mounting" />
+		<action name="horse_perk_no_rest_for_the_wicked" map="horse_mounted" />
+		<action name="sprint" map="sprint" />
+		<control input="lshift" controller="keyboard" />
+	</superaction>
+
+	<superaction name="toggle_crouch" ui_group="movement" ui_name="ui_keybinds_toggle_crouch" ui_tooltip="" keyboard="writeable">
+		<action name="toggle_crouch" map="movement" />
+		<action name="photomode_movedown" map="photomode_camera" />
+		<control input="c" controller="keyboard" />
+	</superaction>
+
+	<superaction name="toggle_run" ui_group="movement" ui_name="ui_keybinds_toggle_run" ui_tooltip="" keyboard="writeable">
+		<action name="toggle_run" map="movement" />
+		<control input="capslock" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="horse_slowdown" ui_group="general" ui_name="ui_keybinds_horse_slowdown" ui_tooltip="" keyboard="writeable">
+		<action name="horse_slowdown" map="horse_mounting" />
+		<control input="lctrl" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="companion_interaction" ui_group="movement" ui_name="ui_keybinds_companion" ui_tooltip="ui_keybinds_companion_desc" keyboard="writeable">
+		<action name="use_horse" map="interaction" />
+		<action name="horse_dismount" map="horse_mounted" />
+		<action name="cart_dismount" map="cart" />
+		<action name="call" map="call" />
+		<action name="custom_quest_call_horse_action" map="custom_quest_call_horse" />
+		<action name="request_dog" map="dog" />
+		<action name="combat_request_dog" map="dog" />
+		<action name="cancel_dog" map="dog" />
+		<control input="x" controller="keyboard" />
+	</superaction>
+
+	<superaction name="rotate_left" ui_group="movement" ui_name="ui_keybinds_rotate_left" ui_tooltip="" keyboard="writeable">
+		<action name="rotateleft" map="camera_keyboard_mouse" />
+		<action name="rotate_left" map="apse_character_rotate" />
+		<control input="k" controller="keyboard" />
+	</superaction>
+
+	<superaction name="rotate_right" ui_group="movement" ui_name="ui_keybinds_rotate_right" ui_tooltip="" keyboard="writeable">
+		<action name="rotateright" map="camera_keyboard_mouse" />
+		<action name="rotate_right" map="apse_character_rotate" />
+		<control input="l" controller="keyboard" />
+	</superaction>
+
+	<!-- COMBAT -->
+	<superaction name="attack_primary" ui_group="combat" ui_name="ui_keybinds_primary_attack" ui_tooltip="" keyboard="writeable">
+		<action name="attack_primary_mouse" map="combat_base" />
+		<action name="blacksmith_stroke" map="blacksmithing_anvil" />
+		<action name="combat_stealth_pick_up_body" map="combat_stealth" />
+		<action name="stealth_kill_attack" map="combat_stealth_attack" />
+		<action name="stealth_kill_silent_attack" map="combat_stealth_silent_attack" />
+		<action name="bow_primary" map="combat_bow" />
+		<action name="bow_primary_release" map="combat_bow" />
+		<action name="crossbow_execute" map="combat_crossbow" />
+		<action name="gun_execute" map="combat_gun" />
+		<control input="mouse1" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="block" ui_group="combat" ui_name="ui_keybinds_block" ui_tooltip="" keyboard="writeable">
+		<action name="block" map="combat_base" />
+    	<action name="attack_abort" map="combat_base" />
+		<action name="combat_stealth_drop_body" map="combat_stealth" />
+		<action name="bow_secondary" map="combat_bow" />
+		<action name="bow_secondary_release" map="combat_bow" />
+		<action name="crossbow_abort" map="combat_crossbow" />
+		<action name="crossbow_prepare" map="combat_crossbow" />
+		<action name="gun_abort" map="combat_gun" />
+		<action name="gun_prepare" map="combat_gun" />
+		<control input="mouse2" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="unlock" ui_group="combat" ui_name="ui_keybinds_unlock_target" ui_tooltip="ui_keybinds_unlock_target_desc" keyboard="writeable">
+		<action name="combat_unlock_mouse" map="combat" />
+		<control input="mouse3" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="opponent_lock" ui_group="combat" ui_name="ui_keybinds_opponent_lock" ui_tooltip="" keyboard="writeable">
+		<action name="opponent_lock" map="combat" />
+		<control input="tab" controller="keyboard" />
+	</superaction>
+
+	<superaction name="attack_special" ui_group="combat" ui_name="ui_keybinds_physical_attack" ui_tooltip="ui_keybinds_physical_attack_desc" keyboard="writeable">
+		<action name="attack_special" map="combat_locked" />
+		<action name="grab_body" map="player" />
+		<action name="stealth_kill" map="combat_base" />
+		<action name="knock_out" map="combat_base" />
+		<action name="horse_pulldown" map="combat_base" />
+		<action name="mercy_kill" map="combat_base" />
+		<action name="butcher" map="interaction" />
+		<control input="f" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="opponent_next" ui_group="combat" ui_name="ui_keybinds_next_opponent" ui_tooltip="" keyboard="writeable">
+		<action name="combat_switch_opp_next" map="combat" />
+		<control input="mwheel_up" controller="keyboard" />
+	</superaction>
+
+	<superaction name="opponent_prev" ui_group="combat" ui_name="ui_keybinds_previous_opponent" ui_tooltip="" keyboard="writeable">
+		<action name="combat_switch_opp_prev" map="combat" />
+		<control input="mwheel_down" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="attack_abort" ui_group="combat" ui_name="ui_keybinds_abort_attack" ui_tooltip="ui_keybinds_abort_attack_desc" keyboard="writeable">
+		<action name="attack_abort" map="combat_base" />
+		<action name="decoy_abort" map="distract" />
+		<control input="e" controller="keyboard" />
+	</superaction>
+	
+	<!-- CHAT -->
+	<superaction name="chat_init" ui_group="chat" ui_name="ui_keybinds_chat_init" ui_tooltip="" keyboard="writeable">
+		<action name="chat_init_press" map="chat_init" />
+		<action name="chat_init_release" map="chat_init" />
+		<action name="chat_init_interactor_press" map="chat_init_interactor" />
+		<action name="chat_interaction_release" map="chat_interaction" />
+		<control input="q" controller="keyboard" />
+	</superaction>
+
+	<superaction name="chat_init_with_focus" ui_group="chat" ui_name="ui_keybinds_chat_init_with_focus" ui_tooltip="" keyboard="writeable">
+		<action name="chat_init_with_focus" map="chat_init_interactor" />
+		<control input="lalt" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="chat_focus_follow_init" ui_group="chat" ui_name="ui_keybinds_focus_follow_init" ui_tooltip="" keyboard="writeable">
+		<action name="chat_focus_follow_init_press" map="chat_focus_follow_init" />
+		<action name="chat_focus_follow_init_release" map="chat_focus_follow_init" />
+		<action name="focus_follow_init_interactor_press" map="focus_follow_init_interactor" />
+		<action name="infinite_hold_interaction_init_press" map="infinite_hold_interaction_init" />
+		<action name="infinite_hold_interaction_inprogress_release" map="infinite_hold_interaction_inprogress" />
+		<control input="lalt" controller="keyboard" />
+	</superaction>
+
+	<superaction name="chat_first" ui_group="chat" ui_name="ui_keybinds_chat_first" ui_tooltip="" keyboard="readable">
+		<action name="chat_first" map="chat_interaction" />
+		<action name="choice_1" map="modal_dialog_random_event" />
+		<control input="1" controller="keyboard" />
+		<control input="np_1" controller="keyboard" />
+	</superaction>
+
+	<superaction name="chat_second" ui_group="chat" ui_name="ui_keybinds_chat_second" ui_tooltip="" keyboard="readable">
+		<action name="chat_second" map="chat_interaction" />
+		<action name="choice_2" map="modal_dialog_random_event" />
+		<control input="2" controller="keyboard" />
+		<control input="np_2" controller="keyboard" />
+	</superaction>
+
+	<superaction name="chat_third" ui_group="chat" ui_name="ui_keybinds_chat_third" ui_tooltip="" keyboard="readable">
+		<action name="chat_third" map="chat_interaction" />
+		<action name="choice_3" map="modal_dialog_random_event" />
+		<control input="3" controller="keyboard" />
+		<control input="np_3" controller="keyboard" />
+	</superaction>
+
+	<superaction name="chat_fourth" ui_group="chat" ui_name="ui_keybinds_chat_fourth" ui_tooltip="" keyboard="readable">
+		<action name="chat_fourth" map="chat_interaction" />
+		<action name="choice_4" map="modal_dialog_random_event" />
+		<control input="4" controller="keyboard" />
+		<control input="np_4" controller="keyboard" />
+	</superaction>
+	
+	<!-- QAM -->
+	<superaction name="qam_init" ui_group="qam" ui_name="ui_keybinds_qam_init" ui_tooltip="" keyboard="writeable">
+		<action name="open_qam_both" map="qam_init" />
+		<action name="toggle_holster_qam_weapon" map="qam_init" />
+		<control input="b" controller="keyboard" />
+	</superaction>
+
+	<!-- GUI -->
+	<superaction name="inventory" ui_group="gui" ui_name="ui_keybinds_inventory" ui_tooltip="" keyboard="writeable">
+		<action name="move_inventory" map="apse" />
+		<action name="move_shop_inventory_btn" map="shop" />
+		<action name="open_apse_inventory_keyboard" map="open_apse_keyboard" />
+		<action name="alch_open_inventory" map="alchemy" />
+		<control input="i" controller="keyboard" />
+	</superaction>
+
+	<superaction name="player" ui_group="gui" ui_name="ui_keybinds_player" ui_tooltip="" keyboard="writeable">
+		<action name="move_player" map="apse" />
+		<action name="move_shop_trader_btn" map="shop" />
+		<action name="open_apse_player" map="open_apse_keyboard" />
+		<control input="p" controller="keyboard" />
+	</superaction>
+
+	<superaction name="quest_log" ui_group="gui" ui_name="ui_keybinds_quest_log" ui_tooltip="" keyboard="writeable">
+		<action name="move_questlog" map="apse" />
+		<action name="open_apse_questlog" map="open_apse_keyboard" />
+		<control input="j" controller="keyboard" />
+	</superaction>
+
+	<superaction name="map" ui_group="gui" ui_name="ui_keybinds_map" ui_tooltip="" keyboard="writeable">
+		<action name="move_map" map="apse" />
+		<action name="open_apse_map_keyboard" map="open_apse_keyboard" />
+		<control input="m" controller="keyboard" />
+	</superaction>
+
+	<superaction name="codex" ui_group="gui" ui_name="ui_keybinds_codex" ui_tooltip="" keyboard="writeable">
+		<action name="move_codex" map="apse" />
+		<action name="open_apse_codex" map="open_apse_keyboard" />
+		<action name="open_codex_new_entry" map="open_codex" />
+		<control input="n" controller="keyboard" />
+	</superaction>
+
+	<superaction name="crafting" ui_group="gui" ui_name="ui_keybinds_crafting" ui_tooltip="" keyboard="writeable">
+		<action name="move_crafting" map="apse" />
+		<control input="c" controller="keyboard" />
+	</superaction>
+
+	<superaction name="apse_change_outfit" ui_group="gui" ui_name="ui_keybinds_toggle_outfit" ui_tooltip="ui_keybinds_toggle_outfit_desc" keyboard="writeable">
+		<action name="next_outfit" map="apse_change_outfit" />
+		<control input="o" controller="keyboard" />
+	</superaction>
+
+	<superaction name="toggle_vertical" ui_group="gui" ui_name="ui_keybinds_toggle_info" ui_tooltip="ui_keybinds_toggle_info_desc" keyboard="writeable">
+		<action name="toggle_info" map="apse_toggle_info" />
+		<control input="q" controller="keyboard" />
+	</superaction>
+
+	<superaction name="cycle_tabs" ui_group="gui" ui_name="ui_keybinds_cycle_tabs" ui_tooltip="ui_keybinds_cycle_tabs_desc" keyboard="writeable">
+		<action name="tab_next" map="apse_tabs" />
+		<control input="tab" controller="keyboard" />
+	</superaction>
+
+	<superaction name="ui_map_center" ui_group="gui" ui_name="ui_keybinds_map_center" ui_tooltip="" keyboard="writeable">
+		<action name="map_center" map="apse_map_checkpoint" />
+		<control input="f" controller="keyboard" />
+	</superaction>
+
+	<superaction name="move_item" ui_group="gui" ui_name="ui_keybinds_move_item" ui_tooltip="ui_keybinds_move_item_desc" keyboard="writeable">
+		<action name="menu_reset" map="menu" />
+		<action name="move_item" map="apse_item_actions" />
+		<action name="drop_item" map="apse_item_actions" />
+		<action name="confirm" map="apse_confirm" />
+		<action name="haggle" map="item_selection_repair" />
+		<action name="close_deal" map="shop" />
+		<action name="haggle" map="shop" />
+		<action name="toggle_hints_visibility" map="photomode_base" />
+		<action name="toggle_track_quest" map="apse_questlog" />
+		<action name="toggle_track_poi" map="apse_map_legend" />
+		<action name="toggle_track_poi_all" map="apse_map_legend" />
+		<action name="confirm" map="dialog_minigame" />
+
+		<control input="x" controller="keyboard" />
+	</superaction>
+
+	<superaction name="skiptime" ui_group="gui" ui_name="ui_keybinds_skiptime" ui_tooltip="" keyboard="writeable">
+		<action name="open_skiptime" map="open_skiptime" />
+		<action name="open_help_screen" map="help_dialog" />
+		<control input="t" controller="keyboard" />
+	</superaction>
+	
+	<!-- PHOTOMODE -->
+	<superaction name="enable_photomode" ui_group="photomode" ui_name="ui_keybinds_enable_photomode" ui_tooltip="" keyboard="writeable">		
+		<action name="photomode_enable" map="photomode_enable" />
+		<control input="f1" controller="keyboard" />
+	</superaction>
+
+	<superaction name="photomode_fast_movement" ui_group="photomode" ui_name="ui_keybinds_photomode_fast_movement" ui_tooltip="" keyboard="writeable">
+		<action name="fast_movement" map="photomode_camera" />
+		<control input="lshift" controller="keyboard" />
+	</superaction>
+
+	<superaction name="photomode_toggle_mode" ui_group="photomode" ui_name="ui_keybinds_photomode_toggle_mode" ui_tooltip="" keyboard="writeable">
+		<action name="toggle_mode" map="photomode_base" />
+		<control input="m" controller="keyboard" />
+	</superaction>
+
+	<superaction name="photomode_reset" ui_group="photomode" ui_name="ui_keybinds_photomode_reset_menu" ui_tooltip="" keyboard="writeable">
+		<action name="photomode_reset_menu" map="photomode_menu" />
+		<control input="r" controller="keyboard" />
+	</superaction>
+
+	<!-- OTHER / MINIGAMES -->
+	<superaction name="minigame_action_2" ui_group="other" ui_name="ui_keybinds_secondary_action" ui_tooltip="" keyboard="writeable">
+		<action name="dice_score" map="dice_interaction" />
+		<action name="alch_use_sandglass" map="alchemy" />
+		<action name="open_crime_list" map="dialog_crime_list_open" />
+		<action name="close_crime_list_alt" map="dialog_crime_list" />
+		<action name="blacksmith_inspection" map="blacksmithing_forge" />
+		<action name="blacksmith_inspection" map="blacksmithing_forge_basic" />
+		<action name="blacksmith_inspection_stop" map="blacksmithing_inspection" />
+		<action name="blacksmith_swap_workpiece" map="blacksmithing_anvil" />
+		<control input="f" controller="keyboard" />
+	</superaction>
+
+	<superaction name="minigame_action_3" ui_group="other" ui_name="ui_keybinds_ternary_action" ui_tooltip="" keyboard="writeable">
+		<action name="dice_pass" map="dice_interaction" />
+		<action name="read_toggle" map="alchemy_reading" />
+		<action name="alch_use_bag" map="alchemy" />
+		<action name="blacksmith_use_forgebag" map="blacksmithing_forge" />
+		<action name="blacksmith_use_forgebag" map="blacksmithing_forge_basic" />
+		<control input="q" controller="keyboard" />
+	</superaction>
+
+	<superaction name="minigame_action_4" ui_group="other" ui_name="ui_keybinds_reset_alchemy" ui_tooltip="" keyboard="writeable">
+		<action name="dice_badge_use" map="dice_interaction" />
+		<action name="alch_reset" map="alchemy" />
+		<action name="alch_back" map="alchemy" />
+		<action name="read_back" map="alchemy_reading" />
+		<action name="blacksmith_to_anvil" map="blacksmithing_forge" />
+		<action name="blacksmith_to_anvil" map="blacksmithing_forge_basic" />
+		<action name="blacksmith_to_forge" map="blacksmithing_anvil" />
+		<control input="r" controller="keyboard" />
+	</superaction>
+	
+	<superaction name="minigame_action_5" ui_group="other" ui_name="ui_keybinds_alchemy_move_pot" ui_tooltip="" keyboard="writeable">
+		<action name="dice_exit_badge_effect" map="dice_interaction" />
+		<action name="alch_move_pot" map="alchemy" />
+		<control input="x" controller="keyboard" />
+	</superaction>
+
+	<!-- hidden (unchangable) -->
+	<!-- extra actions -->
+	<superaction name="confirm_dialog_extra" ui_group="" keyboard="hidden">
+		<action name="dialog_confirm_mouse" map="dialog" />
+		<action name="next_step_mouse" map="dialog_minigame" />
+		<action name="chat_confirm_mouse" map="chat_interaction" />
+		<control input="mouse1" controller="keyboard" />
+	</superaction>
+
+	<superaction name="ui_clear" ui_group="" keyboard="hidden">
+		<action name="menu_clear" map="menu" />
+		<control input="delete" controller="keyboard" />
+	</superaction>
+
+	<superaction name="ui_reset_keybind" ui_group="" keyboard="hidden">
+		<action name="menu_reset_keybind" map="menu" />
+		<control input="home" controller="keyboard" />
+	</superaction>
+
+	<superaction name="menu_pros" ui_group="" keyboard="hidden">
+		<action name="menu_pros" map="menu" />
+		<action name="menu_support" map="menu" />
+		<control input="n" controller="keyboard" />
+	</superaction>
+
+	<superaction name="menu_open_web" ui_group="" keyboard="hidden">
+		<action name="open_web" map="open_web" />
+		<control input="f1" controller="keyboard" />
+	</superaction>
+
+	<!-- mouse in UI -->
+	<superaction name="ui_and_dialog_wheel_up" ui_group="general" ui_name="ui_keybinds_wheel_up" ui_tooltip="ui_keybinds_wheel_up_tt" keyboard="writeable">
+		<action name="map_zoom_up" map="apse_map_move" />
+		<action name="scroll_up" map="navigation_up" />
+		<action name="scroll_up" map="dialog_minigame_move" />
+		<action name="chat_up" map="chat_interaction" />
+		<control input="mwheel_up" controller="keyboard" />
+	</superaction>
+
+	<superaction name="ui_and_dialog_wheel_down" ui_group="general" ui_name="ui_keybinds_wheel_down" ui_tooltip="ui_keybinds_wheel_down_tt" keyboard="writeable">
+		<action name="map_zoom_down" map="apse_map_move" />
+		<action name="scroll_down" map="navigation_down" />
+		<action name="scroll_down" map="dialog_minigame_move" />
+		<action name="chat_down" map="chat_interaction" />
+		<control input="mwheel_down" controller="keyboard" />
+	</superaction>
+
+	<superaction name="checkpoint_mouse" ui_group="gui" ui_name="ui_keybinds_map_checkpoint" keyboard="writeable">
+		<action name="checkpoint" map="apse_map_checkpoint" />
+		<control input="mouse2" controller="keyboard" />
+	</superaction>
+
+	<!-- qam -->
+	<superaction name="qam_1" ui_group="qam" ui_name="ui_keybinds_qam_1" keyboard="writeable">
+		<action name="action_qam_1" map="qam_init" />
+		<action name="weapon_slot_1" map="apse_qam_slots" />
+		<control input="1" controller="keyboard" />
+		<control input="np_1" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_2" ui_group="qam" ui_name="ui_keybinds_qam_2" keyboard="writeable">
+		<action name="action_qam_2" map="qam_init" />
+		<action name="weapon_slot_2" map="apse_qam_slots" />
+		<control input="2" controller="keyboard" />
+		<control input="np_2" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_3" ui_group="qam" ui_name="ui_keybinds_qam_3" keyboard="writeable">
+		<action name="action_qam_3" map="qam_init" />
+		<action name="weapon_slot_3" map="apse_qam_slots" />
+		<control input="3" controller="keyboard" />
+		<control input="np_3" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_4" ui_group="qam" ui_name="ui_keybinds_qam_4" keyboard="writeable">
+		<action name="action_qam_4" map="qam_init" />
+		<action name="weapon_slot_4" map="apse_qam_slots" />
+		<control input="4" controller="keyboard" />
+		<control input="np_4" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_5" ui_group="qam" ui_name="ui_keybinds_qam_5" keyboard="writeable">
+		<action name="action_qam_5" map="qam_init" />
+		<action name="action_qam_5_hold" map="qam_init" />
+		<action name="food_slot_1" map="apse_qam_slots" />
+		<control input="5" controller="keyboard" />
+		<control input="np_5" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_6" ui_group="qam" ui_name="ui_keybinds_qam_6" keyboard="writeable">
+		<action name="action_qam_6" map="qam_init" />
+		<action name="action_qam_6_hold" map="qam_init" />
+		<action name="food_slot_2" map="apse_qam_slots" />
+		<control input="6" controller="keyboard" />
+		<control input="np_6" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_7" ui_group="qam" ui_name="ui_keybinds_qam_7" keyboard="writeable">
+		<action name="action_qam_7" map="qam_init" />
+		<action name="action_qam_7_hold" map="qam_init" />
+		<action name="food_slot_3" map="apse_qam_slots" />
+		<control input="7" controller="keyboard" />
+		<control input="np_7" controller="keyboard" />
+	</superaction>
+
+	<superaction name="qam_8" ui_group="qam" ui_name="ui_keybinds_qam_8" keyboard="writeable">
+		<action name="action_qam_8" map="qam_init" />
+		<action name="action_qam_8_hold" map="qam_init" />
+		<action name="food_slot_4" map="apse_qam_slots" />
+		<control input="8" controller="keyboard" />
+		<control input="np_8" controller="keyboard" />
+	</superaction>
+
+	<!-- haste -->
+	<superaction name="haste_num0" ui_group="other" ui_name="ui_keybinds_haste0" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key0" map="haste" />
+		<control input="np_0" controller="keyboard" />
+		<control input="0" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num1" ui_group="other" ui_name="ui_keybinds_haste1" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key1" map="haste" />
+		<control input="np_1" controller="keyboard" />
+		<control input="1" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num2" ui_group="other" ui_name="ui_keybinds_haste2" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key2" map="haste" />
+		<control input="np_2" controller="keyboard" />
+		<control input="2" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num3" ui_group="other" ui_name="ui_keybinds_haste3" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key3" map="haste" />
+		<control input="np_3" controller="keyboard" />
+		<control input="3" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num4" ui_group="other" ui_name="ui_keybinds_haste4" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key4" map="haste" />
+		<control input="np_4" controller="keyboard" />
+		<control input="4" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num5" ui_group="other" ui_name="ui_keybinds_haste5" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key5" map="haste" />
+		<control input="np_5" controller="keyboard" />
+		<control input="5" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num6" ui_group="other" ui_name="ui_keybinds_haste6" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key6" map="haste" />
+		<control input="np_6" controller="keyboard" />
+		<control input="6" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num7" ui_group="other" ui_name="ui_keybinds_haste7" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key7" map="haste" />
+		<control input="np_7" controller="keyboard" />
+		<control input="7" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num8" ui_group="other" ui_name="ui_keybinds_haste8" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key8" map="haste" />
+		<control input="np_8" controller="keyboard" />
+		<control input="8" controller="keyboard" />
+	</superaction>
+
+	<superaction name="haste_num9" ui_group="other" ui_name="ui_keybinds_haste9" ui_tooltip="" keyboard="hidden">
+		<action name="haste_key9" map="haste" />
+		<control input="np_9" controller="keyboard" />
+		<control input="9" controller="keyboard" />
+	</superaction>
+	
+	<!-- tobii -->
+	<!--<superaction name="tobii_enable" ui_group="" ui_name="ui_tobiiEyeTrackerEnable" ui_tooltip="ui_tobiiEyeTrackerEnableTT">
+		<action name="tobii_enable" map="tobii" />
+		<control input="" controller="keyboard" />
+	</superaction>-->
+
+	<!--============== conflicting groups =========================================-->
+	<!-- basic groups -->
+	<conflict name="directions">
+		<superaction name="left" />
+		<superaction name="right" />
+		<superaction name="up" />
+		<superaction name="down" />
+	</conflict>
+
+	<conflict name="directions_in_ui">
+		<include conflict="directions"/>
+		<superaction name="ui_and_dialog_wheel_down" />
+		<superaction name="ui_and_dialog_wheel_up" />
+	</conflict>
+
+	<conflict name="actions">
+		<superaction name="primary_action" />
+		<superaction name="back" />
+	</conflict>
+
+	<conflict name="barber">
+		<include conflict="directions_in_ui"/>
+		<superaction name="move_item" />
+		<superaction name="back" />
+	</conflict>
+
+	<conflict name="movement">
+		<superaction name="jump" />
+		<superaction name="sprint" />
+		<superaction name="toggle_run" />
+		<superaction name="rotate_left" />
+		<superaction name="rotate_right" />
+	</conflict>
+
+	<conflict name="combat">
+		<superaction name="attack_primary" />
+		<superaction name="block" />
+		<superaction name="torch" />
+		<superaction name="opponent_next" />
+		<superaction name="opponent_prev" />
+		<superaction name="unlock" />
+		<superaction name="opponent_lock" />
+	</conflict>
+
+	<conflict name="inventory_shortcuts">
+		<superaction name="inventory" />
+		<superaction name="player" />
+		<superaction name="quest_log" />
+		<superaction name="map" />
+		<superaction name="skiptime" />
+		<superaction name="codex" />
+	</conflict>
+
+	<conflict name="ui_actions">
+		<superaction name="move_item" />
+		<superaction name="toggle_vertical" />
+		<superaction name="cycle_tabs" />
+		<superaction name="apse_change_outfit" />
+		<superaction name="crafting" />
+		<superaction name="checkpoint_mouse" />
+		<superaction name="rotate_left" />
+		<superaction name="rotate_right" />
+	</conflict>
+
+	<conflict name="qam">
+		<superaction name="qam_1" />
+		<superaction name="qam_2" />
+		<superaction name="qam_3" />
+		<superaction name="qam_4" />
+		<superaction name="qam_5" />
+		<superaction name="qam_6" />
+		<superaction name="qam_7" />
+		<superaction name="qam_8" />
+	</conflict>
+
+	<!-- ============== interactive ground ============== -->
+	<!-- general -->
+	<conflict name="general">
+		<include conflict="directions"/>
+		<include conflict="actions"/>
+		<include conflict="movement"/>
+		<include conflict="combat"/>
+		<include conflict="inventory_shortcuts"/>
+		<include conflict="qam"/>
+		<superaction name="enable_photomode" />
+		<superaction name="tobii_enable" />
+		<superaction name="companion_interaction" />
+		<superaction name="chat_init" />
+		<superaction name="qam_init" />
+		<superaction name="helmet_action" />
+	</conflict>
+
+	<conflict name="movement_player">
+		<include conflict="general"/>
+		<superaction name="toggle_crouch" />
+	</conflict>
+
+	<conflict name="movement_horse">
+		<include conflict="general"/>
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="companion_bond" />
+		<superaction name="horse_slowdown" />
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="attack_special" />
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="distract" />
+		<superaction name="attack_special" />
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="horse_slowdown" />
+		<superaction name="chat_focus_follow_init" />
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="distract" />
+		<superaction name="companion_bond" />
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="distract" />
+		<superaction name="chat_focus_follow_init" />
+	</conflict>
+
+	<conflict>
+		<include conflict="general"/>
+		<superaction name="distract" />
+		<superaction name="chat_init_with_focus" />
+	</conflict>
+
+	<!-- attack abort -->
+	<conflict>
+		<superaction name="attack_abort" />
+
+		<include conflict="directions"/>
+		<include conflict="inventory_shortcuts"/>
+		<superaction name="back" />
+		<superaction name="attack_primary" />
+		<superaction name="torch" />
+		<superaction name="opponent_next" />
+		<superaction name="opponent_prev" />
+		<superaction name="unlock" />
+		<superaction name="tobii_enable" />
+	</conflict>
+
+	<!-- ============== inventory / menu ============== -->
+	<!-- general -->
+	<conflict>
+		<include conflict="directions_in_ui"/>
+		<include conflict="actions"/>
+		<include conflict="ui_actions"/>
+		<include conflict="inventory_shortcuts"/>
+		<include conflict="qam"/>
+		<superaction name="tobii_enable" />
+		<superaction name="ui_map_center" />
+	</conflict>
+
+	<!-- ui_clear -->
+	<conflict>
+		<superaction name="ui_clear" />
+		<superaction name="ui_reset_keybind" />
+
+		<include conflict="directions_in_ui"/>
+		<include conflict="actions"/>
+		<superaction name="tobii_enable" />
+	</conflict>
+
+	<!-- ============== dialog ============== -->
+	<!-- back aborts cutscene, skip_dialog skips part of cutscene ; back skips dialog anyway -->
+	<conflict>
+		<include conflict="directions_in_ui"/>
+		<superaction name="minigame_action_2" />
+		<superaction name="skip_dialog" />
+		<superaction name="back" />
+		<superaction name="tobii_enable" />
+		<superaction name="primary_action" />
+		<superaction name="confirm_dialog_extra"/>
+	</conflict>
+
+	<!-- ============== chat ============== -->
+	<conflict>
+		<include conflict="directions_in_ui"/>
+		<include conflict="inventory_shortcuts"/>
+		<superaction name="chat_init" />
+		<superaction name="chat_focus_follow_init" />
+		<superaction name="chat_first" />
+		<superaction name="chat_second" />
+		<superaction name="chat_third" />
+		<superaction name="chat_fourth" />
+		<superaction name="confirm_dialog_extra"/>
+		<superaction name="primary_action" />
+		<superaction name="skip_dialog" />
+		<superaction name="tobii_enable" />
+		<superaction name="back" />
+	</conflict>
+
+	<!-- ============== minigames ============== -->
+	<!-- alchemy and others -->
+	<conflict>
+		<superaction name="minigame_action_2" />
+		<superaction name="minigame_action_3" />
+		<superaction name="minigame_action_4" />
+		<superaction name="minigame_action_5" />
+		<superaction name="inventory" />
+		<include conflict="actions" />
+		<superaction name="left" />
+		<superaction name="right" />
+		<superaction name="enable_photomode" />
+		<superaction name="tobii_enable" />
+		<superaction name="skiptime" />
+	</conflict>
+
+	<conflict name="shield_painting">
+		<superaction name="minigame_action_4"/>
+		<superaction name="move_item" />
+	</conflict>
+
+	<!-- sharpening -->
+	<conflict>
+		<superaction name="jump" />
+		<superaction name="enable_photomode" />
+		<superaction name="tobii_enable" />
+		<superaction name="back" />
+		<superaction name="skiptime" />
+	</conflict>
+
+	<!-- photomode -->
+	<conflict>
+		<superaction name="tobii_enable" />
+		<superaction name="photomode_fast_movement" />
+		<superaction name="photomode_toggle_mode" />
+		<superaction name="photomode_reset" />
+		<superaction name="back" />
+		<superaction name="primary_action" />
+		<superaction name="move_item" />
+		<include conflict="directions_in_ui"/>
+	</conflict>
+
+	<!--===========================================================================-->
+	<!-- KCD2MP (WO-6): multiplayer dice board input. Every control below is
+	     confirmed unclaimed ANYWHERE else in this file (checked against the
+	     full sorted list of every input="..." value used), but that alone
+	     was NOT sufficient proof of safety, learned the hard way: the Numpad
+	     operator keys (originally used for cast/bank/yield) turned out to be
+	     bound to engine-level debug toggles (AI/animation debug draw) that
+	     live entirely outside this XML, invisible to any check of this file's
+	     own contents. F1 (photo mode), F3 (flight mode) and F10 (poly/anim
+	     debug) are the same story among the F-keys. Every key actually used
+	     below was pressed live, one at a time, and confirmed to visibly do
+	     NOTHING before being wired up: the only real proof. H is ALSO in the
+	     "confirmed unclaimed in this file" set and is NOT safe: it opens a
+	     Modding Tools debug menu, hardcoded outside this XML same as the
+	     Numpad-operator/F1/F3/F10 traps. Bank/yield moved off F11/F12 to U/Y
+	     on request, freeing F11/F12 for a future invite-accept/decline bind.
+	     Hidden from the rebind menu (no ui_name/ui_tooltip, keyboard="hidden")
+	     since these are fixed defaults, not meant for player rebinding;
+	     mp_dice_mark/cast/bank/yield/cancel remain the console fallback.
+	     map="interaction" observed active whether standing or seated.
+	     See kdcmp.lua handleAction. -->
+	<superaction name="kcd2mp_dice_mark_1" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_mark_1" map="interaction" />
+		<control input="f2" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_mark_2" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_mark_2" map="interaction" />
+		<control input="f4" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_mark_3" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_mark_3" map="interaction" />
+		<control input="f5" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_mark_4" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_mark_4" map="interaction" />
+		<control input="f6" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_mark_5" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_mark_5" map="interaction" />
+		<control input="f7" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_mark_6" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_mark_6" map="interaction" />
+		<control input="f8" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_cast" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_cast" map="interaction" />
+		<control input="f9" controller="keyboard" />
+	</superaction>
+
+	<!-- Back on F11/F12: U/Y worked fine, but np_decimal (below) turned out not
+	     to be a recognised control name at all: silently no-op, not a
+	     hidden debug bind like the earlier traps, just an unverified guess at
+	     this engine's name for that key. Simplest fix: use only keys already
+	     proven end-to-end (F11/F12), and put cancel on U, which is confirmed
+	     both unclaimed AND actually wired correctly. Y is unused again. -->
+	<superaction name="kcd2mp_dice_bank" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_bank" map="interaction" />
+		<control input="f11" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_yield" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_yield" map="interaction" />
+		<control input="f12" controller="keyboard" />
+	</superaction>
+
+	<superaction name="kcd2mp_dice_cancel" ui_group="" keyboard="hidden">
+		<action name="kcd2mp_dice_cancel" map="interaction" />
+		<control input="u" controller="keyboard" />
+	</superaction>
+</keybinds>

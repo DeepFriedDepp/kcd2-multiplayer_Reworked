@@ -95,6 +95,15 @@ public sealed class FarkleGame
         CurrentPlayer = firstPlayer ?? _rng.Next(0, 2);
     }
 
+    /// <summary>
+    /// The exact roll that caused the most recent bust, so callers can narrate
+    /// what was rolled -- <see cref="ResetTurnState"/> clears <see cref="FreeDice"/>
+    /// in the same call that busts it, so nothing else preserves this. Empty
+    /// except in the tick immediately after a busting Roll; a following Roll
+    /// (busted or not) always overwrites it first, so it is never stale.
+    /// </summary>
+    public IReadOnlyList<Die> LastBustedDice { get; private set; } = [];
+
     public IntentResult Roll(int player)
     {
         if (Outcome != FarkleOutcome.InProgress) return IntentResult.Reject(IntentRejectReason.GameAlreadyOver);
@@ -107,11 +116,13 @@ public sealed class FarkleGame
 
         if (!Scoring.HasAnyScoringDie(_freeDice))
         {
+            LastBustedDice = _freeDice;
             ResetTurnState();
             CurrentPlayer = 1 - CurrentPlayer;
             return IntentResult.OkBusted;
         }
 
+        LastBustedDice = [];
         Phase = TurnPhase.AwaitingKeep;
         return IntentResult.Ok;
     }

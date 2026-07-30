@@ -86,9 +86,17 @@ namespace KcdMp.Wire;
 ///                        [turnTotal:4][targetScore:4][phase:1]
 ///                        [freeDiceCount:1][freeDiceFaces:freeDiceCount]
 ///                        [keptDiceCount:1][keptDiceFaces:keptDiceCount]
+///                        [bustedDiceCount:1][bustedDiceFaces:bustedDiceCount]
 ///              A full snapshot, always -- never a delta. Sent to both
 ///              participants identically; each already knows its own role
 ///              from SessionStart. phase: 0=AwaitingRoll, 1=AwaitingKeep.
+///              bustedDiceFaces is the roll that just busted, non-empty only
+///              on the one snapshot immediately after a bust (freeDice is
+///              already empty by then -- the engine clears it in the same
+///              call that busts it, before this is ever sent). Appended
+///              after the original WO-5 layout; a parser that stops after
+///              keptDiceFaces still works, since the framing is
+///              length-prefixed.
 /// S→C  0x18  DiceError:  [sessionId:2][reason:1]  -- sent to the rejected
 ///              sender only. The game state is unchanged; retry with a
 ///              corrected intent.
