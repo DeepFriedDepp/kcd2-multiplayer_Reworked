@@ -619,3 +619,236 @@ every `mp_dice_*` console command still works as the fallback.
 
 **Do not bind to `open_menu`** -- it appeared repeatedly during capture and
 would open the game menu on every press.
+
+---
+
+## Session 3 -- 2026-07-30 -- real keybinds, the panel rework, bust visibility
+
+Started from the handoff at the end of Session 2. All three "verify first"
+items got done, but not cleanly -- each one uncovered something the previous
+session's design had wrong, and this session is mostly the trail of fixing
+those, in order.
+
+### Seat gate and steadiness: confirmed, no surprises
+
+The three seat-gate checks (far from a bench, near but not seated, actually
+seated) all matched expectations, and `mp_dice_demo` was confirmed steady
+after last session's flicker fix -- the remaining "flicker" the human first
+reported turned out to be the demo itself, which fires ~10 fabricated
+snapshots in 30 s on purpose, faster than any real turn ever would. Not a bug.
+
+### The keybinds: R/F/X/1-6 failed in real play, worse than expected
+
+Playing a real match surfaced two problems Session 2's design didn't catch:
+
+1. **1-6 drew a sword mid-match.** The mod's `OnAction` hook cannot consume
+   input, so `action_qam_N` firing was never going to be silent -- but nobody
+   had actually watched what physically happens when you press a QAM-bound
+   key outside the QAM wheel. It equips the weapon/food slot immediately,
+   full stop, whether or not the wheel is open. Disabled behind
+   `enableMarkKeys = false` immediately; console `mp_dice_mark N` carried the
+   feature until this was replaced properly.
+2. **R (`toggle_torch`) was flaky while seated.** First diagnosed (wrongly)
+   as R being remapped to `sitting_exit_up` while seated -- the ACT capture
+   showed `sitting_exit_up` right before a batch of `toggle_torch` presses,
+   read as causation. `Libs/Config/keybindSuperactions.xml` (see below) later
+   showed R is bound to exactly `toggle_torch` + `reset_tutorials_action`,
+   nothing sitting-related at all -- `sitting_exit_up` is on W/Up, and the
+   capture almost certainly caught the sit-down transition itself, not the R
+   press. Recorded here so a future reader does not re-trust the earlier
+   claim; the true cause of R's unreliability while seated is still not
+   confirmed, and no longer matters since R is retired.
+
+### First attempted fix: a native keyboard hook -- built, then removed
+
+Reasoned that since the game's action-map is what limits Lua's `OnAction`
+(only fires for a key the map already resolves to *something*), a
+lower-level Windows hook could see physical keys the game had no opinion on
+at all. Built `WH_KEYBOARD_LL` into `KCDMP.dll` (`dice_input_hook.cpp/h`,
+new `pipe::kDiceKey` (0x91) frame, `CombatPipe.OnDiceKey`,
+`GameBridge.HandleDiceKey`), scan-code matched (not vkCode, which is
+NumLock-dependent) against Numpad 0/1-6/+/-.
+
+**It does not work, for a reason specific to this game.** Exhaustive testing
+(four rebuild-reinject cycles) found the hook never sees ANY key -- not just
+Numpad, literally anything -- while KCD2 has focus. It only ever caught the
+human's own typed chat replies from *other* windows, proving the hook
+mechanism itself was fine. Conclusion: KCD2 reads keyboard input through
+DirectInput in exclusive-acquisition mode while focused, which never
+generates the Win32 message-level events `WH_KEYBOARD_LL` taps into. A
+correct fix would mean hooking DirectInput's device-state calls directly --
+a materially bigger, riskier native undertaking than this WO scoped, and not
+attempted.
+
+**A real trust incident happened along the way and is worth recording
+honestly.** An early diagnostic build of the hook logged *every* keystroke
+system-wide (to debug why Numpad wasn't registering) before a
+foreground-window check was added -- it captured the human typing chat
+replies to the assistant in another window. The human, reasonably, asked
+directly whether a keylogger had been built or would be committed. Answer
+given at the time and still true: no, the shipped code (once fixed) only
+ever acted on 9 specific scan codes while the game had focus, and nothing
+resembling broad key logging was ever committed -- but the diagnostic
+*build*, while it existed, genuinely did do that, and the stray captured
+text (two lines: "Done" and "pressed num -16") was deleted from the local
+log file on request. The hook and all its wiring were fully reverted
+(`git checkout` on every touched native/agent file) once proven not to work,
+specifically so nothing like it would sit in the tree unused. `git status`
+and a repo-wide grep for `WH_KEYBOARD_LL`/`SetWindowsHookEx` confirm none of
+it is in the commit that shipped.
+
+### The real fix: `keybindSuperactions.xml` is moddable, and so is `defaultProfile.xml`
+
+The human found a Nexus mod ("Hotkeys Unlocked") that edits
+`Libs/Config/keybindSuperactions.xml` to unlock QAM/consumable rebinding.
+Inspecting its pak (just that one XML file) showed the real mechanism: one
+physical key (a "superaction") can carry MULTIPLE named actions across
+different `map=` contexts simultaneously, and the game's own action-map
+system decides which one is live based on player state. This is exactly
+`sitting_exit_up` vs `toggle_torch` on different keys, in the open --
+Warhorse ships this as plain data, not compiled logic.
+
+Shipped our own addition to this file (not depending on the third-party
+mod) defining new action names (`kcd2mp_dice_mark_1..6`,
+`kcd2mp_dice_cast`, `kcd2mp_dice_bank`, `kcd2mp_dice_yield`,
+`kcd2mp_dice_cancel`) on physical keys, under `map="interaction"` -- chosen
+because `use`/`talk`/`trigger_use` (also under `interaction`) were directly
+observed firing immediately after sitting down, unlike `sitting`-shadowed
+actions.
+
+**First attempt still did nothing -- a second file was needed.**
+`keybindSuperactions.xml` alone declares which key names *could* map to
+which actions; it is not what registers an action with the live action-map
+system at all. `Libs/Config/defaultProfile.xml` is the other half -- it
+declares `<actionmap>` blocks with `<action name="..." keyboard="_keybinds_ref_">`
+entries, and an action absent from this file's actionmaps never fires via
+`OnAction`, no matter what `keybindSuperactions.xml` says. Confirmed via the
+`[DIAG]` a=press` capture: zero `ACT` lines for `kcd2mp_dice_cast` until the
+matching entry was added to `defaultProfile.xml`'s `interaction` actionmap,
+then it fired first press. Both files are now shipped in this mod's own
+pak; per the Nexus mod's own compatibility note, this makes the mod
+incompatible with any other mod that also edits either file -- an accepted,
+disclosed tradeoff of using this mechanism at all.
+
+**Picking the actual keys cost several more live-tested traps, none visible
+from the XML's own contents:**
+
+- Numpad 1-6 checked clean (nothing else in the file claims them) but
+  wasn't -- `weapon_slot_N` under `apse_qam_slots` turned out to stay active
+  during ordinary play, not gated behind the QAM wheel being open. Adding an
+  action to a key never suppresses whatever else is already bound there.
+- The Numpad operator keys and F1/F3/F10 are bound to engine-level debug
+  toggles (photo mode, flight mode, AI/animation debug draw) entirely
+  outside this XML. **Numpad `/` crashed the game outright** when tested live.
+- **H** is also "clean" by the XML's contents and is not safe either -- it
+  opens a Modding Tools debug menu.
+- `np_decimal` is a different failure shape: not dangerous, just not a
+  control name this engine's action-map recognises at all, so the entry
+  silently never registers -- indistinguishable at a glance from a working
+  key with nothing to do yet.
+
+**Final layout**, every key pressed live and watched before being trusted:
+F2/F4/F5/F6/F7/F8 mark dice 1-6, F9 casts/sets aside, hold F11 banks, hold
+F12 yields, U clears every pending mark without rerolling
+(`KCD2MP_DiceUnmarkAll`, added on request so a bad partial selection does
+not have to be committed to start over). Bank/yield briefly lived on U/Y
+instead, to leave F11/F12 free for a future invite-accept bind -- reverted
+back to F11/F12 when U/np_decimal turned out mixed (U worked, np_decimal
+didn't), on the human's own call to keep only keys already proven
+end-to-end rather than add a fifth key family.
+
+### The live board: panel is primary again, but debounced this time
+
+The human, having seen the panel's start/end card, asked directly for it to
+be the whole live board again -- explicitly aware this was the design that
+flickered before. The fix was not "never push the panel", it was "don't
+push once per keystroke": `KCD2MP_DiceRender()` still pushes immediately on
+relay-driven state (a new roll, an error, match end), which is naturally
+paced by however long a turn takes; a new `scheduleRender()` debounces the
+one thing that actually flickered -- local rapid-fire marking -- coalescing
+a burst of presses into one push instead of one each.
+
+Two more rounds of live feedback, both real bugs:
+
+- **Alignment drift, again, different cause.** Fixed the DrawText-era
+  padding bug last session; this session's panel version drifted for a
+  different reason -- an "unlit" pip rendered as blank space (`&nbsp;`),
+  which is not the same width as a lit bullet in this proportional font, so
+  a die's total rendered width depended on its face (a 1 much narrower than
+  a 6). Fixed by rendering every cell as an actual bullet, colour-only
+  toggling between the die's colour and a new `COL.faint` (close to the
+  parchment) for "unlit" -- every die is now the same width regardless of
+  face, structurally, not by tuning a gap.
+- **The gap itself then had to shrink.** Widening it earlier (single-digit
+  die indices) broke once index labels became 2-character F-key names
+  (`F2`..`F8`) -- six of them plus a wide gap no longer fit one line and
+  wrapped. Replaced the wide all-NBSP gap with a single broken-bar divider
+  (`¦`, already proven renderable) between dice: narrower, and reads as an
+  actual boundary between dice rather than empty space -- explicitly asked
+  for ("married... not confusing").
+- Gold (`COL.bright`, `#e8c25c`) was too close to the parchment's own
+  lightness to read at a glance; darkened to `#96691a`.
+- `panelMs` (the safety-expiry) was raised from 2 minutes to 30 -- it
+  visibly expired mid-match during the seated-R debugging, when no new roll
+  was going through for several minutes and nothing else was re-pushing it.
+
+### Bust visibility: a real engine + wire-protocol change, stated up front
+
+Asked for by the human: on a bust, show what was actually rolled, and say
+"Bust!" rather than just "nothing scored". Checked first, rather than
+guessed: `FarkleGame.Roll()` clears `_freeDice` (`ResetTurnState()`) in the
+same call that busts it, before `SendDiceState` ever runs -- the busted
+roll was never on the wire at all, for either client, so this could not be
+a presentation-only fix. Confirmed as in-scope with the human before
+touching the engine, per this WO's own "presentation and input only, state
+a reason" rule.
+
+Minimal version: `FarkleGame.LastBustedDice` captures the roll before
+`ResetTurnState()` clears it; `DiceState` (0x17) grows one trailing
+`[bustedDiceCount][bustedDiceFaces]` field, empty except on the one
+snapshot immediately after a bust. Wire-compatible with old parsers
+(`Test-Dice.ps1`, `Bot-DiceOpponent.ps1`) since the framing is
+length-prefixed and they simply never read past `keptFaces`. The board's
+bust/bank distinction now reads this directly (`#bustedFaces > 0`) instead
+of the old heuristic (score unchanged across a turn hand-off), which
+retired `D.seenState` (dead once the heuristic was gone) as a side effect.
+All four suites (Farkle 59/59, Test-Dice 10/10, Test-Sessions 22/22,
+Test-Combat 14/14) stayed green.
+
+### New tool: `tools/Bot-DiceOpponent.ps1`
+
+A raw-TCP scripted opponent (same wire-protocol technique as
+`Test-Dice.ps1`, but long-running and interactive rather than a fixed
+test), built because verifying real keybinds needs an actual open session,
+and there is still no second human or machine. Plays its own turns with the
+same greedy keep policy `Test-Dice.ps1` uses; the human's side is entirely
+real keyboard input. This is how every keybind in this session was actually
+verified against a live match rather than just `mp_dice_demo`.
+
+### Shipped: commit `9cf7b9d`
+
+Everything in this session -- the two new XML files, the kdcmp.lua rework,
+the wire/engine change for bust faces, the new bot tool -- is pushed. The
+abandoned native hook is not: confirmed via `git status` and a repo-wide
+grep for `WH_KEYBOARD_LL`/`SetWindowsHookEx`/`dice_input_hook` before
+staging, specifically because the human had just, reasonably, asked
+whether anything resembling a keylogger was about to ship.
+
+### Handoff -- requested for next session, not started
+
+1. **On a Farkle loss, transfer the wager to the winner.** Currently a pure
+   score abstraction; this needs real currency to move, which per
+   `[[lua-writes-are-inert]]` means a native (RTTR) write, not a Lua one --
+   scope it against `docs/NATIVE-PLUGIN-findings.md` before starting.
+2. **A native invite-send control, no console command.** `DICE_INVITE_ACTIONS`
+   (`dialog_answer3/4`) is still an unverified guess from WO-5; the
+   `keybindSuperactions.xml`/`defaultProfile.xml` technique proven this
+   session is the likely correct fix, the same way cast/mark/bank/yield
+   were solved.
+3. **A native invite-accept/decline control, no console command.** Same
+   technique, same caveat -- `ACCEPT_ACTIONS`/`DECLINE_ACTIONS` are guesses
+   too. F11/F12 were deliberately left unbound this session specifically to
+   leave room for these two.
+4. **Improve `KCDMP_launcher` to fetch its own dependencies**, rather than
+   requiring `dotnet run` against the relay and agent by hand. Build on the
+   existing launcher; do not start over.
