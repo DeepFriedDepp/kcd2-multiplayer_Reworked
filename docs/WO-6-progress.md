@@ -585,3 +585,37 @@ starts with a BOM and prints the fix. Always write Lua with
 `kcd.log` for `Startup/kdcmp` *before* anything else. The load line and its error
 are always there, and they are decisive. The generic "no `[KCD2-MP]` lines" check
 is what surfaced it here.
+
+### Keybinds: discovered, not guessed (2026-07-29)
+
+Captured with `KCD2MP.logActions = true` against a live game, pressing each
+candidate and reading the `ACT` lines out of `kcd.log`. What the keys emit:
+
+| Key | Actions |
+|---|---|
+| E | `use`, `talk`, `pickpocketing`, `trigger_use`, `mount_horse`, `use_bed_*`, `attack_abort` |
+| R | `toggle_torch` |
+| F | `knock_out`, `stealth_kill`, `mercy_kill`, `butcher`, `grab_body`, `horse_pulldown` |
+| X | `call`, `use_horse` |
+| 1-6 | `action_qam_1` .. `action_qam_6` (plus `_hold` variants on 5 and 6) |
+
+**The constraint that decided the mapping:** our `OnAction` hook runs IN
+ADDITION to the game's and cannot consume the input, so any bound key still does
+its normal job too. That rules out **E** -- the obvious pick for "cast" -- because
+`use` at a dice table fires the table's own "Play dice" interaction and would
+start the NPC minigame underneath our board.
+
+Chosen for having harmless defaults while seated at a board:
+
+| Action | Key | Normal side effect |
+|---|---|---|
+| cast / set aside | **R** `toggle_torch` | toggles the torch |
+| mark die 1-6 | **1-6** `action_qam_1..6` | QAM slot use |
+| bank (hold) | **F** `knock_out` | nothing without a valid target |
+| yield (hold) | **X** `call` | whistles for the horse |
+
+Bindings are gated on `KCD2MP.dice.open`, so none fire outside a match, and
+every `mp_dice_*` console command still works as the fallback.
+
+**Do not bind to `open_menu`** -- it appeared repeatedly during capture and
+would open the game menu on every press.

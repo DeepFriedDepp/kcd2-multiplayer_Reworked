@@ -567,23 +567,30 @@ local function buildHtml()
           .. fnt(groschen(D.turnTotal), (D.turnTotal > 0) and COL.bright or COL.dim, 20) .. "<br/>"
     h = h .. ruleLine() .. "<br/>"
 
-    -- The action strip lists ONLY what actually works today. It used to
-    -- advertise [E]/[1-6]/[B]/[X] keybinds that were unverified guesses and
-    -- almost certainly dead, which read as broken rather than as a hint.
+    -- The action strip shows REAL keys. It briefly listed console commands
+    -- instead, because the keybinds at that point were unverified guesses and
+    -- advertising dead keys reads as broken. The names behind these were
+    -- captured from a live game (see DICE_CONFIRM_ACTIONS), so they can be
+    -- shown honestly now. The mp_dice_* commands still work and are the
+    -- fallback if a key is rebound.
     if D.err then
         h = h .. fnt(D.err.text, COL.blood, 18) .. "<br/>"
     end
+
+    local function key(k, label, hot)
+        return fnt("[" .. k .. "] ", hot and COL.gold or COL.dim, 16)
+            .. fnt(label, hot and COL.ink or COL.dim, 16)
+    end
+
     if mine then
         if D.phase == 1 then
-            h = h .. fnt("mp_dice_mark 1-6", COL.ink, 16) .. "<br/>"
-            h = h .. fnt("mp_dice_cast", COL.gold, 16)
-                  .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
-                  .. fnt("mp_dice_bank", COL.ink, 16)
+            h = h .. key("1-6", "mark", true) .. fnt("  ", nil, 16)
+                  .. key("R", "set aside", true) .. "<br/>"
         else
-            h = h .. fnt("mp_dice_cast", COL.gold, 16)
-                  .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
-                  .. fnt("mp_dice_bank", COL.ink, 16)
+            h = h .. key("R", "cast", true) .. "<br/>"
         end
+        h = h .. key("hold F", "bank", true) .. fnt("  " .. D.sep .. "  ", COL.dim, 16)
+              .. key("hold X", "yield", false)
     else
         h = h .. fnt(D.peer .. " is casting" .. D.leader .. D.leader .. D.leader, COL.dim, 18)
     end
@@ -3270,31 +3277,38 @@ local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = tr
 
 -- Dice overlay keys (WO-6).
 --
--- UNVERIFIED GUESSES, same standing as everything above: this project does not
--- invent API names and does not invent action ids either. mp_dice_cast /
--- mp_dice_mark / mp_dice_bank / mp_dice_yield are the supported path and always
--- work. To find the real names: set KCD2MP.logActions = true, press the key you
--- want, and read the ACT lines out of kcd.log.
+-- DISCOVERED, not guessed: captured with KCD2MP.logActions = true against a real
+-- game, pressing each candidate key and reading the ACT lines out of kcd.log.
 --
--- Unlike DICE_INVITE_ACTIONS these are SAFE to guess wrong in one direction:
--- every one of them is gated on KCD2MP.dice.open, so none can fire unless a
--- match is already on screen. A wrong guess means the key does nothing, never
--- that it does something unwanted during normal play.
-local DICE_CONFIRM_ACTIONS = { ["use"] = true, ["dialog_answer1"] = true }
-local DICE_BANK_ACTIONS    = { ["block"] = true }
-local DICE_YIELD_ACTIONS   = { ["cancel"] = true, ["ui_cancel"] = true }
--- Marking a die: whichever action the number row turns out to raise. The value
--- 1..6 is taken from the action name's trailing digit, so one table covers all
--- six without six separate guesses.
-local DICE_MARK_PREFIXES   = { "dialog_answer", "hotkey", "quickslot", "weapon_slot" }
+--   R  -> toggle_torch                      (one clean action)
+--   F  -> knock_out, stealth_kill, mercy_kill, butcher, grab_body, horse_pulldown
+--   X  -> call, use_horse
+--   1-6 -> action_qam_1 .. action_qam_6     (also *_hold variants for 5 and 6)
+--   E  -> use, talk, pickpocketing, trigger_use, mount_horse, use_bed_*, ...
+--
+-- THE CONSTRAINT THAT DECIDED THESE: our hook runs IN ADDITION to the game's
+-- handler and cannot consume the input, so whichever key is bound still does its
+-- normal job as well. That rules out E, the obvious choice for "cast" -- `use`
+-- at a dice table triggers the table's own "Play dice" interaction and would
+-- launch the NPC minigame underneath our board.
+--
+-- So the picks below are keys whose normal behaviour is harmless while sitting
+-- at a board: toggling a torch, whistling for a horse, and a takedown that does
+-- nothing without a valid target.
+--
+-- All of these are gated on KCD2MP.dice.open, so none can fire outside a match.
+-- The mp_dice_* console commands remain and always work.
+local DICE_CONFIRM_ACTIONS = { ["toggle_torch"] = true }              -- R
+local DICE_BANK_ACTIONS    = { ["knock_out"]    = true }              -- F, held
+local DICE_YIELD_ACTIONS   = { ["call"]         = true }              -- X, held
 
+-- Marking a die. action_qam_1..6 is the number row; the trailing digit is the
+-- die index, which lines up with the numbered row drawn under the dice.
 local function diceMarkIndex(action)
-    for _, p in ipairs(DICE_MARK_PREFIXES) do
-        local n = action:match("^" .. p .. "(%d)$")
-        if n then
-            local i = tonumber(n)
-            if i and i >= 1 and i <= 6 then return i end
-        end
+    local n = action:match("^action_qam_(%d)$")
+    if n then
+        local i = tonumber(n)
+        if i and i >= 1 and i <= 6 then return i end
     end
     return nil
 end
