@@ -18,9 +18,45 @@ dice engine is **done and proven** — relay-authoritative Farkle
 10/10. This work order is **presentation and input only**. Do not change the
 engine or the wire protocol without stating a reason up front.
 
+## The repo, and how to get current
+
+```
+git clone https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked.git
+git checkout main && git pull
+```
+
+Everything described here is **pushed to `origin/main`**. `main` is the only
+branch; there are no feature branches.
+
+The WO-6 work is the run of `WO-6:` commits at the tip. In order (oldest first):
+
+| Commit | What |
+|---|---|
+| `8451365` | session prompt + preceding verification pass |
+| `72bbcfd` | GPLv3 license and fork attribution |
+| `5141842` | R0 dependency scout, R1 groundwork |
+| `17d8f76` | `tools/Probe-Dice.ps1` |
+| `05440d7` | R1 negative confirmed with ground truth; R2 finds `C_Dice` |
+| `ae8f642` | inline hook on `C_Dice::SetPauseWorldTime` — clean, never fired |
+| `99a71ef` | Ghidra-recovered `array_range` ABI; clean negative on `C_Dice` |
+| `4adfa8f` | progress log + handoff for the in-game overlay pivot |
+| `d59f3fe` | in-game dice overlay replaces the launcher window |
+| `4c5096f` | board renders through the game's own parchment panel |
+| `881ff60` | fix BOM that stopped `kdcmp.lua` loading; guard added |
+| `f89cd93` | record the BOM trap |
+| `2aad42d` | first flicker fix — `HideTutorial` advances the queue |
+| `5a2fb26` | real dice keybinds, discovered from a live game |
+| `8ea6fb9` | live board moves to DrawText; panel only at start/end |
+| `4591bd9` | rebuild pak to match source |
+| `4075061` | gate dice on sitting at ANY table, from a real seat scan |
+
+Read `git log` for reasoning and **retractions** — several of these commits
+explicitly retract an earlier claim (the vector renderer, the first flicker
+diagnosis). Trust the later one.
+
 ## State: everything below is committed, nothing below is verified in game
 
-`git log --oneline` — the WO-6 run ends at `4075061`.
+The WO-6 run ends at `4075061` plus this handoff commit.
 
 **HEAD is ahead of what is installed.** The human's last build predates
 `4075061`, so `mp_dice_seat`, `mp_dice_scan`, `mp_dice_gate` and the DrawText
