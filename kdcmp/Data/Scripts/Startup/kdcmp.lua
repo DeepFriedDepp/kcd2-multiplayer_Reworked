@@ -342,6 +342,10 @@ KCD2MP.dice = {
     -- HideTutorial(id) then ShowTutorial(id, ...); pushing twice without the
     -- hide leaves the second push waiting behind the first. Found the hard way.
     panelId   = "kcd2mp_dice",
+    -- The parchment panel is now reserved for match start and match end only.
+    -- Hosting the live board in it meant ~24 hide/show cycles per match, each
+    -- replaying its fade animation -- unwatchable. See KCD2MP_DiceRender.
+    usePanel  = true,
     -- Safety net, not the intended lifetime: every state change re-pushes, so
     -- the board is normally refreshed long before this. Deliberately not an hour
     -- -- if this code ever stops refreshing, a shorter expiry means the panel
@@ -620,8 +624,22 @@ end
 -- panelMs is a safety net, not the intended lifetime: if this code ever stops
 -- refreshing (agent dies, script error), the board expires by itself instead of
 -- sitting on screen forever.
+-- MEASURED, not assumed: a demo match pushes the panel 24 times in 30 seconds,
+-- roughly one every 1.25 s. Each push is HideAllTutorials + ShowTutorial and the
+-- panel replays its full fade-out/fade-in every time. That is the "flickering
+-- horribly" -- not a loop, and not something queue management can fix.
+--
+-- ShowTutorial is a NOTIFICATION CARD. There is no in-place text update, so a
+-- board whose dice change on every roll and every keep will always flicker.
+-- Trying to host live state in it was the wrong call.
+--
+-- So the panel is now reserved for the handful of moments that genuinely warrant
+-- an animated card -- match start and match end -- and the live board is drawn
+-- with System.DrawText, which renders every frame with no animation at all.
+-- Plainer, but readable and completely steady, which is what play testing needs.
 function KCD2MP_DiceRender()
     if not D.open then return end
+    if not D.usePanel then return end
     local ok, html = pcall(buildHtml)
     if not ok then
         mp_log("DICE render error: " .. tostring(html))
@@ -632,6 +650,93 @@ function KCD2MP_DiceRender()
         UIAction.CallFunction("hud", -1, "ShowTutorial",
             D.panelId, html, D.panelMs, false, 9, 0, false, "")
     end)
+end
+
+-- ===== the live board: System.DrawText, once per frame ======================
+--
+-- Text only. Draw2DLine renders nothing in this build (see the header), so
+-- there is no frame and no vector dice -- pips are spelled out per die instead.
+-- Ugly next to the parchment panel, and completely stable, which beats pretty
+-- and unreadable.
+
+local TEXT_X, TEXT_Y, TEXT_LH = 40, 240, 22
+
+local function pipRowsPlain(face)
+    local c = PIPCELLS[face] or PIPCELLS[1]
+    local out = {}
+    for r = 1, 3 do
+        local s = ""
+        for k = 1, 3 do s = s .. ((c[r][k] == 1) and "o " or "  ") end
+        out[r] = s
+    end
+    return out
+end
+
+function KCD2MP_DiceDrawText()
+    if not D.open then return end
+    local y = TEXT_Y
+    local function line(s, size)
+        System.DrawText(TEXT_X, y, s, size or 1.8)
+        y = y + TEXT_LH
+    end
+
+    local mine = (D.turnRole == D.role) and (D.outcome == nil)
+
+    line("== THE WAGER ==", 2.2)
+    line(string.format("%s %-14s %d", (not mine) and ">" or " ", D.peer, D.scores[1 - D.role]))
+    line(string.format("%s %-14s %d", mine and ">" or " ", "You", D.scores[D.role]))
+    line("target " .. D.target .. "   this hand " .. D.turnTotal)
+
+    if D.outcome then
+        line(D.outcome == "win" and "YOU WIN -- mp_dice_close" or "You lose -- mp_dice_close")
+        return
+    end
+
+    -- dice as three stacked rows, all six across, marked ones flagged
+    local rows = { "", "", "" }
+    local idx  = ""
+    for i, f in ipairs(D.free) do
+        local face = D.rolling and math.random(1, 6) or f
+        local p = pipRowsPlain(face)
+        for r = 1, 3 do rows[r] = rows[r] .. p[r] .. "  " end
+        idx = idx .. (D.sel[i] and (" *" .. i .. "*  ") or ("  " .. i .. "   "))
+    end
+    line("on the board:", 1.5)
+    for r = 1, 3 do line(rows[r]) end
+    line(idx, 1.5)
+
+    if #D.kept > 0 then
+        local k = ""
+        for _, f in ipairs(D.kept) do k = k .. f .. " " end
+        line("set aside: " .. k, 1.5)
+    end
+
+    if D.err then line("! " .. D.err.text, 1.6) end
+
+    if mine then
+        if D.phase == 1 then line("[1-6] mark   [R] set aside   [hold F] bank", 1.5)
+        else                  line("[R] cast   [hold F] bank   [hold X] yield", 1.5) end
+    else
+        line(D.peer .. " is casting...", 1.6)
+    end
+end
+
+-- The live board needs a per-frame loop; the panel does not. Runs only while a
+-- match is open, so the cost outside one is zero.
+KCD2MP.dice.tickMs = 16
+KCD2MP.dice.ticking = false
+
+function KCD2MP_DiceTick()
+    if not D.ticking then return end
+    Script.SetTimer(D.tickMs, KCD2MP_DiceTick)   -- reschedule FIRST
+    pcall(KCD2MP_DiceHoldTick)
+    pcall(KCD2MP_DiceDrawText)
+end
+
+function KCD2MP_DiceStartTick()
+    if D.ticking then return end
+    D.ticking = true
+    Script.SetTimer(D.tickMs, KCD2MP_DiceTick)
 end
 
 -- Drops every queued and displayed tutorial. Also exposed as mp_dice_flush, so
@@ -703,12 +808,13 @@ function KCD2MP_DiceOpen(role, peer, target)
     D.outcome, D.err, D.hold, D.rolling = nil, nil, nil, nil
     D.seenState = false
     D.open = true
-    KCD2MP_DiceRender()
+    KCD2MP_DiceStartTick()   -- the live DrawText board
+    KCD2MP_DiceRender()      -- one parchment card announcing the match
     mp_log("DICE overlay open vs " .. D.peer .. " to " .. tostring(D.target))
 end
 
 function KCD2MP_DiceClose()
-    D.open, D.rolling, D.hold = false, nil, nil
+    D.open, D.rolling, D.hold, D.ticking = false, nil, nil, false
     -- Flush rather than hide one entry: anything still queued would otherwise
     -- keep surfacing after the match is over. Runs even if the board was already
     -- closed, so mp_dice_close doubles as "clear whatever is stuck on screen".
@@ -783,7 +889,10 @@ function KCD2MP_DiceState(turnRole, s0, s1, turnTotal, target, phase, freeCsv, k
     D.err = nil
     D.seenState = true
 
-    if cast then startCast() else KCD2MP_DiceRender() end
+    -- No panel push here. The live board is DrawText and redraws itself every
+    -- frame; pushing the parchment card on every snapshot is exactly what made
+    -- it flicker. `cast` is still tracked so the DrawText dice can tumble.
+    if cast then startCast() end
 end
 
 -- The relay rejected an intent. State did not change; the board says why.
@@ -958,28 +1067,82 @@ end
 -- If they are not, set KCD2MP.dice.tableClass = nil to fall back to a plain
 -- proximity check between the two players -- honest, flagged, and not the
 -- default.
-KCD2MP.dice.tableClass  = "DiceInteractor"
-KCD2MP.dice.tableRadius = 4.0
+-- WO-6 revision: the strict "must be at a DiceInteractor" gate is correct for
+-- shipping but hostile to testing, because every dice table in the world is
+-- already occupied by an NPC and we cannot drive the native minigame anyway.
+-- So the gate is now a list of accepted classes plus a switch.
+--
+--   requireTable = false  -- test mode, invite anywhere (DEFAULT for now)
+--   requireTable = true   -- shipping behaviour, must be at an accepted table
+--
+-- `mp_dice_gate on|off` flips it live, and `mp_dice_scan` lists the entity
+-- classes actually around the player so a generic table's real class name can be
+-- ADDED to tableClasses from evidence rather than guessed at.
+KCD2MP.dice.tableClasses = { "DiceInteractor" }
+KCD2MP.dice.tableClass   = "DiceInteractor"   -- kept: first entry, back-compat
+KCD2MP.dice.tableRadius  = 4.0
+KCD2MP.dice.requireTable = false
 
--- Returns entity, distance -- or nil plus a reason.
+-- Returns entity, distance -- or nil plus a reason. Searches every class in
+-- KCD2MP.dice.tableClasses and returns the nearest hit across all of them.
 function KCD2MP_NearestDiceTable(radius)
     radius = tonumber(radius) or KCD2MP.dice.tableRadius
-    if not KCD2MP.dice.tableClass then return nil, "table detection disabled" end
+    local classes = KCD2MP.dice.tableClasses
+    if not classes or #classes == 0 then return nil, "table detection disabled" end
     local ppos = player and player:GetWorldPos()
     if not ppos then return nil, "no player position" end
 
     local best, bestD = nil, nil
-    local ok, list = pcall(System.GetEntitiesInSphereByClass, ppos, radius, KCD2MP.dice.tableClass)
-    if not ok or not list then return nil, "entity query failed" end
-    for _, e in ipairs(list) do
-        local ok2, ep = pcall(function() return e:GetWorldPos() end)
-        if ok2 and ep then
-            local d = math.sqrt((ep.x - ppos.x) ^ 2 + (ep.y - ppos.y) ^ 2 + (ep.z - ppos.z) ^ 2)
-            if not bestD or d < bestD then best, bestD = e, d end
+    for _, cls in ipairs(classes) do
+        local ok, list = pcall(System.GetEntitiesInSphereByClass, ppos, radius, cls)
+        if ok and list then
+            for _, e in ipairs(list) do
+                local ok2, ep = pcall(function() return e:GetWorldPos() end)
+                if ok2 and ep then
+                    local d = math.sqrt((ep.x - ppos.x) ^ 2 + (ep.y - ppos.y) ^ 2 + (ep.z - ppos.z) ^ 2)
+                    if not bestD or d < bestD then best, bestD = e, d end
+                end
+            end
         end
     end
-    if not best then return nil, "no dice table within " .. tostring(radius) .. "m" end
+    if not best then return nil, "no table within " .. tostring(radius) .. "m" end
     return best, bestD
+end
+
+-- Lists every entity near the player with its class, so a generic table's real
+-- class name can be read off the log and ADDED to tableClasses. Evidence, not a
+-- guess -- the same discipline that produced DiceInteractor in the first place.
+function KCD2MP_ScanTables(radiusStr)
+    local radius = tonumber(tostring(radiusStr or ""):match("%d+%.?%d*") or "") or 6.0
+    local ppos = player and player:GetWorldPos()
+    if not ppos then mp_log("SCAN: no player position"); return false end
+    local ok, list = pcall(System.GetEntitiesInSphere, ppos, radius)
+    if not ok or not list then mp_log("SCAN: query failed"); return false end
+    mp_log(string.format("SCAN: %d entities within %.1fm", #list, radius))
+    local seen = {}
+    for _, e in ipairs(list) do
+        local ok2 = pcall(function()
+            local cls = e.class or "?"
+            local nm  = tostring(e:GetName())
+            local ep  = e:GetWorldPos()
+            local d   = math.sqrt((ep.x-ppos.x)^2 + (ep.y-ppos.y)^2 + (ep.z-ppos.z)^2)
+            -- one line per entity, but collapse identical classes past the third
+            seen[cls] = (seen[cls] or 0) + 1
+            if seen[cls] <= 3 then
+                mp_log(string.format("SCAN  %-22s %-34s %.1fm", tostring(cls), nm, d))
+            end
+        end)
+    end
+    return true
+end
+
+-- Flip the shipping gate on or off without a rebuild.
+function KCD2MP_DiceGate(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.dice.requireTable = true
+    elseif s:find("off") then KCD2MP.dice.requireTable = false end
+    mp_log("DICE table gate = " .. tostring(KCD2MP.dice.requireTable))
+    return true
 end
 
 function KCD2MP_IsAtDiceTable(radius)
@@ -1007,10 +1170,12 @@ end
 -- this: they never call into KCD2MP, and this only ever emits our own invite
 -- event to our own agent.
 function KCD2MP_InviteDiceAtTable()
-    local e, why = KCD2MP_NearestDiceTable()
-    if not e then
-        KCD2MP_ShowInteractionMsg("Find a dice table first (" .. tostring(why) .. ")")
-        return false
+    if KCD2MP.dice.requireTable then
+        local e, why = KCD2MP_NearestDiceTable()
+        if not e then
+            KCD2MP_ShowInteractionMsg("Sit at a table first (" .. tostring(why) .. ")")
+            return false
+        end
     end
     return KCD2MP_InviteNearest("dice")
 end
@@ -3222,6 +3387,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice_table",  "KCD2MP_ReportDiceTable()",   "Report the nearest dice table, for verifying table detection")
     System.AddCCommand("mp_dice_redraw", "KCD2MP_DiceRender()",        "Force the board to re-push (use if it ever goes stale)")
     System.AddCCommand("mp_dice_flush",  "KCD2MP_DiceFlush()",         "Clear every queued/shown tutorial panel -- fixes a stuck or flickering board")
+    System.AddCCommand("mp_dice_scan",   'KCD2MP_ScanTables("%LINE")', "List nearby entity classes, to find a table's real class: mp_dice_scan 6")
+    System.AddCCommand("mp_dice_gate",   'KCD2MP_DiceGate("%LINE")',   "Require a real table for mp_dice: mp_dice_gate on|off (default off for testing)")
     System.AddCCommand("mp_dice_demo",   "KCD2MP_DiceDemo()",          "Open the board with fake state, to review the visuals without a second player")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
