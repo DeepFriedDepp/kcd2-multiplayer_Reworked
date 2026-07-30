@@ -1136,6 +1136,76 @@ function KCD2MP_ScanTables(radiusStr)
     return true
 end
 
+-- ===== seats at ordinary tables (WO-6 revision) =============================
+--
+-- Found by scanning entity classes around a real seated player, not guessed.
+-- Every tavern seat carries three linked entities, all within ~1.5 m:
+--
+--   ActionTrigger      sitActionTrigger[Table/table_oneSides_tavern1:...:Bench/...]
+--   StanceSmartObject  smartObject2[Table/table_oneSides_tavern1:...:Bench/...]
+--   SmartObjectHolder  smartObject[Table/table_oneSides_tavern1_<guid>]
+--
+-- sitActionTrigger is the useful one. It exists only at a seat attached to a
+-- table, its position is a stable anchor to teleport the other player to, and
+-- its NAME encodes the table -- so two players can be checked for being at the
+-- SAME table rather than merely both sitting somewhere.
+--
+-- Note this detects "at a seat", not "currently seated": player:GetStance() is
+-- not available in this build (returned nil when probed), so there is no direct
+-- read of the sitting state. Proximity to the trigger is the proxy, and it is
+-- honest to call it that.
+KCD2MP.dice.seatRadius = 1.6
+
+-- Pulls "Table/table_oneSides_tavern1" out of a sitActionTrigger's name, so the
+-- same table can be recognised from either player's seat.
+function KCD2MP_TableIdFromName(name)
+    if not name then return nil end
+    return (tostring(name):match("%[(Table[/%.][%w_]+)"))
+end
+
+-- Returns entity, distance, tableId -- or nil plus a reason.
+function KCD2MP_NearestSeat(radius)
+    radius = tonumber(radius) or KCD2MP.dice.seatRadius
+    local ppos = player and player:GetWorldPos()
+    if not ppos then return nil, "no player position" end
+    local ok, list = pcall(System.GetEntitiesInSphereByClass, ppos, radius, "ActionTrigger")
+    if not ok or not list then return nil, "entity query failed" end
+
+    local best, bestD, bestName = nil, nil, nil
+    for _, e in ipairs(list) do
+        local ok2, nm = pcall(function() return tostring(e:GetName()) end)
+        if ok2 and nm and nm:find("^sitActionTrigger") then
+            local ok3, ep = pcall(function() return e:GetWorldPos() end)
+            if ok3 and ep then
+                local d = math.sqrt((ep.x-ppos.x)^2 + (ep.y-ppos.y)^2 + (ep.z-ppos.z)^2)
+                if not bestD or d < bestD then best, bestD, bestName = e, d, nm end
+            end
+        end
+    end
+    if not best then return nil, "no seat within " .. tostring(radius) .. "m" end
+    return best, bestD, KCD2MP_TableIdFromName(bestName)
+end
+
+function KCD2MP_IsAtSeat(radius)
+    return (KCD2MP_NearestSeat(radius)) ~= nil
+end
+
+-- Reports the seat under the player: distance, table id, and the anchor position
+-- the other player would be teleported to.
+function KCD2MP_ReportSeat()
+    local e, d, tid = KCD2MP_NearestSeat(6.0)
+    if not e then
+        mp_log("SEAT: none within 6m (" .. tostring(d) .. ")")
+        KCD2MP_ShowInteractionMsg("No seat nearby")
+        return false
+    end
+    local p = e:GetWorldPos()
+    mp_log(string.format("SEAT: %.2fm table=%s anchor=%.2f,%.2f,%.2f",
+        d, tostring(tid), p.x, p.y, p.z))
+    KCD2MP_ShowInteractionMsg(string.format("Seat %.1fm  %s", d, tostring(tid)))
+    return true
+end
+
 -- Flip the shipping gate on or off without a rebuild.
 function KCD2MP_DiceGate(arg)
     local s = tostring(arg or ""):lower()
@@ -1169,13 +1239,29 @@ end
 -- The gate the dice invite goes through. NPC dice games are untouched by any of
 -- this: they never call into KCD2MP, and this only ever emits our own invite
 -- event to our own agent.
+-- The gate is now "at a seat attached to any table", per the design call that
+-- every real dice table is NPC-occupied and the native minigame is unreachable
+-- anyway. A dice-specific DiceInteractor still counts, so nothing is lost.
+--
+-- The seat's table id rides along on the invite: it is what lets the acceptor be
+-- placed at the SAME table rather than merely at some table of their own.
 function KCD2MP_InviteDiceAtTable()
-    if KCD2MP.dice.requireTable then
-        local e, why = KCD2MP_NearestDiceTable()
+    local seat, d, tid = KCD2MP_NearestSeat()
+    if not seat and KCD2MP.dice.requireTable then
+        -- fall back to a real dice table before refusing
+        local e = KCD2MP_NearestDiceTable()
         if not e then
-            KCD2MP_ShowInteractionMsg("Sit at a table first (" .. tostring(why) .. ")")
+            KCD2MP_ShowInteractionMsg("Sit at a table first (" .. tostring(d) .. ")")
             return false
         end
+    end
+    if seat then
+        local p = seat:GetWorldPos()
+        KCD2MP.dice.seat = { tableId = tid, x = p.x, y = p.y, z = p.z }
+        mp_log(string.format("DICE invite from seat table=%s anchor=%.2f,%.2f,%.2f",
+            tostring(tid), p.x, p.y, p.z))
+    else
+        KCD2MP.dice.seat = nil
     end
     return KCD2MP_InviteNearest("dice")
 end
@@ -3388,6 +3474,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice_redraw", "KCD2MP_DiceRender()",        "Force the board to re-push (use if it ever goes stale)")
     System.AddCCommand("mp_dice_flush",  "KCD2MP_DiceFlush()",         "Clear every queued/shown tutorial panel -- fixes a stuck or flickering board")
     System.AddCCommand("mp_dice_scan",   'KCD2MP_ScanTables("%LINE")', "List nearby entity classes, to find a table's real class: mp_dice_scan 6")
+    System.AddCCommand("mp_dice_seat",   "KCD2MP_ReportSeat()",        "Report the seat under you: distance, table id, teleport anchor")
     System.AddCCommand("mp_dice_gate",   'KCD2MP_DiceGate("%LINE")',   "Require a real table for mp_dice: mp_dice_gate on|off (default off for testing)")
     System.AddCCommand("mp_dice_demo",   "KCD2MP_DiceDemo()",          "Open the board with fake state, to review the visuals without a second player")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
