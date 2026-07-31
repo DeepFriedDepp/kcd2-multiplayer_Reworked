@@ -62,20 +62,6 @@ Same Wi-Fi/LAN: that's it. Different houses: see
 over the internet (a VPN overlay like Tailscale — recommended — or port
 forwarding), including exactly what address and port to share.
 
-### Install
-
-1. Download **`KCDMP-Setup-<version>.exe`** from the releases page.
-2. Run it.
-3. That's it — use Host or Join as above.
-
-The installer finds your game through Steam, deploys the mod into it,
-installs the launcher, writes the game path into the launcher's settings so
-there is nothing to configure, and puts a shortcut on your desktop. If the
-free **KCD2 Modding Tools** are not installed it will say so, offer a button
-that starts that download in Steam, and refuse to continue until they are
-there — the retail game genuinely cannot run this mod, it lacks the debug
-API and the module layout the plugin needs.
-
 You need Kingdom Come: Deliverance II on Steam, plus that Modding Tools
 entry (free, a separate item in your Steam library). Nothing else: the
 launcher, agent and relay carry their own .NET runtime, and the installer
