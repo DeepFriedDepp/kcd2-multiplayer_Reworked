@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Assemble a self-contained release folder a friend can unzip and run --
     no .NET runtime install, no manual DLL copying.
@@ -34,37 +34,40 @@ if (-not $env:DOTNET_ROOT) {
 if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 New-Item -ItemType Directory -Path $OutDir | Out-Null
 
+# Publishes one project and leaves the output path in $script:PublishDir.
+#
+# The path comes back through a variable rather than as a return value on
+# purpose. Everything a PowerShell function writes to the success stream is
+# part of its return value, so logging with Write-Output made the caller
+# receive an array of log lines with the path last ("Cannot find drive
+# 'Publishing C'"); switching the logging to Write-Host fixed that but sent
+# the MSBuild diagnostics somewhere a redirected or background run cannot
+# capture, which is exactly when they are needed. This way logs stay on the
+# success stream where any caller sees them, and the path is unambiguous.
 function Publish-Project($csproj, $publishSubdir) {
-    # Everything progress-ish goes to the host stream, never the success
-    # stream: this function's return value is a path, and a single stray
-    # Write-Output turns that return into an array whose first element is a
-    # log line ("Cannot find drive 'Publishing C'").
-    #
-    # dotnet's own output is teed rather than left to stream straight through,
-    # so a failure carries its MSBuild diagnostics even when this runs
-    # non-interactively -- that is how a broken FolderProfile.pubxml managed to
-    # report nothing but "publish failed".
-    Write-Host "Publishing $csproj ..."
-    $log = & dotnet publish $csproj -c Release -p:PublishProfile=FolderProfile 2>&1
-    $log | ForEach-Object { Write-Host $_ }
+    Write-Output "Publishing $csproj ..."
+    & dotnet publish $csproj -c Release -p:PublishProfile=FolderProfile 2>&1 | ForEach-Object { Write-Output $_ }
     if ($LASTEXITCODE -ne 0) { throw "publish failed: $csproj" }
-    $publishDir = Join-Path (Split-Path $csproj -Parent) $publishSubdir
-    if (-not (Test-Path $publishDir)) { throw "expected publish output not found: $publishDir" }
-    return $publishDir
+    $dir = Join-Path (Split-Path $csproj -Parent) $publishSubdir
+    if (-not (Test-Path $dir)) { throw "expected publish output not found: $dir" }
+    $script:PublishDir = $dir
 }
 
 # --- Launcher (root of the release: everything else is copied beside it,
 #     matching AppSettings' relative-path defaults for DllPath/AgentPath/
 #     RelayPath) ---
-$launcherPublish = Publish-Project (Join-Path $root "KCDMP_launcher\KCDMP_launcher.csproj") "bin\Release\net8.0-windows\publish"
+Publish-Project (Join-Path $root "KCDMP_launcher\KCDMP_launcher.csproj") "bin\Release\net8.0-windows\publish"
+$launcherPublish = $script:PublishDir
 Copy-Item "$launcherPublish\*" $OutDir -Recurse -Force
 
 # --- Agent ---
-$clientPublish = Publish-Project (Join-Path $root "dotnet\KcdMp.Client\KcdMp.Client.csproj") "bin\Release\net8.0\publish"
+Publish-Project (Join-Path $root "dotnet\KcdMp.Client\KcdMp.Client.csproj") "bin\Release\net8.0\publish"
+$clientPublish = $script:PublishDir
 Copy-Item "$clientPublish\*" $OutDir -Recurse -Force
 
 # --- Relay ---
-$serverPublish = Publish-Project (Join-Path $root "dotnet\KcdMp.Server\KcdMp.Server.csproj") "bin\Release\net8.0\publish"
+Publish-Project (Join-Path $root "dotnet\KcdMp.Server\KcdMp.Server.csproj") "bin\Release\net8.0\publish"
+$serverPublish = $script:PublishDir
 Copy-Item "$serverPublish\*" $OutDir -Recurse -Force
 
 # --- Native plugin + injector ---
@@ -80,3 +83,4 @@ Copy-Item $nativeInjector $OutDir -Force
 Write-Output "`nRelease assembled at: $OutDir"
 Write-Output "Contents:"
 Get-ChildItem $OutDir -File | Select-Object Name, @{N='KB';E={[math]::Round($_.Length/1KB,1)}} | Format-Table
+
