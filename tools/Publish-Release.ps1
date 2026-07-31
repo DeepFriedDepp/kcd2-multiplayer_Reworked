@@ -35,8 +35,18 @@ if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 New-Item -ItemType Directory -Path $OutDir | Out-Null
 
 function Publish-Project($csproj, $publishSubdir) {
-    Write-Output "Publishing $csproj ..."
-    & dotnet publish $csproj -c Release -p:PublishProfile=FolderProfile
+    # Everything progress-ish goes to the host stream, never the success
+    # stream: this function's return value is a path, and a single stray
+    # Write-Output turns that return into an array whose first element is a
+    # log line ("Cannot find drive 'Publishing C'").
+    #
+    # dotnet's own output is teed rather than left to stream straight through,
+    # so a failure carries its MSBuild diagnostics even when this runs
+    # non-interactively -- that is how a broken FolderProfile.pubxml managed to
+    # report nothing but "publish failed".
+    Write-Host "Publishing $csproj ..."
+    $log = & dotnet publish $csproj -c Release -p:PublishProfile=FolderProfile 2>&1
+    $log | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "publish failed: $csproj" }
     $publishDir = Join-Path (Split-Path $csproj -Parent) $publishSubdir
     if (-not (Test-Path $publishDir)) { throw "expected publish output not found: $publishDir" }
