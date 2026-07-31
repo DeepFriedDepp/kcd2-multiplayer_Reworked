@@ -1,9 +1,18 @@
 # How to launch
 
-## The manual flow
+> **The normal way is `KCDMP-Setup-<version>.exe`** — download it, run it,
+> done. It finds the game through Steam, deploys the mod, installs the
+> launcher and pre-fills the game path. See the Install section of
+> `README.md`. Everything below is the **fallback**: the manual flow, kept
+> because it is what every test in `tools\` assumes and what to fall back to
+> when the installer misbehaves or a Steam setup is unusual.
 
-This is still the flow every test in `tools\` assumes, and the one to fall back
-to when something misbehaves.
+## The manual flow (fallback)
+
+Doing by hand what the installer does for you: put `kdcmp/` into
+`<ModdingTools>\Mods\kdcmp\`, unzip a release folder somewhere, and point the
+launcher's `GamePath` at the Modding Tools `KingdomCome.exe`. Or skip the
+launcher entirely and drive the pieces directly:
 
 1. **Relay** — on one machine (either player's PC or a dedicated box):
    `KcdMpServer.exe` (defaults to port 7778)

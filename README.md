@@ -33,6 +33,7 @@ never "probably fine."
 | Duelling | **Not implemented** — the wire protocol reserves a slot for it, nothing behind it |
 | Master server (server browser backend) | **Built but unverified** — the .NET side is tested against a stub of its contract; the Python service itself has never been run on a machine that touched this project |
 | Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below |
+| Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (39/39, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
 **Known not achievable, closed with evidence:**
 - **NPC aggro / stimulus injection** — replicated damage lands and can kill
@@ -63,16 +64,38 @@ forwarding), including exactly what address and port to share.
 
 ### Install
 
-1. Own Kingdom Come: Deliverance II, and install the **KCD2 Modding Tools**
-   entry from Steam (a separate library item — the base game alone cannot
-   run this mod, it lacks the debug API and module layout the plugin needs).
-2. Copy `kdcmp/` into the Modding Tools install's `Mods/` directory:
-   `<ModdingTools>\Mods\kdcmp\`.
-3. Download a launcher release and run it. Point it at your Modding Tools
-   `KingdomCome.exe` in Settings if it doesn't find it automatically.
-4. Use Host or Join as above. The launcher launches the correct game build,
-   injects the plugin, and starts your agent — no manual DLL injection, no
-   console commands, no hand-edited config for the common case.
+1. Download **`KCDMP-Setup-<version>.exe`** from the releases page.
+2. Run it.
+3. That's it — use Host or Join as above.
+
+The installer finds your game through Steam, deploys the mod into it,
+installs the launcher, writes the game path into the launcher's settings so
+there is nothing to configure, and puts a shortcut on your desktop. If the
+free **KCD2 Modding Tools** are not installed it will say so, offer a button
+that starts that download in Steam, and refuse to continue until they are
+there — the retail game genuinely cannot run this mod, it lacks the debug
+API and the module layout the plugin needs.
+
+You need Kingdom Come: Deliverance II on Steam, plus that Modding Tools
+entry (free, a separate item in your Steam library). Nothing else: the
+launcher, agent and relay carry their own .NET runtime, and the installer
+fetches Microsoft's WebView2 runtime if your Windows doesn't already have it.
+
+Installing by hand still works and is documented in
+[docs/LAUNCHING.md](docs/LAUNCHING.md) — use it if the installer misbehaves
+or your Steam setup is unusual.
+
+**Building the installer yourself:**
+
+```
+powershell -ExecutionPolicy Bypass -File tools\Build-Installer.ps1
+```
+
+That publishes everything self-contained and compiles
+`release\KCDMP-Setup-<version>.exe`. It needs
+[Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(`winget install --id JRSoftware.InnoSetup`). The version comes from the
+`VERSION` file at the repo root.
 
 ## Architecture
 
