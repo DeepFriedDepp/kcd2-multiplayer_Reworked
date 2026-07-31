@@ -68,6 +68,24 @@ forwarding), including exactly what address and port to share.
 2. Run it.
 3. That's it — use Host or Join as above.
 
+> **One-time step done by Steam/Warhorse's own tools, not ours — do this
+> before your first launch, regardless of the order you install things in.**
+> The KCD2 Modding Tools app does not ship with its own copy of the game's
+> data (animations, characters, tables, scripts, cinematics, and more) — only
+> a `Developer.pak`. The first time you install it, launch it **once through
+> Steam itself** (its own Play button, or the shortcut Steam creates for it)
+> and let **Workspace Setup**
+> (`Tools\ModdingWorkspaceSetup\WorkspaceSetup.exe`) run — it copies the
+> missing data from your base **Kingdom Come: Deliverance II** install into
+> the Modding Tools folder. You need to own and have the base game installed
+> too, since that's where the copy comes from.
+>
+> Skip this and the game will start, then immediately crash:
+> *"Database system error — 114 tables are not loaded. See log for details.
+> Ensure you have latest tables."* This is **not** this mod and **not** our
+> installer — reproduced with the mod entirely removed, same crash. Our
+> `Setup.exe` currently has no way to detect it; see "Not done," below.
+
 The installer finds your game through Steam, deploys the mod into it,
 installs the launcher, writes the game path into the launcher's settings so
 there is nothing to configure, and puts a shortcut on your desktop. If the
@@ -306,6 +324,14 @@ Things that are genuinely missing or impossible, as opposed to untested:
   to confirm you have loaded your save before it injects, because injecting
   too early attaches a plugin that hooks nothing and only a fresh game launch
   recovers. It tells you either way; it cannot yet decide for you.
+- **The installer does not detect an incomplete Modding Tools data
+  install** — it verifies `Framework.dll`/`CrySystem.dll` exist beside
+  `KingdomCome.exe`, which proves the *engine binaries* are the right build.
+  It does not check for the actual game data (`Data\Tables.pak` and the
+  other mandatory paks), so a Modding Tools install that has never had its
+  one-time **Workspace Setup** step run (see Install, above) passes the gate
+  and then crashes the game with "114 tables are not loaded" — a real,
+  reproduced failure, not a hypothetical one.
 - **Installer code signing** — Setup.exe is unsigned, so a first download
   shows SmartScreen's "Windows protected your PC". Click *More info* →
   *Run anyway*.
