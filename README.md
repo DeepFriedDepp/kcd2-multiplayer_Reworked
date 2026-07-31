@@ -2,7 +2,8 @@
 
 An unofficial multiplayer mod for Kingdom Come: Deliverance II. It lets two
 or more people play the same open world together at once: you see each
-other as ghost NPCs (position, animation, nameplates), hear each other over
+other as ghost NPCs (position, animation, nameplates, and each other's
+actual equipped outfit — not one fixed costume), hear each other over
 proximity voice chat, can land shared damage on each other and on the
 world's NPCs, and can play a full relay-authoritative game of Farkle dice
 against each other from inside the game itself.
@@ -23,6 +24,7 @@ never "probably fine."
 | Agent (`KcdMpClient.exe`) | **Working** |
 | Native plugin + injection | **Built but unverified** on the fully-automatic path — the DLL's own liveness check can silently no-op if injected before a save is loaded; manual/gated injection into an already-running game is proven |
 | Ghost presence (position/animation/nameplates) | **Working** |
+| Appearance sync (ghosts mirror your real equipped outfit) | **Working** against synthetic peers and in real single-machine play — per-item, not a fixed costume; **unverified** with a second real human. Individual equip/unequip calls occasionally take several seconds to a couple of minutes to actually land under load — a **known rough edge**, not silently broken, see below |
 | Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human. NPC aggro (making an NPC fight back) is a **known limit**, not a bug — see below |
 | Voice chat | **Working**, proximity-based |
 | Session framework (invites/accept/decline) | **Working** |
@@ -33,7 +35,7 @@ never "probably fine."
 | Duelling | **Not implemented** — the wire protocol reserves a slot for it, nothing behind it |
 | Master server (server browser backend) | **Built but unverified** — the .NET side is tested against a stub of its contract; the Python service itself has never been run on a machine that touched this project |
 | Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below |
-| Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (39/39, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
+| Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
 **Known not achievable, closed with evidence:**
 - **NPC aggro / stimulus injection** — replicated damage lands and can kill
@@ -290,7 +292,10 @@ dotnet test dotnet\KcdMp.Farkle.Tests
 ```
 
 `tools\Test-Pipe.ps1` additionally needs the real game running with the
-plugin injected — see the script header.
+plugin injected — see the script header. `tools\Test-AppearanceE2E.ps1`
+needs the real game and a running agent, but **not** the native plugin —
+appearance sync never touches the DLL or the pipe, only the reflection
+debug API.
 
 ## What's left undone, what still needs a human, and reporting bugs
 
@@ -308,6 +313,13 @@ Things that are genuinely missing or impossible, as opposed to untested:
   (`mp_dice`, `mp_accept`, `mp_decline`) are the working path. The key
   bindings in the code are built on guessed engine action names that have
   never been confirmed to fire.
+- **Appearance sync's write latency is genuinely variable** — equipping or
+  unequipping one item on a ghost usually lands within a second, but under
+  heavier load it has taken up to a couple of minutes, and it self-heals via
+  a 30-second resend rather than promising a fixed time. `mp_sync_appearance`
+  forces an immediate resync if you don't want to wait. Hairstyle, face and
+  beard do not sync — no reflected engine surface exposes them at all.
+  Weapon sync is not implemented (same mechanism as armor, just not built).
 - **NPC aggro** — *closed with evidence, not a to-do.* Replicated damage
   lands and can kill NPCs, but nothing reachable makes an NPC's AI react to
   it. They never fight back.
@@ -355,6 +367,9 @@ machine or synthetic:
 - [ ] Host on one PC, join from another, both load saves and connect.
 - [ ] Each sees the other's ghost, hears proximity voice, and lands shared
       combat damage both ways.
+- [ ] One player changes into a visibly different outfit and the other's
+      ghost updates to match within the poll interval or the heartbeat (or
+      instantly via `mp_sync_appearance`), with no animation glitch.
 - [ ] A full dice match played to completion on both screens.
 - [ ] The same, with one player on a different network over a VPN overlay
       (see [docs/NETWORKING.md](docs/NETWORKING.md)).
