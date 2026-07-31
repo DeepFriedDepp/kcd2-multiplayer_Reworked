@@ -132,6 +132,7 @@ var
   DetectedGameExe: String;
   DetectedGameRoot: String;
   SteamFound: Boolean;
+  ModdingToolsRegistered: Boolean;
 
 { -------------------------------------------------------------- WebView2 }
 
@@ -276,23 +277,44 @@ begin
   end
   else
   begin
-    if SteamFound then
-    begin
-      GameStatusLabel.Caption := 'The KCD2 Modding Tools are not installed.';
-      GamePathLabel.Caption := '(nothing found in any of your Steam libraries)';
-    end
-    else
+    if not SteamFound then
     begin
       GameStatusLabel.Caption := 'Steam was not found on this PC.';
       GamePathLabel.Caption := '(install Steam, then Kingdom Come: Deliverance II and its Modding tools)';
+      GameHelpLabel.Caption :=
+        'This mod is installed into a game that comes from Steam, so Setup needs' + #13#10 +
+        'Steam here to find it.' + #13#10#13#10 +
+        'If you do have Steam but it lives somewhere unusual, use "Browse..." to' + #13#10 +
+        'point straight at the KingdomCome.exe inside your Modding Tools install.';
+    end
+    else if ModdingToolsRegistered then
+    begin
+      { Steam lists the app but the files are not there: a download that is
+        still running or was cancelled, or an install that got damaged. Telling
+        this person to "get it on Steam" would be useless advice. }
+      GameStatusLabel.Caption := 'The Modding Tools are listed in Steam, but their files are missing.';
+      GamePathLabel.Caption := '(Steam knows about them; nothing is on disk yet)';
+      GameHelpLabel.Caption :=
+        'That usually means the download is still running, or was cancelled part' + #13#10 +
+        'way through.' + #13#10#13#10 +
+        'Open Steam and let it finish. If Steam thinks it is already done, right-' + #13#10 +
+        'click "Kingdom Come: Deliverance II Modding tools" in your library and' + #13#10 +
+        'choose Properties -> Installed Files -> Verify integrity.' + #13#10#13#10 +
+        'Then come back and click "Re-check". Setup cannot continue until the' + #13#10 +
+        'files are actually there.';
+    end
+    else
+    begin
+      GameStatusLabel.Caption := 'The KCD2 Modding Tools are not installed.';
+      GamePathLabel.Caption := '(nothing found in any of your Steam libraries)';
+      GameHelpLabel.Caption :=
+        'This mod cannot run on the normal game. It needs the free "Kingdom Come:' + #13#10 +
+        'Deliverance II Modding tools" entry in your Steam library -- a separate' + #13#10 +
+        'download that comes with the debug interface and the split engine DLLs the' + #13#10 +
+        'mod hooks into. The retail game has neither.' + #13#10#13#10 +
+        'Click "Get it on Steam" to start that download, wait for Steam to finish,' + #13#10 +
+        'then click "Re-check". Setup cannot continue until it is there.';
     end;
-    GameHelpLabel.Caption :=
-      'This mod cannot run on the normal game. It needs the free "Kingdom Come:' + #13#10 +
-      'Deliverance II Modding tools" entry in your Steam library -- a separate' + #13#10 +
-      'download that comes with the debug interface and the split engine DLLs the' + #13#10 +
-      'mod hooks into. The retail game has neither.' + #13#10#13#10 +
-      'Click "Get it on Steam" to start that download, wait for Steam to finish,' + #13#10 +
-      'then click "Re-check". Setup cannot continue until it is there.';
     SteamButton.Visible := True;
   end;
 end;
@@ -320,6 +342,7 @@ begin
     SteamPath := GetSteamPath();
 
   SteamFound := SteamPath <> '';
+  ModdingToolsRegistered := ModdingToolsRegisteredIn(SteamPath);
 
   if DetectModdingToolsIn(SteamPath, DetectedGameExe) then
     DetectedGameRoot := GameRootOf(DetectedGameExe)

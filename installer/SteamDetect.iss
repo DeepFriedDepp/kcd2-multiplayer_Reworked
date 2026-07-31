@@ -211,6 +211,29 @@ begin
   Result := Libs;
 end;
 
+// True if any library holds an appmanifest for the Modding Tools at all,
+// regardless of whether the files it names are on disk. This is the
+// difference between "you do not have them" and "Steam knows about them but
+// the files are not there yet" -- what a download still running, a cancelled
+// one, and a damaged install all look like, and three very different things
+// to tell someone to do about it.
+function ModdingToolsRegisteredIn(const SteamPath: String): Boolean;
+var
+  Libs: TArrayOfString;
+  I: Integer;
+begin
+  Result := False;
+  if SteamPath = '' then Exit;
+
+  Libs := GetSteamLibraries(SteamPath);
+  for I := 0 to GetArrayLength(Libs) - 1 do
+    if FileExists(Libs[I] + '\steamapps\appmanifest_{#ModdingToolsAppId}.acf') then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
 { True only if the Modding Tools were found AND pass the discriminator. Both
   halves matter: an appmanifest can name an app whose files are gone, and a
   folder can be the retail game wearing the same executable name. }
