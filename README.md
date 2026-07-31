@@ -97,6 +97,99 @@ That publishes everything self-contained and compiles
 (`winget install --id JRSoftware.InnoSetup`). The version comes from the
 `VERSION` file at the repo root.
 
+## How to play dice
+
+Farkle, played against another real player. This is **not** the vanilla dice
+minigame — it is a separate relay-authoritative engine with its own board
+drawn over the game, so the rules are settled by the relay and neither player
+can desync the other. The vanilla NPC minigame is untouched and still works
+normally; nothing here interferes with it.
+
+**Before you start:** both of you must be connected (green in the launcher)
+and standing near each other in the same part of the world. Dice needs your
+two characters close enough for "nearest player" to mean each other.
+
+### 1. Open the game console
+
+Every step that has no keybind yet is a console command. Open the developer
+console with **`~`** (the key left of `1`; the Modding Tools build has the
+console enabled — retail does not, which is one more reason the mod requires
+that build). Type the command, press Enter, press `~` again to close.
+
+### 2. Challenge someone
+
+Walk up to a dice table, sit down if you like, and run:
+
+```
+mp_dice
+```
+
+That invites the nearest player. If you get *"Sit at a table first"*, the
+table gate is on and there is no dice table in range — either move to a real
+table, or turn the gate off with `mp_dice_gate off` (it ships **off** by
+default, so you should not normally see this).
+
+`mp_dice_table` reports the nearest table it can see, and `mp_dice_seat`
+reports the seat under you — both are for working out why a table is not
+being recognised.
+
+### 3. Accept the challenge
+
+The other player sees the invite prompt and runs:
+
+```
+mp_accept
+```
+
+or `mp_decline` to refuse. The board appears for both of you once accepted.
+
+### 4. Play
+
+Once the board is up, dice is played on **real keys** — no console needed:
+
+| Key | Does |
+|---|---|
+| `F2` `F4` `F5` `F6` `F7` `F8` | Mark die 1–6 (the numbers under the dice on the board) |
+| `F9` | Cast — rolls, or sets aside the dice you marked, depending on the phase |
+| `U` | Clear every mark without rolling |
+| `F11` *(hold)* | Bank your points and end your turn |
+| `F12` *(hold)* | Yield the match |
+
+Bank and yield are **hold-to-confirm**, deliberately — they are irreversible
+and a stray tap should not end your turn or the match.
+
+A turn goes: press `F9` to roll → mark the scoring dice you want to keep →
+`F9` again to set them aside → roll the rest, or `F11` to bank what you have.
+Roll nothing scoring and you **bust**: the board shows what you rolled and
+says so, and your turn ends with nothing banked. First to the target score
+wins.
+
+Every key above has a console equivalent if a key ever fails you:
+`mp_dice_mark 1`…`6`, `mp_dice_cast`, `mp_dice_unmark_all`, `mp_dice_bank`,
+`mp_dice_yield`.
+
+### If the board misbehaves
+
+| Command | Use when |
+|---|---|
+| `mp_dice_redraw` | The board is stale — forces it to re-push |
+| `mp_dice_flush` | The board is stuck or flickering — clears every queued panel |
+| `mp_dice_close` | You want it gone |
+
+### Known rough edges
+
+- **Inviting and accepting have no keybind.** `mp_dice`, `mp_accept` and
+  `mp_decline` are the reliable path. Key bindings for these exist in the code
+  but are built on **guessed** action names (`dialog_answer3/4`,
+  `dialog_answer1/2`) that have never been confirmed to fire — treat them as
+  not working.
+- **Nothing is wagered.** The match is a pure score contest; no groschen
+  changes hands. Moving real currency needs a native write and has not been
+  built.
+- **A full two-human match has never been played.** Everything above was
+  verified against a scripted opponent (`tools\Bot-DiceOpponent.ps1`) on one
+  machine. See below.
+
 ## Architecture
 
 ```
@@ -180,6 +273,113 @@ dotnet test dotnet\KcdMp.Farkle.Tests
 
 `tools\Test-Pipe.ps1` additionally needs the real game running with the
 plugin injected — see the script header.
+
+## What's left undone, what still needs a human, and reporting bugs
+
+### Not done
+
+Things that are genuinely missing or impossible, as opposed to untested:
+
+- **Emotes** — not implemented.
+- **Duelling** — not implemented. The wire protocol reserves an
+  `InteractionKind.Duel` value and nothing at all sits behind it; it reads
+  like a shipped feature to anyone skimming `Protocol.cs` and it is not one.
+- **Dice wagers** — a match is a pure score contest. No groschen moves.
+  Transferring real currency needs a native (RTTR) write, not a Lua one.
+- **Dice invite / accept / decline keybinds** — the console commands
+  (`mp_dice`, `mp_accept`, `mp_decline`) are the working path. The key
+  bindings in the code are built on guessed engine action names that have
+  never been confirmed to fire.
+- **NPC aggro** — *closed with evidence, not a to-do.* Replicated damage
+  lands and can kill NPCs, but nothing reachable makes an NPC's AI react to
+  it. They never fight back.
+- **Faction manipulation** — *closed with evidence.* Writing faction
+  ownership through the reflection layer corrupts a pointer the game owns and
+  crashes it.
+- **Reading the vanilla dice minigame's live state** — *closed with
+  evidence.* That is why our dice is a separate engine rather than a mirror.
+- **The master server (server browser backend)** — the Python service has
+  never been run on any machine that touched this project. The .NET side is
+  tested against a stub of its contract. The launcher's Join-by-address path
+  does not need it; the browsable server list does.
+- **Auto-detecting "you are actually in the world"** — the launcher asks you
+  to confirm you have loaded your save before it injects, because injecting
+  too early attaches a plugin that hooks nothing and only a fresh game launch
+  recovers. It tells you either way; it cannot yet decide for you.
+- **Installer code signing** — Setup.exe is unsigned, so a first download
+  shows SmartScreen's "Windows protected your PC". Click *More info* →
+  *Run anyway*.
+- **A moved game is only half-handled** — re-running Setup finds the new path
+  and re-deploys the mod, but will not overwrite a `GamePath` already set in
+  your `settings.json`. The launcher notices the stale path at startup and
+  opens Settings; it does not fix it for you.
+- **`settings.json` follows the working directory, not the launcher** — the
+  shortcuts the installer creates set it correctly. Launch
+  `KCDMP_launcher.exe` from some other directory and it will read and write
+  its settings there instead.
+
+### Still needs a human, and has not had one
+
+Nothing in this list has been executed. It is not a list of things believed
+to work — it is the list of things nobody has watched happen.
+
+**Two machines, two people — the real test.** Everything below is single-
+machine or synthetic:
+
+- [ ] Host on one PC, join from another, both load saves and connect.
+- [ ] Each sees the other's ghost, hears proximity voice, and lands shared
+      combat damage both ways.
+- [ ] A full dice match played to completion on both screens.
+- [ ] The same, with one player on a different network over a VPN overlay
+      (see [docs/NETWORKING.md](docs/NETWORKING.md)).
+
+**One machine, one person:**
+
+- [ ] Launcher → HOST → START GAME → load a save → CONNECT, confirming
+      `kcdmp-native.log` shows a nonzero `frames in ~1s` line for that run's
+      pid and that `KcdMpClient.exe` starts.
+- [ ] The deliberate failure case: click CONNECT *before* loading a save, and
+      confirm you get the explicit "launch again" message within ~8s rather
+      than a silent half-connected state.
+- [ ] Whether `~` is actually the console key on your keyboard layout — the
+      dice instructions above assume it.
+- [ ] The installer's interactive wizard, including the Modding-Tools gate.
+      Checklist: [docs/INSTALLER-TESTING.md](docs/INSTALLER-TESTING.md) tier 2.
+
+**A machine that is not a development machine** — out of reach for this
+project, which has exactly one PC:
+
+- [ ] Fresh Windows with no WebView2 runtime: the installer's download and
+      install of it has never been observed running.
+- [ ] A PC with no Steam, and a PC with Steam but no Kingdom Come.
+- [ ] A non-ASCII Windows username.
+
+Full checklist and what each tier does and does not cover:
+[docs/INSTALLER-TESTING.md](docs/INSTALLER-TESTING.md).
+
+### Reporting a bug
+
+Say which side you were on (host or join), what you were doing, and what you
+expected instead. Then attach whatever of these exists — the paths are exact,
+and `%LocalAppData%` / `%AppData%` / `%Temp%` can be pasted straight into
+Explorer's address bar:
+
+| What | Where | Attach it when |
+|---|---|---|
+| Launcher log | `%AppData%\KCDMP_Launcher\app<YYYYMMDD>.log` | Always. This is the first one to grab |
+| Launcher settings | `%LocalAppData%\KCDMP\settings.json` | Always — it is three lines and it says which game it found |
+| Native plugin log | `%LocalAppData%\KCDMP\kcdmp-native.log` | Injection, ghosts, combat, or dice not appearing in game |
+| Game log | `<ModdingTools>\kcd.log`, e.g. `...\steamapps\common\KCD2Mod\kcd.log` | Anything in-game. Look for `[KCD2-MP]` lines |
+| Agent output | The `KcdMpClient.exe` console window — **it writes no log file**, so copy the text out before closing it | Connected but nothing syncs |
+| Relay output | The `KcdMpServer.exe` console window on the **host's** PC | Nobody can join, or people get dropped |
+| Installer log | `%Temp%\Setup Log <date> #NNN.txt` — newest one | Anything that went wrong during install |
+
+Also useful: your version (Add/Remove Programs → *KCD2 Multiplayer*), whether
+both players are on the same network, and — for anything that looks like the
+game ignoring the mod — confirmation that `<ModdingTools>\Mods\kdcmp\` exists
+and that you launched through the launcher rather than through Steam.
+
+Please redact your public IP from logs if you were playing over the internet.
 
 ## License and provenance
 
