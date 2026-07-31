@@ -169,7 +169,36 @@ namespace KCDMP_launcher.Pages
             LoadFavorites();
             LoadSettings();
             LoadCustomServers();
+            CheckGamePathOnStartup();
             await RefreshApp();
+        }
+
+        /// <summary>
+        /// The installer pre-seeds settings.json with the game path it found,
+        /// so the normal case never sees this. It exists for the person who
+        /// unzipped a release by hand, or whose game moved between Steam
+        /// libraries: rather than letting them find out at the moment they
+        /// press Launch, open Settings straight away and say what is wrong.
+        /// </summary>
+        private void CheckGamePathOnStartup()
+        {
+            if (string.IsNullOrWhiteSpace(settings.GamePath) || !File.Exists(settings.GamePath))
+            {
+                showSettings = true;
+                UiService.ShowError(
+                    "No game found yet. Point 'Game Path' at the KingdomCome.exe inside your " +
+                    "KCD2 Modding Tools install (…\\KCD2Mod\\Bin\\Win64ReleaseSteamLTO_DLL).");
+                return;
+            }
+
+            if (!IsModdingToolsBuild(settings.GamePath))
+            {
+                showSettings = true;
+                UiService.ShowError(
+                    "The saved game path is the retail build. KCD2 must be launched from the Modding " +
+                    "Tools build (KCD2Mod) — it is the only one with the debug API on port 1403 and the " +
+                    "separate module DLLs the plugin hooks.");
+            }
         }
 
         //CUSTOM SERVERS LOGIC 
