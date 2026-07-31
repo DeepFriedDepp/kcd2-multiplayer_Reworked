@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -61,6 +62,22 @@ public partial class GameBridge(ClientConfig config)
     // ghostId → display name, from Name packets. Lets an invite prompt say who
     // is asking instead of showing a bare relay id.
     private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
+
+    // Appearance (WO-9). Outbound: the local player's item classes as of the
+    // last successful send, so the poll loop only sends on an actual change.
+    // Inbound: per ghost, what is currently applied and which classes have
+    // ever been created in that ghost's inventory -- tracked here rather than
+    // re-read from the game, so applying a diff never needs an extra round
+    // trip to ask "what does this ghost have on already".
+    private HashSet<Guid>? _lastSentAppearance;
+    private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostAppearance = new();
+    private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostKnownItemClasses = new();
+
+    // Set by the "appearance_sync" game event (mp_sync_appearance console
+    // command) to force the next poll to send unconditionally, bypassing the
+    // change check -- the honest floor for a tester who does not want to wait
+    // for the poll interval or the heartbeat.
+    private volatile bool _forceAppearanceResync;
 
     // The only channel to KCDMP_launcher's dice window -- see DiceIpcServer.
     private DiceIpcServer? _diceIpcServer;
@@ -246,6 +263,9 @@ public partial class GameBridge(ClientConfig config)
         Console.WriteLine();
 
         _hasPushed = false;
+        _lastSentAppearance = null;
+        _ghostAppearance.Clear();
+        _ghostKnownItemClasses.Clear();
 
         // --- Interaction layer ---
         // Framing lives here because this class owns the stream; the interaction
@@ -311,8 +331,9 @@ public partial class GameBridge(ClientConfig config)
         // before the first inbound packet ever arrives.
         _ = _combat.EnsureConnectedAsync(cts.Token);
 
-        var receiveTask  = ReceiveLoopAsync(stream, cts.Token);
-        var pingTask     = PingLoopAsync(stream, cts.Token);
+        var receiveTask     = ReceiveLoopAsync(stream, cts.Token);
+        var pingTask        = PingLoopAsync(stream, cts.Token);
+        var appearanceTask  = AppearanceLoopAsync(stream, cts.Token);
 
         // --- Position push loop ---
         try
@@ -365,8 +386,9 @@ public partial class GameBridge(ClientConfig config)
         finally
         {
             cts.Cancel();
-            try { await receiveTask;  } catch { }
-            try { await pingTask;     } catch { }
+            try { await receiveTask;     } catch { }
+            try { await pingTask;        } catch { }
+            try { await appearanceTask;  } catch { }
             _voice?.Stop();
             _voice?.Dispose();
             _voice = null;
@@ -409,6 +431,223 @@ public partial class GameBridge(ClientConfig config)
             catch (OperationCanceledException) { break; }
             catch { break; }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Appearance poll loop (WO-9)
+    // -------------------------------------------------------------------------
+
+    /// <summary>How often the local player's equipped set is checked for a change.</summary>
+    private const int AppearancePollMs = 3000;
+
+    /// <summary>
+    /// Polls the local player's equipped item classes on a slow timer and
+    /// sends an Appearance packet only when the set actually changed, plus an
+    /// unconditional resend every <see cref="Protocol.AppearanceHeartbeatSeconds"/>
+    /// so a peer who connects after the last real change still converges --
+    /// the relay does not remember or replay it for a late joiner.
+    ///
+    /// A poll on a multi-second timer is deliberate, not a placeholder: outfit
+    /// changes are a player action, not a per-frame concern, and this is the
+    /// same reasoning WO-1 applied to the position tick versus a slower yaw
+    /// refresh. Reading a preset id off spawn state was tried and rejected in
+    /// Phase 0 -- see docs/WO-9-appearance-sync.md -- because a player who
+    /// re-equips by hand instead of via a preset leaves BaseClothingPreset all
+    /// zero, so only the per-item read is trustworthy.
+    /// </summary>
+    private async Task AppearanceLoopAsync(NetworkStream stream, CancellationToken ct)
+    {
+        int ticksSinceSend = int.MaxValue; // force the first poll to send
+        int ticksPerHeartbeat = Math.Max(1, Protocol.AppearanceHeartbeatSeconds * 1000 / AppearancePollMs);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var current = await _transport.ReadEquippedItemClassesAsync(ct);
+                if (current.Length > 0)
+                {
+                    var currentSet = new HashSet<Guid>(current);
+                    bool changed = _lastSentAppearance is null || !currentSet.SetEquals(_lastSentAppearance);
+                    bool heartbeatDue = ticksSinceSend >= ticksPerHeartbeat;
+                    bool forced = _forceAppearanceResync;
+
+                    if (changed || heartbeatDue || forced)
+                    {
+                        var items = currentSet.Count <= Protocol.MaxAppearanceItems
+                            ? [.. currentSet]
+                            : currentSet.Take(Protocol.MaxAppearanceItems).ToArray();
+                        await SendAppearanceAsync(stream, items, ct);
+                        _lastSentAppearance = currentSet;
+                        ticksSinceSend = 0;
+                        _forceAppearanceResync = false;
+                        Console.WriteLine($"[appearance] sent {items.Length} item class(es)" +
+                            (forced ? " (forced)" : changed ? "" : " (heartbeat)"));
+                    }
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[appearance] poll failed: {ex.Message}"); }
+
+            try { await Task.Delay(AppearancePollMs, ct); }
+            catch (OperationCanceledException) { break; }
+            ticksSinceSend++;
+        }
+    }
+
+    /// <summary>
+    /// The ghost's spawn-time outfit (kdcmp.lua's <c>KCD2MP.armorPresets.white_red</c>,
+    /// applied via <c>EquipClothingPreset</c> in <c>KCD2MP_SpawnGhost</c>), mirrored
+    /// here as data -- same rule as the animation tables: port it, never
+    /// regenerate it. This exists so the *first* appearance diff for a ghost
+    /// has something to unequip. Without it, the preset's own items are
+    /// never in <see cref="_ghostAppearance"/> (they were never applied
+    /// through this path, only at spawn), so the diff would only ever add to
+    /// the preset and never remove from it -- a real player wearing nothing
+    /// like full plate would still show a ghost head-to-toe in the spawn
+    /// preset with their actual gear invisible underneath. Observed live,
+    /// WO-9 Phase 2: the only visible difference before this fix was a
+    /// gambeson collar peeking out from under an otherwise-unchanged suit of
+    /// plate.
+    /// </summary>
+    private static readonly Guid[] GhostSpawnPresetItems =
+    [
+        Guid.Parse("a8b22da0-e42e-4d79-abe7-52e6eebad6eb"), // LegsBrigandine04
+        Guid.Parse("cc1adb78-fa5a-45c9-be7b-b7b50e182cb3"), // LegsPadded01
+        Guid.Parse("36a701ed-2144-452a-b113-385efba2c0d1"), // knackersGloves
+        Guid.Parse("46b051c4-d4e2-4f3a-8b88-e3f64dae4618"), // GambesonLong01
+        Guid.Parse("1aadf1e5-c37b-41c3-bc65-354187022c91"), // Brigandine10
+        Guid.Parse("a5322fcd-27b4-4f4e-bfbf-49c519c74c74"), // ArmPlate04
+        Guid.Parse("cfc1fd72-dbb7-49a4-8713-6acf215a72be"), // CoifMail01
+        Guid.Parse("b6fe59ec-c854-402a-848e-a77f55661c19"), // BascinetVisor05
+        Guid.Parse("a06cfbf0-3d59-4003-89d4-69a82eb735af"), // BootsKnee03
+    ];
+
+    /// <summary>
+    /// Applies a received Appearance packet to the ghost identified by
+    /// <paramref name="ghostId"/>: diffs the target set against what was last
+    /// applied to that ghost -- seeded with <see cref="GhostSpawnPresetItems"/>
+    /// the first time this ghost is seen, so the preset itself is a proper
+    /// part of the diff -- unequips what dropped out, equips what is new.
+    /// Never re-touches a slot that did not change.
+    /// </summary>
+    private async Task ApplyAppearanceAsync(byte ghostId, Guid[] target, CancellationToken ct)
+    {
+        string soulName = $"kcd2mp_{ghostId}";
+        var applied = _ghostAppearance.GetOrAdd(ghostId, static _ => [.. GhostSpawnPresetItems]);
+        // The preset's items are already sitting in the ghost's inventory from
+        // spawn (EquipClothingPreset put them there) -- CreateItems must never
+        // run for them again.
+        var known = _ghostKnownItemClasses.GetOrAdd(ghostId, static _ => [.. GhostSpawnPresetItems]);
+        var targetSet = new HashSet<Guid>(target);
+
+        List<Guid> toRemove;
+        List<Guid> toAdd;
+        lock (applied)
+        {
+            toRemove = applied.Except(targetSet).ToList();
+            toAdd    = targetSet.Except(applied).ToList();
+        }
+
+        foreach (var cls in toRemove)
+        {
+            try
+            {
+                await _transport.UnequipItemOnGhostAsync(soulName, cls, ct);
+                lock (applied) applied.Remove(cls);
+            }
+            catch (Exception ex) { Console.WriteLine($"[appearance] unequip {cls} on {soulName} failed: {ex.Message}"); }
+        }
+
+        foreach (var cls in toAdd)
+        {
+            bool createIfMissing;
+            lock (known) createIfMissing = known.Add(cls);
+            try
+            {
+                await _transport.EquipItemOnGhostAsync(soulName, cls, createIfMissing, ct);
+                lock (applied) applied.Add(cls);
+            }
+            catch (Exception ex) { Console.WriteLine($"[appearance] equip {cls} on {soulName} failed: {ex.Message}"); }
+        }
+
+        if (toRemove.Count > 0 || toAdd.Count > 0)
+        {
+            Console.WriteLine($"[appearance] ghost {ghostId}: +{toAdd.Count} -{toRemove.Count}");
+            await VerifyAndRetryAsync(soulName, ghostId, toAdd, applied, ct);
+        }
+    }
+
+    /// <summary>
+    /// A fault-free EquipItem invoke is not a successful one. Measured live
+    /// (WO-9 Phase 2, two-agent test): under the agent's normal concurrent
+    /// load -- its own position tick flushing Lua every ~10 ms plus this same
+    /// poll loop's other traffic -- EquipItem returns <c>true</c> immediately
+    /// but the actual game-state commit lagged several seconds behind on a
+    /// freshly-spawned ghost. A lone manual call against a quiet API answered
+    /// instantly; the identical call through the running agent needed up to
+    /// ~10 s to actually land. So this is a real, reproduced processing
+    /// delay, not a guessed one, and the retry schedule below (1/2/3/4 s,
+    /// ~10 s total) is sized to the worst case actually observed rather than
+    /// an arbitrary short backoff.
+    ///
+    /// Reads the ghost's own EquippedArmorsByClassId back, and for anything
+    /// this call just tried to add but is still missing, retries EquipItem
+    /// (never CreateItems again -- the item instance from the first attempt
+    /// is already sitting in the ghost's inventory). Anything still missing
+    /// once the schedule is exhausted is dropped from <paramref name="applied"/>
+    /// so the next change or heartbeat naturally tries again, rather than the
+    /// diff believing a slot is settled when it never took.
+    /// </summary>
+    private static readonly int[] AppearanceRetryDelaysMs = [1000, 1000, 1000, 2000, 2000, 3000];
+
+    private async Task VerifyAndRetryAsync(string soulName, byte ghostId, List<Guid> toAdd,
+        HashSet<Guid> applied, CancellationToken ct)
+    {
+        var pending = new List<Guid>(toAdd);
+
+        foreach (int delayMs in AppearanceRetryDelaysMs)
+        {
+            if (pending.Count == 0) return;
+
+            await Task.Delay(delayMs, ct);
+            var actual = new HashSet<Guid>(await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct));
+            pending = pending.Where(cls => !actual.Contains(cls)).ToList();
+            if (pending.Count == 0) return;
+
+            Console.WriteLine($"[appearance] ghost {ghostId}: {pending.Count} item(s) still not applied, retrying");
+            foreach (var cls in pending)
+            {
+                try { await _transport.EquipItemOnGhostAsync(soulName, cls, createIfMissing: false, ct); }
+                catch (Exception ex) { Console.WriteLine($"[appearance] retry equip {cls} on {soulName} failed: {ex.Message}"); }
+            }
+        }
+
+        // Schedule exhausted: one final read to tell a genuine failure (a
+        // slot the game will never grant, e.g. the Hood-vs-Helmet exclusivity
+        // found in Phase 0) from one more round of lag.
+        var final = new HashSet<Guid>(await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct));
+        foreach (var cls in pending)
+        {
+            if (final.Contains(cls)) continue;
+            Console.WriteLine($"[appearance] ghost {ghostId}: {cls} never equipped after {AppearanceRetryDelaysMs.Sum()}ms of retrying -- leaving it out of the applied set");
+            lock (applied) applied.Remove(cls);
+        }
+    }
+
+    private static async Task SendAppearanceAsync(NetworkStream stream, Guid[] itemClasses, CancellationToken ct)
+    {
+        int payloadLen = 1 + itemClasses.Length * Protocol.ItemClassLen;
+        var packet = new byte[3 + payloadLen];
+        packet[0] = Protocol.AppearanceUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payloadLen);
+        packet[3] = (byte)itemClasses.Length;
+        int o = 4;
+        foreach (var cls in itemClasses)
+        {
+            cls.TryWriteBytes(packet.AsSpan(o, Protocol.ItemClassLen));
+            o += Protocol.ItemClassLen;
+        }
+        await stream.WriteAsync(packet, ct);
     }
 
     // -------------------------------------------------------------------------
@@ -466,6 +705,8 @@ public partial class GameBridge(ClientConfig config)
                     byte ghostId = payload[0];
                     Console.WriteLine($"[disconnect] ghost {ghostId} removed");
                     _voice?.RemovePlayer(ghostId);
+                    _ghostAppearance.TryRemove(ghostId, out _);
+                    _ghostKnownItemClasses.TryRemove(ghostId, out _);
                     try { await ExecLuaAsync($"KCD2MP_RemoveGhost(\"{ghostId}\")"); } catch { }
                 }
                 else if (type == Protocol.VoiceDown && payloadLen == 1 + Protocol.VoiceFrameLen)
@@ -501,6 +742,19 @@ public partial class GameBridge(ClientConfig config)
                     if (!applied)
                         Console.WriteLine($"[combat] death from ghost {sourceId} not applied " +
                                           $"(soul {soul} not loaded here, or the DLL is absent)");
+                }
+                else if (type == Protocol.AppearanceDown && payloadLen >= 2)
+                {
+                    // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
+                    byte sourceId = payload[0];
+                    int itemCount = payload[1];
+                    if (payloadLen == 2 + itemCount * Protocol.ItemClassLen)
+                    {
+                        var items = new Guid[itemCount];
+                        for (int i = 0; i < itemCount; i++)
+                            items[i] = new Guid(payload.AsSpan(2 + i * Protocol.ItemClassLen, Protocol.ItemClassLen));
+                        _ = ApplyAppearanceAsync(sourceId, items, ct);
+                    }
                 }
                 else if (Interactions?.HandlePacket(type, payload) == true)
                 {
@@ -568,6 +822,15 @@ public partial class GameBridge(ClientConfig config)
             case "invite_decline":
                 Console.WriteLine("[interaction] player declined");
                 _ = interactions.RespondAsync(false);
+                break;
+
+            case "appearance_sync":
+                // mp_sync_appearance (WO-9): the honest floor. Forces the next
+                // poll tick to send regardless of whether the equipped set
+                // actually changed, so a tester never has to wait out the poll
+                // interval or the heartbeat to demo or fix a desync.
+                Console.WriteLine("[appearance] manual resync requested");
+                _forceAppearanceResync = true;
                 break;
 
             case "invite_send":

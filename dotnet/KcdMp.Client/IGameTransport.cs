@@ -59,4 +59,41 @@ public interface IGameTransport : IAsyncDisposable
     /// transports that send immediately, so callers can always call it.
     /// </summary>
     Task FlushAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// The local player's currently-equipped item classes (WO-9), read via the
+    /// reflection debug API's <c>EquipmentManager.EquippedArmorsByClassId</c>
+    /// -- NOT the Lua clothing-preset binding, which only reports the preset a
+    /// soul was spawned with and goes blank the moment the player re-equips
+    /// anything by hand. Empty (not null) if the game is not answering.
+    /// </summary>
+    Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Reads a named ghost soul's own equipped item classes back. Used to
+    /// verify an apply actually took -- a fault-free EquipItem invoke is not
+    /// a successful one, the same trap the native reflection ABI has
+    /// everywhere else -- never to drive the outbound diff, which is
+    /// tracked client-side instead.
+    /// </summary>
+    Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default);
+
+    /// <summary>
+    /// Equips one item class onto a named ghost soul (e.g. "kcd2mp_5"), via
+    /// the same native <c>EquipmentManager.EquipItem</c> reflection call
+    /// proven in WO-9 Phase 0 to render visually -- unlike the Lua
+    /// <c>actor:EquipInventoryItem</c> binding, which does not.
+    /// </summary>
+    /// <param name="createIfMissing">
+    /// True the first time this item class is applied to this ghost: it has
+    /// no instance of that class in its inventory yet, so one must be created
+    /// via <c>Inventory.CreateItems</c> first. False on every later
+    /// application of the same class to the same ghost, since the created
+    /// instance is still sitting in its inventory, just unequipped -- calling
+    /// CreateItems again would pile up duplicates for no reason.
+    /// </param>
+    Task EquipItemOnGhostAsync(string ghostSoulName, Guid itemClass, bool createIfMissing, CancellationToken ct = default);
+
+    /// <summary>Unequips one item class from a named ghost soul.</summary>
+    Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default);
 }

@@ -105,7 +105,32 @@ namespace KcdMp.Wire;
 ///              participants, immediately followed by a normal SessionEnd
 ///              (Completed) that removes the session.
 ///
-/// Free type bytes for new features: 0x1A and up.
+/// Appearance layer (WO-9). Replicates the local player's currently-equipped
+/// clothing/armor onto their ghost, per item, instead of the single hardcoded
+/// spawn-time preset.
+/// C→S  0x1A  AppearanceUp:   [itemCount:1][itemClass:16]*itemCount
+/// S→C  0x1B  AppearanceDown: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
+///
+/// itemClass is the item's ItemClass GUID (the game's per-type id, e.g. every
+/// "GambesonShort01_m04_D2" shares one), read from
+/// EquipmentManager.EquippedArmorsByClassId via the reflection debug API --
+/// NOT the SharedSoulGuid used by the combat layer, and not an item instance
+/// id. itemCount is small in practice (a full outfit is under 15 slots) but
+/// bounded at <see cref="Protocol.MaxAppearanceItems"/> so a malformed sender
+/// cannot make a receiver allocate an unbounded array.
+///
+/// Sent only when the local player's equipped set changes, plus a slow
+/// unconditional heartbeat (see GameBridge) so a peer who joins after the
+/// last real change still converges -- the relay is stateless and does not
+/// remember or replay appearance for a late joiner, exactly like it does not
+/// for position.
+///
+/// The receiver diffs against what it last applied to that ghost (client-side
+/// state, not on the wire) and only touches the slots that actually changed:
+/// unequip what dropped out, equip what is new. This is the same
+/// per-hit-authority, no-new-server-state shape as the combat layer.
+///
+/// Free type bytes for new features: 0x1C and up.
 ///
 /// This file lives in the shared KcdMp.Protocol project (net8.0, no
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
@@ -116,13 +141,14 @@ public static class Protocol
     /// <summary>
     /// Protocol version, negotiated in the Handshake.
     ///
-    /// Bumped to 4 for the dice layer. The relay refuses any handshake
+    /// Bumped to 5 for the appearance layer. The relay refuses any handshake
     /// version that isn't an exact match, so a peer that is actually
-    /// connected always speaks the relay's own dice vocabulary -- there is no
-    /// separate "does the peer support dice" gate to add on top of that,
-    /// because a peer that didn't would never have gotten past Handshake.
+    /// connected always speaks the relay's own appearance vocabulary -- there
+    /// is no separate "does the peer support appearance" gate to add on top
+    /// of that, because a peer that didn't would never have gotten past
+    /// Handshake.
     /// </summary>
-    public const byte Version = 4;
+    public const byte Version = 5;
 
     // C→S
     public const byte Handshake      = 0x00;
@@ -136,6 +162,7 @@ public static class Protocol
     public const byte DamageUp       = 0x12;
     public const byte DeathUp        = 0x14;
     public const byte DiceIntent     = 0x16;
+    public const byte AppearanceUp   = 0x1A;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -153,6 +180,7 @@ public static class Protocol
     public const byte DiceState        = 0x17;
     public const byte DiceError        = 0x18;
     public const byte DiceEnd          = 0x19;
+    public const byte AppearanceDown   = 0x1B;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -181,6 +209,20 @@ public static class Protocol
 
     /// <summary>Damage flag: apply without playing a hit reaction.</summary>
     public const byte DamageFlagSuppressHitReaction = 0x01;
+
+    /// <summary>Length of an ItemClass GUID on the wire (Appearance layer).</summary>
+    public const int ItemClassLen = 16;
+
+    /// <summary>
+    /// Upper bound on items in one Appearance packet. A full authored outfit
+    /// tops out around 15 slots; this is headroom, not a measured ceiling, and
+    /// exists so a malformed itemCount byte cannot make a receiver allocate
+    /// 255 * 16 bytes on bad input.
+    /// </summary>
+    public const int MaxAppearanceItems = 32;
+
+    /// <summary>How often the appearance layer resends unconditionally, so a peer who joins after the last real change still converges. The relay does not remember or replay it for a late joiner.</summary>
+    public const int AppearanceHeartbeatSeconds = 30;
 
     /// <summary>
     /// How long an invite waits for a response before the relay expires it.

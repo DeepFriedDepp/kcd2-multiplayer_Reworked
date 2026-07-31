@@ -146,6 +146,22 @@ public sealed class LogTailGameTransport : IGameTransport
     public Task FlushAsync(CancellationToken ct = default) =>
         _http.FlushAsync(ct);
 
+    // Appearance (WO-9) has no push-based equivalent -- it always goes
+    // through the debug REST API regardless of which transport reads
+    // position, so these simply delegate to the composed HttpGameTransport
+    // exactly like ExecuteAsync/FlushAsync above.
+    public Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default) =>
+        _http.ReadEquippedItemClassesAsync(ct);
+
+    public Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default) =>
+        _http.ReadGhostEquippedItemClassesAsync(ghostSoulName, ct);
+
+    public Task EquipItemOnGhostAsync(string ghostSoulName, Guid itemClass, bool createIfMissing, CancellationToken ct = default) =>
+        _http.EquipItemOnGhostAsync(ghostSoulName, itemClass, createIfMissing, ct);
+
+    public Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default) =>
+        _http.UnequipItemOnGhostAsync(ghostSoulName, itemClass, ct);
+
     // -------------------------------------------------------------------------
 
     private async Task TailLoopAsync(CancellationToken ct)

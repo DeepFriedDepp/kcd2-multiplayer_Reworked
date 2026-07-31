@@ -229,6 +229,17 @@ function KCD2MP_DeclineInvite()
     return true
 end
 
+-- WO-9: honest floor for appearance sync. The agent normally polls
+-- EquipmentManager.EquippedArmorsByClassId itself (no Lua involved in
+-- detection at all -- that read goes straight over the debug REST API), but
+-- a player who wants to force it right now rather than wait for the poll or
+-- the heartbeat can run this. Same event-channel pattern as invite_accept.
+function KCD2MP_SyncAppearance()
+    KCD2MP_EmitEvent("appearance_sync", "")
+    mp_log("Requested immediate appearance resync")
+    KCD2MP_ShowInteractionMsg("Appearance resync requested")
+end
+
 -- Superseded by the WO-6 dice overlay below, which draws the whole match. Kept
 -- as a one-liner so an older agent build talking to a newer pak still puts
 -- something on screen instead of erroring.
@@ -3411,6 +3422,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_emit_once",       "KCD2MP_EmitState()",      "Emit a single state line")
     System.AddCCommand("mp_accept",          "KCD2MP_AcceptInvite()",   "Accept a pending interaction invite")
     System.AddCCommand("mp_decline",         "KCD2MP_DeclineInvite()",  "Decline a pending interaction invite")
+    System.AddCCommand("mp_sync_appearance", "KCD2MP_SyncAppearance()", "Force an immediate appearance resync to peers (WO-9)")
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
 

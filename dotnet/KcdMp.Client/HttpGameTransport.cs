@@ -227,6 +227,82 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         await _http.GetStringAsync($"{gameApiBase}/api/System/Console/ExecuteString?command={cmd}", ct);
     }
 
+    // -------------------------------------------------------------------------
+    // Appearance (WO-9)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// One round trip: every ItemClass currently in the player's
+    /// EquipmentManager.EquippedArmorsByClassId map. This is the real
+    /// per-slot equipment state -- proven in WO-9 Phase 0 to track a player
+    /// who equipped by hand, unlike BaseClothingPreset, which reads all-zero
+    /// the moment a player stops matching the preset they spawned with.
+    /// </summary>
+    public async Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var xml = await _http.GetStringAsync(
+                $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
+            return ParseItemClasses(xml);
+        }
+        catch { return []; }
+    }
+
+    /// <summary>
+    /// Reads a named ghost's own EquippedArmorsByClassId. Not used by the
+    /// normal apply path -- GameBridge tracks what it last applied to each
+    /// ghost itself, so it never needs to ask the game what is currently
+    /// equipped -- but kept for diagnostics and the manual test procedure.
+    /// </summary>
+    public async Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default)
+    {
+        try
+        {
+            var xml = await _http.GetStringAsync(
+                $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{Uri.EscapeDataString(ghostSoulName)}" +
+                "/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
+            return ParseItemClasses(xml);
+        }
+        catch { return []; }
+    }
+
+    public async Task EquipItemOnGhostAsync(string ghostSoulName, Guid itemClass, bool createIfMissing, CancellationToken ct = default)
+    {
+        string soul = Uri.EscapeDataString(ghostSoulName);
+        string cls = itemClass.ToString();
+
+        if (createIfMissing)
+        {
+            // Fire-and-forget the descriptor: CreateItems returns an
+            // ItemClassDescriptor with no readable properties at this depth,
+            // and the only verification that matters is the equip that
+            // follows actually taking effect.
+            await _http.GetStringAsync(
+                $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/Inventory/CreateItems" +
+                $"?ItemClass={cls}&Amount=1&ShowUINotification=false", ct);
+        }
+
+        await _http.GetStringAsync(
+            $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/EquipItem?itemClassId={cls}", ct);
+    }
+
+    public async Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default)
+    {
+        string soul = Uri.EscapeDataString(ghostSoulName);
+        await _http.GetStringAsync(
+            $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/UnequipItem?itemClassId={itemClass}", ct);
+    }
+
+    private static Guid[] ParseItemClasses(string xml)
+    {
+        var matches = ItemClassRegex().Matches(xml);
+        var result = new Guid[matches.Count];
+        for (int i = 0; i < matches.Count; i++)
+            result[i] = Guid.Parse(matches[i].Groups[1].Value);
+        return result;
+    }
+
     public async ValueTask DisposeAsync()
     {
         try { await FlushAsync(); } catch { }
@@ -249,4 +325,7 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
 
     [GeneratedRegex(@">([^<]*)<")]
     private static partial Regex CvarValueRegex();
+
+    [GeneratedRegex(@"ItemClass=""([0-9a-fA-F-]{36})""")]
+    private static partial Regex ItemClassRegex();
 }

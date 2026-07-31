@@ -156,6 +156,22 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Appearance layer (WO-9) ---
+                // [itemCount:1][itemClass:16]*itemCount. Validated against the
+                // declared itemCount rather than trusted, so a bad count cannot
+                // desync framing for the rest of the connection.
+                if (type == Protocol.AppearanceUp
+                    && payloadLen >= 1
+                    && payloadLen <= 1 + Protocol.MaxAppearanceItems * Protocol.ItemClassLen)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    int itemCount = body[0];
+                    if (payloadLen == 1 + itemCount * Protocol.ItemClassLen)
+                        _broadcastService.BroadcastAppearance(this, body);
+                    continue;
+                }
+
                 if (type != Protocol.Position || payloadLen != Protocol.PositionPayloadLen)
                 {
                     // Skip unknown/malformed packet
@@ -235,6 +251,19 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(soulGuid, 0, payload, 1, soulGuid.Length);
         EnqueueRaw(BuildPacket(Protocol.DeathDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue an Appearance (0x1B) packet to be sent to this
+    /// client. The body is the upstream [itemCount][itemClass...] payload
+    /// verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueAppearance(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.AppearanceDown, payload));
     }
 
     // -------------------------------------------------------------------------

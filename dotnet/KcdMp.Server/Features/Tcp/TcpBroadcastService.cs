@@ -82,6 +82,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays an Appearance (0x1B) update from <paramref name="source"/> to
+    /// all other ready clients. Idempotent at the receiver like Damage/Death:
+    /// it is a diff against last-applied state, not an event, so a duplicate
+    /// or a stale resend is harmless.
+    /// </summary>
+    public void BroadcastAppearance(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueAppearance(source.Id, body);
+    }
+
+    /// <summary>
     /// Broadcasts a Disconnect (0x06) packet to all remaining clients so they can remove the ghost.
     /// </summary>
     public void BroadcastDisconnect(ClientSession disconnected)

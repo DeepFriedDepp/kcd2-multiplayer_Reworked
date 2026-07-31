@@ -23,9 +23,10 @@ The brief numbered six work orders. Actual state:
 | WO-4 | Emotes | **not started** | — |
 | WO-5 | Duelling | **not started** | — |
 
-**Plus one unplanned work order, not in the brief:**
+**Plus two unplanned work orders, not in the brief:**
 
 | — | **Shared combat** — damage and death replicate between clients | **done** | `HANDOFF-WO4-combat.md` |
+| — | **Appearance sync** — ghosts mirror the real player's equipped items, not one hardcoded outfit | **done** | `WO-9-appearance-sync.md`, protocol `0x1A`-`0x1B` |
 
 ### Naming collision — fix this
 
@@ -164,14 +165,15 @@ list at least one method (`System.DrawTriStrip`) this build does not register.
 `0x83 Pong`, `0x90 LocalHit` up. **Overlapped I/O on both handles is mandatory**
 — see §5.
 
-### Wire protocol v4
+### Wire protocol v5
 
-Added `0x12`–`0x15` (Damage/Death, both directions) in v3, then `0x16`–`0x19`
-(DiceIntent/DiceState/DiceError/DiceEnd) in v4. `Protocol.cs` is **no longer
+Added `0x12`–`0x15` (Damage/Death, both directions) in v3, `0x16`–`0x19`
+(DiceIntent/DiceState/DiceError/DiceEnd) in v4, and `0x1A`–`0x1B`
+(AppearanceUp/AppearanceDown) in v5. `Protocol.cs` is **no longer
 duplicated** — it moved to a shared `KcdMp.Protocol` project (net8.0 classlib,
 namespace `KcdMp.Wire` to avoid a name collision with the `Protocol` class
 itself) that both `KcdMp.Client` and `KcdMp.Server` reference. One copy, kept
-in sync with itself by construction. Next free type byte: **`0x1A`**.
+in sync with itself by construction. Next free type byte: **`0x1C`**.
 
 ### Test scripts (`tools\`)
 
@@ -179,6 +181,7 @@ in sync with itself by construction. Next free type byte: **`0x1A`**.
 |---|---|---|
 | `Test-Combat.ps1` | relay forwarding, 14/14 | relay only |
 | `Test-Pipe.ps1` | pipe → DLL → NPC | game + DLL |
+| `Test-AppearanceE2E.ps1` | appearance sync end-to-end, synthetic peer → relay → agent → ghost | relay + agent + game (no DLL) |
 | `Test-CombatE2E.ps1` | inbound, full chain | everything |
 | `Test-CombatOutbound.ps1` | outbound, full chain | everything |
 | `Test-Sessions.ps1` | WO-2 sessions, 23/23 | relay only |
