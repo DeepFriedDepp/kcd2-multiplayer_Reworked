@@ -602,9 +602,21 @@ namespace KCDMP_launcher.Pages
         /// game to attach to.
         ///
         /// Looks for this run's own "pid=&lt;pid&gt;" attach line and the
-        /// liveness sample that follows it ("MAIN: N frames in ~1s"). N == 0
-        /// is the documented race (docs/VERIFICATION-REPORT.md); N &gt; 0 means
-        /// the plugin is live and the pipe is starting.
+        /// liveness sample that follows it. WO-10 changed the native DLL from
+        /// a single 1s sample-and-abort to a poll (up to 5 minutes) so an
+        /// early injection retries instead of permanently failing -- see
+        /// dllmain.cpp and docs/WO-10-injection-fix.md. That changed the log
+        /// line's wording, so this regex must track it:
+        ///   success: "MAIN: N frames after ~M ms -- tick is live" (N &gt; 0)
+        ///   failure: "MAIN: tick never fired after M ms -- ..."
+        /// This 8s window is unchanged: by the time the player clicks CONNECT
+        /// here (WO-7's own gate -- they can already see and move their
+        /// character), the tick is essentially always already live, so the
+        /// native side's first 1s sample should log success well inside 8s.
+        /// The native poll's longer ceiling exists for injection paths
+        /// without that human gate (a developer running
+        /// KCDMP_LauncherInjector.exe directly, or a future automatic
+        /// injector), not for this UI flow.
         /// </summary>
         private static async Task<bool> VerifyInjectionAsync(string dllPath, int pid)
         {
@@ -630,12 +642,12 @@ namespace KCDMP_launcher.Pages
                         if (attachIdx >= 0)
                         {
                             var tail = text[attachIdx..];
-                            var match = Regex.Match(tail, @"MAIN: (\d+) frames in ~1s");
+                            var match = Regex.Match(tail, @"MAIN: (\d+) frames after ~\d+ ms -- tick is live");
                             if (match.Success)
                             {
                                 return int.Parse(match.Groups[1].Value) > 0;
                             }
-                            if (tail.Contains("tick is not firing"))
+                            if (tail.Contains("tick never fired"))
                             {
                                 return false;
                             }
@@ -652,7 +664,12 @@ namespace KCDMP_launcher.Pages
             }
 
             // Timed out without conclusive evidence either way -- treat as
-            // failure rather than optimistically starting the agent.
+            // failure rather than optimistically starting the agent. The
+            // native side may still be polling past this point (it now has
+            // up to 5 minutes) -- that is fine: WO-7's gate means the tick
+            // should already be live by the time CONNECT is clicked, so a
+            // timeout here is a real problem (clicked too early, or the save
+            // never actually finished loading), not this fix under-waiting.
             return false;
         }
 

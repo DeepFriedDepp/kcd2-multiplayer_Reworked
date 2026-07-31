@@ -50,11 +50,49 @@ DWORD WINAPI plugin_main(LPVOID) {
     // Confirm the hook is on a live path before trusting it. A hook that never
     // fires is indistinguishable from a queue that never drains, and work
     // posted to it would sit there forever looking like a hang.
-    Sleep(1000);
-    const auto frames = kcdmp::main_thread::frame_count();
-    kcdmp::logf("MAIN: %llu frames in ~1s", frames);
+    //
+    // WO-10: a single 1s sample-and-abort was wrong for automatic injection
+    // and reliably fired there. WHGame.dll is a static import, so it is
+    // present in the process almost instantly -- but the game's actual
+    // per-frame C_ModulesManager::Update tick does not start until well
+    // past the splash/menu screens, into an actually-loaded save. Injecting
+    // the moment the module is merely loadable hooks the import correctly
+    // but checks for ticks far too soon, and a one-shot check with no retry
+    // aborted permanently before the pipe or sampler ever started. Verified
+    // (docs/VERIFICATION-REPORT.md): the identical DLL, injected into the
+    // same still-running process minutes later once a save was actually
+    // loaded, ticked immediately ("25 frames in ~1s") -- this isolates the
+    // defect to timing, not the hook/rttr mechanism. Manual injection into
+    // an already-loaded game was never affected, since the tick is already
+    // live by the time the DLL attaches.
+    //
+    // Fix: poll instead of sampling once. This runs on its own background
+    // thread (see DllMain below), so waiting costs nothing but time -- it
+    // does not block the game or the loader. The ceiling is generous, not
+    // measured: a player may sit at the main menu for a while before
+    // loading a save, and there is no cost to waiting longer for a real
+    // player, only a benefit over giving up on one that just hasn't loaded
+    // yet.
+    constexpr DWORD kFrameCheckIntervalMs = 1000;
+    constexpr DWORD kFrameCheckCeilingMs  = 300'000; // 5 minutes
+    constexpr DWORD kFrameCheckLogEveryMs = 30'000;  // progress line, so a long wait doesn't look hung in the log
+
+    unsigned long long frames = 0;
+    DWORD waited = 0;
+    while (waited < kFrameCheckCeilingMs) {
+        Sleep(kFrameCheckIntervalMs);
+        waited += kFrameCheckIntervalMs;
+        frames = kcdmp::main_thread::frame_count();
+        if (frames > 0) {
+            kcdmp::logf("MAIN: %llu frames after ~%u ms -- tick is live", frames, waited);
+            break;
+        }
+        if (waited % kFrameCheckLogEveryMs == 0) {
+            kcdmp::logf("MAIN: still waiting for the tick to start (%u ms elapsed, 0 frames so far)", waited);
+        }
+    }
     if (frames == 0) {
-        kcdmp::logf("MAIN: tick is not firing -- aborting before any game-state access");
+        kcdmp::logf("MAIN: tick never fired after %u ms -- aborting before any game-state access", waited);
         return 0;
     }
 

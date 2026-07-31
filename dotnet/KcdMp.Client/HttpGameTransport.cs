@@ -232,36 +232,47 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// One round trip: every ItemClass currently in the player's
-    /// EquipmentManager.EquippedArmorsByClassId map. This is the real
-    /// per-slot equipment state -- proven in WO-9 Phase 0 to track a player
-    /// who equipped by hand, unlike BaseClothingPreset, which reads all-zero
-    /// the moment a player stops matching the preset they spawned with.
+    /// Two round trips: every ItemClass in the player's
+    /// EquipmentManager.EquippedArmorsByClassId AND EquippedWeaponsByClassId
+    /// maps, merged. This is the real per-slot equipment state -- proven in
+    /// WO-9 Phase 0 (armor) and WO-10 (weapons, identical shape, confirmed
+    /// live) to track a player who equipped by hand, unlike
+    /// BaseClothingPreset, which reads all-zero the moment a player stops
+    /// matching the preset they spawned with. One merged read rather than two
+    /// separate wire messages because EquipItem/UnequipItem do not care which
+    /// map a class came from -- see the diff/apply path in GameBridge.
     /// </summary>
     public async Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default)
     {
-        try
-        {
-            var xml = await _http.GetStringAsync(
-                $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
-            return ParseItemClasses(xml);
-        }
-        catch { return []; }
+        var armor = await ReadItemClassMapAsync(
+            $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
+        var weapons = await ReadItemClassMapAsync(
+            $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedWeaponsByClassId?depth=1", ct);
+        return [.. armor, .. weapons];
     }
 
     /// <summary>
-    /// Reads a named ghost's own EquippedArmorsByClassId. Not used by the
-    /// normal apply path -- GameBridge tracks what it last applied to each
-    /// ghost itself, so it never needs to ask the game what is currently
-    /// equipped -- but kept for diagnostics and the manual test procedure.
+    /// Reads a named ghost's own EquippedArmorsByClassId and
+    /// EquippedWeaponsByClassId, merged. Not used by the normal apply path --
+    /// GameBridge tracks what it last applied to each ghost itself, so it
+    /// never needs to ask the game what is currently equipped -- but kept for
+    /// verification retries, diagnostics and the manual test procedure.
     /// </summary>
     public async Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default)
     {
+        string soul = Uri.EscapeDataString(ghostSoulName);
+        var armor = await ReadItemClassMapAsync(
+            $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
+        var weapons = await ReadItemClassMapAsync(
+            $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/EquippedWeaponsByClassId?depth=1", ct);
+        return [.. armor, .. weapons];
+    }
+
+    private async Task<Guid[]> ReadItemClassMapAsync(string url, CancellationToken ct)
+    {
         try
         {
-            var xml = await _http.GetStringAsync(
-                $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{Uri.EscapeDataString(ghostSoulName)}" +
-                "/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
+            var xml = await _http.GetStringAsync(url, ct);
             return ParseItemClasses(xml);
         }
         catch { return []; }

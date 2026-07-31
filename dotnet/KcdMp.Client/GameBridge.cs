@@ -63,12 +63,15 @@ public partial class GameBridge(ClientConfig config)
     // is asking instead of showing a bare relay id.
     private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
 
-    // Appearance (WO-9). Outbound: the local player's item classes as of the
-    // last successful send, so the poll loop only sends on an actual change.
-    // Inbound: per ghost, what is currently applied and which classes have
-    // ever been created in that ghost's inventory -- tracked here rather than
-    // re-read from the game, so applying a diff never needs an extra round
-    // trip to ask "what does this ghost have on already".
+    // Appearance (WO-9 armor, WO-10 weapons). Outbound: the local player's
+    // item classes as of the last successful send, so the poll loop only
+    // sends on an actual change. Armor and weapon classes share this one set
+    // -- EquipItem/UnequipItem do not care which map a class came from, so
+    // there was no need for a second wire message. Inbound: per ghost, what
+    // is currently applied and which classes have ever been created in that
+    // ghost's inventory -- tracked here rather than re-read from the game, so
+    // applying a diff never needs an extra round trip to ask "what does this
+    // ghost have on already".
     private HashSet<Guid>? _lastSentAppearance;
     private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostAppearance = new();
     private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostKnownItemClasses = new();
@@ -495,19 +498,29 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>
-    /// The ghost's spawn-time outfit (kdcmp.lua's <c>KCD2MP.armorPresets.white_red</c>,
-    /// applied via <c>EquipClothingPreset</c> in <c>KCD2MP_SpawnGhost</c>), mirrored
-    /// here as data -- same rule as the animation tables: port it, never
-    /// regenerate it. This exists so the *first* appearance diff for a ghost
-    /// has something to unequip. Without it, the preset's own items are
-    /// never in <see cref="_ghostAppearance"/> (they were never applied
-    /// through this path, only at spawn), so the diff would only ever add to
-    /// the preset and never remove from it -- a real player wearing nothing
-    /// like full plate would still show a ghost head-to-toe in the spawn
-    /// preset with their actual gear invisible underneath. Observed live,
-    /// WO-9 Phase 2: the only visible difference before this fix was a
-    /// gambeson collar peeking out from under an otherwise-unchanged suit of
-    /// plate.
+    /// The ghost's spawn-time outfit AND weapon (kdcmp.lua's
+    /// <c>KCD2MP.armorPresets.white_red</c>, applied via
+    /// <c>EquipClothingPreset</c> + <c>EquipWeaponPreset</c> in
+    /// <c>KCD2MP_SpawnGhost</c>), mirrored here as data -- same rule as the
+    /// animation tables: port it, never regenerate it. This exists so the
+    /// *first* appearance diff for a ghost has something to unequip. Without
+    /// it, the preset's own items are never in <see cref="_ghostAppearance"/>
+    /// (they were never applied through this path, only at spawn), so the
+    /// diff would only ever add to the preset and never remove from it -- a
+    /// real player wearing nothing like full plate would still show a ghost
+    /// head-to-toe in the spawn preset with their actual gear invisible
+    /// underneath. Observed live, WO-9 Phase 2: the only visible difference
+    /// before this fix was a gambeson collar peeking out from under an
+    /// otherwise-unchanged suit of plate.
+    ///
+    /// The weapon entry (WO-10) is the identical trap for
+    /// <c>EquipWeaponPreset(p.weapons)</c>, which the WO-9 session never
+    /// noticed because it only looked at armor: a spawned ghost carries
+    /// <c>sermiry_longSwordMenhart</c> from the <c>kkut_menhart</c> weapon
+    /// preset the moment it exists, confirmed live by reading a freshly
+    /// spawned ghost's own EquippedWeaponsByClassId (WO-10). Left unseeded,
+    /// the first weapon diff would only ever add a player's real weapon
+    /// alongside the preset's sword rather than replacing it.
     /// </summary>
     private static readonly Guid[] GhostSpawnPresetItems =
     [
@@ -520,6 +533,7 @@ public partial class GameBridge(ClientConfig config)
         Guid.Parse("cfc1fd72-dbb7-49a4-8713-6acf215a72be"), // CoifMail01
         Guid.Parse("b6fe59ec-c854-402a-848e-a77f55661c19"), // BascinetVisor05
         Guid.Parse("a06cfbf0-3d59-4003-89d4-69a82eb735af"), // BootsKnee03
+        Guid.Parse("204c1852-dd30-42ae-9317-bc3123a3e301"), // sermiry_longSwordMenhart (kkut_menhart weapon preset)
     ];
 
     /// <summary>

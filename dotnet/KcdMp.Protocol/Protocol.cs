@@ -105,19 +105,25 @@ namespace KcdMp.Wire;
 ///              participants, immediately followed by a normal SessionEnd
 ///              (Completed) that removes the session.
 ///
-/// Appearance layer (WO-9). Replicates the local player's currently-equipped
-/// clothing/armor onto their ghost, per item, instead of the single hardcoded
-/// spawn-time preset.
+/// Appearance layer (WO-9 armor, WO-10 weapons). Replicates the local
+/// player's currently-equipped clothing/armor AND weapons onto their ghost,
+/// per item, instead of the single hardcoded spawn-time preset.
 /// C→S  0x1A  AppearanceUp:   [itemCount:1][itemClass:16]*itemCount
 /// S→C  0x1B  AppearanceDown: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
 ///
 /// itemClass is the item's ItemClass GUID (the game's per-type id, e.g. every
 /// "GambesonShort01_m04_D2" shares one), read from
-/// EquipmentManager.EquippedArmorsByClassId via the reflection debug API --
-/// NOT the SharedSoulGuid used by the combat layer, and not an item instance
-/// id. itemCount is small in practice (a full outfit is under 15 slots) but
-/// bounded at <see cref="Protocol.MaxAppearanceItems"/> so a malformed sender
-/// cannot make a receiver allocate an unbounded array.
+/// EquipmentManager.EquippedArmorsByClassId AND EquippedWeaponsByClassId via
+/// the reflection debug API -- NOT the SharedSoulGuid used by the combat
+/// layer, and not an item instance id. Weapons (WO-10) were added to the same
+/// message rather than a sibling one: EquipItem/UnequipItem/CreateItems are
+/// item-class-agnostic (confirmed live, WO-10 -- the same calls that equip an
+/// armor class equip a weapon class), so the wire payload and the receiver's
+/// diff/apply logic need no new shape, only a second source map on the
+/// outbound read. itemCount is small in practice (a full outfit plus one or
+/// two weapons is under 20 slots) but bounded at
+/// <see cref="Protocol.MaxAppearanceItems"/> so a malformed sender cannot
+/// make a receiver allocate an unbounded array.
 ///
 /// Sent only when the local player's equipped set changes, plus a slow
 /// unconditional heartbeat (see GameBridge) so a peer who joins after the

@@ -61,18 +61,25 @@ public interface IGameTransport : IAsyncDisposable
     Task FlushAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// The local player's currently-equipped item classes (WO-9), read via the
-    /// reflection debug API's <c>EquipmentManager.EquippedArmorsByClassId</c>
-    /// -- NOT the Lua clothing-preset binding, which only reports the preset a
-    /// soul was spawned with and goes blank the moment the player re-equips
-    /// anything by hand. Empty (not null) if the game is not answering.
+    /// The local player's currently-equipped item classes: armor (WO-9) and
+    /// weapons (WO-10) merged into one set, read via the reflection debug
+    /// API's <c>EquipmentManager.EquippedArmorsByClassId</c> and
+    /// <c>EquippedWeaponsByClassId</c> -- NOT the Lua clothing-preset binding,
+    /// which only reports the preset a soul was spawned with and goes blank
+    /// the moment the player re-equips anything by hand. Merging the two maps
+    /// is safe because <c>EquipItem</c>/<c>UnequipItem</c> are item-class-
+    /// agnostic (confirmed live, WO-10): the same call equips whatever slot
+    /// an item class occupies, armor or weapon, so the wire and the apply
+    /// diff never need to know which map a class came from. Empty (not null)
+    /// if the game is not answering.
     /// </summary>
     Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Reads a named ghost soul's own equipped item classes back. Used to
-    /// verify an apply actually took -- a fault-free EquipItem invoke is not
-    /// a successful one, the same trap the native reflection ABI has
+    /// Reads a named ghost soul's own equipped item classes back -- armor and
+    /// weapons merged, same as <see cref="ReadEquippedItemClassesAsync"/>.
+    /// Used to verify an apply actually took -- a fault-free EquipItem invoke
+    /// is not a successful one, the same trap the native reflection ABI has
     /// everywhere else -- never to drive the outbound diff, which is
     /// tracked client-side instead.
     /// </summary>
