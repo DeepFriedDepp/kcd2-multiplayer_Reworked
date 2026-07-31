@@ -77,19 +77,45 @@ Run `release\KCDMP-Setup-<version>.exe` by double-clicking it.
 - [ ] **Launch now** starts the launcher, and it opens with the game already
       configured — Settings shows the right path and no first-run warning.
 
-**The gate, deliberately provoked** (this is the point of the exercise):
+**The gate, deliberately provoked** (this is the point of the exercise).
 
-- [ ] Rename `<library>\steamapps\appmanifest_2429020.acf` to
-      `appmanifest_2429020.acf.bak` and re-run Setup.
-- [ ] The Modding Tools page now says they are not installed and explains
-      what they are.
+> **Do not fake "not installed" by renaming the real
+> `appmanifest_2429020.acf`.** It looks reversible and is not. Steam reads
+> the absence of that file as "the app is not installed", drops the app's
+> entitlement, and the game then refuses to start with **"no license
+> found"** — the only way back is a full redownload. This was done once, on
+> 2026-07-30, and cost 8.8 GB. Setup takes a `/STEAMROOT` override precisely
+> so nobody has to do it again.
+>
+> The trigger is Steam *noticing*. Clicking **Get it on Steam** while the
+> manifest is missing is what does it. Do not rely on "I'll close Steam
+> first" — the deep-link starts it.
+
+Point Setup at a fixture tree instead. `tools\Test-InstallerDetect.ps1`
+builds one at `%TEMP%\kcdmp-detect-fixtures`; run it once first, then:
+
+```bash
+"release\KCDMP-Setup-0.8.0.exe" /STEAMROOT="%TEMP%\kcdmp-detect-fixtures\missing\Steam"
+```
+
+- [ ] The Modding Tools page says they are not installed and explains what
+      they are.
 - [ ] **Next is refused** — clicking it produces the explanation message and
       does not advance.
-- [ ] **Get it on Steam** opens Steam on the Modding Tools store/library
-      entry (`steam://install/2429020`). Cancel out of Steam's dialog.
-- [ ] **Re-check** with the manifest still renamed → "still nothing".
-- [ ] Restore the manifest name, click **Re-check** → the page flips to
-      found, and Next now advances.
+- [ ] **Get it on Steam** opens Steam on the Modding Tools entry
+      (`steam://install/2429020`). Safe here: real Steam still has its
+      manifest, so it just shows you the app. Close Steam's window.
+- [ ] **Re-check** → "still nothing".
+- [ ] Now make the fixture succeed without restarting the wizard: copy
+      `%TEMP%\kcdmp-detect-fixtures\rootlib\Steam\steamapps` over
+      `%TEMP%\kcdmp-detect-fixtures\missing\Steam\steamapps`, then click
+      **Re-check** → the page flips to found and Next advances.
+- [ ] Cancel out at that point rather than installing — the fixture's
+      "game" is a folder of empty files, so letting it deploy the mod there
+      proves nothing and seeds a junk directory.
+
+- [ ] Separately, `/STEAMROOT="C:\definitely\not\here"` → the *Steam not
+      found* page, not the *Modding Tools missing* page.
 
 **Replacing a foreign mod folder:**
 
@@ -102,6 +128,18 @@ Run `release\KCDMP-Setup-<version>.exe` by double-clicking it.
 - [ ] Uninstall from Add/Remove Programs asks whether to remove the mod from
       the game folder; answering No leaves it, answering Yes removes it.
 - [ ] Either way the game itself is untouched.
+- [ ] **With the launcher deliberately left running**, start the uninstaller:
+      it must refuse with "KCD2 Multiplayer is still running" and a
+      Retry/Cancel choice, and Cancel must leave the install completely
+      intact — not half-removed. Close the launcher, click Retry, and confirm
+      it then completes cleanly with no leftover files in
+      `%LocalAppData%\KCDMP`.
+
+      *Why this is on the list:* it was observed failing. Uninstalling with
+      the launcher open removed the registry entries and the uninstaller
+      itself but left ~120 of ~680 files behind, because Inno's built-in
+      CloseApplications uses the Restart Manager over `[Files]` entries and
+      does not cover the `[UninstallDelete]` sweep of `{app}`.
 
 ## Tier 3 — clean machine — NOT EXECUTED
 

@@ -301,7 +301,24 @@ procedure RefreshDetection();
 var
   SteamPath: String;
 begin
-  SteamPath := GetSteamPath();
+  { /STEAMROOT=<dir> makes detection read a fixture tree instead of the real
+    Steam install. This exists so the Modding-Tools gate can be exercised
+    without touching real Steam metadata -- renaming a live appmanifest to
+    fake "not installed" costs a multi-gigabyte redownload, because Steam
+    treats the missing manifest as "not installed" and drops the app's
+    entitlement, and the game then refuses to start with a licence error.
+    Learned the expensive way. See docs\INSTALLER-TESTING.md. }
+  SteamPath := ExpandConstant('{param:steamroot|}');
+  if SteamPath <> '' then
+  begin
+    { A path that does not exist reproduces the "Steam is not installed"
+      page, so both failure pages are reachable from a fixture. }
+    SteamPath := BackslashPath(SteamPath);
+    if not DirExists(SteamPath) then SteamPath := '';
+  end
+  else
+    SteamPath := GetSteamPath();
+
   SteamFound := SteamPath <> '';
 
   if DetectModdingToolsIn(SteamPath, DetectedGameExe) then
@@ -541,10 +558,102 @@ end;
 
 { ----------------------------------------------------------- uninstalling }
 
+// True if any of ours is still running. Inno's own CloseApplications drives
+// the Restart Manager from the Files section, which does not cover the
+// UninstallDelete sweep of the install directory -- so uninstalling with the
+// launcher open removed the registry entries and the uninstaller itself but
+// left ~120 files of ~680 behind. Observed on a real run, not theorised.
+//
+// tasklist rather than a mutex, because a mutex would mean changing the
+// launcher and the uninstaller has no business requiring that. `find`
+// returns exit code 1 when it matches nothing, which is the whole test.
+function AnyOfOursRunning(): Boolean;
+var
+  I, ResultCode: Integer;
+  Names: array[0..2] of String;
+begin
+  Result := False;
+  Names[0] := 'KCDMP_launcher.exe';
+  Names[1] := 'KcdMpClient.exe';
+  Names[2] := 'KcdMpServer.exe';
+
+  for I := 0 to 2 do
+    if Exec(ExpandConstant('{cmd}'),
+            '/c tasklist /fi "imagename eq ' + Names[I] + '" /nh | find /i "' + Names[I] + '"',
+            '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      if ResultCode = 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+end;
+
+procedure KillOursQuietly();
+var
+  I, ResultCode: Integer;
+  Names: array[0..2] of String;
+begin
+  Names[0] := 'KCDMP_launcher.exe';
+  Names[1] := 'KcdMpClient.exe';
+  Names[2] := 'KcdMpServer.exe';
+  for I := 0 to 2 do
+    Exec(ExpandConstant('{cmd}'), '/c taskkill /f /im "' + Names[I] + '"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+{ Runs before anything is removed, and returning False aborts cleanly with
+  nothing touched -- which is the point: a half-finished uninstall is worse
+  than one that did not start. }
+function InitializeUninstall(): Boolean;
+begin
+  Result := True;
+
+  while AnyOfOursRunning() do
+  begin
+    if UninstallSilent then
+    begin
+      { Nobody to ask. Unattended means unattended, and the launcher only
+        writes settings.json when the user presses Save, so there is no
+        in-flight state to lose. }
+      KillOursQuietly();
+      Sleep(1500);
+      if AnyOfOursRunning() then
+      begin
+        Result := False;
+        Exit;
+      end;
+      Break;
+    end;
+
+    if MsgBox('KCD2 Multiplayer is still running.' + #13#10#13#10 +
+              'Close the launcher (and the game, if it is open) first, then click Retry.' + #13#10 +
+              'Uninstalling now would leave files behind that Windows will not let it delete.',
+              mbConfirmation, MB_RETRYCANCEL) <> IDRETRY then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Mods: String;
 begin
+  // Belt and braces for the case InitializeUninstall cannot catch: something
+  // grabbed a file mid-uninstall. Better a plain sentence than silent debris
+  // in the user's profile. Tested on the launcher exe rather than on the
+  // install directory, which legitimately still holds unins000.exe here.
+  if CurUninstallStep = usPostUninstall then
+  begin
+    if FileExists(ExpandConstant('{app}\KCDMP_launcher.exe')) and (not UninstallSilent) then
+      MsgBox('Some files were in use and could not be removed. They are still in:' + #13#10#13#10 +
+             ExpandConstant('{app}') + #13#10#13#10 +
+             'Nothing there is needed any more -- deleting that folder by hand finishes the job.',
+             mbInformation, MB_OK);
+    Exit;
+  end;
+
   if CurUninstallStep <> usUninstall then Exit;
 
   { The mod lives inside the game's own folder, so it is never removed
