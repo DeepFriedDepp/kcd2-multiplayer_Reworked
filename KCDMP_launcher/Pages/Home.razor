@@ -51,10 +51,56 @@
             OnToggleSettings="@ToggleSettingsJS"
             OnRefresh="@RefreshApp"
             OnExit="@ExitApp"
+            OnHostGame="@OpenHostModal"
 />
 
-<ExitModal  IsVisible="@showExitConfirm" 
-            OnConfirm="@(() => Environment.Exit(0))" 
+@if (launchStage != LaunchStage.Idle)
+{
+    <div class="modal-overlay">
+        <div class="modal-box" @onclick:stopPropagation="true" style="max-width: 480px;">
+            <div class="modal-frame-top modal-frame-bg"></div>
+            <div class="modal-content" style="text-align: center;">
+                <div class="modal-title">
+                    @(launchStage switch
+                    {
+                        LaunchStage.WaitingForConnect => "READY TO CONNECT",
+                        LaunchStage.Injecting => "INJECTING...",
+                        LaunchStage.Verifying => "VERIFYING...",
+                        LaunchStage.Connected => "CONNECTED",
+                        LaunchStage.Failed => "CONNECT FAILED",
+                        _ => ""
+                    })
+                </div>
+                <p style="margin: 15px 0;">@launchStatusMessage</p>
+
+                <div class="modal-actions">
+                    @if (launchStage == LaunchStage.WaitingForConnect)
+                    {
+                        <button class="kcd-btn primary" @onclick="ConnectToGame">CONNECT</button>
+                        <button class="kcd-btn" @onclick="CancelPendingConnect">CANCEL</button>
+                    }
+                    else if (launchStage == LaunchStage.Connected || launchStage == LaunchStage.Failed)
+                    {
+                        <button class="kcd-btn primary" @onclick="ResetLaunchState">CLOSE</button>
+                    }
+                </div>
+            </div>
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+<HostInfoModal  IsVisible="@showHostInfo"
+                Port="@settings.HostPort"
+                Addresses="@hostLanAddresses"
+                ErrorMessage="@hostErrorMessage"
+                RelayRunning="@(hostedRelayProcess != null && !hostedRelayProcess.HasExited)"
+                OnLaunchAsHost="@LaunchAsHost"
+                OnStopRelay="@(() => { StopHostedRelay(); showHostInfo = false; })"
+                OnClose="@(() => showHostInfo = false)" />
+
+<ExitModal  IsVisible="@showExitConfirm"
+            OnConfirm="@ConfirmExit"
             OnClose="@(() => showExitConfirm = false)" />
 
 <SettingsModal  IsVisible="@showSettings" 

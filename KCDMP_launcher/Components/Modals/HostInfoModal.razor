@@ -1,0 +1,70 @@
+@inherits ModalBase
+@using KCDMP_launcher.Models
+
+@if (IsVisible)
+{
+    <div class="modal-overlay @(isClosing ? "closing" : "")">
+        <div class="modal-box" @onclick:stopPropagation="true">
+
+            <div class="modal-frame-top modal-frame-bg"></div>
+
+            <div class="modal-content" style="text-align: left;">
+                <div class="modal-title" style="text-align: center;">HOST A GAME</div>
+
+                @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+                {
+                    <div class="kcd-hint" style="color: #c86a4a; margin-bottom: 15px;">@ErrorMessage</div>
+                }
+                else if (RelayRunning)
+                {
+                    <div class="kcd-input-group">
+                        <label class="kcd-label">Share this with your friend</label>
+                        @if (Addresses.Count == 0)
+                        {
+                            <div class="kcd-hint">No network adapters found -- pass "127.0.0.1:@Port" to a friend on this same machine only, or check your network connection.</div>
+                        }
+                        else
+                        {
+                            @foreach (var addr in Addresses)
+                            {
+                                <div class="kcd-input" style="margin-bottom: 6px; font-weight: bold;">@addr:@Port</div>
+                            }
+                        }
+                    </div>
+
+                    <div class="kcd-hint" style="margin-bottom: 12px;">
+                        Same Wi-Fi/LAN: any address above works as-is.<br />
+                        Different networks (over the internet): the simplest option is a VPN overlay like
+                        Tailscale or ZeroTier -- install it on both PCs, and use the IP it gives you instead.
+                        Without a VPN, you'll need to forward port @Port (TCP) on your router to this PC.
+                        See docs/NETWORKING.md for details.
+                    </div>
+                }
+                else
+                {
+                    <div class="kcd-hint">Starting the relay...</div>
+                }
+
+                <div class="modal-actions">
+                    @if (RelayRunning)
+                    {
+                        <button class="kcd-btn primary" @onclick="OnLaunchAsHost">START GAME</button>
+                        <button class="kcd-btn danger" @onclick="OnStopRelay">STOP HOSTING</button>
+                    }
+                    <button class="kcd-btn" @onclick="CloseModalAsync">CLOSE</button>
+                </div>
+            </div>
+
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int Port { get; set; }
+    [Parameter] public List<string> Addresses { get; set; } = new();
+    [Parameter] public string ErrorMessage { get; set; } = "";
+    [Parameter] public bool RelayRunning { get; set; }
+    [Parameter] public EventCallback OnLaunchAsHost { get; set; }
+    [Parameter] public EventCallback OnStopRelay { get; set; }
+}

@@ -92,5 +92,20 @@ namespace KCDMP_launcher.Models
         public int DiceIpcPort { get; set; } = 5901;
 
         public string Language { get; set; } = "en";
+
+        // The relay executable, started locally when the player clicks "Host".
+        // Same resolution rule as AgentPath/DllPath: relative means "next to
+        // the launcher", which is where a packaged release puts it.
+        public string RelayPath { get; set; } = "KcdMpServer.exe";
+
+        // TCP port the locally-hosted relay listens on, and what a joining
+        // friend needs in their own address bar. Matches KcdMp.Server's own
+        // default (Tcp:Port in appsettings.json) so the common case needs no
+        // coordination.
+        public int HostPort { get; set; } = 7778;
+
+        // Mirrors KcdMp.Client's --voice/--no-voice. Exposed as a normal
+        // setting rather than something only reachable via the command line.
+        public bool VoiceChatEnabled { get; set; } = true;
     }
 }

@@ -215,6 +215,37 @@ namespace KCDMP_launcher.Services
             return true;
         }
 
-        
+        /// <summary>
+        /// IPv4 addresses of this machine's own network interfaces, excluding
+        /// loopback and anything not currently up. This is what a friend on
+        /// the same LAN or VPN overlay (Tailscale/ZeroTier/Radmin/Hamachi)
+        /// needs to type in -- there can be more than one (real LAN + a VPN
+        /// adapter), so the host is shown all of them rather than a guess.
+        /// </summary>
+        public List<string> GetLocalIPv4Addresses()
+        {
+            var result = new List<string>();
+            try
+            {
+                foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    if (nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+
+                    foreach (var addr in nic.GetIPProperties().UnicastAddresses)
+                    {
+                        if (addr.Address.AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            result.Add(addr.Address.ToString());
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Could not enumerate local network interfaces");
+            }
+            return result;
+        }
     }
 }

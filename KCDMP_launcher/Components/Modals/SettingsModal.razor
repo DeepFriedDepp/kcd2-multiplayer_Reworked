@@ -55,6 +55,23 @@
                     <input class="kcd-input" type="number" @bind="Settings.ServerInfoPort" />
                 </div>
 
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Relay Path (used when hosting)</label>
+                    <input class="kcd-input" @bind="Settings.RelayPath" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Host Port</label>
+                    <input class="kcd-input" type="number" @bind="Settings.HostPort" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" @bind="Settings.VoiceChatEnabled" />
+                        Voice Chat Enabled
+                    </label>
+                </div>
+
                 <div class="modal-actions">
                     <button class="kcd-btn primary" @onclick="OnSave">SAVE & CLOSE</button>
                     <button class="kcd-btn" @onclick="CloseModalAsync">CANCEL</button>

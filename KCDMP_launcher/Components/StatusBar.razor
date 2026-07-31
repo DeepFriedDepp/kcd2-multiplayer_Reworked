@@ -4,6 +4,10 @@
         <span class="status-btn" @onclick="OnToggleFilters" style="color: #d4af37; font-weight: bold;">
             [TAB] FILTERS @(IsFilterActive ? "(Active)" : "")
         </span>
+        <span class="sep">|</span>
+        <span class="status-btn" @onclick="OnHostGame" style="color: #d4af37; font-weight: bold;">
+            HOST GAME
+        </span>
     </div>
 
     <div class="status-center">
@@ -31,4 +35,5 @@
     [Parameter] public EventCallback OnToggleSettings { get; set; }
     [Parameter] public EventCallback OnRefresh { get; set; }
     [Parameter] public EventCallback OnExit { get; set; }
+    [Parameter] public EventCallback OnHostGame { get; set; }
 }

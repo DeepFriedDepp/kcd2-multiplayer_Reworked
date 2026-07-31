@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using KCDMP_launcher.Components;
 using KCDMP_launcher.Models;
@@ -42,10 +43,35 @@ namespace KCDMP_launcher.Pages
         // Modals
         private bool showExitConfirm = false;
         private bool showSettings = false;
+        private bool showHostInfo = false;
 
         private DotNetObjectReference<Home>? objRef;
         private AppSettings settings = new AppSettings();
         private ServerInfo? serverToEdit = null;
+        #endregion
+
+        #region Host state
+        private Process? hostedRelayProcess = null;
+        private List<string> hostLanAddresses = new List<string>();
+        private string hostErrorMessage = "";
+        #endregion
+
+        #region Launch/connect state
+        // The launcher used to inject the instant WHGame.dll became loadable,
+        // which happens well before the game finishes loading a save -- the
+        // native DLL's own liveness check then finds zero engine ticks and
+        // silently aborts (see docs/VERIFICATION-REPORT.md, "Real finding").
+        // Re-injecting the same DLL path a second time does not help: Windows
+        // does not re-run DllMain for an already-loaded module. So injection
+        // now happens exactly once, gated on the player confirming they are
+        // actually in a loaded world, and the result is verified against the
+        // DLL's own log rather than trusted from the injector's exit code.
+        private enum LaunchStage { Idle, WaitingForConnect, Injecting, Verifying, Connected, Failed }
+        private LaunchStage launchStage = LaunchStage.Idle;
+        private Process? pendingGameProcess = null;
+        private ServerInfo? pendingServer = null;
+        private string? pendingDllPath = null;
+        private string launchStatusMessage = "";
         #endregion
 
         #region Filter State
@@ -326,8 +352,7 @@ namespace KCDMP_launcher.Pages
         }
 
         /// <summary>
-        /// Start the three things the system actually needs: the game, the
-        /// injected DLL, and the agent.
+        /// Start the game and wait until it is ready to be injected into.
         ///
         /// This was written against a design that did not exist yet, and every
         /// assumption in it has since been settled by the native-plugin work:
@@ -335,18 +360,22 @@ namespace KCDMP_launcher.Pages
         /// - It passed "+map &lt;name&gt;" to boot straight into a level. KCD2
         ///   loads a save; there is no level to boot into, so the argument and
         ///   the level-directory check that guarded it are both gone.
-        /// - It never started KcdMpClient.exe, which is the only process that
-        ///   talks to the relay. Launching the game alone connected nothing.
-        /// - It injected 3 seconds after Process.Start. The DLL hooks
-        ///   WHGame.dll's import of C_ModulesManager::Update, so it needs that
-        ///   module loaded; 3 seconds in it is not. It now waits for the module
-        ///   to appear rather than guessing at a delay.
+        /// - It injected the instant WHGame.dll became loadable, and started
+        ///   the agent right after. Both happened well before the game's own
+        ///   per-frame update loop was actually ticking, which is what the DLL
+        ///   itself checks for -- see ConnectToGame below.
         ///
         /// The game must be the Modding Tools build. That is checked here
         /// rather than left to fail confusingly later — see AppSettings.GamePath.
         /// </summary>
         private async Task LaunchGame(ServerInfo server)
         {
+            if (launchStage != LaunchStage.Idle && launchStage != LaunchStage.Failed)
+            {
+                UiService.ShowError("A launch is already in progress.");
+                return;
+            }
+
             if (string.IsNullOrEmpty(settings.GamePath) || !File.Exists(settings.GamePath))
             {
                 UiService.ShowError("Game Executable not found! Please check Settings.");
@@ -405,18 +434,76 @@ namespace KCDMP_launcher.Pages
                     return;
                 }
 
+                launchStage = LaunchStage.WaitingForConnect;
+                launchStatusMessage = "Waiting for the game to start...";
+                StateHasChanged();
+
                 if (!await WaitForInjectableAsync(gameProcess, settings.InjectDelaySeconds))
                 {
                     UiService.ShowError(gameProcess.HasExited
                         ? "Game process exited unexpectedly before injection."
                         : $"WHGame.dll did not load within {settings.InjectDelaySeconds}s, so the DLL was not injected.");
+                    ResetLaunchState();
                     return;
                 }
+
+                pendingGameProcess = gameProcess;
+                pendingServer = server;
+                pendingDllPath = dllFullPath;
+                launchStatusMessage = "Load into your save, then click CONNECT once you can see and move your character.";
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                UiService.ShowError($"Critical Launch Error: {ex.Message}");
+                ResetLaunchState();
+            }
+        }
+
+        /// <summary>
+        /// The second half of launching: inject and start the agent. Split out
+        /// from LaunchGame and gated on the player clicking CONNECT because the
+        /// native DLL only works once the game is actually ticking frames --
+        /// which, per docs/VERIFICATION-REPORT.md, does not happen until well
+        /// past the splash/menu screens and into a loaded save. Injecting the
+        /// moment WHGame.dll is merely loadable (the old behaviour) attaches a
+        /// DLL that immediately finds zero frames and aborts on its own
+        /// liveness check -- silently, since the injector's exit code is still
+        /// 0 (LoadLibrary succeeded; the DLL just gave up after that).
+        ///
+        /// There is no retry if this fires too early: Windows does not re-run
+        /// DllMain for a module that is already loaded at that path, so a
+        /// second injector run against the same game process is a no-op. The
+        /// only way back from a failed verification is a fresh game launch.
+        /// </summary>
+        private async Task ConnectToGame()
+        {
+            if (pendingGameProcess == null || pendingServer == null || pendingDllPath == null)
+            {
+                return;
+            }
+
+            if (pendingGameProcess.HasExited)
+            {
+                UiService.ShowError("The game process has already exited.");
+                ResetLaunchState();
+                return;
+            }
+
+            string injectorPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "KCDMP_LauncherInjector.exe");
+            string agentPath = ResolveAgainstLauncher(settings.AgentPath);
+
+            try
+            {
+                launchStage = LaunchStage.Injecting;
+                launchStatusMessage = "Injecting...";
+                StateHasChanged();
 
                 var injectorStartInfo = new ProcessStartInfo
                 {
                     FileName = injectorPath,
-                    Arguments = $"--pid {gameProcess.Id} --dll \"{dllFullPath}\"",
+                    Arguments = $"--pid {pendingGameProcess.Id} --dll \"{pendingDllPath}\"",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
@@ -429,28 +516,205 @@ namespace KCDMP_launcher.Pages
                         if (injector.ExitCode != 0)
                         {
                             UiService.ShowError($"Injection failed (exit code {injector.ExitCode}).");
+                            ResetLaunchState();
                             return;
                         }
                     }
                 }
 
-                // The agent waits for a save to load on its own, so starting it
-                // now is fine even though the player is still at the main menu.
+                launchStage = LaunchStage.Verifying;
+                launchStatusMessage = "Verifying the plugin actually attached...";
+                StateHasChanged();
+
+                var verdict = await VerifyInjectionAsync(pendingDllPath, pendingGameProcess.Id);
+                if (!verdict)
+                {
+                    UiService.ShowError(
+                        "The plugin loaded but never saw the game running -- you likely clicked Connect before " +
+                        "the save had fully loaded. It cannot retry from here: Windows will not reload an " +
+                        "already-loaded DLL into the same game process. Close the game, click Launch again, and " +
+                        "wait until you can move your character before clicking Connect.");
+                    launchStage = LaunchStage.Failed;
+                    launchStatusMessage = "Injection did not take. Restart the game to try again.";
+                    StateHasChanged();
+                    return;
+                }
+
+                var agentArgs = $"--host {pendingServer.Ip} --port {pendingServer.Port}" +
+                    (settings.VoiceChatEnabled ? "" : " --no-voice");
+
                 var agentStartInfo = new ProcessStartInfo
                 {
                     FileName = agentPath,
-                    Arguments = $"--host {server.Ip} --port {server.Port}",
+                    Arguments = agentArgs,
                     UseShellExecute = false,
                     WorkingDirectory = Path.GetDirectoryName(agentPath)
                 };
 
                 Process.Start(agentStartInfo);
+
+                launchStage = LaunchStage.Connected;
+                launchStatusMessage = "Connected. You can close this once you're playing.";
+                StateHasChanged();
             }
             catch (Exception ex)
             {
                 errorMessage = ex.Message;
-                UiService.ShowError($"Critical Launch Error: {ex.Message}");
+                UiService.ShowError($"Critical Connect Error: {ex.Message}");
+                ResetLaunchState();
             }
+        }
+
+        /// <summary>
+        /// Confirms the injection actually took by reading the DLL's own log
+        /// next to it (see native/KCDMP/log.h -- it always writes beside the
+        /// loaded module) rather than trusting the injector's exit code, which
+        /// only proves LoadLibrary succeeded, not that the plugin found a live
+        /// game to attach to.
+        ///
+        /// Looks for this run's own "pid=&lt;pid&gt;" attach line and the
+        /// liveness sample that follows it ("MAIN: N frames in ~1s"). N == 0
+        /// is the documented race (docs/VERIFICATION-REPORT.md); N &gt; 0 means
+        /// the plugin is live and the pipe is starting.
+        /// </summary>
+        private static async Task<bool> VerifyInjectionAsync(string dllPath, int pid)
+        {
+            var dir = Path.GetDirectoryName(dllPath) ?? "";
+            var logPath = Path.Combine(dir, "kcdmp-native.log");
+            var deadline = DateTime.UtcNow.AddSeconds(8);
+            var attachMarker = $"pid={pid}";
+
+            while (DateTime.UtcNow < deadline)
+            {
+                try
+                {
+                    if (File.Exists(logPath))
+                    {
+                        string text;
+                        using (var stream = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        using (var reader = new StreamReader(stream))
+                        {
+                            text = await reader.ReadToEndAsync();
+                        }
+
+                        var attachIdx = text.LastIndexOf(attachMarker, StringComparison.Ordinal);
+                        if (attachIdx >= 0)
+                        {
+                            var tail = text[attachIdx..];
+                            var match = Regex.Match(tail, @"MAIN: (\d+) frames in ~1s");
+                            if (match.Success)
+                            {
+                                return int.Parse(match.Groups[1].Value) > 0;
+                            }
+                            if (tail.Contains("tick is not firing"))
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                catch (IOException)
+                {
+                    // The DLL still holds a write handle at the moment we try
+                    // to open it; retry rather than treating this as failure.
+                }
+
+                await Task.Delay(300);
+            }
+
+            // Timed out without conclusive evidence either way -- treat as
+            // failure rather than optimistically starting the agent.
+            return false;
+        }
+
+        private void ResetLaunchState()
+        {
+            launchStage = LaunchStage.Idle;
+            pendingGameProcess = null;
+            pendingServer = null;
+            pendingDllPath = null;
+            launchStatusMessage = "";
+            StateHasChanged();
+        }
+
+        private void CancelPendingConnect() => ResetLaunchState();
+
+        // Host flow: start a local relay, show the address a friend needs to
+        // join it, and launch the game connected to it (127.0.0.1, since the
+        // host's own agent always talks to a relay on this machine regardless
+        // of what address a friend uses to reach it).
+        private async Task OpenHostModal()
+        {
+            hostErrorMessage = "";
+            hostLanAddresses = NetService.GetLocalIPv4Addresses();
+
+            if (hostedRelayProcess == null || hostedRelayProcess.HasExited)
+            {
+                string relayPath = ResolveAgainstLauncher(settings.RelayPath);
+                if (!File.Exists(relayPath))
+                {
+                    hostErrorMessage = $"Relay executable not found at: {relayPath}. Check Settings.";
+                }
+                else
+                {
+                    try
+                    {
+                        var relayStartInfo = new ProcessStartInfo
+                        {
+                            FileName = relayPath,
+                            Arguments = $"--port {settings.HostPort}",
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            WorkingDirectory = Path.GetDirectoryName(relayPath)
+                        };
+                        hostedRelayProcess = Process.Start(relayStartInfo);
+                        // Give it a moment to bind before anyone tries to connect.
+                        await Task.Delay(500);
+                        if (hostedRelayProcess == null || hostedRelayProcess.HasExited)
+                        {
+                            hostErrorMessage = "The relay process exited immediately -- check app.log.";
+                            hostedRelayProcess = null;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        hostErrorMessage = $"Could not start the relay: {ex.Message}";
+                        hostedRelayProcess = null;
+                    }
+                }
+            }
+
+            showHostInfo = true;
+            StateHasChanged();
+        }
+
+        private Task LaunchAsHost()
+        {
+            showHostInfo = false;
+            var hostServer = new ServerInfo
+            {
+                Name = "(Hosting)",
+                Ip = "127.0.0.1",
+                Port = settings.HostPort,
+                Ping = 0
+            };
+            return LaunchGame(hostServer);
+        }
+
+        private void StopHostedRelay()
+        {
+            try
+            {
+                if (hostedRelayProcess != null && !hostedRelayProcess.HasExited)
+                {
+                    hostedRelayProcess.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to stop the hosted relay process");
+            }
+            hostedRelayProcess = null;
         }
 
         /// <summary>
@@ -535,7 +799,11 @@ namespace KCDMP_launcher.Pages
         }
 
 
-        private void ConfirmExit() => Environment.Exit(0);
+        private void ConfirmExit()
+        {
+            StopHostedRelay();
+            Environment.Exit(0);
+        }
 
         // Persistence
         private void LoadFavorites() { try { if (File.Exists(FavoritesFileName)) favoriteIps = JsonSerializer.Deserialize<HashSet<string>>(File.ReadAllText(FavoritesFileName)) ?? new(); } catch { } }
