@@ -96,8 +96,24 @@ if ($gamePath) {
 }
 if ($modsPath) {
     Assert-That "mod folder is named kdcmp under Mods" ($modsPath -like "*\Mods\kdcmp") $modsPath
-    foreach ($rel in @("mod.manifest", "Data\kdcmp.pak", "Data\Scripts\Startup\kdcmp.lua")) {
+    foreach ($rel in @("mod.manifest", "Data\kdcmp.pak")) {
         Assert-That "mod file $rel" (Test-Path (Join-Path $modsPath $rel)) $modsPath
+    }
+
+    # The deployment is exactly two files and this is not a style preference.
+    # kdcmp\Data\ also holds the pak's sources; deploying those loose as well
+    # gives the mod a Data\Libs\Tables directory, which takes over the engine's
+    # table root and makes every base table fail to resolve. The game then dies
+    # at startup with "114 tables are not loaded" and nothing points at us.
+    # Happened for real on 2026-07-30, hence an explicit test.
+    $deployed = (Get-ChildItem $modsPath -Recurse -File | ForEach-Object {
+        $_.FullName.Substring($modsPath.Length + 1)
+    } | Sort-Object) -join ' | '
+    Assert-That "mod deployment is exactly mod.manifest + Data\kdcmp.pak" `
+        ($deployed -eq 'Data\kdcmp.pak | mod.manifest') $deployed
+    foreach ($forbidden in @("Data\Libs", "Data\Scripts")) {
+        Assert-That "pak sources NOT deployed loose: $forbidden" `
+            (-not (Test-Path (Join-Path $modsPath $forbidden))) "$modsPath\$forbidden exists"
     }
 }
 

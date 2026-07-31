@@ -52,8 +52,12 @@ Write-Host '=== KCD2-MP build and install ===' -ForegroundColor Cyan
 
 # --- the game must be closed -----------------------------------------------
 
+# Anchored, and not the bare string 'KCD': that also matches this project's own
+# KcdMpServer, KcdMpClient, KCDMP_launcher and KCDMP_LauncherInjector, so a
+# running relay used to be reported as "the game is still running" and blocked
+# the build. The game's process is KingdomCome and nothing else.
 $running = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ProcessName -match 'KingdomCome|KCD' }
+    Where-Object { $_.ProcessName -match '^KingdomCome' }
 if ($running) {
     Write-Host 'FAILED: the game is still running.' -ForegroundColor Red
     $running | ForEach-Object { "  pid $($_.Id)  $($_.ProcessName)" }

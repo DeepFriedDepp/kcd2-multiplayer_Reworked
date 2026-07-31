@@ -81,14 +81,23 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; so this flat layout is the one AppSettings' defaults already expect.
 Source: "..\release\KCDMP\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; The game mod. PrepareToInstall has already emptied this folder if it
-; existed, so this is always a clean replace rather than a merge.
+; The game mod, and ONLY these two files. Do not turn this back into a
+; wildcard over kdcmp\.
 ;
-; uninsneveruninstall is deliberate and load-bearing: without it the
+; kdcmp\Data\ also holds the pak's *sources* -- Libs\Tables\...,
+; Libs\Config\..., Scripts\Startup\kdcmp.lua -- which tools\Build-And-Install-
+; Mod.ps1 packs into kdcmp.pak and deliberately does not copy. Deploying them
+; loose as well breaks the game outright: a loose Data\Libs\Tables directory
+; inside a mod takes over the engine's table root, and every base table then
+; fails to resolve. The game dies at startup with "114 tables are not loaded",
+; and nothing in that message points at this. Observed for real on 2026-07-30.
+;
+; uninsneveruninstall is deliberate and load-bearing too: without it the
 ; uninstaller silently deletes these files out of the player's game folder,
 ; which is not ours to do unasked. Removal is handled by the explicit
 ; question in CurUninstallStepChanged instead.
-Source: "..\kdcmp\*"; DestDir: "{code:GetKdcmpTargetDir}"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall
+Source: "..\kdcmp\mod.manifest"; DestDir: "{code:GetKdcmpTargetDir}"; Flags: ignoreversion uninsneveruninstall
+Source: "..\kdcmp\Data\kdcmp.pak"; DestDir: "{code:GetKdcmpTargetDir}\Data"; Flags: ignoreversion uninsneveruninstall
 
 [Icons]
 ; WorkingDir matters and is not decoration: settings.json is a bare relative

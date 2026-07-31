@@ -52,6 +52,13 @@ Write-Host "Inno Setup compiler: $iscc"
 
 $payload = Join-Path $root "release\KCDMP"
 
+# Rebuild kdcmp.pak from its sources before packaging it. The pak is a build
+# artifact that happens to be tracked in git, so without this a release can
+# quietly ship a pak that does not match the Lua and XML next to it in the
+# repo. -NoInstall: this only rebuilds, it does not touch any game folder.
+& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Build-And-Install-Mod.ps1") -NoInstall
+if ($LASTEXITCODE -ne 0) { throw "Build-And-Install-Mod.ps1 failed (is the game running?)" }
+
 if (-not $SkipPublish) {
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Publish-Release.ps1 failed" }
