@@ -5,7 +5,13 @@ both done and verified live against the real game. Full detail in
 `docs/WO-10-weapon-sync.md` (Part A) and `docs/WO-10-injection-fix.md`
 (Part B) — this file is the session log and the regression record.
 
-**Status: both done.**
+**Status: both done, committed (`10ad471`), pushed, and human-visually
+confirmed.** Beyond the automated `Test-AppearanceE2E.ps1` pass, the human
+watched a live ghost cycle through 3 swords, an axe, a mace, a shield+sword
+combo, and a crossbow (`tools/Bot-WeaponShowcase.ps1`, written for this
+purpose) and confirmed every one rendered correctly before this was
+committed. See "Post-commit: visual confirmation and a new finding" below
+for what happened after the commit landed.
 
 ---
 
@@ -156,6 +162,61 @@ grep, not assumed.
 
 ---
 
+## Post-commit: visual confirmation and a new finding
+
+After `Test-AppearanceE2E.ps1` passed headlessly, the human asked for a
+visual check before trusting it enough to commit. Built
+`tools/Bot-WeaponShowcase.ps1` for this: spawns a test ghost 3 m in front
+of the player (`mp_spawn_test`) and cycles it through 7 real weapon states,
+each held on screen for a configurable dwell so a human can actually look —
+same idea as `Probe-Visual.ps1`'s dwell pattern, but driving the WO-9/WO-10
+equip mechanism directly rather than a Scaleform/UI probe. Every item class
+used was read live off the real player's own `Inventory` (`?depth=2`), not
+guessed. **Human-confirmed, all 7 steps**: spawn preset sword, 2 more
+swords, an axe, a mace, shield+sword simultaneously, and crossbow-only.
+This is the visual-hiding edge case from `docs/WO-10-weapon-sync.md`
+partially answered: shield+sword rendered correctly together, so the
+Hood-vs-Helmet-style exclusivity does **not** reproduce for that
+combination at least. Committed and pushed as part of `10ad471`.
+
+**A new, unresolved anomaly found afterward, informally, not yet
+investigated**: minutes after the showcase finished (ghost left in its
+final "crossbow only" state, `_shieldKite_twitch_ and _huntingSword_`
+unequipped, `_crossbowLightNormal01_` the only thing that should remain),
+a REST read of the ghost's `EquippedWeaponsByClassId` showed
+**`longswordHenry_reforged` back in the equipped map alongside the
+crossbow** — a sword that had been unequipped several steps earlier and
+never re-equipped by anything this session ran. Reproduced on a second
+read minutes later; not a one-off blip. Two live possibilities, neither
+confirmed:
+
+- The game itself may auto-fill an empty melee weapon slot from whatever
+  is sitting in the ghost's inventory once nothing occupies it — every
+  `CreateItems` this session ever ran left an instance sitting in
+  inventory even after being unequipped, so there was something for it to
+  pick back up.
+- Or an `UnequipItem` call earlier in the session silently did not
+  actually take, and the read-back that "confirmed" the crossbow step
+  never checked that the *previous* item was actually gone — only that
+  the *new* target was present. (`Bot-WeaponShowcase.ps1`'s own
+  `Show-Step` verifies additions landed; it does not separately verify
+  removals did. `GameBridge.VerifyAndRetryAsync` in the shipped agent has
+  the same asymmetry — it retries what should now be equipped, never
+  confirms what should now be gone.)
+
+**Not investigated further this session** — found while answering an
+unrelated question after the commit, and root-causing it means the next
+session, not a note appended after the fact. If it is the second
+explanation, it is a real correctness gap in the shipped diff/verify
+logic (a stale weapon could sit on a ghost indefinitely, wrongly believed
+unequipped) and deserves priority. If it is the first, it may not be a
+bug in this project's own code at all, and the shipped design (unequip
+what's not wanted, rely on the next diff/heartbeat to correct anything
+that drifts) may already be self-healing against it — untested either
+way.
+
+---
+
 ## Files touched this session
 
 ```
@@ -170,6 +231,7 @@ VERSION                                   0.9.0 -> 0.9.1
 docs/WO-10-weapon-sync.md                 new
 docs/WO-10-injection-fix.md               new
 docs/WO-10-progress.md                    new (this file)
+tools/Bot-WeaponShowcase.ps1              new -- visual confirmation tool, see "Post-commit" above
 ```
 
 No session-framework, dice, or unrelated engine changes.
@@ -178,9 +240,20 @@ No session-framework, dice, or unrelated engine changes.
 
 ## Next session starts here
 
+- **The unequip/reappearing-weapon anomaly** (see "Post-commit" above) —
+  highest-priority pickup of the items below: a sword thought unequipped
+  reappeared in the ghost's `EquippedWeaponsByClassId` unprompted. Not
+  root-caused. Start by checking whether `VerifyAndRetryAsync`-style
+  read-back-of-removals would have caught it, and whether it reproduces
+  against a fresh ghost (this session's ghost had been through 7 equip/
+  unequip cycles first, so heavy churn may be a factor — same shape as the
+  DLL-injection-recency correlation WO-9 noted and never explained).
 - **Weapon visual-hiding edge case** (sheathed/off-hand exclusivity) —
-  unconfirmed, needs a human watching the screen during a live weapon
-  swap. See `docs/WO-10-weapon-sync.md`.
+  partially answered post-commit: shield+sword rendered correctly
+  together for one real human-confirmed case. Not exhaustively checked
+  against every weapon pairing (e.g. two-handed weapons, crossbow +
+  sidearm) — still needs a human watching the screen for anything beyond
+  what was tried. See `docs/WO-10-weapon-sync.md`.
 - **The soul-walk residual gap** in the injection path — a real, smaller
   version of the same shape of race, found but not fixed this session.
   See `docs/WO-10-injection-fix.md`.
