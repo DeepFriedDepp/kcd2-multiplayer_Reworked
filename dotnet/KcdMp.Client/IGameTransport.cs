@@ -103,4 +103,21 @@ public interface IGameTransport : IAsyncDisposable
 
     /// <summary>Unequips one item class from a named ghost soul.</summary>
     Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default);
+
+    /// <summary>
+    /// Runs a Lua statement immediately, bypassing the batch buffer that
+    /// <see cref="ExecuteAsync"/> writes into.
+    ///
+    /// Exists for WO-13's interp pump, where the timing *is* the feature: the
+    /// batch is flushed by the agent's position loop, so a batched pump frame
+    /// would arrive a whole tick late, every tick. Use <see cref="ExecuteAsync"/>
+    /// for everything else -- one HTTP round trip per statement is exactly the
+    /// cost batching exists to avoid.
+    ///
+    /// This replaced WO-11's <c>SetTimeScaleAsync</c>, whose only caller was
+    /// the peer-slowdown response retired in WO-13. The underlying capability
+    /// is still real and documented in docs/WO-11-findings.md s0.4 if anything
+    /// ever needs it again; it just has no caller.
+    /// </summary>
+    Task ExecuteNowAsync(string lua, CancellationToken ct = default);
 }

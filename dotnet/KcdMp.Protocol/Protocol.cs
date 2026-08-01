@@ -136,7 +136,43 @@ namespace KcdMp.Wire;
 /// unequip what dropped out, equip what is new. This is the same
 /// per-hit-authority, no-new-server-state shape as the combat layer.
 ///
-/// Free type bytes for new features: 0x1C and up.
+/// Pause/world-halt mitigation layer (WO-11). KCD2's UI-state pauses (the
+/// system menu, inventory, sleeping/skipping time) have no reachable native
+/// veto (docs/WO-11-findings.md, tier A closed) -- the local player's own
+/// tick keeps running, so this is not about un-pausing them. The problem is
+/// the shared-world side effect. Each client runs its own full simulation
+/// (HANDOFF-WO4-combat.md), so a player sitting in a menu stops advancing
+/// relative to a peer who is not.
+/// C→S  0x1C  PauseUp:   [state:1]                       (1 byte)
+/// S→C  0x1D  PauseDown: [sourceGhostId:1][state:1]       (2 bytes)
+///
+/// state: 1 = entered a pausing-like UI state, 0 = exited. Sent on every
+/// transition, not on a timer -- unlike Appearance there is no heartbeat,
+/// because a late joiner who missed an "entered" they cannot still be
+/// relevant to (the source's own tick has not stopped, so nothing about a
+/// missed transition compounds the way a missed appearance change would).
+///
+/// Detected client-side by tailing kcd.log for engine-emitted markers that
+/// bracket each state (docs/WO-11-findings.md addendum) -- no native hook,
+/// since 0.2 showed none exists for these states. Only the log-tail
+/// transport can see these lines; the HTTP transport never sends PauseUp.
+///
+/// **What a receiver does with it changed in WO-13.** WO-11 had every
+/// receiver drop its own t_scale for as long as any peer reported paused.
+/// That is retired and must not come back: it is correct for two players and
+/// wrong at any real size, because in a 20-person session one player opening
+/// their inventory would visibly slow the other nineteen. A player's own game
+/// must never slow because someone else paused.
+///
+/// The packet survives as a pure presence signal: the receiver tags that
+/// peer's ghost "[in menu]" so a motionless figure reads as "stepped away"
+/// rather than broken. A manual `mp_slow_time` console command remains as an
+/// independent, OR'd-in source of the same state, for states automatic
+/// detection misses (tutorial popups and photo mode were never confirmed to
+/// emit a log marker). Its name is now a misnomer -- it slows nothing; it
+/// marks you as away.
+///
+/// Free type bytes for new features: 0x1E and up.
 ///
 /// This file lives in the shared KcdMp.Protocol project (net8.0, no
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
@@ -147,14 +183,14 @@ public static class Protocol
     /// <summary>
     /// Protocol version, negotiated in the Handshake.
     ///
-    /// Bumped to 5 for the appearance layer. The relay refuses any handshake
-    /// version that isn't an exact match, so a peer that is actually
-    /// connected always speaks the relay's own appearance vocabulary -- there
-    /// is no separate "does the peer support appearance" gate to add on top
+    /// Bumped to 6 for the pause-mitigation layer. The relay refuses any
+    /// handshake version that isn't an exact match, so a peer that is
+    /// actually connected always speaks the relay's own pause vocabulary --
+    /// there is no separate "does the peer support this" gate to add on top
     /// of that, because a peer that didn't would never have gotten past
     /// Handshake.
     /// </summary>
-    public const byte Version = 5;
+    public const byte Version = 6;
 
     // C→S
     public const byte Handshake      = 0x00;
@@ -169,6 +205,7 @@ public static class Protocol
     public const byte DeathUp        = 0x14;
     public const byte DiceIntent     = 0x16;
     public const byte AppearanceUp   = 0x1A;
+    public const byte PauseUp        = 0x1C;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -187,6 +224,7 @@ public static class Protocol
     public const byte DiceError        = 0x18;
     public const byte DiceEnd          = 0x19;
     public const byte AppearanceDown   = 0x1B;
+    public const byte PauseDown        = 0x1D;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -215,6 +253,18 @@ public static class Protocol
 
     /// <summary>Damage flag: apply without playing a hit reaction.</summary>
     public const byte DamageFlagSuppressHitReaction = 0x01;
+
+    /// <summary>Exact PauseUp (0x1C) payload length.</summary>
+    public const int PauseUpPayloadLen = 1;
+
+    /// <summary>Exact PauseDown (0x1D) payload length.</summary>
+    public const int PauseDownPayloadLen = 2;
+
+    /// <summary>PauseUp/PauseDown state byte: entered a pausing-like UI state.</summary>
+    public const byte PauseStateEntered = 1;
+
+    /// <summary>PauseUp/PauseDown state byte: exited it.</summary>
+    public const byte PauseStateExited = 0;
 
     /// <summary>Length of an ItemClass GUID on the wire (Appearance layer).</summary>
     public const int ItemClassLen = 16;

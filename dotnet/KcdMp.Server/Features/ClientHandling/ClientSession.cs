@@ -172,6 +172,15 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Pause mitigation layer (WO-11) ---
+                if (type == Protocol.PauseUp && payloadLen == Protocol.PauseUpPayloadLen)
+                {
+                    var body = new byte[Protocol.PauseUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.BroadcastPause(this, body);
+                    continue;
+                }
+
                 if (type != Protocol.Position || payloadLen != Protocol.PositionPayloadLen)
                 {
                     // Skip unknown/malformed packet
@@ -264,6 +273,19 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.AppearanceDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a PauseDown (0x1D) packet to be sent to this
+    /// client. The body is the upstream [state:1] payload verbatim, prefixed
+    /// with who sent it.
+    /// </summary>
+    public void EnqueuePause(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.PauseDown, payload));
     }
 
     // -------------------------------------------------------------------------

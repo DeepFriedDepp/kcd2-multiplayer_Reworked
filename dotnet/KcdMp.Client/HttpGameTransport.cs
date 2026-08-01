@@ -314,6 +314,20 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         return result;
     }
 
+    // -------------------------------------------------------------------------
+    // Unbatched Lua (WO-13)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Runs one Lua statement immediately. Same wire path as the batched
+    /// sender, minus the buffer -- so it inherits the property WO-12 s0.4
+    /// proved and this depends on: an ExecuteString-driven statement executes
+    /// straight away even while a menu has focus and Script.SetTimer is
+    /// frozen.
+    /// </summary>
+    public Task ExecuteNowAsync(string lua, CancellationToken ct = default)
+        => SendNowAsync($"pcall(function() {lua} end)", ct);
+
     public async ValueTask DisposeAsync()
     {
         try { await FlushAsync(); } catch { }

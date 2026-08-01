@@ -7,6 +7,7 @@ KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
 KCD2MP.ghostNames = {}          -- id → steam name (received via 0x03 Name packet from server)
+KCD2MP.ghostInMenu = {}         -- id → true while that player has a menu open (WO-13, set by agent on 0x1D)
 KCD2MP.labelCache = {}          -- id → {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
 KCD2MP.horseGhosts = {}         -- id → {entity, entityId} horse ghost per player
@@ -131,9 +132,27 @@ function KCD2MP_EmitState()
     return true
 end
 
+-- Every *Running flag in this file means "we intended this loop to run", NOT
+-- "this loop is running". A save load destroys every pending Script.SetTimer
+-- while leaving the globals set, so the flag stays true over a dead chain --
+-- and because the Start* functions below early-return on the flag, nothing
+-- could ever restart it. Observed live (WO-13): after a save load,
+-- emitRunning and interpRunning both read true with ZERO heartbeats and zero
+-- emitted frames for as long as you care to wait, and every remote player's
+-- ghost stands frozen.
+--
+-- So each loop stamps a heartbeat, and the Start* functions treat a stale
+-- stamp as "not actually running" and restart regardless of the flag.
+local TICK_ALIVE_WINDOW = 1.0   -- seconds; all three loops run far faster
+
+local function tickAlive(flag, stamp)
+    return flag and stamp and (os.clock() - stamp) < TICK_ALIVE_WINDOW
+end
+
 function KCD2MP_EmitTick()
     if not KCD2MP.emitRunning then return end
     Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)  -- reschedule FIRST: a Lua error must not kill the stream
+    KCD2MP._emitAliveAt = os.clock()
 
     local ok, err = pcall(KCD2MP_EmitState)
     if not ok then
@@ -148,8 +167,9 @@ end
 -- intervalMs is optional; the agent passes its configured rate.
 function KCD2MP_StartEmitter(intervalMs)
     if intervalMs and intervalMs >= 5 then KCD2MP.emitIntervalMs = intervalMs end
-    if KCD2MP.emitRunning then return end
+    if tickAlive(KCD2MP.emitRunning, KCD2MP._emitAliveAt) then return end
     KCD2MP.emitRunning = true
+    KCD2MP._emitAliveAt = os.clock()   -- prime it: the first tick is one interval away
     KCD2MP._emitErrLogged = false
     System.LogAlways("[KCD2-MP] State emitter started (" .. KCD2MP.emitIntervalMs .. "ms)")
     Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)
@@ -238,6 +258,20 @@ function KCD2MP_SyncAppearance()
     KCD2MP_EmitEvent("appearance_sync", "")
     mp_log("Requested immediate appearance resync")
     KCD2MP_ShowInteractionMsg("Appearance resync requested")
+end
+
+-- WO-11: honest floor for pause detection, same idea as KCD2MP_SyncAppearance
+-- above. The agent watches kcd.log itself for the menu/inventory/skip-time
+-- markers that were confirmed live (docs/WO-11-findings.md) -- no Lua
+-- involved in detection there either -- but a tutorial popup and photo mode
+-- were never confirmed to emit one, so this lets a player declare "I'm
+-- effectively unavailable" by hand regardless of the reason. Toggles: this
+-- side has no way to know whether the agent currently considers us paused,
+-- so it just flips a manual flag and lets GameBridge OR it with automatic
+-- detection.
+function KCD2MP_SlowTime()
+    KCD2MP_EmitEvent("slow_time_toggle", "")
+    mp_log("Requested manual slow-time toggle")
 end
 
 -- Superseded by the WO-6 dice overlay below, which draws the whole match. Kept
@@ -1608,21 +1642,33 @@ end
 
 -- Auto-start interp tick (safe to call multiple times)
 function KCD2MP_StartInterp()
-    if KCD2MP.interpRunning then return end
-    KCD2MP.interpRunning = true
-    System.LogAlways("[KCD2-MP] Interp tick started (20ms)")
-    Script.SetTimer(20, KCD2MP_InterpTick)
+    -- Liveness, not the flag -- see the comment on tickAlive. A save load
+    -- leaves interpRunning true over a dead timer chain, and the old
+    -- flag-only guard here made that permanent: every remote ghost frozen for
+    -- the rest of the session with no way to recover short of restarting the
+    -- game.
+    if not tickAlive(KCD2MP.interpRunning, KCD2MP._interpAliveAt) then
+        KCD2MP.interpRunning = true
+        KCD2MP._interpAliveAt = os.clock()
+        System.LogAlways("[KCD2-MP] Interp tick started (20ms)")
+        Script.SetTimer(20, KCD2MP_InterpTick)
+    end
     -- Start label render loop if not already running (8ms < 16.7ms frame = no flicker)
-    if not KCD2MP.labelRunning then
+    if not tickAlive(KCD2MP.labelRunning, KCD2MP._labelAliveAt) then
         KCD2MP.labelRunning = true
+        KCD2MP._labelAliveAt = os.clock()
+        System.LogAlways("[KCD2-MP] Label render loop started (8ms)")
         Script.SetTimer(8, KCD2MP_LabelTick)
     end
 end
 
-function KCD2MP_LabelTick()
-    if not KCD2MP.labelRunning then return end
-    Script.SetTimer(8, KCD2MP_LabelTick)
-    -- Update horse positions at 8ms to avoid 20ms stutter (physics fights SetWorldPos less).
+-- Update horse positions at 8ms to avoid 20ms stutter (physics fights SetWorldPos less).
+--
+-- Split out of KCD2MP_LabelTick for WO-13's external pump. InterpTick only
+-- computes horseData.render*; this is what actually applies it, so a pump that
+-- drove InterpTick alone would leave a mounted ghost's horse standing still
+-- while the rider slid along on top of it.
+function KCD2MP_ApplyHorseTransforms()
     for id, horseData in pairs(KCD2MP.horseGhosts) do
         if horseData.entity and horseData.renderX then
             pcall(function()
@@ -1631,6 +1677,43 @@ function KCD2MP_LabelTick()
             end)
         end
     end
+end
+
+-- WO-13: driven by the agent over ExecuteString while a LOCAL menu has focus.
+-- Script.SetTimer -- which schedules every tick in this file -- is frozen for
+-- the whole duration of a local menu (WO-12 s0.3), so without this the other
+-- players' ghosts stand still on your own screen while you are the one in the
+-- inventory. ExecuteString-driven Lua keeps executing throughout (WO-12 s0.4),
+-- which is the whole reason this works.
+--
+-- Deliberately does NOT pump KCD2MP_LabelTick's drawing half. DrawLabel and
+-- DrawText are immediate-mode -- one frame per call -- so pumping them would
+-- draw a nameplate on some frames and not others, i.e. strobe rather than
+-- render. Measured pump rate live is 35-86 Hz against a 60 fps frame, which
+-- is fast enough for motion to look continuous but is NOT frame-locked, so
+-- the strobing is real. Labels therefore stay hidden for the duration of the
+-- menu -- exactly what already happens today. This fix is about ghost bodies
+-- moving, not about labels.
+function KCD2MP_InterpPump()
+    KCD2MP_InterpTick("ext")
+    KCD2MP_ApplyHorseTransforms()
+end
+
+-- WO-13 Phase 2. Called by the agent when a PauseDown (0x1D) says a peer
+-- entered or left a menu. Ghost ids are strings on this side (they key
+-- KCD2MP.ghosts), so the caller must pass the same form it uses everywhere
+-- else; tostring here rather than trusting that.
+function KCD2MP_SetGhostMenuState(id, inMenu)
+    id = tostring(id)
+    KCD2MP.ghostInMenu[id] = inMenu and true or nil
+    mp_log("GHOST_MENU id=" .. id .. " inMenu=" .. tostring(inMenu and true or false))
+end
+
+function KCD2MP_LabelTick()
+    if not KCD2MP.labelRunning then return end
+    Script.SetTimer(8, KCD2MP_LabelTick)
+    KCD2MP._labelAliveAt = os.clock()
+    KCD2MP_ApplyHorseTransforms()
     for id, lbl in pairs(KCD2MP.labelCache) do
         if lbl.size > 0 then
             pcall(function()
@@ -1895,9 +1978,23 @@ local function getFloorZ(x, y, curZ)
     return floorZ, reliable
 end
 
-function KCD2MP_InterpTick()
+-- `arg` is the timer id when this fires from Script.SetTimer, and the string
+-- "ext" when the agent pumps it in through ExecuteString while a local menu
+-- has focus (WO-13). Compared against the sentinel rather than tested for
+-- truthiness, because a real timer id is truthy too.
+--
+-- A pumped call must NOT reschedule. Script.SetTimer is frozen for the whole
+-- duration of a local menu (WO-12 s0.3), so every timer queued by a pumped
+-- call would still be pending when the menu closes and fire as one burst.
+function KCD2MP_InterpTick(arg)
     if not KCD2MP.interpRunning then return end
-    Script.SetTimer(20, KCD2MP_InterpTick)  -- reschedule FIRST: crash-safe, tick never stops
+    if arg ~= "ext" then
+        Script.SetTimer(20, KCD2MP_InterpTick)  -- reschedule FIRST: crash-safe, tick never stops
+        -- Only a scheduled fire counts as the chain being alive. A pumped call
+        -- must not stamp this, or the pump would make a dead chain look
+        -- healthy and stop KCD2MP_StartInterp from ever rebuilding it.
+        KCD2MP._interpAliveAt = os.clock()
+    end
 
     -- Heartbeat: confirm tick is alive (every ~5s = 250 * 20ms)
     KCD2MP._tickN = (KCD2MP._tickN or 0) + 1
@@ -2122,6 +2219,13 @@ function KCD2MP_InterpTick()
                 -- When riding: sz = saddle height, head ~1.3m above saddle.
                 -- When on foot: sz = feet, head ~1.8m above feet.
                 local displayName = KCD2MP.ghostNames[id] or ("Player" .. tostring(id))
+                -- WO-13 Phase 2: a player in a menu is standing perfectly still
+                -- and not responding, which reads as broken. Say so instead.
+                -- No pose work needed -- KCD2MP_UpdateAnimation already settles
+                -- a stationary ghost into its idle animation on its own.
+                if KCD2MP.ghostInMenu[id] then
+                    displayName = displayName .. " [in menu]"
+                end
                 local labelZ = sz + (istate.isRiding and 1.1 or 1.8)
                 local labelSize = 0  -- 0 = hidden (too far)
                 if _playerPos then
@@ -2233,6 +2337,9 @@ function KCD2MP_RemoveGhost(id)
     end
     KCD2MP.ghosts[id] = nil
     KCD2MP.labelCache[id] = nil
+    -- A player who disconnects while in a menu must not leave a stale
+    -- "[in menu]" tag behind for whoever next reuses this ghost id (WO-13).
+    KCD2MP.ghostInMenu[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
     -- wrong (false). Re-probe on next riding ghost (free NPC → correct results).
@@ -3423,6 +3530,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_accept",          "KCD2MP_AcceptInvite()",   "Accept a pending interaction invite")
     System.AddCCommand("mp_decline",         "KCD2MP_DeclineInvite()",  "Decline a pending interaction invite")
     System.AddCCommand("mp_sync_appearance", "KCD2MP_SyncAppearance()", "Force an immediate appearance resync to peers (WO-9)")
+    System.AddCCommand("mp_slow_time",       "KCD2MP_SlowTime()",       "Toggle manually broadcasting a paused/unavailable state to peers (WO-11 fallback)")
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
 

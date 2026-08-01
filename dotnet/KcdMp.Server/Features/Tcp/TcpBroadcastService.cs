@@ -94,6 +94,20 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a PauseUp (0x1C) transition from <paramref name="source"/> to
+    /// all other ready clients (WO-11). Idempotent at the receiver like
+    /// Appearance: it is current state, not a one-shot event, so a duplicate
+    /// or a stale resend is harmless -- the receiver tracks which peers are
+    /// currently reporting paused and only acts on the set becoming
+    /// empty/non-empty, not on each individual packet.
+    /// </summary>
+    public void BroadcastPause(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueuePause(source.Id, body);
+    }
+
+    /// <summary>
     /// Broadcasts a Disconnect (0x06) packet to all remaining clients so they can remove the ghost.
     /// </summary>
     public void BroadcastDisconnect(ClientSession disconnected)

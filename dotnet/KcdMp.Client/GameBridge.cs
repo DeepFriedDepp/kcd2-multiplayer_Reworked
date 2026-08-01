@@ -85,6 +85,42 @@ public partial class GameBridge(ClientConfig config)
     // The only channel to KCDMP_launcher's dice window -- see DiceIpcServer.
     private DiceIpcServer? _diceIpcServer;
 
+    // Local menu state (WO-11 detection, WO-13 semantics). Two independent
+    // sources OR'd into one reported state -- automatic detection (the tail
+    // transport's PauseStateChanged, log-marker driven) and the manual
+    // mp_slow_time override, so either alone is enough to report "in a menu",
+    // and only a transition of the OR'd result sends a packet.
+    //
+    // There is deliberately no remote-side state here any more. WO-11 tracked
+    // which peers were paused so it could slow this client's own t_scale;
+    // WO-13 retired that outright -- see ApplyPeerPauseAsync.
+    private bool _localAutoPaused;
+    private bool _localManualPaused;
+    private bool? _lastSentPauseState;
+    private readonly SemaphoreSlim _pauseSendLock = new(1, 1);
+
+    // WO-13 Phase 1. Script.SetTimer is frozen for the whole duration of a
+    // local menu (WO-12 s0.3), which stops KCD2MP_InterpTick and leaves every
+    // other player's ghost standing still on this player's own screen. While
+    // the local menu state is active this pumps the tick in from outside,
+    // which keeps working because ExecuteString-driven Lua still executes
+    // with a menu open (WO-12 s0.4).
+    private CancellationTokenSource? _interpPumpCts;
+    private readonly object _interpPumpLock = new();
+
+    /// <summary>
+    /// How often the position loop re-arms the mod's Script.SetTimer loops.
+    /// The loop runs at roughly the emit interval, so a few hundred ticks is
+    /// a handful of seconds -- fast enough that a save load costs at most a
+    /// brief freeze, slow enough to be free.
+    /// </summary>
+    private const int ReArmInterpEveryTicks = 250;
+    // Reassigned per connection, same idiom as _combat.OnLocalHit: closes
+    // over that connection's stream, so callers that don't have it
+    // themselves (OnGameEvent, the tail transport's own event thread) can
+    // still trigger a send.
+    private Func<Task>? _sendPauseIfChanged;
+
     public async Task RunAsync(CancellationToken ct = default)
     {
         var http = new HttpGameTransport(config.GameApiBase);
@@ -136,6 +172,26 @@ public partial class GameBridge(ClientConfig config)
         var deadline = DateTime.UtcNow.AddSeconds(3);
         while (tail.FramesReceived == 0 && DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
             await Task.Delay(50, ct);
+
+        // One retry before giving up (WO-13). Falling back to HTTP is not a
+        // cosmetic downgrade: PauseStateChanged and GameEvent only exist on
+        // this transport, so a spurious fallback silently disables the local
+        // menu signal, the interp pump and the "[in menu]" ghost tag. Observed
+        // live: the emitter-start call did not take effect on one startup
+        // (the mod was loaded and healthy, and the identical call issued by
+        // hand a moment later worked immediately), so the failure is real,
+        // transient, and cheap to paper over. The batched send swallows its
+        // own exceptions, so there is nothing to catch upstream -- retrying
+        // the call is the only available remedy.
+        if (tail.FramesReceived == 0 && !ct.IsCancellationRequested)
+        {
+            Console.WriteLine("[transport] no frames yet; re-issuing the emitter start");
+            tail.ResetEmitterStart();
+            try { await tail.StartAsync(ct); } catch { }
+            deadline = DateTime.UtcNow.AddSeconds(3);
+            while (tail.FramesReceived == 0 && DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+                await Task.Delay(50, ct);
+        }
 
         if (tail.FramesReceived == 0)
         {
@@ -269,6 +325,10 @@ public partial class GameBridge(ClientConfig config)
         _lastSentAppearance = null;
         _ghostAppearance.Clear();
         _ghostKnownItemClasses.Clear();
+        _localAutoPaused = false;
+        _localManualPaused = false;
+        _lastSentPauseState = null;
+        StopInterpPump();
 
         // --- Interaction layer ---
         // Framing lives here because this class owns the stream; the interaction
@@ -334,6 +394,22 @@ public partial class GameBridge(ClientConfig config)
         // before the first inbound packet ever arrives.
         _ = _combat.EnsureConnectedAsync(cts.Token);
 
+        // Pause mitigation (WO-11): only the log-tail transport can see the
+        // kcd.log markers this relies on (docs/WO-11-findings.md addendum),
+        // so this is a no-op under HttpGameTransport -- the event simply
+        // never fires. Re-subscribed per connection like _combat.OnLocalHit
+        // above, since the handler closes over this connection's stream.
+        _sendPauseIfChanged = () => SendPauseIfChangedAsync(stream, cts.Token);
+        void OnLocalPauseDetected(bool paused)
+        {
+            _localAutoPaused = paused;
+            _ = _sendPauseIfChanged?.Invoke();
+            // WO-13: the local tick is frozen for as long as this is true.
+            if (paused) StartInterpPump(); else StopInterpPump();
+        }
+        if (_transport is LogTailGameTransport tailForPause)
+            tailForPause.PauseStateChanged += OnLocalPauseDetected;
+
         var receiveTask     = ReceiveLoopAsync(stream, cts.Token);
         var pingTask        = PingLoopAsync(stream, cts.Token);
         var appearanceTask  = AppearanceLoopAsync(stream, cts.Token);
@@ -351,6 +427,21 @@ public partial class GameBridge(ClientConfig config)
                 sw.Stop();
                 totalReadMs += sw.ElapsedMilliseconds;
                 tickCount++;
+
+                // Re-arm the mod's own timer loops periodically (WO-13).
+                // Loading a save destroys every pending Script.SetTimer in the
+                // game, which kills the interp and label loops outright -- and
+                // before the liveness check added in kdcmp.lua, left them
+                // permanently unrestartable. Observed live: every remote
+                // ghost frozen for the rest of the session after one save
+                // load. StartInterp is idempotent and cheap (a stamp
+                // comparison) so calling it on a slow cadence costs nothing
+                // and makes the recovery automatic rather than a restart.
+                if (tickCount % ReArmInterpEveryTicks == 0)
+                {
+                    try { await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end"); }
+                    catch { }
+                }
 
                 if (state.HasValue)
                 {
@@ -395,6 +486,15 @@ public partial class GameBridge(ClientConfig config)
             _voice?.Stop();
             _voice?.Dispose();
             _voice = null;
+
+            if (_transport is LogTailGameTransport tailForPause2)
+                tailForPause2.PauseStateChanged -= OnLocalPauseDetected;
+            _sendPauseIfChanged = null;
+
+            // Stop pumping the interp tick. Nothing else would: the pump is
+            // driven off the local menu signal, and a menu that is still open
+            // when the socket drops never delivers its "exited" edge.
+            StopInterpPump();
 
             // The relay drops our sessions when the socket closes, so local
             // state has to go too or a reconnect would think it is still busy.
@@ -648,6 +748,124 @@ public partial class GameBridge(ClientConfig config)
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Pause mitigation (WO-11)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Sends a PauseUp packet if the OR of the two local sources
+    /// (<see cref="_localAutoPaused"/>, <see cref="_localManualPaused"/>)
+    /// actually changed since the last send. Both sources call this on every
+    /// change rather than computing the OR themselves, so a lock here is the
+    /// one place that has to reason about the two racing -- the tail
+    /// transport's thread (auto) and the log-tail event thread (manual, via
+    /// <see cref="OnGameEvent"/>) can both fire in close succession.
+    /// </summary>
+    private async Task SendPauseIfChangedAsync(NetworkStream stream, CancellationToken ct)
+    {
+        await _pauseSendLock.WaitAsync(ct);
+        try
+        {
+            bool aggregate = _localAutoPaused || _localManualPaused;
+            if (_lastSentPauseState == aggregate) return;
+            _lastSentPauseState = aggregate;
+
+            var packet = new byte[3 + Protocol.PauseUpPayloadLen];
+            packet[0] = Protocol.PauseUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PauseUpPayloadLen);
+            packet[3] = aggregate ? Protocol.PauseStateEntered : Protocol.PauseStateExited;
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine($"[pause] local state -> {(aggregate ? "entered" : "exited")}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[pause] send failed: {ex.Message}"); }
+        finally { _pauseSendLock.Release(); }
+    }
+
+    /// <summary>
+    /// Applies a received PauseDown (0x1D): a peer entered or left a menu.
+    ///
+    /// WO-11 originally had every receiver drop its own <c>t_scale</c> for as
+    /// long as any peer was paused. **That is retired (WO-13 Phase 0) and must
+    /// not come back**: it is correct for two players and wrong at any real
+    /// size, because in a 20-person session one player opening their inventory
+    /// would visibly slow the other nineteen. Nothing here touches the local
+    /// simulation any more -- a player's own game never slows because someone
+    /// else paused.
+    ///
+    /// The packet survives as a pure presence signal. The peer's ghost gets an
+    /// "[in menu]" tag on its nameplate so a motionless, unresponsive figure
+    /// reads as "stepped away" rather than as a broken ghost.
+    /// </summary>
+    /// <summary>
+    /// Starts pumping <c>KCD2MP_InterpPump()</c> into the game (WO-13 Phase 1).
+    ///
+    /// Idempotent: the local menu state can be re-asserted (two overlapping
+    /// markers, or the manual override arriving on top of automatic
+    /// detection) without stacking a second pump.
+    ///
+    /// Sent unbatched. The batch buffer is flushed by the agent's own position
+    /// loop, which would add a whole tick of latency to every pumped frame for
+    /// no reason -- and unlike most Lua this agent sends, the *timing* is the
+    /// entire point.
+    /// </summary>
+    private void StartInterpPump()
+    {
+        lock (_interpPumpLock)
+        {
+            if (_interpPumpCts is not null) return;
+            var cts = new CancellationTokenSource();
+            _interpPumpCts = cts;
+            _ = Task.Run(async () =>
+            {
+                Console.WriteLine("[menu] local menu open -- pumping interp tick");
+                int frames = 0;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    while (!cts.IsCancellationRequested)
+                    {
+                        try { await _transport.ExecuteNowAsync("KCD2MP_InterpPump()", cts.Token); }
+                        catch (OperationCanceledException) { break; }
+                        catch { /* a dropped frame is not worth stopping the pump for */ }
+                        frames++;
+                    }
+                }
+                finally
+                {
+                    sw.Stop();
+                    double hz = sw.Elapsed.TotalSeconds > 0.05 ? frames / sw.Elapsed.TotalSeconds : 0;
+                    Console.WriteLine($"[menu] local menu closed -- pumped {frames} frames in "
+                                    + $"{sw.Elapsed.TotalSeconds:F1}s ({hz:F1} Hz)");
+                }
+            }, cts.Token);
+        }
+    }
+
+    /// <summary>Stops the pump if running. Safe to call when it is not.</summary>
+    private void StopInterpPump()
+    {
+        CancellationTokenSource? cts;
+        lock (_interpPumpLock)
+        {
+            cts = _interpPumpCts;
+            _interpPumpCts = null;
+        }
+        if (cts is null) return;
+        try { cts.Cancel(); } catch { }
+        cts.Dispose();
+    }
+
+    private async Task ApplyPeerPauseAsync(byte sourceGhostId, bool paused, CancellationToken ct)
+    {
+        try
+        {
+            await ExecLuaAsync(
+                $"KCD2MP_SetGhostMenuState(\"{sourceGhostId}\", {(paused ? "true" : "false")})");
+            Console.WriteLine($"[menu] ghost {sourceGhostId} {(paused ? "entered" : "left")} a menu");
+        }
+        catch (Exception ex) { Console.WriteLine($"[menu] ghost {sourceGhostId} tag failed: {ex.Message}"); }
+    }
+
     private static async Task SendAppearanceAsync(NetworkStream stream, Guid[] itemClasses, CancellationToken ct)
     {
         int payloadLen = 1 + itemClasses.Length * Protocol.ItemClassLen;
@@ -721,6 +939,9 @@ public partial class GameBridge(ClientConfig config)
                     _voice?.RemovePlayer(ghostId);
                     _ghostAppearance.TryRemove(ghostId, out _);
                     _ghostKnownItemClasses.TryRemove(ghostId, out _);
+                    // A peer who disconnects mid-pause must not leave us
+                    // slowed forever with no PauseDown(exit) ever coming.
+                    await ApplyPeerPauseAsync(ghostId, paused: false, ct);
                     try { await ExecLuaAsync($"KCD2MP_RemoveGhost(\"{ghostId}\")"); } catch { }
                 }
                 else if (type == Protocol.VoiceDown && payloadLen == 1 + Protocol.VoiceFrameLen)
@@ -756,6 +977,13 @@ public partial class GameBridge(ClientConfig config)
                     if (!applied)
                         Console.WriteLine($"[combat] death from ghost {sourceId} not applied " +
                                           $"(soul {soul} not loaded here, or the DLL is absent)");
+                }
+                else if (type == Protocol.PauseDown && payloadLen == Protocol.PauseDownPayloadLen)
+                {
+                    // PauseDown: [sourceGhostId:1][state:1]
+                    byte sourceId = payload[0];
+                    bool paused = payload[1] == Protocol.PauseStateEntered;
+                    await ApplyPeerPauseAsync(sourceId, paused, ct);
                 }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
@@ -845,6 +1073,23 @@ public partial class GameBridge(ClientConfig config)
                 // interval or the heartbeat to demo or fix a desync.
                 Console.WriteLine("[appearance] manual resync requested");
                 _forceAppearanceResync = true;
+                break;
+
+            case "slow_time_toggle":
+                // mp_slow_time (WO-11): the honest floor for pause detection,
+                // same idea as mp_sync_appearance above. Automatic detection
+                // only covers the three states confirmed live (menu,
+                // inventory, skip-time) -- a tutorial popup or photo mode was
+                // never confirmed to emit a log marker, so this lets a player
+                // manually declare "I'm effectively unavailable" regardless
+                // of why. Toggles rather than a one-shot, since Lua has no
+                // way to know the current state; OR'd with automatic
+                // detection in SendPauseIfChangedAsync, so this never turns
+                // OFF a pause that automatic detection still considers active.
+                _localManualPaused = !_localManualPaused;
+                Console.WriteLine($"[pause] manual override -> {(_localManualPaused ? "paused" : "cleared")}");
+                _ = ExecLuaAsync($"if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"{(_localManualPaused ? "Slow-time: broadcasting paused" : "Slow-time: override cleared")}\") end");
+                _ = _sendPauseIfChanged?.Invoke();
                 break;
 
             case "invite_send":

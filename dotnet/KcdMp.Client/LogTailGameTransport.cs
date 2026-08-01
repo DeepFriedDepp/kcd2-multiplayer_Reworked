@@ -127,6 +127,14 @@ public sealed class LogTailGameTransport : IGameTransport
         }
     }
 
+    /// <summary>
+    /// Forgets that the emitter-start command was already sent, so a following
+    /// <see cref="StartAsync"/> issues it again (WO-13). The send path swallows
+    /// its own exceptions, so a lost start command is indistinguishable from a
+    /// missing mod without simply asking twice.
+    /// </summary>
+    public void ResetEmitterStart() => _emitterStarted = false;
+
     public Task<bool> IsGameReadyAsync(CancellationToken ct = default) =>
         _http.IsGameReadyAsync(ct);
 
@@ -161,6 +169,76 @@ public sealed class LogTailGameTransport : IGameTransport
 
     public Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default) =>
         _http.UnequipItemOnGhostAsync(ghostSoulName, itemClass, ct);
+
+    public Task ExecuteNowAsync(string lua, CancellationToken ct = default) =>
+        _http.ExecuteNowAsync(lua, ct);
+
+    /// <summary>
+    /// Raised when the local player's aggregate pause-like state changes
+    /// (WO-11): true on entering any tracked UI state, false when the last
+    /// one clears. Aggregated from independent enter/exit marker pairs in
+    /// <see cref="ProcessPauseMarkers"/> so two overlapping states (e.g.
+    /// opening inventory while a skip-time animation is still resolving)
+    /// don't produce a spurious "exited" when only one of them closes.
+    ///
+    /// Raised on the tail loop's thread, same discipline as
+    /// <see cref="GameEvent"/> -- subscribers must not block.
+    /// </summary>
+    public event Action<bool>? PauseStateChanged;
+
+    // Independent because they were confirmed as genuinely distinct engine
+    // signals (docs/WO-11-findings.md addendum, isolated live tests): the
+    // ESC pause menu's RTPC tag does not fire for inventory, and neither
+    // fires for a time skip.
+    private bool _menuOpen;
+    private bool _inventoryOpen;
+    private bool _skipTimeActive;
+
+    private bool AggregatePaused => _menuOpen || _inventoryOpen || _skipTimeActive;
+
+    /// <summary>
+    /// Scans one raw (untagged) engine log line for the marker pairs found
+    /// live in WO-11. These are not this mod's own lines -- no
+    /// [KCD2-MP-...] tag -- so they are matched by substring against
+    /// whatever CryEngine/Warhorse actually wrote, confirmed against real
+    /// isolated single-action tests rather than the mixed first pass that
+    /// initially looked ambiguous.
+    /// </summary>
+    private void ProcessPauseMarkers(ReadOnlySpan<char> line)
+    {
+        bool before = AggregatePaused;
+
+        // ESC/system pause menu: confirmed live, isolated
+        // (docs/WO-11-findings.md addendum) -- MenuOpen pairs with the RTPC
+        // tag going to 1, ui_menu_close with it going to 0. The RTPC line is
+        // used as the authoritative edge since it is an explicit boolean,
+        // not just an audio cue that could in principle fire elsewhere.
+        if (line.IndexOf("'sqc_ptag_menu' will be 1") >= 0) _menuOpen = true;
+        else if (line.IndexOf("'sqc_ptag_menu' will be 0") >= 0) _menuOpen = false;
+
+        // Inventory: confirmed live, isolated -- its own PlayAudio pair,
+        // distinct from the pause menu's (WO-11 addendum: the first mixed
+        // test wrongly suggested inventory shared the menu RTPC tag; an
+        // isolated re-test showed that was leftover state from a menu still
+        // open at the start of that window, not inventory at all).
+        if (line.IndexOf("PlayAudio: ApseOpen") >= 0) _inventoryOpen = true;
+        else if (line.IndexOf("PlayAudio: ApseClose") >= 0) _inventoryOpen = false;
+
+        // Skip-time (sleep/wait/bed): brackets the entire skip, start to
+        // finish, via CryEngine's own readiness-observer logging.
+        if (line.IndexOf("Readiness observer 'AfterSkipTime'") >= 0)
+        {
+            if (line.IndexOf("started async waiting") >= 0) _skipTimeActive = true;
+            else if (line.IndexOf("is ready") >= 0) _skipTimeActive = false;
+        }
+
+        bool after = AggregatePaused;
+        if (after != before)
+        {
+            try { PauseStateChanged?.Invoke(after); }
+            catch (Exception ex) { Console.WriteLine($"[pause] handler threw: {ex.Message}"); }
+        }
+    }
 
     // -------------------------------------------------------------------------
 
@@ -264,7 +342,15 @@ public sealed class LogTailGameTransport : IGameTransport
         }
 
         int tagIdx = line.IndexOf(Tag);
-        if (tagIdx < 0) return;
+        if (tagIdx < 0)
+        {
+            // Not one of this mod's own tagged lines -- still worth scanning
+            // for the raw engine markers WO-11 found (menu/inventory/skip-
+            // time). Those never appear on a [KCD2-MP-...] line, so checking
+            // only here costs nothing on the hot (DATA-tagged) path.
+            ProcessPauseMarkers(line);
+            return;
+        }
 
         var rest = line[(tagIdx + Tag.Length)..].Trim();
 
