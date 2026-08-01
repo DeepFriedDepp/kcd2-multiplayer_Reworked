@@ -3,7 +3,7 @@
 An unofficial multiplayer mod for Kingdom Come: Deliverance II. It lets two
 or more people play the same open world together at once: you see each
 other as ghost NPCs (position, animation, nameplates, and each other's
-actual equipped outfit — not one fixed costume), hear each other over
+actual equipped armor *and* weapons — not one fixed costume), hear each other over
 proximity voice chat, can land shared damage on each other and on the
 world's NPCs, and can play a full relay-authoritative game of Farkle dice
 against each other from inside the game itself.
@@ -22,9 +22,9 @@ never "probably fine."
 |---|---|
 | Relay (`KcdMpServer.exe`) | **Working** — automated suites green |
 | Agent (`KcdMpClient.exe`) | **Working** |
-| Native plugin + injection | **Built but unverified** on the fully-automatic path — the DLL's own liveness check can silently no-op if injected before a save is loaded; manual/gated injection into an already-running game is proven |
-| Ghost presence (position/animation/nameplates) | **Working** |
-| Appearance sync (ghosts mirror your real equipped outfit) | **Working** against synthetic peers and in real single-machine play — per-item, not a fixed costume; **unverified** with a second real human. Individual equip/unequip calls occasionally take several seconds to a couple of minutes to actually land under load — a **known rough edge**, not silently broken, see below |
+| Native plugin + injection | **Working** — the liveness race that used to make early injection silently no-op is fixed and verified by a real cold-start injection (the DLL now polls for the game's tick instead of sampling once, and picked the tick up 42s after hooking where it previously aborted at 1s). One **residual gap** remains in the step immediately after it — see below |
+| Ghost presence (position/animation/nameplates) | **Working**, including while *you* are in a menu — ghosts keep moving instead of freezing and snapping, measured at 6–7 m of real ghost travel during a menu that previously froze them dead. A peer who is *themselves* in a menu is tagged **`[in menu]`** on their nameplate, confirmed on screen. Your own nameplates stay hidden during your own menu, as before — see below |
+| Appearance sync (ghosts mirror your real equipped armor and weapons) | **Working** against synthetic peers and in real single-machine play — per-item, not a fixed costume; **unverified** with a second real human. Weapons go through the same mechanism as armor and were human-confirmed on screen across swords, an axe, a mace, shield+sword and a crossbow. Individual equip/unequip calls occasionally take several seconds to a couple of minutes to actually land under load — a **known rough edge**, not silently broken, see below |
 | Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human. NPC aggro (making an NPC fight back) is a **known limit**, not a bug — see below |
 | Voice chat | **Working**, proximity-based |
 | Session framework (invites/accept/decline) | **Working** |
@@ -105,17 +105,44 @@ Installing by hand still works and is documented in
 [docs/LAUNCHING.md](docs/LAUNCHING.md) — use it if the installer misbehaves
 or your Steam setup is unusual.
 
+### Already installed? Update in 2 steps — no reinstall needed
+
+Everyone you play with needs the same version, not just the host — an old and
+a new build won't connect to each other.
+
+Download **`KCDMP-DirectInstall-0.9.2.zip`** from the release and unzip it. It
+contains two folders, `App` and `Mod`:
+
+1. Copy the **`App`** folder's contents into your existing install folder
+   (`%LocalAppData%\KCDMP` — paste that into Explorer's address bar),
+   overwriting when asked. Your `settings.json` is not in the zip, so the game
+   path you already have is left alone.
+2. Copy the **`Mod`** folder's contents into your game's mod folder
+   (`<your KCD2 Modding Tools folder>\Mods\kdcmp`), overwriting when asked —
+   that's `mod.manifest` and `Data\kdcmp.pak`, the same two files Setup.exe
+   deploys there and the only two that belong there.
+
+Close the launcher first. That's it — no need to run Setup.exe again, and
+nothing else on your PC is touched. Prefer a full reinstall? Running
+`KCDMP-Setup-0.9.2.exe` over the top does that and keeps your settings too.
+
 **Building the installer yourself:**
 
 ```
 powershell -ExecutionPolicy Bypass -File tools\Build-Installer.ps1
+powershell -ExecutionPolicy Bypass -File tools\Build-DirectInstall.ps1 -SkipPublish
 ```
 
-That publishes everything self-contained and compiles
-`release\KCDMP-Setup-<version>.exe`. It needs
-[Inno Setup 6](https://jrsoftware.org/isinfo.php)
-(`winget install --id JRSoftware.InnoSetup`). The version comes from the
-`VERSION` file at the repo root.
+The first publishes everything self-contained and compiles
+`release\KCDMP-Setup-<version>.exe`; the second zips that same published
+output into `release\KCDMP-DirectInstall-<version>.zip` (`App\` + `Mod\`, as
+above), reusing the publish the first one just did. Building the installer
+needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(`winget install --id JRSoftware.InnoSetup`); the zip needs nothing extra.
+
+Both read the version from the `VERSION` file at the repo root and from
+nowhere else, so they cannot disagree about it. That number is chosen by hand,
+never bumped automatically — see [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ## How to play dice
 
@@ -319,7 +346,20 @@ Things that are genuinely missing or impossible, as opposed to untested:
   a 30-second resend rather than promising a fixed time. `mp_sync_appearance`
   forces an immediate resync if you don't want to wait. Hairstyle, face and
   beard do not sync — no reflected engine surface exposes them at all.
-  Weapon sync is not implemented (same mechanism as armor, just not built).
+  Weapons *do* sync, through the same mechanism as armor.
+- **Unequips are not verified the way equips are** — the agent retries what
+  should now be *on* a ghost, but never confirms that what should now be
+  *gone* actually went. A weapon unequipped several steps earlier was once
+  observed back in a ghost's equipped map, reproducibly, minutes later. Not
+  root-caused: it may be the game refilling an empty weapon slot from the
+  ghost's own inventory rather than a failed write. See
+  `docs/WO-10-progress.md`.
+- **The soul walk right after injection still gives up after one 5s try** —
+  the tick-liveness check above it now polls and retries; the step after it
+  does not. Inject in the narrow window where the game has started ticking
+  but a save has not finished loading and that injected instance declines to
+  start the pipe, with no second attempt. Observed directly, in the same run
+  that verified the liveness fix. See `docs/WO-10-injection-fix.md`.
 - **NPC aggro** — *closed with evidence, not a to-do.* Replicated damage
   lands and can kill NPCs, but nothing reachable makes an NPC's AI react to
   it. They never fight back.
@@ -332,10 +372,17 @@ Things that are genuinely missing or impossible, as opposed to untested:
   never been run on any machine that touched this project. The .NET side is
   tested against a stub of its contract. The launcher's Join-by-address path
   does not need it; the browsable server list does.
-- **Auto-detecting "you are actually in the world"** — the launcher asks you
-  to confirm you have loaded your save before it injects, because injecting
-  too early attaches a plugin that hooks nothing and only a fresh game launch
-  recovers. It tells you either way; it cannot yet decide for you.
+- **Auto-detecting "you are actually in the world"** — the launcher still asks
+  you to confirm you have loaded your save before it injects. Injecting too
+  early is no longer fatal (the plugin waits for the game's tick instead of
+  giving up on it), but the launcher cannot yet decide for you when you are
+  really in the world, so it asks.
+- **Nameplates are hidden while *your own* menu is open** — ghost bodies keep
+  moving during your menu, but the `System.DrawLabel`/`DrawText` calls that
+  draw names are immediate-mode, one frame per call, and the update pump is
+  not frame-locked to the renderer. Pumping them would strobe rather than
+  render, so they stay off. This is unchanged from before the menu fix, not a
+  regression from it.
 - **The installer does not detect an incomplete Modding Tools data
   install** — it verifies `Framework.dll`/`CrySystem.dll` exist beside
   `KingdomCome.exe`, which proves the *engine binaries* are the right build.
@@ -367,9 +414,18 @@ machine or synthetic:
 - [ ] Host on one PC, join from another, both load saves and connect.
 - [ ] Each sees the other's ghost, hears proximity voice, and lands shared
       combat damage both ways.
-- [ ] One player changes into a visibly different outfit and the other's
-      ghost updates to match within the poll interval or the heartbeat (or
-      instantly via `mp_sync_appearance`), with no animation glitch.
+- [ ] One player changes into a visibly different outfit **or draws a
+      different weapon** and the other's ghost updates to match within the
+      poll interval or the heartbeat (or instantly via `mp_sync_appearance`),
+      with no animation glitch.
+- [ ] Weapon pairings beyond the ones already watched on screen — a
+      two-handed weapon, or a crossbow plus a sidearm. Shield+sword was
+      confirmed to render together; whether anything hides anything else is
+      otherwise unknown.
+- [ ] One player opens a menu while **mounted** and the other watches: does
+      the ghost's horse keep moving with its rider, or does only one of the
+      two update? The horse transform is on the same pump as the rider by
+      design, but a mounted peer during a menu has never been watched.
 - [ ] A full dice match played to completion on both screens.
 - [ ] The same, with one player on a different network over a VPN overlay
       (see [docs/NETWORKING.md](docs/NETWORKING.md)).
@@ -377,11 +433,19 @@ machine or synthetic:
 **One machine, one person:**
 
 - [ ] Launcher → HOST → START GAME → load a save → CONNECT, confirming
-      `kcdmp-native.log` shows a nonzero `frames in ~1s` line for that run's
-      pid and that `KcdMpClient.exe` starts.
+      `kcdmp-native.log` shows a `MAIN: <n> frames after ~<ms> ms -- tick is
+      live` line with a nonzero count for that run's pid, and that
+      `KcdMpClient.exe` starts. (Cold-start injection by hand is verified;
+      the same thing driven by the launcher's own button is not.)
+- [ ] The `[in menu]` nameplate tag seen from the *other* side of a real
+      two-machine session — it was confirmed on screen against a synthetic
+      peer, never against a second human's real menu.
 - [ ] The deliberate failure case: click CONNECT *before* loading a save, and
-      confirm you get the explicit "launch again" message within ~8s rather
-      than a silent half-connected state.
+      confirm you get an explicit message within ~8s rather than a silent
+      half-connected state. Note the two sides now disagree on purpose — the
+      launcher gives up waiting after 8s, while the injected plugin keeps
+      polling for up to 5 minutes and may well go live afterwards. What that
+      looks like to a player has not been watched.
 - [ ] Whether `~` is actually the console key on your keyboard layout — the
       dice instructions above assume it.
 - [ ] The installer's interactive wizard, including the Modding-Tools gate.

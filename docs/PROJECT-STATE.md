@@ -324,7 +324,9 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 ## 8. Reading order for a new session
 
 1. **this document** — current state and corrections
-2. `HANDOFF-WO4-combat.md` — shared combat: architecture, how to run and test
+2. `VERSIONING.md` — **read before touching `VERSION` or building a release.**
+   Version numbers are the user's to choose; no session increments them.
+3. `HANDOFF-WO4-combat.md` — shared combat: architecture, how to run and test
 3. `WO-5-dice.md` — dice (Farkle): architecture, how to run and test, what is
    and is not verified
 4. `NATIVE-PLUGIN-findings.md` — capability evidence, the RTTR ABI
