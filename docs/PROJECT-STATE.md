@@ -204,8 +204,15 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 - **Attacker attribution.** `TakeDamage`'s `Attacker` parameter creates no
   combat history — `HasCombatHistoryWithSoul(player, 30s)` returned false after
   a hit landed.
-- **Faction manipulation.** `C_FactionBase::SetParent` corrupted the faction
-  tree and crashed the game. Disabled in code with reasoning inline.
+- ~~**Faction manipulation.** `C_FactionBase::SetParent` corrupted the faction
+  tree and crashed the game.~~ **FIXED, 2026-08-02 (WO-15 addendum).** The
+  crash was a diagnosed calling-convention bug (a borrowed reference handed to
+  a by-value parameter the callee destroys), not an inherent unsafety of the
+  mechanism. Fixed and live-tested successfully (stable 4+ minutes, donor
+  faction's own membership unharmed) — see `docs/WO-15-findings.md`'s
+  addendum. **Still not wired into the mod's actual aggro path** — this
+  proves the write is safe now, not that it produces aggro on its own (it
+  needs a perceiving/"brained" ghost combined with it, untested together).
 - **Retail build as a target.** Monolithic `WHGame.dll`, exports nothing, no
   reflection REST API. Modding Tools only — both players need that Steam entry.
 

@@ -1065,14 +1065,20 @@ void call_set_parent(FactionSetParent fn, void* self, const void* sp) {
 
 // SetParent is virtual (UEAA in the mangling). Calling the exported
 // C_FactionBase address invokes the BASE implementation and skips whatever
-// C_NPCFactionNode overrides it with -- which is the most likely reason the
-// parent pointer was set and then reconciled away: the base writes one side of
-// a two-sided relationship.
+// C_NPCFactionNode overrides it with.
 //
-// C_FactionBase's vtable is itself exported (??_7C_FactionBase@rpgmodule@wh@@6B@),
-// so the slot index can be recovered honestly: find the base SetParent's
-// address inside the base vtable, then call that same index on the object's own
-// vtable. No guessed offsets.
+// SUPERSEDED THEORY, kept for the record: this was once suspected to be *the*
+// reason the original attempt failed ("the base writes one side of a
+// two-sided relationship"). It was not -- WO-15's Ghidra decompilation of
+// SetParent's actual body found the real cause (an ownership/refcount bug in
+// how the caller passed its argument, fixed at the call site above) with no
+// base-vs-virtual distinction involved anywhere in it. The vtable-recovery
+// approach below was never actually needed. Left in place, unused, in case a
+// future session finds a real reason C_NPCFactionNode's override matters --
+// C_FactionBase's vtable is itself exported
+// (??_7C_FactionBase@rpgmodule@wh@@6B@), so the slot index CAN be recovered
+// honestly rather than guessed, if it's ever needed.
+[[maybe_unused]]
 int find_vtable_index(void* const* vtable, const void* fn, int max_slots = 256) {
     if (!vtable) return -1;
     __try {
@@ -1084,6 +1090,7 @@ int find_vtable_index(void* const* vtable, const void* fn, int max_slots = 256) 
     return -1;
 }
 
+[[maybe_unused]]
 bool call_virtual_set_parent(void* obj, int index, const void* sp) {
     __try {
         auto* vt = *reinterpret_cast<void***>(obj);
@@ -1095,6 +1102,7 @@ bool call_virtual_set_parent(void* obj, int index, const void* sp) {
     }
 }
 
+[[maybe_unused]]
 const void* object_vslot(void* obj, int index) {
     __try {
         auto* vt = *reinterpret_cast<void***>(obj);
@@ -1211,41 +1219,94 @@ void probe_faction() {
         }
 
         // ------------------------------------------------------------------
-        // DISABLED. Calling SetParent from here corrupted the game's faction
-        // tree and ultimately crashed it.
+        // WO-15 fix. Previously DISABLED after this call corrupted the
+        // faction tree and crashed the game -- see git history / the retracted
+        // block this replaces for the original incident.
         //
-        // SetParent takes std::shared_ptr<C_Faction> BY VALUE. MSVC passes it
-        // by address, but the caller must supply a copy the callee will consume
-        // and destroy. What was passed instead was the address of the shared_ptr
-        // living inside the reflected variant, so the callee's destructor ran on
-        // a reference it did not own. Repeated attempts drove the refcount to
-        // zero and released animal_wild_enemy_trosecko outright: the faction
-        // vanished from the manager and its members lost their parent.
+        // Root cause, confirmed by decompiling SetParent and its two helper
+        // functions in RPGModule.dll (Ghidra, 2026-08-02, not guessed):
+        // SetParent's body is
+        //     assign(&this->parent_, param_2);      // copy-assign: increments
+        //                                            // param_2's target, releases
+        //                                            // whatever this->parent_
+        //                                            // held before
+        //     if (param_2.rep != null) release(param_2);   // destroys ITS OWN
+        //                                                   // by-value parameter
+        // That second line is the tell: SetParent unconditionally destroys
+        // (decrements) whatever shared_ptr we hand it, exactly as the x64 ABI
+        // requires for a by-value class parameter. The original call passed
+        // parent_v.data directly -- the reflected Variant's OWN storage -- so
+        // SetParent's destroy-the-parameter step decremented the SAME
+        // reference that call_variant_dtor(parent_v) decremented again
+        // afterward. Two decrements for one increment: exactly the over-release
+        // that emptied animal_wild_enemy_trosecko's member list.
         //
-        // The earlier "the write does not persist" reading was wrong. Nothing
-        // was reconciling the value away -- the refcount was being destroyed
-        // underneath it. The two-sided-registration theory and the vtable work
-        // that followed were both chasing a cause that did not exist.
-        //
-        // Every other write this plugin performs passes a VALUE type -- floats,
-        // an enum, a raw object pointer -- where pointing at our own storage is
-        // correct because the callee copies out. Ownership-transferring
-        // parameters are a different contract, and the same wall blocks
-        // GetFaction, whose argument is a CryStringT.
-        //
-        // DO NOT re-enable until there is a way to construct a genuinely owned
-        // copy of the game's shared_ptr/string types. A read-back straight after
-        // the call looked correct every time; the damage only surfaced later, so
-        // immediate verification does not make this safe.
+        // Fix: hand SetParent a SEPARATE, independently-owned copy instead of
+        // parent_v's own storage, and never destroy that copy ourselves --
+        // SetParent's own body already does. Rather than hand-roll the
+        // increment against a guessed _Ref_count_base offset (the same kind of
+        // assumption that caused the original bug), get that separate copy the
+        // way every other read in this file already does: call
+        // get_property_value a SECOND time. RTTR must copy-construct a shared_ptr
+        // into a variant's own storage to satisfy "a variant owns its value" --
+        // this project has done exactly that read, successfully, hundreds of
+        // times this session alone (SkirmishStatistics, FactionNode, etc.) with
+        // no corruption, so a second independent read is the proven-safe way to
+        // get a proven-safe owned copy. No new offsets, no new assumptions.
         // ------------------------------------------------------------------
-        (void)set_parent;
-        (void)&call_set_parent;
-        (void)&call_virtual_set_parent;
-        (void)&find_vtable_index;
-        (void)&object_vslot;
-        logf("FACTION: SetParent is DISABLED -- shared_ptr is an ownership-transfer "
-             "parameter and passing a borrowed reference corrupted the faction tree. "
-             "See the comment in rttr_abi.cpp.");
+        Variant parent_v2{};
+        if (!call_get_property_value(api.get_property_value, &t_npcf, &parent_v2, &par, dinst.bytes)) {
+            logf("FACTION: FAULT on the second donor Parent read -- aborting, nothing touched");
+            call_variant_dtor(api.variant_dtor, &parent_v);
+            return;
+        }
+        void* fp2 = nullptr;
+        std::memcpy(&fp2, parent_v2.data, sizeof(fp2));
+        if (fp2 != fp) {
+            // Should be impossible (same property, same object, back-to-back
+            // reads) -- if it ever fires, something about this donor changed
+            // faction mid-call and neither copy should be trusted.
+            logf("FACTION: second read returned a different faction (%p vs %p) -- aborting", fp2, fp);
+            call_variant_dtor(api.variant_dtor, &parent_v);
+            call_variant_dtor(api.variant_dtor, &parent_v2);
+            return;
+        }
+
+        // Log the ghost's Parent before touching anything -- expected null
+        // (orphan), which also means SetParent's internal "release the OLD
+        // parent" branch will not run. If this is ever non-null (a re-run
+        // against an already-attached ghost), that branch WILL run and this
+        // fix has no evidence covering it yet.
+        InstanceBuf ginst{};
+        ginst.build(g_layout, t_npcf, ghost_node);
+        Variant before_v{};
+        if (call_get_property_value(api.get_property_value, &t_npcf, &before_v, &par, ginst.bytes)) {
+            void* before_fp = nullptr;
+            std::memcpy(&before_fp, before_v.data, sizeof(before_fp));
+            logf("FACTION: ghost Parent before = %p (expected null/orphan)", before_fp);
+            call_variant_dtor(api.variant_dtor, &before_v);
+        }
+
+        logf("FACTION: calling SetParent(ghost_node=%p, donor_faction=%p) with an "
+             "independently-owned copy", ghost_node, fp2);
+        call_set_parent(set_parent, ghost_node, parent_v2.data);
+        logf("FACTION: SetParent returned -- parent_v2 is now SetParent's to have "
+             "destroyed, not ours; not calling variant_dtor on it");
+
+        // Immediate read-back is evidence, not proof -- the original incident's
+        // read-back also looked correct right up until the refcount emptied
+        // minutes later. Log it anyway as a fast sanity check, but the real
+        // verification is the human polling FactionNode/Parent/Name over HTTP
+        // for an extended window afterward, per the WO's own instruction.
+        Variant after_v{};
+        if (call_get_property_value(api.get_property_value, &t_npcf, &after_v, &par, ginst.bytes)) {
+            void* after_fp = nullptr;
+            std::memcpy(&after_fp, after_v.data, sizeof(after_fp));
+            logf("FACTION: ghost Parent immediately after = %p (expected %p) -- "
+                 "this is NOT sufficient verification, keep polling over HTTP", after_fp, fp);
+            call_variant_dtor(api.variant_dtor, &after_v);
+        }
+
         call_variant_dtor(api.variant_dtor, &parent_v);
         return;
     }
@@ -1295,9 +1356,39 @@ void probe_faction() {
     logf("FACTION: GetFaction(\"%s\") -> %p", faction_name, faction_ptr);
 
     if (plausible_pointer(faction_ptr)) {
-        logf("FACTION: calling SetParent(ghost_node, faction)");
-        call_set_parent(set_parent, ghost_node, fac_v.data);
-        logf("FACTION: returned -- verify ghost FactionNode/Parent/Name over HTTP");
+        // Same ownership fix as the donor path (see the long comment there):
+        // SetParent destroys whatever shared_ptr it is handed, so it must not
+        // be handed fac_v's own storage. Invoke GetFaction a SECOND time for
+        // an independently-owned copy instead of hand-rolling a refcount
+        // increment.
+        //
+        // UNVERIFIED SEPARATELY from the ownership fix: this path's own
+        // std::string argument construction was the thing that FAULTED
+        // (SEH-caught, harmless) in the original investigation
+        // (NATIVE-PLUGIN-findings.md, "FAULT in GetFaction -- the string
+        // argument shape is wrong"). Reaching this line at all means that
+        // fault did not recur for this build/name, but it has not been
+        // re-tested enough to trust independently of the donor path. Prefer
+        // the donor path until this one has its own live evidence.
+        Variant fac_v2{};
+        if (!call_invoke1(api.invoke1, &m_gf, &fac_v2, finst.bytes, sarg)) {
+            logf("FACTION: FAULT on the second GetFaction invoke -- aborting, nothing touched");
+            call_variant_dtor(api.variant_dtor, &fac_v);
+            return;
+        }
+        void* faction_ptr2 = nullptr;
+        std::memcpy(&faction_ptr2, fac_v2.data, sizeof(faction_ptr2));
+        if (faction_ptr2 != faction_ptr) {
+            logf("FACTION: second GetFaction invoke returned a different pointer (%p vs %p) -- aborting",
+                 faction_ptr2, faction_ptr);
+            call_variant_dtor(api.variant_dtor, &fac_v);
+            call_variant_dtor(api.variant_dtor, &fac_v2);
+            return;
+        }
+        logf("FACTION: calling SetParent(ghost_node, faction) with an independently-owned copy");
+        call_set_parent(set_parent, ghost_node, fac_v2.data);
+        logf("FACTION: SetParent returned -- fac_v2 is SetParent's to have destroyed, not ours; "
+             "verify ghost FactionNode/Parent/Name over HTTP, repeatedly, over an extended window");
     } else {
         logf("FACTION: GetFaction returned null -- name not found?");
     }

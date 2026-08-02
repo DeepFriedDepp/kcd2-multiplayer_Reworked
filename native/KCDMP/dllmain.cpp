@@ -102,6 +102,10 @@ DWORD WINAPI plugin_main(LPVOID) {
         kcdmp::rttr::walk_to_soul();
         kcdmp::rttr::probe_method_wrapper();
         kcdmp::rttr::probe_dice_class();
+        // WO-15: re-enabled with the ownership fix (see rttr_abi.cpp). No-ops
+        // unless kcdmp-faction.txt exists beside the DLL -- opt-in, human
+        // writes the ghost/donor GUIDs deliberately before injecting.
+        kcdmp::rttr::probe_faction();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");
