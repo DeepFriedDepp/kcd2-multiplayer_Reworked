@@ -321,7 +321,12 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 - **Ghost behaviour-tree trade-off.** `KCD2MP_SpawnGhost` passes
   `esModularBehaviorTree=""` deliberately so the scheduler does not fight
   `ForceMount` during riding. A ghost *with* a tree genuinely perceives (it
-  appears in `PerceptionHistory`). Real trade-off, undecided.
+  appears in `PerceptionHistory`). **WO-16 tested the trade-off directly**: a
+  populated tree (`"IdleSeq"`) broke neither basic ghost behaviour nor
+  `ForceMount` in testing, and combined with a hostile faction attach (the
+  fix from WO-15), produced real, spontaneous aggro from an ordinary nearby
+  NPC — see `WO-16-findings.md`. Still undecided: whether/how to change the
+  mod's default spawn behaviour; that decision was explicitly deferred.
 - **`kdcmp.lua` is a ~2,400-line monolith.** Much of the ghost plumbing is
   redundant if the DLL ever renders players directly. The animation tables and
   speed thresholds are empirical data — port them, never regenerate them.
