@@ -55,10 +55,13 @@ Confirmed from `git log --follow -- VERSION`, not assumed:
 | `0.9.0` | `4fd2ff8` | WO-9 — armor / appearance sync |
 | `0.9.1` | `10ad471` | + WO-10 — weapon sync, injection liveness fix |
 | `0.9.2` | WO-14 | + WO-13 — ghost-freeze fix, `[in menu]` tag. User-chosen. |
+| `0.9.5` | WO-17 | + WO-15/16 — NPC aggro on ghosts (opt-in). User-chosen. Never published as its own GitHub release. |
+| `0.10.0` | WO-19 | + launcher visual refresh, bug-report modal, version-mismatch notice. User-chosen. First release to actually publish everything since `0.9.2` — see `docs/releases/RELEASE-NOTES-0.10.0.md`. |
 
 `0.9.2` was stated by the user explicitly. It is the label for everything on
 `main` as of WO-14 — WO-9, WO-10 and WO-13 together — not an increment
-derived from `0.9.1`.
+derived from `0.9.1`. `0.9.5` and `0.10.0` were likewise stated by the user,
+not derived.
 
 ## Building a release
 

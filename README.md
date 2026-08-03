@@ -135,7 +135,7 @@ or your Steam setup is unusual.
 Everyone you play with needs the same version, not just the host — an old and
 a new build won't connect to each other.
 
-Download **`KCDMP-DirectInstall-0.9.2.zip`** from the release and unzip it. It
+Download **`KCDMP-DirectInstall-0.10.0.zip`** from the release and unzip it. It
 contains two folders, `App` and `Mod`:
 
 1. Copy the **`App`** folder's contents into your existing install folder
@@ -149,7 +149,7 @@ contains two folders, `App` and `Mod`:
 
 Close the launcher first. That's it — no need to run Setup.exe again, and
 nothing else on your PC is touched. Prefer a full reinstall? Running
-`KCDMP-Setup-0.9.2.exe` over the top does that and keeps your settings too.
+`KCDMP-Setup-0.10.0.exe` over the top does that and keeps your settings too.
 
 **Building the installer yourself:**
 
@@ -488,6 +488,10 @@ Full checklist and what each tier does and does not cover:
 [docs/INSTALLER-TESTING.md](docs/INSTALLER-TESTING.md).
 
 ### Reporting a bug
+
+The launcher's status bar has a **REPORT BUG** button — it opens either the
+GitHub Issues page or this project's Discord directly, whichever you'd
+rather use.
 
 Say which side you were on (host or join), what you were doing, and what you
 expected instead. Then attach whatever of these exists — the paths are exact,
