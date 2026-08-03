@@ -16,6 +16,11 @@ KCD2MP.playerSneaking = false   -- set by OnAction hook when sneak key pressed
 KCD2MP.isRiding = false         -- updated each interp tick (player on horse detection)
 KCD2MP.logActions = false       -- set true only to discover action names (floods log)
 
+-- WO-17: opt-in, off by default, decided locally per player -- see
+-- KCD2MP_EnableAggro. Persists for the session (a plain Lua global survives
+-- until the mod restarts); never auto-enabled, never negotiated with a peer.
+KCD2MP.aggroEnabled = false
+
 -- ===== Debug Logger =====
 -- Messages are queued in KCD2MP.debugLog (max 50).
 -- Server polls KCD2MP_PopLog() via evalLua and prints to its console.
@@ -1266,6 +1271,31 @@ end
 
 -- ===== Ghost NPC Spawn =====
 
+-- WO-17: mp_enable_aggro on|off. Opt-in, off by default, decided locally on
+-- this client only -- it does not need the other player's agreement, the
+-- same way dice needed a session invite/accept but this does not, because it
+-- only changes how THIS player's world treats an incoming ghost. Affects
+-- every ghost spawned AFTER the toggle flips; an already-spawned ghost keeps
+-- whatever tree it spawned with (respawn it, e.g. by having the peer
+-- reconnect, to pick up a change). The agent hears about this via the same
+-- log-tail event channel invite_accept already uses (KCD2MP_EmitEvent) --
+-- it, not Lua, is what actually decides when to attach a ghost to the
+-- hostile faction, since that write only exists in native code.
+function KCD2MP_EnableAggro(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.aggroEnabled = true
+    elseif s:find("off") then KCD2MP.aggroEnabled = false
+    else
+        mp_log("mp_enable_aggro: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    KCD2MP_EmitEvent("aggro_toggle", KCD2MP.aggroEnabled and "on" or "off")
+    mp_log("AGGRO " .. (KCD2MP.aggroEnabled and "ENABLED" or "disabled") ..
+           " -- affects ghosts spawned from now on")
+    KCD2MP_ShowInteractionMsg("Aggro: " .. (KCD2MP.aggroEnabled and "ON" or "OFF"))
+    return true
+end
+
 function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     if KCD2MP.ghosts[id] then
         KCD2MP_RemoveGhost(id)
@@ -1280,13 +1310,20 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     -- which enables human:Mount() for horse riding. Fallback to System.SpawnEntity if needed.
     -- OPTION B: esModularBehaviorTree="" tries to spawn NPC without a scheduler so
     -- SchedulerSubbrain doesn't fight ForceMount ("No valid scheduler behavior" error).
+    --
+    -- WO-17: KCD2MP.aggroEnabled=false (the default) keeps this byte-for-byte
+    -- the empty string every ghost has always spawned with -- this is the
+    -- one non-negotiable regression this WO protects. When true, "IdleSeq"
+    -- is the real, in-use top-level tree WO-16 read off live NPCs/animals;
+    -- it runs real perception without breaking ForceMount (WO-16, Phase 0.2/0.3).
+    local mbt = KCD2MP.aggroEnabled and "IdleSeq" or ""
     local entity = nil
     pcall(function()
         XGenAIModule.SpawnEntity{
             Name      = name,
             ClassName = "NPC",
             Pos       = {x, y, z},
-            Properties = { esFaction = "Civilians", esModularBehaviorTree = "" },
+            Properties = { esFaction = "Civilians", esModularBehaviorTree = mbt },
         }
         entity = System.GetEntityByName(name)
     end)
@@ -1320,6 +1357,22 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     Script.SetTimer(800, function()
         pcall(function() System.ExecuteCommand("closeVisorOn " .. ghostName) end)
     end)
+
+    -- WO-17: human:DrawWeapon() is a real, visually-confirmed native mutation
+    -- (unlike EquipWeaponPreset, which is cosmetic-only, WO-9) -- it does NOT
+    -- flip CombatSoul.HasMeleeWeapon on an NPC (confirmed live: that flag
+    -- tracks the AI's own combat-engagement state, not the item-in-hand
+    -- visual), so this does not grant real retaliation capability. It only
+    -- makes an aggro-flagged ghost look combat-ready rather than sheathed,
+    -- which is worth doing for free since the call is proven harmless.
+    if KCD2MP.aggroEnabled then
+        Script.SetTimer(1000, function()
+            local g = KCD2MP.ghosts[id]
+            if g and g.entity and g.entity.human then
+                pcall(function() g.entity.human:DrawWeapon() end)
+            end
+        end)
+    end
 
     local r = rotZ or 0
 
@@ -3533,6 +3586,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_slow_time",       "KCD2MP_SlowTime()",       "Toggle manually broadcasting a paused/unavailable state to peers (WO-11 fallback)")
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
+    System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
 
     -- Dice overlay (WO-6). These console commands are the SUPPORTED path: the
     -- keybinds below them are unverified action-name guesses, exactly as WO-2's

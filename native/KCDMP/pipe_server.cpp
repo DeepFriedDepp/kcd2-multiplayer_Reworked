@@ -190,6 +190,25 @@ void serve(HANDLE h) {
                 break;
             }
 
+            case kSetFactionHostile: {
+                if (len != kSetFactionHostileLen) {
+                    logf("PIPE: SetFactionHostile wrong length %u", len);
+                    send_result(h, false, seq);
+                    break;
+                }
+                unsigned char guid[16];
+                std::memcpy(guid, body, 16);
+                const bool hostile = body[16] != 0;
+                bool ok = false;
+                const bool ran = main_thread::run_sync([&] {
+                    ok = rttr::set_ghost_faction_hostile(guid, hostile);
+                });
+                logf("PIPE: SetFactionHostile hostile=%s -> %s",
+                     hostile ? "true" : "false", ok ? "applied" : "ghost not loaded / failed");
+                send_result(h, ran && ok, seq);
+                break;
+            }
+
             default:
                 logf("PIPE: unknown frame type 0x%02X (%u bytes)", type, len);
                 break;

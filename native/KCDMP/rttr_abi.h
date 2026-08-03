@@ -402,4 +402,15 @@ bool apply_death(const unsigned char guid[16]);
 // reading Parent back afterwards.
 using FactionSetParent = void (*)(void* self, const void* shared_ptr_faction);
 
+// The real runtime trigger for WO-17's reactive aggro, called from the pipe
+// (agent -> DLL, kSetFactionHostile) instead of the gitignored
+// kcdmp-faction.txt research file probe_faction() still reads. Takes the
+// ghost's own Soul::Guid directly rather than a donor GUID -- the donor is
+// the fixed WO-16 pairing (a real, loaded, hostile-faction bandit soul),
+// baked in as the one v1 hostile faction this project has actually verified
+// produces real aggro. `hostile=false` detaches back to the ghost's
+// pre-attach orphan state (Parent=null), not a guess at a different faction.
+// MUST be called on the game's main thread, same as apply_damage/apply_death.
+bool set_ghost_faction_hostile(const unsigned char ghost_guid[16], bool hostile);
+
 } // namespace kcdmp::rttr

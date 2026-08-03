@@ -105,6 +105,14 @@ public interface IGameTransport : IAsyncDisposable
     Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default);
 
     /// <summary>
+    /// Reads a named ghost's own Soul.Guid (WO-17 reactive aggro) -- the
+    /// identity the native pipe's SetFactionHostile needs, distinct from the
+    /// SharedSoulGuid used for cross-client damage matching. Null if the
+    /// ghost is not a real soul yet.
+    /// </summary>
+    Task<Guid?> ReadGhostSoulGuidAsync(string ghostSoulName, CancellationToken ct = default);
+
+    /// <summary>
     /// Runs a Lua statement immediately, bypassing the batch buffer that
     /// <see cref="ExecuteAsync"/> writes into.
     ///

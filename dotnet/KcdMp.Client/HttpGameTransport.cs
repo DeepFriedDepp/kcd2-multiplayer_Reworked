@@ -305,6 +305,30 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/UnequipItem?itemClassId={itemClass}", ct);
     }
 
+    /// <summary>
+    /// Reads a ghost's own Soul.Guid (WO-17). This is NOT the same field as
+    /// SharedSoulGuid used elsewhere for cross-client damage matching -- a
+    /// locally-spawned ghost proxy carries SharedSoulGuid=0, so Guid is the
+    /// identity that actually resolves through the DLL's SoulsByGuid lookup
+    /// for it. Depth=1 with a heavy-subtree exclude list keeps this cheap,
+    /// same idiom as Get-KcdSoulSnapshot in tools\KcdApi.ps1. Null if the
+    /// ghost is not (yet) a real soul the game will answer for.
+    /// </summary>
+    public async Task<Guid?> ReadGhostSoulGuidAsync(string ghostSoulName, CancellationToken ct = default)
+    {
+        string soul = Uri.EscapeDataString(ghostSoulName);
+        try
+        {
+            var xml = await _http.GetStringAsync(
+                $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}?depth=1&exclude=" +
+                "DerivedStatsByName,Buffs,Roles,StaticData,PersistentData,Archetype,Inventory," +
+                "CombatSoul,CompanionManager,EquipmentManager,FactionNode,SoulClass,SocialClass,StormDebug", ct);
+            var m = SoulGuidRegex().Match(xml);
+            return m.Success ? Guid.Parse(m.Groups[1].Value) : null;
+        }
+        catch { return null; }
+    }
+
     private static Guid[] ParseItemClasses(string xml)
     {
         var matches = ItemClassRegex().Matches(xml);
@@ -353,4 +377,10 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
 
     [GeneratedRegex(@"ItemClass=""([0-9a-fA-F-]{36})""")]
     private static partial Regex ItemClassRegex();
+
+    // Negative lookbehind for "Soul" so this matches the Soul element's own
+    // Guid="..." attribute but not SharedSoulGuid="..." -- both end in
+    // "Guid=", only the latter is preceded by "Soul".
+    [GeneratedRegex(@"(?<!Soul)Guid=""([0-9a-fA-F-]{36})""")]
+    private static partial Regex SoulGuidRegex();
 }

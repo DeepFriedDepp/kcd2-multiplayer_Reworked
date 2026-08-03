@@ -125,3 +125,16 @@ this one test — not committed as reusable tooling, same as WO-15.
 
 Per the WO's own scope, none of this is a decision this session makes —
 just what's now known to be true, and what's still open.
+
+---
+
+**Update, 2026-08-02, later the same day:** items 2 and 3 above were picked
+up in a follow-on session that closed both gaps, got the feature's real
+shape confirmed by the human (changed from this WO's own proposal in
+response to explicit feedback), and shipped it as real, permanent,
+toggle-gated code — see `docs/WO-16-release-candidate.md` for the full gate.
+Short version: (2) root-caused, not fixed, scoped as a known v1 limitation;
+(3) investigated further (native `EquipmentManager.EquipItem` and
+`human:DrawWeapon()`, both real but neither grants combat capability),
+scoped as one-sided aggro for v1. Item 1 (what actually triggers a nearby
+NPC's attack) remains genuinely unanswered.

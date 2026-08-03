@@ -170,6 +170,9 @@ public sealed class LogTailGameTransport : IGameTransport
     public Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default) =>
         _http.UnequipItemOnGhostAsync(ghostSoulName, itemClass, ct);
 
+    public Task<Guid?> ReadGhostSoulGuidAsync(string ghostSoulName, CancellationToken ct = default) =>
+        _http.ReadGhostSoulGuidAsync(ghostSoulName, ct);
+
     public Task ExecuteNowAsync(string lua, CancellationToken ct = default) =>
         _http.ExecuteNowAsync(lua, ct);
 

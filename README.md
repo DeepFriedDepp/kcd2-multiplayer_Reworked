@@ -25,7 +25,8 @@ never "probably fine."
 | Native plugin + injection | **Working** — the liveness race that used to make early injection silently no-op is fixed and verified by a real cold-start injection (the DLL now polls for the game's tick instead of sampling once, and picked the tick up 42s after hooking where it previously aborted at 1s). One **residual gap** remains in the step immediately after it — see below |
 | Ghost presence (position/animation/nameplates) | **Working**, including while *you* are in a menu — ghosts keep moving instead of freezing and snapping, measured at 6–7 m of real ghost travel during a menu that previously froze them dead. A peer who is *themselves* in a menu is tagged **`[in menu]`** on their nameplate, confirmed on screen. Your own nameplates stay hidden during your own menu, as before — see below |
 | Appearance sync (ghosts mirror your real equipped armor and weapons) | **Working** against synthetic peers and in real single-machine play — per-item, not a fixed costume; **unverified** with a second real human. Weapons go through the same mechanism as armor and were human-confirmed on screen across swords, an axe, a mace, shield+sword and a crossbow. Individual equip/unequip calls occasionally take several seconds to a couple of minutes to actually land under load — a **known rough edge**, not silently broken, see below |
-| Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human. NPC aggro (making an NPC fight back) is a **known limit**, not a bug — see below |
+| Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human |
+| NPC aggro on ghosts (`mp_enable_aggro`) | **Working, opt-in, off by default** — decided locally per player, no session invite needed. When on, a ghost that lands or receives a hit gets temporarily attached to one hostile faction, so nearby NPCs recognize and can attack it, then reverts automatically ~20s after combat quiets down. Verified end-to-end (synthetic peer → relay → agent → native plugin → game) and via repeated live fights; **unverified** with a second real human. **Known limits, not bugs** — see below |
 | Voice chat | **Working**, proximity-based |
 | Session framework (invites/accept/decline) | **Working** |
 | Dice engine (Farkle) | **Working** — 59/59 unit tests |
@@ -37,13 +38,37 @@ never "probably fine."
 | Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below |
 | Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
+**NPC aggro (`mp_enable_aggro`) — known limits, v1 scope, not bugs:**
+- **One-sided.** A hostile NPC can hurt an aggro'd ghost; the ghost cannot hurt
+  back. Its weapon visibly draws (`human:DrawWeapon()`, a real native call,
+  confirmed on screen) but `CombatSoul.HasMeleeWeapon` never reflects it and
+  its bare behaviour tree never throws a punch. No lever for real two-way
+  combat was found — see `docs/WO-16-release-candidate.md`.
+- **A sustained fight can leave the ghost stuck floored.** Real combat damage
+  can trigger a genuine stagger/knockdown reaction with no recovery behaviour
+  to bring it back up, because the ghost's behaviour tree is a bare dispatcher
+  with none of a real NPC's archetype-specific recovery branches. The RPG
+  layer still considers it alive and standing throughout (`IsDead`/
+  `IsUnconscious` both stay false) — root-caused, not fixed, this session; see
+  `docs/WO-16-release-candidate.md`.
+- **One hostile faction for all of v1**, a real bandit faction confirmed
+  hostile to ordinary townsfolk (WO-16) — not a nuanced per-NPC-type system.
+- **The hostile-faction attach depends on a playthrough-specific donor soul**
+  (a leftover NPC from a specific earlier ambush sequence). On a save that
+  hasn't reached that ambush, the attach fails quietly — logged, not crashed,
+  but `mp_enable_aggro` currently does nothing observable on such a save.
+  Not verified against a save in that state.
+- **Not synchronized between clients** — whether an NPC treats a ghost as
+  hostile is decided entirely by that NPC's own player's local toggle and
+  local combat events, not agreed between both players.
+- **Not tested with a second real human** — verified end-to-end via a
+  synthetic peer through the real relay and agent, not a real second player.
+
 **Known not achievable, closed with evidence:**
-- **NPC aggro / stimulus injection** — replicated damage lands and can kill
-  NPCs, but there is no reachable way to make an NPC's AI *react* to it; the
-  AI/stimulus surface is not exposed. NPCs never fight back.
-- **Faction manipulation** — writing to a faction's ownership through the
-  reflection layer corrupts a reference-counted pointer the game owns and
-  crashes it; no safe path was found.
+- **Faction manipulation** was closed as unsafe, then reopened and fixed
+  (WO-15): the crash was a diagnosed ownership/refcount bug in how the
+  original call passed its argument, not an inherent unsafety of the
+  mechanism. It now underpins the aggro feature above.
 - **Reading the native dice minigame's live state** — the minigame's own
   in-progress state isn't reachable from outside it. This is why dice is a
   separate relay-authoritative engine rather than mirroring the vanilla

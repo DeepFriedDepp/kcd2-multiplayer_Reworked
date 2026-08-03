@@ -82,6 +82,28 @@ public partial class GameBridge(ClientConfig config)
     // for the poll interval or the heartbeat.
     private volatile bool _forceAppearanceResync;
 
+    // WO-17 reactive aggro. Set by the "aggro_toggle" game event
+    // (mp_enable_aggro console command) -- the mod's own runtime trigger for
+    // rttr::set_ghost_faction_hostile, replacing WO-16's hand-written
+    // kcdmp-faction.txt research file. Off by default: every connected ghost
+    // keeps today's exact behaviour unless a player explicitly opts in on
+    // their own client.
+    private bool _aggroEnabled;
+
+    // A ghost's own Soul.Guid, read once via the debug REST API and cached
+    // for its lifetime -- it does not change, and re-reading it on every
+    // damage event would add a round trip to the hot path. Invalidated on
+    // Disconnect alongside the other per-ghost caches.
+    private readonly ConcurrentDictionary<byte, Guid> _ghostSoulGuidCache = new();
+
+    // How long a ghost stays attached to the hostile faction after the most
+    // recent combat event involving it, before the sweep in the main tick
+    // loop detaches it back to normal. Refreshed on every qualifying event,
+    // so a sustained fight keeps it attached continuously rather than
+    // flapping attach/detach every few seconds.
+    private static readonly TimeSpan AggroHoldDuration = TimeSpan.FromSeconds(20);
+    private readonly ConcurrentDictionary<byte, DateTime> _ghostHostileUntilUtc = new();
+
     // The only channel to KCDMP_launcher's dice window -- see DiceIpcServer.
     private DiceIpcServer? _diceIpcServer;
 
@@ -325,6 +347,12 @@ public partial class GameBridge(ClientConfig config)
         _lastSentAppearance = null;
         _ghostAppearance.Clear();
         _ghostKnownItemClasses.Clear();
+        // WO-17: ghost ids are reassigned per relay connection; a cached
+        // Guid or hold-timer from a previous session would point at nothing.
+        // _aggroEnabled itself is a deliberate local user setting and
+        // deliberately survives a reconnect.
+        _ghostSoulGuidCache.Clear();
+        _ghostHostileUntilUtc.Clear();
         _localAutoPaused = false;
         _localManualPaused = false;
         _lastSentPauseState = null;
@@ -389,6 +417,21 @@ public partial class GameBridge(ClientConfig config)
                 Console.WriteLine($"[combat] sent hit {health:F1} on {soul}");
             }
             catch (Exception ex) { Console.WriteLine($"[combat] hit not sent: {ex.Message}"); }
+
+            // WO-17: Henry (the local player) just landed a real hit too --
+            // per Phase B, that should mark any ghost present in this world
+            // hostile the same as if the ghost had thrown the punch itself,
+            // so a fight either player starts is one both characters are
+            // recognisably part of. Simplification for >2 players: this
+            // flags every currently-named ghost rather than only ones
+            // actually near Henry, which is exactly equivalent to "the one
+            // ghost" in this project's real (2-player) usage. No-op when
+            // aggro is disabled.
+            if (_aggroEnabled)
+            {
+                foreach (var ghostId in _ghostNames.Keys)
+                    _ = TriggerReactiveAggroAsync(ghostId, cts.Token);
+            }
         };
         // Connect now rather than lazily, so the DLL has somewhere to push hits
         // before the first inbound packet ever arrives.
@@ -442,6 +485,10 @@ public partial class GameBridge(ClientConfig config)
                     try { await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end"); }
                     catch { }
                 }
+
+                // WO-17: cheap when nothing is attached -- see the method doc.
+                if (tickCount % 100 == 0)
+                    _ = SweepAggroCooldownsAsync(cts.Token);
 
                 if (state.HasValue)
                 {
@@ -939,6 +986,10 @@ public partial class GameBridge(ClientConfig config)
                     _voice?.RemovePlayer(ghostId);
                     _ghostAppearance.TryRemove(ghostId, out _);
                     _ghostKnownItemClasses.TryRemove(ghostId, out _);
+                    // WO-17: a respawned ghost gets a fresh Soul.Guid, and a
+                    // gone ghost has nothing left to detach.
+                    _ghostSoulGuidCache.TryRemove(ghostId, out _);
+                    _ghostHostileUntilUtc.TryRemove(ghostId, out _);
                     // A peer who disconnects mid-pause must not leave us
                     // slowed forever with no PauseDown(exit) ever coming.
                     await ApplyPeerPauseAsync(ghostId, paused: false, ct);
@@ -966,6 +1017,11 @@ public partial class GameBridge(ClientConfig config)
                     if (!applied)
                         Console.WriteLine($"[combat] damage from ghost {sourceId} not applied " +
                                           $"(soul {soul} not loaded here, or the DLL is absent)");
+                    else
+                        // WO-17: the ghost representing sourceId just landed a
+                        // real hit in this world -- the "Henry is attacking an
+                        // innocent NPC" moment. No-op when aggro is disabled.
+                        _ = TriggerReactiveAggroAsync(sourceId, ct);
                 }
                 else if (type == Protocol.DeathDown && payloadLen == Protocol.DeathDownPayloadLen)
                 {
@@ -1066,6 +1122,25 @@ public partial class GameBridge(ClientConfig config)
                 _ = interactions.RespondAsync(false);
                 break;
 
+            case "aggro_toggle":
+                // mp_enable_aggro on|off (WO-17): the real, always-available
+                // toggle Phase B agreed on. Decided locally, per player -- it
+                // only changes how THIS client's world treats an incoming
+                // ghost, so it needs no session invite/agreement the way dice
+                // does. Off means every damage event below is a no-op, which
+                // is what keeps the default (never-toggled) path byte-for-
+                // byte identical to pre-WO-17 behaviour.
+                _aggroEnabled = arg.Equals("on", StringComparison.OrdinalIgnoreCase);
+                Console.WriteLine($"[aggro] {(_aggroEnabled ? "enabled" : "disabled")}");
+                if (!_aggroEnabled)
+                {
+                    // Turning it off mid-fight must not leave a ghost stuck
+                    // hostile forever with nothing left to detach it.
+                    foreach (var id in _ghostHostileUntilUtc.Keys.ToArray())
+                        _ = DetachGhostAggroAsync(id, CancellationToken.None);
+                }
+                break;
+
             case "appearance_sync":
                 // mp_sync_appearance (WO-9): the honest floor. Forces the next
                 // poll tick to send regardless of whether the equipped set
@@ -1153,6 +1228,91 @@ public partial class GameBridge(ClientConfig config)
             default:
                 Console.WriteLine($"[event] ignoring unknown game event '{name}'");
                 break;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // WO-17 reactive aggro
+    //
+    // The toggle (mp_enable_aggro, above) only gates whether this machinery
+    // runs at all. What actually attaches/detaches a ghost's faction is
+    // combat itself: a ghost keeps the mod's original invisible-to-NPCs
+    // behaviour right up until it lands a hit, or a hit lands on it, exactly
+    // like Henry -- not a standing "this player is a bandit" flag. This is
+    // deliberately a coarser proxy than the game's own crime/witness system
+    // (out of scope, ties into private per-player reputation), but it is
+    // driven by real combat events already flowing through this class, not a
+    // guess.
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Resolves and caches a ghost's own Soul.Guid. Returns null (and caches
+    /// nothing) while the ghost is not yet a real soul the game will answer
+    /// for -- a normal, transient state right after spawn.
+    /// </summary>
+    private async Task<Guid?> ResolveGhostSoulGuidAsync(byte ghostId, CancellationToken ct)
+    {
+        if (_ghostSoulGuidCache.TryGetValue(ghostId, out var cached)) return cached;
+
+        var guid = await _transport.ReadGhostSoulGuidAsync($"kcd2mp_{ghostId}", ct);
+        if (guid is { } g) _ghostSoulGuidCache[ghostId] = g;
+        return guid;
+    }
+
+    /// <summary>
+    /// Marks a ghost as currently "in a fight" -- attaches it to the hostile
+    /// faction if it was not already attached, and always refreshes the hold
+    /// timer so a sustained fight does not flap attach/detach every sweep.
+    /// No-op, silently, when aggro is disabled: every caller of this can stay
+    /// unconditional, keeping the toggle-off path simple to audit.
+    /// </summary>
+    private async Task TriggerReactiveAggroAsync(byte ghostId, CancellationToken ct)
+    {
+        if (!_aggroEnabled) return;
+
+        bool wasHeld = _ghostHostileUntilUtc.ContainsKey(ghostId);
+        _ghostHostileUntilUtc[ghostId] = DateTime.UtcNow + AggroHoldDuration;
+        if (wasHeld) return; // already attached; just refreshed the hold
+
+        var guid = await ResolveGhostSoulGuidAsync(ghostId, ct);
+        if (guid is null)
+        {
+            Console.WriteLine($"[aggro] ghost {ghostId} has no resolvable soul yet; not attaching");
+            _ghostHostileUntilUtc.TryRemove(ghostId, out _);
+            return;
+        }
+
+        bool ok = await _combat.SetFactionHostileAsync(guid.Value, hostile: true, ct);
+        Console.WriteLine($"[aggro] ghost {ghostId} attached to hostile faction: {ok}");
+        if (!ok) _ghostHostileUntilUtc.TryRemove(ghostId, out _); // failed -- nothing to detach later
+    }
+
+    /// <summary>Detaches one ghost back to its pre-attach orphan state.</summary>
+    private async Task DetachGhostAggroAsync(byte ghostId, CancellationToken ct)
+    {
+        _ghostHostileUntilUtc.TryRemove(ghostId, out _);
+        if (!_ghostSoulGuidCache.TryGetValue(ghostId, out var guid)) return;
+        try
+        {
+            bool ok = await _combat.SetFactionHostileAsync(guid, hostile: false, ct);
+            Console.WriteLine($"[aggro] ghost {ghostId} detached from hostile faction: {ok}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[aggro] detach failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Called on a slow cadence from the main tick loop. Cheap when nothing
+    /// is attached (one dictionary scan, no I/O) -- only a ghost whose hold
+    /// timer has actually expired triggers a pipe round trip.
+    /// </summary>
+    private async Task SweepAggroCooldownsAsync(CancellationToken ct)
+    {
+        if (_ghostHostileUntilUtc.IsEmpty) return;
+        var now = DateTime.UtcNow;
+        foreach (var (ghostId, until) in _ghostHostileUntilUtc)
+        {
+            if (until > now) continue;
+            await DetachGhostAggroAsync(ghostId, ct);
         }
     }
 

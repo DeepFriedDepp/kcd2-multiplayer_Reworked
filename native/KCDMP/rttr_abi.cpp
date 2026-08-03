@@ -1395,6 +1395,127 @@ void probe_faction() {
     call_variant_dtor(api.variant_dtor, &fac_v);
 }
 
+namespace {
+// WO-17 v1's one hostile faction, carried over unchanged from WO-16's
+// findings: trosecko_enemies_bandits_prepadeniAmbushers_group1, confirmed
+// enemy/-1 against trosecko_settlements. GetFaction-by-name is still the
+// unverified, fragile path (see the long comment on it above in
+// probe_faction) -- this donor-soul copy is the one route this project
+// trusts for a real, unattended runtime trigger. The donor is
+// prepadeni_bandit_1, a despawned-but-still-in-SoulList leftover from this
+// playthrough's ambush sequence; its soul persists with a live FactionNode
+// regardless of whether its entity is anywhere nearby.
+constexpr const char* kDonorGuidText = "4fc4eb57-9f12-4b65-8acc-ed9fb3f8730a";
+}
+
+// The real runtime trigger for reactive aggro (WO-17), reached from the pipe
+// instead of a hand-written file. Same SetParent recipe as probe_faction's
+// donor path (WO-15's ownership fix: hand SetParent an independently-owned
+// second read of Parent, never destroy it ourselves), refactored to take the
+// ghost's GUID as a parameter and to support detaching as well as attaching.
+bool set_ghost_faction_hostile(const unsigned char ghost_guid[16], bool hostile) {
+    if (!g_walked || !g_souls) { logf("AGGRO: no SoulList"); return false; }
+    Api api{};
+    if (!resolve(api)) { logf("AGGRO: resolve incomplete"); return false; }
+
+    HMODULE rpg = GetModuleHandleA("RPGModule.dll");
+    if (!rpg) { logf("AGGRO: RPGModule.dll not loaded"); return false; }
+    auto set_parent = reinterpret_cast<FactionSetParent>(
+        find_export(module_exports(rpg), "?SetParent@C_FactionBase@rpgmodule@wh@@"));
+    if (!set_parent) { logf("AGGRO: SetParent export not found"); return false; }
+
+    void* ghost_soul = find_soul_by_guid(ghost_guid);
+    if (!ghost_soul) { logf("AGGRO: ghost soul not found"); return false; }
+
+    void* ghost_node = read_object_property(api, "wh::rpgmodule::Soul", ghost_soul,
+                                            "FactionNode", g_layout);
+    if (!plausible_pointer(ghost_node)) { logf("AGGRO: ghost has no FactionNode"); return false; }
+
+    const std::string_view npcf{"wh::rpgmodule::NPCFaction"};
+    Type t_npcf{};
+    bool nok = false;
+    if (!call_get_by_name(api.get_by_name, &t_npcf, &npcf) ||
+        !call_is_valid(api.type_is_valid, &t_npcf, &nok) || !nok) {
+        logf("AGGRO: NPCFaction type did not resolve");
+        return false;
+    }
+    const std::string_view par{"Parent"};
+
+    InstanceBuf ginst{};
+    ginst.build(g_layout, t_npcf, ghost_node);
+
+    if (!hostile) {
+        // Detach: hand SetParent a zeroed 16-byte buffer -- an empty
+        // shared_ptr<C_Faction> (control-block pointer and object pointer
+        // both null), constructed directly rather than read from a property.
+        // SetParent's own decompiled body (see the long comment on the
+        // attach path in probe_faction) is:
+        //     assign(&this->parent_, param_2);
+        //     if (param_2.rep != null) release(param_2);
+        // assign() with a null shared_ptr releases whatever parent_ held
+        // before and sets it null; the guard on the second line means
+        // SetParent will not try to release our own null argument. This
+        // reproduces exactly the ghost's own pre-attach state (Parent
+        // observed null/orphan at spawn, before any attach ever runs) --
+        // restoring a known-good state, not guessing at a different one.
+        // First live exercise of this specific path: verify Parent reads
+        // back null afterward, same discipline the attach path already
+        // uses, before trusting it beyond this session.
+        unsigned char zero_sp[16] = {0};
+        logf("AGGRO: detaching ghost from hostile faction");
+        call_set_parent(set_parent, ghost_node, zero_sp);
+
+        Variant after_v{};
+        if (call_get_property_value(api.get_property_value, &t_npcf, &after_v, &par, ginst.bytes)) {
+            void* after_fp = nullptr;
+            std::memcpy(&after_fp, after_v.data, sizeof(after_fp));
+            logf("AGGRO: ghost Parent after detach = %p (expected null)", after_fp);
+            call_variant_dtor(api.variant_dtor, &after_v);
+        }
+        return true;
+    }
+
+    unsigned char donor_guid[16]{};
+    if (!parse_guid(kDonorGuidText, donor_guid)) {
+        logf("AGGRO: donor GUID literal failed to parse -- this is a bug, not a runtime condition");
+        return false;
+    }
+    void* donor_soul = find_soul_by_guid(donor_guid);
+    if (!donor_soul) { logf("AGGRO: donor soul not loaded here"); return false; }
+    void* donor_node = read_object_property(api, "wh::rpgmodule::Soul", donor_soul,
+                                            "FactionNode", g_layout);
+    if (!plausible_pointer(donor_node)) { logf("AGGRO: donor has no FactionNode"); return false; }
+
+    InstanceBuf dinst{};
+    dinst.build(g_layout, t_npcf, donor_node);
+    Variant parent_v2{};
+    if (!call_get_property_value(api.get_property_value, &t_npcf, &parent_v2, &par, dinst.bytes)) {
+        logf("AGGRO: FAULT reading donor Parent");
+        return false;
+    }
+    void* fp = nullptr;
+    std::memcpy(&fp, parent_v2.data, sizeof(fp));
+    if (!plausible_pointer(fp)) {
+        logf("AGGRO: donor has a null parent");
+        call_variant_dtor(api.variant_dtor, &parent_v2);
+        return false;
+    }
+
+    logf("AGGRO: attaching ghost to hostile faction %p", fp);
+    call_set_parent(set_parent, ghost_node, parent_v2.data);
+    // parent_v2 is now SetParent's to have destroyed, not ours -- do not
+    // call variant_dtor on it (the exact WO-15 ownership fix, reapplied).
+
+    Variant after_v{};
+    if (call_get_property_value(api.get_property_value, &t_npcf, &after_v, &par, ginst.bytes)) {
+        void* after_fp = nullptr;
+        std::memcpy(&after_fp, after_v.data, sizeof(after_fp));
+        logf("AGGRO: ghost Parent after attach = %p (expected %p)", after_fp, fp);
+        call_variant_dtor(api.variant_dtor, &after_v);
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Outbound detection by sampling
 // ---------------------------------------------------------------------------

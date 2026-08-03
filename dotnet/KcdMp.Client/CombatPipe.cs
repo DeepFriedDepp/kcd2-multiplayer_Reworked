@@ -20,11 +20,12 @@ public sealed class CombatPipe : IAsyncDisposable
 {
     private const string PipeName = "kcdmp";
 
-    private const byte ApplyDamage = 0x01;
-    private const byte ApplyDeath  = 0x02;
-    private const byte Ping        = 0x03;
-    private const byte Result      = 0x81;
-    private const byte Pong        = 0x83;
+    private const byte ApplyDamage       = 0x01;
+    private const byte ApplyDeath        = 0x02;
+    private const byte Ping              = 0x03;
+    private const byte SetFactionHostile = 0x04;
+    private const byte Result            = 0x81;
+    private const byte Pong              = 0x83;
 
     private const int GuidLen = 16;
 
@@ -107,6 +108,26 @@ public sealed class CombatPipe : IAsyncDisposable
         var payload = new byte[GuidLen];
         WriteSoulGuid(soul, payload);
         return SendAsync(ApplyDeath, payload, ct);
+    }
+
+    /// <summary>
+    /// Attach or detach a locally-spawned ghost's faction node to/from the
+    /// mod's one v1 hostile faction (WO-17 reactive aggro). The DLL's own
+    /// SetParent recipe (WO-15's ownership fix) does the actual write.
+    ///
+    /// <paramref name="ghostSoul"/> is the ghost's own Soul.Guid, NOT a
+    /// SharedSoulGuid -- a locally-spawned ghost proxy carries
+    /// SharedSoulGuid=0, so Guid is the identity that actually resolves
+    /// through the DLL's SoulsByGuid lookup for it. Callers read it once via
+    /// the debug REST API (SoulList/SoulsByName/kcd2mp_&lt;id&gt;) and may
+    /// cache it for the ghost's lifetime.
+    /// </summary>
+    public Task<bool> SetFactionHostileAsync(Guid ghostSoulGuid, bool hostile, CancellationToken ct = default)
+    {
+        var payload = new byte[GuidLen + 1];
+        WriteSoulGuid(ghostSoulGuid, payload);
+        payload[16] = hostile ? (byte)0x01 : (byte)0x00;
+        return SendAsync(SetFactionHostile, payload, ct);
     }
 
     /// <summary>Round-trip check that the DLL is alive and pumping frames.</summary>
