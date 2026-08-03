@@ -83,6 +83,7 @@ never "probably fine."
 4. Both of you click through to load into the game world; the launcher
    handles injecting the plugin and starting your agent once you confirm
    you're actually in-game.
+5. Once both loaded, ALT+TAB into the launcher and choose the "Connect" option
 
 Same Wi-Fi/LAN: that's it. Different houses: see
 **[docs/NETWORKING.md](docs/NETWORKING.md)** for the two ways to connect
