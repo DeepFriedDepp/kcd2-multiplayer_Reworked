@@ -1,0 +1,36 @@
+@inherits ModalBase
+@using KCDMP_launcher.Components.Shared
+
+@if (IsVisible)
+{
+    <div class="modal-overlay @(isClosing ? "closing" : "")">
+        <div class="modal-box" @onclick:stopPropagation="true">
+
+            <div class="modal-frame-top modal-frame-bg"></div>
+
+            <div class="modal-content" style="text-align: center;">
+                <div class="modal-title">VERSION MISMATCH</div>
+
+                <p>@Message</p>
+
+                <div class="modal-actions">
+                    <button class="kcd-btn primary" @onclick="OpenReleases">VIEW RELEASES</button>
+                    <button class="kcd-btn" @onclick="CloseModalAsync">CLOSE</button>
+                </div>
+            </div>
+
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+@code {
+    // Only fires when the protocol handshake already succeeded -- a real
+    // protocol mismatch is refused hard, elsewhere, before this can ever run.
+    // See Home.razor.cs's PollVersionMismatchAsync for how Message is built.
+    [Parameter] public string Message { get; set; } = "";
+
+    private const string ReleasesUrl = "https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases";
+
+    private void OpenReleases() => UrlLauncher.Open(ReleasesUrl);
+}

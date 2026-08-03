@@ -13,7 +13,7 @@
 
                 @if (!string.IsNullOrWhiteSpace(ErrorMessage))
                 {
-                    <div class="kcd-hint" style="color: #c86a4a; margin-bottom: 15px;">@ErrorMessage</div>
+                    <div class="kcd-hint" style="color: var(--kcd-warn); margin-bottom: 15px;">@ErrorMessage</div>
                 }
                 else if (RelayRunning)
                 {

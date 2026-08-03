@@ -52,6 +52,7 @@
             OnRefresh="@RefreshApp"
             OnExit="@ExitApp"
             OnHostGame="@OpenHostModal"
+            OnReportBug="@(() => showReportBug = true)"
 />
 
 @if (launchStage != LaunchStage.Idle)
@@ -113,4 +114,12 @@
                 OnAdd="@AddCustomServer"
                 OnEdit="@HandleServerUpdate"
                 OnClose="@(() => showAddServer = false)" />
+
+<ReportBugModal IsVisible="@showReportBug"
+                OnClose="@(() => showReportBug = false)" />
+
+<VersionMismatchModal   IsVisible="@showVersionMismatch"
+                        Message="@versionMismatchMessage"
+                        OnClose="@(() => showVersionMismatch = false)" />
+
 <ErrorModal />

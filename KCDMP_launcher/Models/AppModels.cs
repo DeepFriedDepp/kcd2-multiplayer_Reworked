@@ -49,6 +49,19 @@ namespace KCDMP_launcher.Models
         public int MaxPlayers { get; set; } = 0;
     }
 
+    // Mirrors VersionStatusDto/PeerVersionDto in dotnet/KcdMp.Client/VersionIpcServer.cs (WO-19).
+    public class VersionStatusData
+    {
+        public string MyReleaseVersion { get; set; } = "";
+        public List<PeerVersionData> Peers { get; set; } = new();
+    }
+
+    public class PeerVersionData
+    {
+        public byte GhostId { get; set; }
+        public string ReleaseVersion { get; set; } = "";
+    }
+
     public class AppSettings
     {
         // KCD2 must be started through the Modding Tools build: the debug REST
@@ -90,6 +103,13 @@ namespace KCDMP_launcher.Models
         // because the agent-side endpoint itself is still there as a debug
         // mirror -- see docs/WO-6-progress.md for that decision.
         public int DiceIpcPort { get; set; } = 5901;
+
+        // Where the locally-running agent's release-version IPC listener
+        // binds (see dotnet/KcdMp.Client/VersionIpcServer.cs, WO-19). Local
+        // machine only, matching KcdMp.Client's own VersionIpcPort default --
+        // this one is live: it is how the version-mismatch notification
+        // learns the connected peer's release version at all.
+        public int VersionIpcPort { get; set; } = 5902;
 
         public string Language { get; set; } = "en";
 

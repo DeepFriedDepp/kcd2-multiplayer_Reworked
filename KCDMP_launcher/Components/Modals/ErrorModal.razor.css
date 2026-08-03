@@ -1,5 +1,5 @@
 ﻿.modal-title {
-    color: #ff5555;
+    color: var(--kcd-danger-bright);
 }
 
 .error-box {
@@ -7,6 +7,6 @@
 }
 
 #perror {
-    color: orangered;
+    color: var(--kcd-warn);
     text-align: center;
 }

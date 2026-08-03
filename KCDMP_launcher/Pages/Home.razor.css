@@ -15,11 +15,11 @@
 }
 
 .game-title {
-    font-family: 'Cinzel', serif;
-    color: #d4af37;
+    font-family: var(--kcd-font-special);
+    color: var(--kcd-gold);
     font-size: 48px;
     text-transform: uppercase;
-    text-shadow: 0 4px 10px rgba(0,0,0,0.9);
+    text-shadow: 0 4px 10px rgba(var(--kcd-shadow-rgb),0.9);
     margin-bottom: 20px;
     letter-spacing: 5px;
     text-align: center;
@@ -34,7 +34,7 @@
     height: 85vh; /* Z Twojego pliku */
     display: flex;
     flex-direction: column;
-    filter: drop-shadow(0 0 50px rgba(0,0,0,1.0));
+    filter: drop-shadow(0 0 50px rgba(var(--kcd-shadow-rgb),1.0));
     background: transparent;
     padding: 0;
     transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
@@ -65,13 +65,13 @@
 }
 
     .frame-top h2 {
-        font-family: 'Cinzel', serif;
-        color: #f0e6d2;
+        font-family: var(--kcd-font-special);
+        color: var(--kcd-parchment);
         font-size: 26px;
         margin: 0;
         text-transform: uppercase;
         letter-spacing: 3px;
-        text-shadow: 0 2px 5px rgba(0,0,0,0.9);
+        text-shadow: 0 2px 5px rgba(var(--kcd-shadow-rgb),0.9);
         position: absolute;
         top: 5px; /* Ręczne dociągnięcie napisu do środka belki */
     }

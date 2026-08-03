@@ -8,11 +8,13 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using KCDMP_launcher.Components;
+using KCDMP_launcher.Components.Shared;
 using KCDMP_launcher.Models;
 using KCDMP_launcher.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 using Serilog;
+using KcdMp.Wire;
 
 
 // TO DO
@@ -44,6 +46,10 @@ namespace KCDMP_launcher.Pages
         private bool showExitConfirm = false;
         private bool showSettings = false;
         private bool showHostInfo = false;
+        private bool showReportBug = false;
+        private bool showVersionMismatch = false;
+        private string versionMismatchMessage = "";
+        private CancellationTokenSource? versionPollCts;
 
         private DotNetObjectReference<Home>? objRef;
         private AppSettings settings = new AppSettings();
@@ -170,7 +176,23 @@ namespace KCDMP_launcher.Pages
             LoadSettings();
             LoadCustomServers();
             CheckGamePathOnStartup();
+            Globals.OnStyleChanged += OnStyleChanged;
             await RefreshApp();
+        }
+
+        private void OnStyleChanged() => _ = ApplyStyleProfile();
+
+        /// <summary>
+        /// Pushes the current StyleProfile's palette over site.css's :root
+        /// defaults (see StyleProfile.ToCssVariables). Called once after first
+        /// render -- JS interop is not available before then -- and again on
+        /// every Globals.OnStyleChanged, so switching or editing a profile
+        /// takes effect immediately without a restart.
+        /// </summary>
+        private async Task ApplyStyleProfile()
+        {
+            try { await JSRuntime.InvokeVoidAsync("applyKcdTheme", Globals.CurrentStyleProfile.ToCssVariables()); }
+            catch (Exception ex) { Log.Debug(ex, "Could not apply the style profile"); }
         }
 
         /// <summary>
@@ -277,6 +299,7 @@ namespace KCDMP_launcher.Pages
             {
                 objRef = DotNetObjectReference.Create(this);
                 await JSRuntime.InvokeVoidAsync("registerGlobalKeys", objRef);
+                await ApplyStyleProfile();
 
                 await JSRuntime.InvokeVoidAsync("eval", @"
                 document.addEventListener('keydown', (e) => {
@@ -289,7 +312,11 @@ namespace KCDMP_launcher.Pages
             }
         }
 
-        public void Dispose() => objRef?.Dispose();
+        public void Dispose()
+        {
+            Globals.OnStyleChanged -= OnStyleChanged;
+            objRef?.Dispose();
+        }
 
         // JS Invokables
         [JSInvokable("ToggleSettingsStatic")] public static void ToggleSettingsStatic() { }
@@ -585,12 +612,66 @@ namespace KCDMP_launcher.Pages
                 launchStage = LaunchStage.Connected;
                 launchStatusMessage = "Connected. You can close this once you're playing.";
                 StateHasChanged();
+
+                versionPollCts?.Cancel();
+                versionPollCts = new CancellationTokenSource();
+                _ = PollVersionMismatchAsync(versionPollCts.Token);
             }
             catch (Exception ex)
             {
                 errorMessage = ex.Message;
                 UiService.ShowError($"Critical Connect Error: {ex.Message}");
                 ResetLaunchState();
+            }
+        }
+
+        /// <summary>
+        /// WO-19. Polls the just-started agent's release-version IPC endpoint
+        /// (dotnet/KcdMp.Client/VersionIpcServer.cs) for a bounded window,
+        /// looking for the first connected peer whose release version
+        /// differs from this launcher's own (<see cref="Globals.Version"/> --
+        /// launcher and its bundled agent always ship under the same VERSION,
+        /// so there is no need to also ask the agent for "its own" version).
+        ///
+        /// Deliberately does NOT run on every protocol mismatch: that case
+        /// never gets this far, because the relay's hard refusal
+        /// (ProtocolVersionMismatchException on the agent side) already
+        /// prevents a connection, so this endpoint would report no peer at
+        /// all. This only ever fires for a connection that *succeeded* but
+        /// carries a different release version -- exactly the case the WO
+        /// asked for, kept separate from the existing hard refusal rather
+        /// than replacing any part of it.
+        ///
+        /// Stops after showing the notice once, after finding a same-version
+        /// peer (nothing to say), or after the window elapses with no peer
+        /// seen at all (solo session, or the agent never got that far).
+        /// </summary>
+        private async Task PollVersionMismatchAsync(CancellationToken ct)
+        {
+            var deadline = DateTime.UtcNow.AddMinutes(5);
+            while (!ct.IsCancellationRequested && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(3000, ct).ContinueWith(_ => { });
+                if (ct.IsCancellationRequested) return;
+
+                var status = await NetService.GetVersionStatusAsync(settings.VersionIpcPort);
+                var peer = status?.Peers.FirstOrDefault();
+                if (peer is null) continue; // agent not up yet, or no peer connected yet -- keep waiting
+
+                var comparison = ReleaseVersionCompare.Compare(Globals.Version, peer.ReleaseVersion);
+                if (comparison == ReleaseVersionComparison.Equal) return; // nothing to say
+
+                versionMismatchMessage = comparison switch
+                {
+                    ReleaseVersionComparison.LocalIsOlder =>
+                        $"You're on {Globals.Version}, your host is on {peer.ReleaseVersion} -- you'll need to update.",
+                    ReleaseVersionComparison.LocalIsNewer =>
+                        $"You're on {Globals.Version}, your host is on {peer.ReleaseVersion} -- they'll need to update.",
+                    _ => "Versions don't match -- make sure everyone's on the latest release.",
+                };
+                showVersionMismatch = true;
+                await InvokeAsync(StateHasChanged);
+                return;
             }
         }
 
@@ -680,6 +761,8 @@ namespace KCDMP_launcher.Pages
             pendingServer = null;
             pendingDllPath = null;
             launchStatusMessage = "";
+            versionPollCts?.Cancel();
+            versionPollCts = null;
             StateHasChanged();
         }
 
@@ -847,6 +930,7 @@ namespace KCDMP_launcher.Pages
 
         private void ConfirmExit()
         {
+            versionPollCts?.Cancel();
             StopHostedRelay();
             Environment.Exit(0);
         }

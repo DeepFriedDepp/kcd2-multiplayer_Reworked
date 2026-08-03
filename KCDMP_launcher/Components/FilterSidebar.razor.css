@@ -14,8 +14,8 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    filter: drop-shadow(5px 0 15px rgba(0,0,0,0.8));
-    color: #eee;
+    filter: drop-shadow(5px 0 15px rgba(var(--kcd-shadow-rgb),0.8));
+    color: var(--kcd-parchment);
 }
 
     .filter-panel.open {
@@ -41,11 +41,11 @@
 
 .kcd-range-input {
     width: 50%;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid #4a3b22;
-    color: #d4af37;
+    background: rgba(var(--kcd-shadow-rgb), 0.3);
+    border: 1px solid var(--kcd-oak);
+    color: var(--kcd-gold);
     padding: 8px;
-    font-family: 'Libre Baskerville', serif;
+    font-family: var(--kcd-font-family);
     font-size: 13px;
     box-sizing: border-box;
     outline: none;
@@ -54,8 +54,8 @@
 }
 
     .kcd-range-input:focus {
-        border-color: #d4af37;
-        background: rgba(0, 0, 0, 0.5);
+        border-color: var(--kcd-gold);
+        background: rgba(var(--kcd-shadow-rgb), 0.5);
     }
 
 .kcd-checkbox-wrapper {
@@ -68,22 +68,22 @@
 .kcd-checkbox {
     width: 18px;
     height: 18px;
-    border: 1px solid #d4af37;
+    border: 1px solid var(--kcd-gold);
     margin-right: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0,0,0,0.3);
+    background: rgba(var(--kcd-shadow-rgb),0.3);
 }
 
     .kcd-checkbox.checked::after {
         content: 'X';
-        color: #d4af37;
+        color: var(--kcd-gold);
         font-weight: bold;
         font-size: 14px;
     }
 
-/* Ukrycie strza³ek w input number */
+/* Ukrycie strzaï¿½ek w input number */
 input[type=number]::-webkit-inner-spin-button,
 input[type=number]::-webkit-outer-spin-button {
     -webkit-appearance: none;

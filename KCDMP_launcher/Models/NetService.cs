@@ -165,6 +165,26 @@ namespace KCDMP_launcher.Services
         }
 
         /// <summary>
+        /// Polls the locally-running agent's release-version IPC endpoint
+        /// (WO-19, see dotnet/KcdMp.Client/VersionIpcServer.cs). Returns null
+        /// when the agent hasn't started that listener yet (too early after
+        /// launch), isn't running at all, or connects to no relay yet -- all
+        /// of which the caller treats the same way: nothing to compare yet,
+        /// try again on the next poll.
+        /// </summary>
+        public async Task<VersionStatusData?> GetVersionStatusAsync(int port)
+        {
+            try
+            {
+                return await _httpClient.GetFromJsonAsync<VersionStatusData>($"http://localhost:{port}/version-status");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// An IPv6 literal has to be bracketed in a URL, or the colons in the
         /// address are read as the port separator and the request throws.
         /// </summary>

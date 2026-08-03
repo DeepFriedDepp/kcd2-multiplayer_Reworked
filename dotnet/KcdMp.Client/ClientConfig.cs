@@ -69,6 +69,13 @@ public sealed class ClientConfig
     /// </summary>
     public int DiceIpcPort { get; set; } = 5901;
 
+    /// <summary>
+    /// Local port the release-version IPC listener binds (see
+    /// VersionIpcServer, WO-19). The launcher polls this after starting the
+    /// agent to show the version-mismatch notification.
+    /// </summary>
+    public int VersionIpcPort { get; set; } = 5902;
+
     [JsonIgnore]
     public static string DefaultPath =>
         Path.Combine(
@@ -181,6 +188,11 @@ public sealed class ClientConfig
                     case "--dice-ipc-port" when value is not null:
                         if (int.TryParse(value, out int dip)) DiceIpcPort = dip;
                         else Console.WriteLine($"[config] --dice-ipc-port '{value}' is not a number, keeping {DiceIpcPort}");
+                        i++;
+                        break;
+                    case "--version-ipc-port" when value is not null:
+                        if (int.TryParse(value, out int vip)) VersionIpcPort = vip;
+                        else Console.WriteLine($"[config] --version-ipc-port '{value}' is not a number, keeping {VersionIpcPort}");
                         i++;
                         break;
                     case "--voice":

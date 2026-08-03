@@ -1,5 +1,5 @@
 .modal-title {
-    color: #ff5555;
+    color: var(--kcd-gold);
 }
 
 .modal-content {
@@ -7,6 +7,6 @@
 }
 
 p {
-    color: #ccc;
+    color: var(--kcd-parchment-dim);
     margin-bottom: 25px;
 }

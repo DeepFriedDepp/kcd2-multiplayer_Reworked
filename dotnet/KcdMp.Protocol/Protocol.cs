@@ -172,7 +172,34 @@ namespace KcdMp.Wire;
 /// emit a log marker). Its name is now a misnomer -- it slows nothing; it
 /// marks you as away.
 ///
-/// Free type bytes for new features: 0x1E and up.
+/// Release version layer (WO-19). A friendly, non-fatal companion to the
+/// Handshake version byte above -- that byte is wire *protocol*
+/// compatibility and the relay hard-refuses a mismatch there, unconditionally,
+/// unchanged by this. This layer is release *versioning* (VERSION,
+/// docs/VERSIONING.md): two builds can speak identical protocol and still be
+/// different releases, and a player on either side benefits from knowing that
+/// even though the connection itself will work.
+///
+/// C→S  Handshake gains an optional trailing field, appended after
+///      [name:UTF-8]: the sender's release version as UTF-8 text (e.g.
+///      "0.9.5"). Optional and trailing, the same idiom as Invite's
+///      [configLen][config] -- an old relay reads exactly
+///      [version][nameLen][name] and never looks past it, so a new client's
+///      extra bytes are silently ignored rather than breaking the parse.
+///      A new relay talking to an old client simply finds nothing there.
+/// S→C  0x1E  ReleaseVersion: [ghostId:1][releaseVersion:UTF-8]  -- no
+///      explicit length field, exactly like Name (0x03): the outer
+///      [type][payloadLen] framing already carries it. Broadcast to existing
+///      peers when a client's Handshake carried one (mirrors BroadcastName),
+///      and replayed to a new client for every existing peer that has one
+///      (mirrors SendAllNamesTo). Never sent for a client whose Handshake
+///      carried no release version, so an old agent build simply never
+///      appears in a peer's map -- nothing to compare, nothing shown.
+///
+/// See <see cref="ReleaseVersionCompare"/> for how a receiver turns two of
+/// these strings into "who's behind."
+///
+/// Free type bytes for new features: 0x1F and up.
 ///
 /// This file lives in the shared KcdMp.Protocol project (net8.0, no
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
@@ -225,6 +252,7 @@ public static class Protocol
     public const byte DiceEnd          = 0x19;
     public const byte AppearanceDown   = 0x1B;
     public const byte PauseDown        = 0x1D;
+    public const byte ReleaseVersion   = 0x1E;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>

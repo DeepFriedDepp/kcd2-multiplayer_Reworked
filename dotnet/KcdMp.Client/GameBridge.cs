@@ -63,6 +63,12 @@ public partial class GameBridge(ClientConfig config)
     // is asking instead of showing a bare relay id.
     private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
 
+    // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
+    // for a peer whose Handshake carried none (an old build). Read by
+    // VersionIpcServer so the launcher can compare it against this agent's
+    // own ReleaseVersionInfo.Current without the wire protocol itself caring.
+    private readonly ConcurrentDictionary<byte, string> _ghostReleaseVersions = new();
+
     // Appearance (WO-9 armor, WO-10 weapons). Outbound: the local player's
     // item classes as of the last successful send, so the poll loop only
     // sends on an actual change. Armor and weapon classes share this one set
@@ -106,6 +112,14 @@ public partial class GameBridge(ClientConfig config)
 
     // The only channel to KCDMP_launcher's dice window -- see DiceIpcServer.
     private DiceIpcServer? _diceIpcServer;
+
+    // WO-19. The launcher's channel to this agent's release-version state --
+    // there is no other one (WO-6 deleted the only prior launcher<->agent
+    // link; DiceIpcServer above survives strictly as a headless test surface,
+    // deliberately unwired on the launcher side, see its own doc comment). A
+    // second small HttpListener rather than repurposing DiceIpcServer, so that
+    // one keeps meaning exactly what its comment says.
+    private VersionIpcServer? _versionIpcServer;
 
     // Local menu state (WO-11 detection, WO-13 semantics). Two independent
     // sources OR'd into one reported state -- automatic detection (the tail
@@ -317,12 +331,19 @@ public partial class GameBridge(ClientConfig config)
             nameBytes = nameBytes[..len];
         }
 
-        var handshake = new byte[3 + 2 + nameBytes.Length];
+        // WO-19: trailing release-version field, appended after the name.
+        // Optional and unlengthed on purpose -- see Protocol.cs's release
+        // version layer doc -- so an old relay that only reads
+        // [version][nameLen][name] is unaffected by these extra bytes.
+        var releaseVersionBytes = Encoding.UTF8.GetBytes(ReleaseVersionInfo.Current);
+        int handshakePayloadLen = 2 + nameBytes.Length + releaseVersionBytes.Length;
+        var handshake = new byte[3 + handshakePayloadLen];
         handshake[0] = Protocol.Handshake;
-        BinaryPrimitives.WriteUInt16LittleEndian(handshake.AsSpan(1), (ushort)(2 + nameBytes.Length));
+        BinaryPrimitives.WriteUInt16LittleEndian(handshake.AsSpan(1), (ushort)handshakePayloadLen);
         handshake[3] = Protocol.Version;
         handshake[4] = (byte)nameBytes.Length;
         nameBytes.CopyTo(handshake, 5);
+        releaseVersionBytes.CopyTo(handshake, 5 + nameBytes.Length);
         await stream.WriteAsync(handshake);
 
         // --- Ack (S→C 0xFF [id:1]) or rejection (S→C 0x09 [serverVersion:1]) ---
@@ -384,6 +405,11 @@ public partial class GameBridge(ClientConfig config)
             ghostId => _ghostNames.TryGetValue(ghostId, out var n) ? n : null);
         _diceIpcServer = new DiceIpcServer(diceIpc, config.DiceIpcPort);
         _diceIpcServer.Start();
+
+        // WO-19: lets the launcher poll this agent's own release version plus
+        // whatever release versions have arrived for connected peers so far.
+        _versionIpcServer = new VersionIpcServer(() => _ghostReleaseVersions.ToArray(), config.VersionIpcPort);
+        _versionIpcServer.Start();
 
         // Kick off the Lua interp tick immediately so KCD2MP.isRiding gets updated
         // even before the first ghost is spawned (e.g. player already on horse at connect time).
@@ -550,7 +576,10 @@ public partial class GameBridge(ClientConfig config)
             Dice = null;
             _diceIpcServer?.Stop();
             _diceIpcServer = null;
+            _versionIpcServer?.Stop();
+            _versionIpcServer = null;
             _ghostNames.Clear();
+            _ghostReleaseVersions.Clear();
 
             Console.WriteLine("Removing all ghosts...");
             try { await ExecLuaAsync("KCD2MP_RemoveAllGhosts()"); } catch { }
@@ -977,6 +1006,14 @@ public partial class GameBridge(ClientConfig config)
                     string gname = Encoding.UTF8.GetString(payload, 1, payloadLen - 1);
                     _ghostNames[ghostId] = gname;
                     await SetGhostNameAsync(ghostId.ToString(), gname);
+                }
+                else if (type == Protocol.ReleaseVersion && payloadLen >= 2)
+                {
+                    // ReleaseVersion (0x1E, WO-19): [ghostId:1][releaseVersion:UTF-8...]
+                    byte ghostId = payload[0];
+                    string releaseVersion = Encoding.UTF8.GetString(payload, 1, payloadLen - 1);
+                    _ghostReleaseVersions[ghostId] = releaseVersion;
+                    Console.WriteLine($"[version] ghost {ghostId} is on release {releaseVersion}");
                 }
                 else if (type == Protocol.Disconnect && payloadLen == 1)
                 {

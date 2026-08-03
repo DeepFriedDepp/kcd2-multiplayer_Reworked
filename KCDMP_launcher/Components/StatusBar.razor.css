@@ -6,11 +6,11 @@
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    background: linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.8) 20%, rgba(0,0,0,0.8) 80%, transparent 100%);
-    border-top: 1px solid #d4af37;
+    background: linear-gradient(90deg, transparent 0%, rgba(var(--kcd-shadow-rgb),0.8) 20%, rgba(var(--kcd-shadow-rgb),0.8) 80%, transparent 100%);
+    border-top: 1px solid var(--kcd-gold);
     padding: 8px 0;
     margin: 0;
-    color: #aaa;
+    color: var(--kcd-muted);
     font-size: 12px;
     z-index: 2000;
 }
@@ -33,18 +33,18 @@
 }
 
 .status-online {
-    color: #4cd137;
+    color: var(--kcd-online);
     font-weight: bold;
 }
 
 .status-offline {
-    color: #e84118;
+    color: var(--kcd-blood);
     font-weight: bold;
 }
 
 .sep {
     margin: 0 10px;
-    color: #666;
+    color: var(--kcd-muted-dim);
 }
 
 .status-btn {
@@ -55,19 +55,22 @@
 }
 
     .status-btn:hover {
-        color: #fff;
-        text-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+        color: var(--kcd-gold-bright);
+        text-shadow: 0 0 8px rgba(255, 219, 115, 0.7);
         transform: scale(1.05);
     }
 
-/*  TO DO SO WE DONT GET COOKED   */
-.legal-footer { 
+    .status-btn:focus-visible {
+        outline: 1px solid var(--kcd-gold-bright);
+    }
+
+.legal-footer {
     position: absolute;
     bottom: -20px;
     width: 100%;
     text-align: center;
-    font-family: sans-serif;
+    font-family: var(--kcd-font-family);
     font-size: 9px;
-    color: #555;
+    color: var(--kcd-muted-dim);
     pointer-events: none;
 }

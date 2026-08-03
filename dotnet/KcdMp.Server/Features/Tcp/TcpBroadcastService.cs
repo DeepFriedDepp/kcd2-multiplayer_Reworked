@@ -125,6 +125,30 @@ public class TcpBroadcastService
             newClient.EnqueueName(c.Id, c.Name!);
     }
 
+    /// <summary>
+    /// Sends a ReleaseVersion (0x1E, WO-19) packet about <paramref name="source"/>
+    /// to all other ready clients -- mirrors <see cref="BroadcastName"/>. A
+    /// no-op when the source's Handshake carried no release version.
+    /// </summary>
+    public void BroadcastReleaseVersion(ClientSession source)
+    {
+        if (source.ReleaseVersion is null) return;
+
+        foreach (var target in Others(source))
+            target.EnqueueReleaseVersion(source.Id, source.ReleaseVersion);
+    }
+
+    /// <summary>
+    /// Sends ReleaseVersion (0x1E) packets of all currently ready clients that
+    /// have one to <paramref name="newClient"/> -- mirrors <see cref="SendAllNamesTo"/>.
+    /// </summary>
+    public void SendAllReleaseVersionsTo(ClientSession newClient)
+    {
+        foreach (var c in Others(newClient))
+            if (c.ReleaseVersion is not null)
+                newClient.EnqueueReleaseVersion(c.Id, c.ReleaseVersion);
+    }
+
     /// <summary>All ready clients except <paramref name="self"/>.</summary>
     private ClientSession[] Others(ClientSession self) =>
         [.. _clientHandler.GetClients().Where(c => c != self && c.IsReady)];

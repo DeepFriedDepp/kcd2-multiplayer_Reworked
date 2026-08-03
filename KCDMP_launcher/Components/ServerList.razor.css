@@ -4,7 +4,7 @@
     height: 85vh;
     display: flex;
     flex-direction: column;
-    filter: drop-shadow(0 0 50px rgba(0,0,0,1.0));
+    filter: drop-shadow(0 0 50px rgba(var(--kcd-shadow-rgb),1.0));
     background: transparent;
     padding: 0;
     transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
@@ -27,13 +27,13 @@
 }
 
     .frame-top h2 {
-        font-family: 'Cinzel', serif;
-        color: #f0e6d2;
+        font-family: var(--kcd-font-special);
+        color: var(--kcd-parchment);
         font-size: 26px;
         margin: 0;
         text-transform: uppercase;
         letter-spacing: 3px;
-        text-shadow: 0 2px 5px rgba(0,0,0,0.9);
+        text-shadow: 0 2px 5px rgba(var(--kcd-shadow-rgb),0.9);
     }
 
 .frame-middle {
@@ -67,7 +67,7 @@
     flex-grow: 1;
     overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: #d4af37 #121a24;
+    scrollbar-color: var(--kcd-gold) var(--kcd-track);
     margin: 20px auto;
 }
 
@@ -80,11 +80,11 @@ table {
 }
 
 thead th {
-    font-family: 'Cinzel', serif;
-    color: #2b1d0e;
+    font-family: var(--kcd-font-special);
+    color: var(--kcd-ink);
     background-image: url('img/ui/list_silver.png');
     background-size: 100% 100%;
-    border-bottom: 1px solid #4a3b22;
+    border-bottom: 1px solid var(--kcd-oak);
     text-align: left;
     padding: 14px 20px;
     font-size: 13px;
@@ -99,7 +99,7 @@ thead th {
 }
 
     thead th:hover {
-        color: #000;
+        color: var(--kcd-shadow);
     }
 
 .sort-icon {
@@ -125,9 +125,9 @@ thead th {
 
 tbody td {
     padding: 10px 20px;
-    color: #eee;
+    color: var(--kcd-parchment);
     font-size: 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(219, 201, 161, 0.08);
     vertical-align: middle;
     white-space: nowrap;
     overflow: hidden;
@@ -141,27 +141,27 @@ tbody tr {
     tbody tr.selected {
         background-image: url('img/ui/list_gold.png');
         background-size: 100% 100%;
-        color: #1a0f00;
+        color: var(--kcd-ink);
         font-weight: bold;
-        border: 1px solid #d4af37;
+        border: 1px solid var(--kcd-gold);
     }
 
         tbody tr.selected td {
-            color: #1a0f00;
+            color: var(--kcd-ink);
             text-shadow: none;
         }
 
     tbody tr:hover {
         background-image: url('img/ui/list_gold.png');
         background-size: 100% 100%;
-        color: #1a0f00;
+        color: var(--kcd-ink);
         font-weight: bold;
         cursor: pointer;
         border-bottom: 1px solid transparent;
     }
 
         tbody tr:hover td {
-            color: #1a0f00;
+            color: var(--kcd-ink);
             text-shadow: none;
         }
 
@@ -189,8 +189,8 @@ tbody tr {
 .frame-btn {
     background: transparent;
     border: none;
-    color: #8a7f6b;
-    font-family: 'Cinzel', serif;
+    color: var(--kcd-dim);
+    font-family: var(--kcd-font-special);
     font-size: 14px;
     font-weight: bold;
     cursor: pointer;
@@ -199,40 +199,44 @@ tbody tr {
     display: flex;
     align-items: center;
     gap: 5px;
-    text-shadow: 0 1px 1px rgba(0,0,0,0.8);
+    text-shadow: 0 1px 1px rgba(var(--kcd-shadow-rgb),0.8);
 }
 
     .frame-btn:hover:not(:disabled) {
-        color: #fff;
-        text-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+        color: var(--kcd-gold-bright);
+        text-shadow: 0 0 8px rgba(255, 219, 115, 0.8);
         transform: scale(1.05);
     }
 
+    .frame-btn:focus-visible {
+        outline: 1px solid var(--kcd-gold-bright);
+    }
+
     .frame-btn:disabled {
-        color: #3a3225;
+        color: var(--kcd-muted-dim);
         cursor: default;
         opacity: 0.5;
     }
 
     .frame-btn.primary {
-        color: #d4af37;
+        color: var(--kcd-gold);
         font-size: 16px;
     }
 
         .frame-btn.primary:hover:not(:disabled) {
-            color: #fff;
-            text-shadow: 0 0 10px gold;
+            color: var(--kcd-gold-bright);
+            text-shadow: 0 0 10px var(--kcd-gold-bright);
         }
 
     .frame-btn.danger:hover:not(:disabled) {
-        color: #ff5555;
-        text-shadow: 0 0 10px red;
+        color: var(--kcd-danger-bright);
+        text-shadow: 0 0 10px var(--kcd-blood);
     }
 
 .frame-sep {
     width: 1px;
     height: 15px;
-    background: #4a3b22;
+    background: var(--kcd-oak);
     margin: 0 10px;
 }
 
@@ -253,7 +257,7 @@ tbody tr:hover .btn-join::after {
 .fav-star {
     cursor: pointer;
     font-size: 18px;
-    color: #444;
+    color: var(--kcd-muted-dim);
     transition: all 0.2s;
     margin-right: 10px;
     display: inline-block;
@@ -261,11 +265,11 @@ tbody tr:hover .btn-join::after {
 }
 
     .fav-star:hover {
-        color: #888;
+        color: var(--kcd-muted);
         transform: scale(1.2);
     }
 
     .fav-star.active {
-        color: #d4af37;
-        text-shadow: 0 0 5px gold;
+        color: var(--kcd-gold);
+        text-shadow: 0 0 5px var(--kcd-gold-bright);
     }

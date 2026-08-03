@@ -27,7 +27,7 @@
 
                     @if (!string.IsNullOrWhiteSpace(Settings.GamePath) && !Home.IsModdingToolsBuild(Settings.GamePath))
                     {
-                        <div class="kcd-hint" style="color: #c86a4a;">
+                        <div class="kcd-hint" style="color: var(--kcd-warn);">
                             This does not look like the Modding Tools build. Multiplayer needs
                             KCD2Mod\Bin\Win64ReleaseSteamLTO_DLL\KingdomCome.exe — the retail
                             executable has no debug API and no module DLLs to hook.

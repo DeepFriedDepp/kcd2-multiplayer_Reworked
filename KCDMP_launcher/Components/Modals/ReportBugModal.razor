@@ -1,0 +1,43 @@
+@inherits ModalBase
+@using KCDMP_launcher.Components.Shared
+
+@if (IsVisible)
+{
+    <div class="modal-overlay @(isClosing ? "closing" : "")">
+        <div class="modal-box" @onclick:stopPropagation="true">
+
+            <div class="modal-frame-top modal-frame-bg"></div>
+
+            <div class="modal-content" style="text-align: center;">
+                <div class="modal-title">REPORT A BUG</div>
+
+                <p>
+                    Found something broken? Tell us on GitHub, or drop a message
+                    in Discord -- whichever you'd rather use.
+                </p>
+
+                <div class="modal-actions">
+                    <button class="kcd-btn primary" @onclick="OpenGitHubIssues">GITHUB ISSUES</button>
+                    <button class="kcd-btn primary" @onclick="OpenDiscord">DISCORD</button>
+                </div>
+                <div class="modal-actions" style="margin-top: 10px;">
+                    <button class="kcd-btn" @onclick="CloseModalAsync">CLOSE</button>
+                </div>
+            </div>
+
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+@code {
+    // Hardcoded rather than a setting: these are the project's own repo and
+    // community, not something a server operator or player should point
+    // elsewhere -- unlike MasterServerUrl or RelayPath, there is only ever
+    // one right value.
+    private const string GitHubIssuesUrl = "https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/issues";
+    private const string DiscordInviteUrl = "https://discord.gg/m4U95xUZ5";
+
+    private void OpenGitHubIssues() => UrlLauncher.Open(GitHubIssuesUrl);
+    private void OpenDiscord() => UrlLauncher.Open(DiscordInviteUrl);
+}

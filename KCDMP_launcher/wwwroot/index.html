@@ -19,6 +19,16 @@
 
     <script src="_framework/blazor.webview.js"></script>
     <script>
+        // WO-19: pushes the current StyleProfile's colours over site.css's
+        // :root defaults, so the profile -- not the stylesheet -- is the
+        // live theme. See StyleProfile.ToCssVariables and Home.razor.cs.
+        window.applyKcdTheme = (vars) => {
+            const root = document.documentElement.style;
+            for (const key in vars) {
+                root.setProperty(key, vars[key]);
+            }
+        };
+
         window.registerGlobalKeys = (dotNetHelper) => {
             window.addEventListener('keydown', (e) => {
                 console.log("Key pressed:", e.key);

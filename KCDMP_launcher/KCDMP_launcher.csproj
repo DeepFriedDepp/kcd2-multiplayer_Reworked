@@ -11,10 +11,31 @@
 		<LangVersion>preview</LangVersion>
 	</PropertyGroup>
 
+	<!--
+	  WO-19: stamp this build with the repo's own VERSION file, the same way
+	  KcdMp.Client.csproj does, so Globals.Version shows the real shipped
+	  version instead of the stale hardcoded "0.1.0" it carried before. Reads
+	  only, never writes VERSION. See docs/VERSIONING.md.
+	-->
+	<PropertyGroup>
+		<VersionFileContent Condition="Exists('$(MSBuildThisFileDirectory)..\VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\VERSION').Trim())</VersionFileContent>
+		<Version Condition="'$(VersionFileContent)' != ''">$(VersionFileContent)</Version>
+		<!-- Otherwise the SDK appends "+<git-commit-hash>" to InformationalVersion,
+		     which both looks wrong in the status bar and breaks ReleaseVersionCompare's
+		     Major.Minor.Patch parsing outright. -->
+		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+	</PropertyGroup>
+
 	<ItemGroup>
 		<PackageReference Include="Photino.Blazor" Version="4.0.13" />
 		<PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
 		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- ReleaseVersionCompare (WO-19), the only piece of this project
+		     the launcher needs; it does not speak the wire protocol itself. -->
+		<ProjectReference Include="..\dotnet\KcdMp.Protocol\KcdMp.Protocol.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

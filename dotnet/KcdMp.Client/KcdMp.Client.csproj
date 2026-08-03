@@ -8,6 +8,21 @@
     <AssemblyName>KcdMpClient</AssemblyName>
   </PropertyGroup>
 
+  <!--
+    WO-19: stamp this build with the repo's own VERSION file so
+    ReleaseVersionInfo.Current reflects reality instead of a second,
+    independently-maintained constant. Reads only, never writes VERSION.
+    See docs/VERSIONING.md: the file's content is the user's call, always.
+  -->
+  <PropertyGroup>
+    <VersionFileContent Condition="Exists('$(MSBuildThisFileDirectory)..\..\VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\..\VERSION').Trim())</VersionFileContent>
+    <Version Condition="'$(VersionFileContent)' != ''">$(VersionFileContent)</Version>
+    <!-- Otherwise the SDK appends "+<git-commit-hash>" to InformationalVersion,
+         which both looks wrong in the UI and breaks ReleaseVersionCompare's
+         Major.Minor.Patch parsing outright. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>

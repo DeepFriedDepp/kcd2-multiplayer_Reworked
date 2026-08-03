@@ -1,9 +1,44 @@
-﻿* {
+﻿/*
+ * WO-19 palette -- pulled from the in-game dice overlay's own art direction
+ * (docs/WO-6-overlay-design.md SS2: aged parchment, oak, iron, candle-warm
+ * gold, tavern shadow), converted from its linear 0..1 RGB to sRGB hex, so the
+ * launcher and the in-game UI read as one product instead of two different
+ * reskins of a generic dark app. These are the DEFAULTS; StyleProfile.cs
+ * carries the same values and pushes them over these at startup (see
+ * Home.razor.cs's ApplyStyleProfile) -- edit a profile, not this file, to
+ * change the live theme. Kept here anyway so the page has real colours before
+ * the first JS interop call lands, and as the documented fallback.
+ */
+:root {
+    --kcd-gold: #D9AD4D;
+    --kcd-gold-bright: #FFDB73;
+    --kcd-parchment: #DBC9A1;
+    --kcd-parchment-dim: #C7B99A;
+    --kcd-oak: #573D24;
+    --kcd-oak-lit: #856138;
+    --kcd-iron: #6B6963;
+    --kcd-ink: #211A12;
+    --kcd-shadow: #0F0D0A;
+    --kcd-shadow-rgb: 15, 13, 10;
+    --kcd-blood: #9E211C;
+    --kcd-danger-bright: #D6453D;
+    --kcd-warn: #C2793D;
+    --kcd-dim: #615747;
+    --kcd-muted: #A99B7E;
+    --kcd-muted-dim: #6B6355;
+    --kcd-online: #5FBF4A;
+    --kcd-track: #17120C;
+
+    --kcd-font-family: 'Libre Baskerville', serif;
+    --kcd-font-special: 'Cinzel', serif;
+}
+
+* {
     box-sizing: border-box;
 }
 
 body {
-    background-image: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), url('../img/kcd2_bg.jpg');
+    background-image: linear-gradient(rgba(var(--kcd-shadow-rgb), 0.7), rgba(var(--kcd-shadow-rgb), 0.7)), url('../img/kcd2_bg.jpg');
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
@@ -11,18 +46,23 @@ body {
     overflow: hidden;
     height: 100vh;
     width: 100vw;
-    font-family: 'Libre Baskerville', serif;
+    font-family: var(--kcd-font-family);
     user-select: none;
-    color: #eee;
+    color: var(--kcd-parchment);
 }
 
+.kcd-hint {
+    color: var(--kcd-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
 
 .game-title {
-    font-family: 'Cinzel', serif;
-    color: #d4af37;
+    font-family: var(--kcd-font-special);
+    color: var(--kcd-gold);
     font-size: 48px;
     text-transform: uppercase;
-    text-shadow: 0 4px 10px rgba(0,0,0,0.9);
+    text-shadow: 0 4px 10px rgba(var(--kcd-shadow-rgb), 0.9);
     margin-bottom: 20px;
     letter-spacing: 5px;
     text-align: center;
@@ -36,7 +76,7 @@ body {
     height: 85vh;
     display: flex;
     flex-direction: column;
-    filter: drop-shadow(0 0 50px rgba(0,0,0,1.0));
+    filter: drop-shadow(0 0 50px rgba(var(--kcd-shadow-rgb), 1.0));
     background: transparent;
     padding: 0;
     transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
@@ -52,18 +92,18 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-    background: #121a24;
+    background: var(--kcd-track);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #d4af37;
+    background: var(--kcd-gold);
     border-radius: 4px;
 }
 
 .kcd-label {
     display: block;
     font-size: 12px;
-    color: #aaa;
+    color: var(--kcd-muted);
     margin-bottom: 5px;
     text-transform: uppercase;
     letter-spacing: 1px;
@@ -75,41 +115,55 @@ body {
 
 .kcd-input {
     width: 100%;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid #4a3b22;
-    color: #d4af37;
+    background: rgba(var(--kcd-shadow-rgb), 0.3);
+    border: 1px solid var(--kcd-oak);
+    color: var(--kcd-gold);
     padding: 8px;
-    font-family: 'Libre Baskerville', serif;
+    font-family: var(--kcd-font-family);
     font-size: 14px;
     outline: none;
     transition: border 0.2s;
 }
 
     .kcd-input:focus {
-        border-color: #d4af37;
-        background: rgba(0, 0, 0, 0.5);
+        border-color: var(--kcd-gold);
+        background: rgba(var(--kcd-shadow-rgb), 0.5);
     }
 
 .kcd-btn {
-    background: rgba(0,0,0,0.4);
-    border: 1px solid #4a3b22;
-    color: #d4af37;
+    background: rgba(var(--kcd-shadow-rgb), 0.4);
+    border: 1px solid var(--kcd-oak);
+    color: var(--kcd-gold);
     padding: 8px 25px;
-    font-family: 'Cinzel', serif;
+    font-family: var(--kcd-font-special);
     cursor: pointer;
     transition: all 0.2s;
     text-transform: uppercase;
 }
 
     .kcd-btn:hover {
-        border-color: #d4af37;
-        background: rgba(212, 175, 55, 0.1);
+        border-color: var(--kcd-gold);
+        background: rgba(217, 173, 77, 0.15);
+    }
+
+    .kcd-btn:focus-visible {
+        outline: 2px solid var(--kcd-gold-bright);
+        outline-offset: 2px;
     }
 
     .kcd-btn.primary {
-        border-color: #d4af37;
+        border-color: var(--kcd-gold);
         font-weight: bold;
     }
+
+    .kcd-btn.danger {
+        border-color: var(--kcd-blood);
+        color: var(--kcd-danger-bright);
+    }
+
+        .kcd-btn.danger:hover {
+            background: rgba(158, 33, 28, 0.15);
+        }
 
 .content-wrapper {
     position: fixed;

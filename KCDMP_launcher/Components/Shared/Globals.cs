@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -15,7 +16,17 @@ namespace KCDMP_launcher.Components.Shared
 
         public static bool IsMasterOnline { get; set; } = false;
 
-        public static string Version { get; } = "0.1.0";
+        /// <summary>
+        /// WO-19: was a hardcoded "0.1.0", stale against the real shipped
+        /// version (VERSION said 0.9.5 at the time this was found). Now read
+        /// from the assembly's InformationalVersion, which the csproj sets
+        /// from VERSION at build time -- see KCDMP_launcher.csproj's
+        /// VersionFileContent property. One source, not two to keep in sync.
+        /// </summary>
+        public static string Version { get; } =
+            Assembly.GetExecutingAssembly()
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? "0.0.0";
         public static string ConfigFilePath { get; } = Path.Combine(AppFolder, "config.json");
 
         public static StyleProfile CurrentStyleProfile { get; set; } = new StyleProfile();

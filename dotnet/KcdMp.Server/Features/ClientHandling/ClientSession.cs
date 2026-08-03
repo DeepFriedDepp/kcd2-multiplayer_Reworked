@@ -29,6 +29,10 @@ public class ClientSession
     public string? Name { get; private set; }
     public bool IsReady => Name is not null;
 
+    /// <summary>WO-19. Null when the client's Handshake carried no trailing
+    /// release-version field (an old build, or a synthetic test peer).</summary>
+    public string? ReleaseVersion { get; private set; }
+
     public ClientSession(ILogger logger, TcpClient tcp, TcpBroadcastService broadcastService,
         SessionManager sessions, ClientHandler clientHandler)
     {
@@ -87,8 +91,16 @@ public class ClientSession
             }
             Name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
 
-            _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}) from {ClientRemoteEndPoint}.",
-                Name, Id, clientVersion, _tcp.Client.RemoteEndPoint);
+            // WO-19: an optional trailing release-version field, the same
+            // idiom as Invite's [configLen][config] -- whatever is left after
+            // the name is the sender's release version, exactly zero bytes
+            // for an old build that never sent one.
+            int releaseVersionOffset = 2 + nameLen;
+            if (handshakeLen > releaseVersionOffset)
+                ReleaseVersion = Encoding.UTF8.GetString(handshakePayload, releaseVersionOffset, handshakeLen - releaseVersionOffset);
+
+            _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}, release {Release}) from {ClientRemoteEndPoint}.",
+                Name, Id, clientVersion, ReleaseVersion ?? "(none)", _tcp.Client.RemoteEndPoint);
 
             // Send Ack with assigned ID
             EnqueueRaw(BuildPacket(Protocol.Ack, [Id]));
@@ -96,6 +108,8 @@ public class ClientSession
             // Broadcast this client's name to all others; send existing names to this client
             _broadcastService.BroadcastName(this);
             _broadcastService.SendAllNamesTo(this);
+            _broadcastService.BroadcastReleaseVersion(this);
+            _broadcastService.SendAllReleaseVersionsTo(this);
 
             // --- Position receive loop ---
             // Payload length is now exact: the version byte replaced the old
@@ -446,6 +460,16 @@ public class ClientSession
         payload[0] = ghostId;
         nameBytes.CopyTo(payload, 1);
         EnqueueRaw(BuildPacket(Protocol.Name, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a ReleaseVersion packet (0x1E, WO-19) to be sent to this client.</summary>
+    public void EnqueueReleaseVersion(byte ghostId, string releaseVersion)
+    {
+        var verBytes = Encoding.UTF8.GetBytes(releaseVersion);
+        var payload = new byte[1 + verBytes.Length];
+        payload[0] = ghostId;
+        verBytes.CopyTo(payload, 1);
+        EnqueueRaw(BuildPacket(Protocol.ReleaseVersion, payload));
     }
 
     private void EnqueueRaw(byte[] packet) =>

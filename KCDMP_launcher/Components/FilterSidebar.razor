@@ -1,6 +1,6 @@
 <div class="filter-panel @(IsOpen ? "open" : "")">
 
-    <div style="margin-bottom: 20px; text-align: center; color: #d4af37; font-family: 'Cinzel'; border-bottom: 1px solid #4a3b22; padding-bottom: 10px;">
+    <div style="margin-bottom: 20px; text-align: center; color: var(--kcd-gold); font-family: var(--kcd-font-special); border-bottom: 1px solid var(--kcd-oak); padding-bottom: 10px;">
         FILTERS
     </div>
 
@@ -50,12 +50,12 @@
 
     <div class="kcd-checkbox-wrapper" @onclick="ToggleFavorites" style="cursor: pointer; position: relative; z-index: 10; margin-top: 20px;">
         <div class="kcd-checkbox @(FilterShowFavorites ? "checked" : "")"></div>
-        <span style="font-size: 14px; color: #d4af37; user-select: none;">Favorites Only</span>
+        <span style="font-size: 14px; color: var(--kcd-gold); user-select: none;">Favorites Only</span>
     </div>
 
     <div class="kcd-checkbox-wrapper" @onclick="ToggleHideUnreachable" style="cursor: pointer; position: relative; z-index: 10; margin-top: 10px;">
         <div class="kcd-checkbox @(FilterHideUnreachable ? "checked" : "")"></div>
-        <span style="font-size: 14px; color: #d4af37; user-select: none;">Hide Unreachable</span>
+        <span style="font-size: 14px; color: var(--kcd-gold); user-select: none;">Hide Unreachable</span>
     </div>
 
     <div style="margin-top: auto; position: relative; z-index: 10;">
