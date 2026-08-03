@@ -19,6 +19,38 @@
   list: [docs/WO-16-release-candidate.md](../WO-16-release-candidate.md) and
   the README's status section — not repeated here.
 
+  **An important distinction for anyone testing this with a real second
+  player, not a stand-in:** "the ghost can't fight back" and "can both of us
+  actually contribute to beating the same enemy" are two different questions
+  with two different answers.
+
+  The ghost itself never fights back — that's the limit above, confirmed,
+  not going to change by itself.
+
+  But shared combat (already shipped, unrelated to this toggle) means that
+  when your friend lands a real hit on an NPC *in their own game*, that
+  damage already applies to the same NPC in your world too. So an NPC both
+  of you are actually fighting, each in your own game, genuinely can take
+  damage from both of you — the ghost standing there doing nothing visually
+  is not the same as "your friend's hits don't count."
+
+  What's genuinely unverified, and testers should watch for specifically:
+  - **The NPC may not know who hit it.** Attacker attribution on a relayed
+    hit is a known gap (documented since the original combat work) — the NPC
+    takes real damage but the game has no record of who dealt it. Whether
+    its AI correctly turns to fight the nearer real player (Henry) as a
+    result, or just takes an unexplained wound and keeps doing whatever it
+    was doing, has not been tested.
+  - **No animation sync.** The ghost will not visibly swing a weapon even
+    while its side of the damage is landing — expect a real visual disconnect
+    between what the ghost looks like it's doing and what's actually
+    happening to the NPC's health.
+  - **Every test of this feature so far used a synthetic peer script standing
+    in for a second player**, not two real people playing at once with real
+    latency, real independent decisions, and two real local AI simulations
+    running side by side. That is exactly the situation this needs testing
+    against — a script cannot surface what real simultaneous play will.
+
 Everything else carries over unchanged from 0.9.2 — see the main
 [README](../../README.md) for the full feature list and current status.
 
