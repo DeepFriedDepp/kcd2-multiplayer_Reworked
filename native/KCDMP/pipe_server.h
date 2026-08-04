@@ -18,10 +18,18 @@
 //     0x02 ApplyDeath   [guid:16]                                   (16)
 //     0x03 Ping         []                       -> replies 0x83
 //     0x04 SetFactionHostile [guid:16][hostile:1]                   (17)
+//     0x05 ResolveLuaClosure [closureAddr:8]      -> replies 0x84   (8)
 //
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
 //     0x83 Pong         []
+//     0x84 ClosureInfo  [ok:1][nativeAddr:8][rva:4]
+//                        [moduleNameLen:1][moduleName:N]
+//                        [nameLen:1][name:N]
+//                        [prologueLen:1][prologueHex:N]
+//                        (WO-20 Phase 2 diagnostic -- see lua_closure.h.
+//                        A one-shot introspection query, not part of the
+//                        normal combat/appearance/aggro traffic.)
 //     0x90 LocalHit     [guid:16][stamina:4f][health:4f]   (outbound, not yet
 //                        emitted -- the hook that detects a local hit does not
 //                        exist. Reserved so the agent side can be written once.)
@@ -42,18 +50,21 @@
 
 namespace kcdmp::pipe {
 
-constexpr uint8_t kApplyDamage       = 0x01;
-constexpr uint8_t kApplyDeath        = 0x02;
-constexpr uint8_t kPing              = 0x03;
-constexpr uint8_t kSetFactionHostile = 0x04;
-constexpr uint8_t kResult            = 0x81;
-constexpr uint8_t kPong              = 0x83;
-constexpr uint8_t kLocalHit          = 0x90;
+constexpr uint8_t kApplyDamage        = 0x01;
+constexpr uint8_t kApplyDeath         = 0x02;
+constexpr uint8_t kPing               = 0x03;
+constexpr uint8_t kSetFactionHostile  = 0x04;
+constexpr uint8_t kResolveLuaClosure  = 0x05;
+constexpr uint8_t kResult             = 0x81;
+constexpr uint8_t kPong               = 0x83;
+constexpr uint8_t kClosureInfo        = 0x84;
+constexpr uint8_t kLocalHit           = 0x90;
 
-constexpr int kGuidLen               = 16;
-constexpr int kApplyDamageLen        = kGuidLen + 4 + 4 + 1;
-constexpr int kApplyDeathLen         = kGuidLen;
-constexpr int kSetFactionHostileLen  = kGuidLen + 1;
+constexpr int kGuidLen                  = 16;
+constexpr int kApplyDamageLen           = kGuidLen + 4 + 4 + 1;
+constexpr int kApplyDeathLen            = kGuidLen;
+constexpr int kSetFactionHostileLen     = kGuidLen + 1;
+constexpr int kResolveLuaClosureLen     = 8;
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not

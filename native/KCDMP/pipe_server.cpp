@@ -1,6 +1,7 @@
 ﻿#include "pipe_server.h"
 #include "main_thread.h"
 #include "rttr_abi.h"
+#include "lua_closure.h"
 #include "log.h"
 
 #include <windows.h>
@@ -112,6 +113,30 @@ void send_local_hit(const unsigned char guid[16], float health_delta, bool died)
     if (!sent) logf("PIPE: LocalHit write failed: %lu", err);
 }
 
+// WO-20 Phase 2 diagnostic reply. Not on the write-lock'd send path used by
+// the async LocalHit thread -- this only ever runs from inside serve()'s own
+// synchronous request/reply loop, same as send_result below.
+void send_closure_info(HANDLE h, const kcdmp::luaintrospect::ClosureInfo& info) {
+    BYTE body[1024];
+    size_t o = 0;
+    body[o++] = info.ok ? 1 : 0;
+    std::memcpy(body + o, &info.nativeAddr, 8); o += 8;
+    std::memcpy(body + o, &info.rva, 4); o += 4;
+
+    auto put_str = [&](const std::string& s) {
+        const uint8_t n = static_cast<uint8_t>(s.size() > 255 ? 255 : s.size());
+        body[o++] = n;
+        std::memcpy(body + o, s.data(), n); o += n;
+    };
+    put_str(info.moduleName);
+    put_str(info.name);
+    put_str(info.prologueHex);
+
+    EnterCriticalSection(&g_write_lock);
+    send_frame(h, kClosureInfo, body, static_cast<uint16_t>(o));
+    LeaveCriticalSection(&g_write_lock);
+}
+
 void send_result(HANDLE h, bool ok, uint8_t seq) {
     BYTE body[2] = { static_cast<BYTE>(ok ? 1 : 0), seq };
     EnterCriticalSection(&g_write_lock);
@@ -206,6 +231,24 @@ void serve(HANDLE h) {
                 logf("PIPE: SetFactionHostile hostile=%s -> %s",
                      hostile ? "true" : "false", ok ? "applied" : "ghost not loaded / failed");
                 send_result(h, ran && ok, seq);
+                break;
+            }
+
+            case kResolveLuaClosure: {
+                if (len != kResolveLuaClosureLen) {
+                    logf("PIPE: ResolveLuaClosure wrong length %u", len);
+                    kcdmp::luaintrospect::ClosureInfo empty;
+                    send_closure_info(h, empty);
+                    break;
+                }
+                uint64_t closureAddr = 0;
+                std::memcpy(&closureAddr, body, 8);
+                kcdmp::luaintrospect::ClosureInfo info;
+                const bool ran = main_thread::run_sync([&] {
+                    info = kcdmp::luaintrospect::resolve(closureAddr);
+                });
+                if (!ran) logf("PIPE: ResolveLuaClosure timed out waiting for a frame");
+                send_closure_info(h, ran ? info : kcdmp::luaintrospect::ClosureInfo{});
                 break;
             }
 

@@ -196,11 +196,26 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ## 4. Closed as not achievable — do not re-derive
 
-- **Aggro / stimulus injection.** No reachable surface. `xgen` reflected =
-  two read-only properties; `XBehaviorModule` = empty; XGenAIModule's 1,784
-  exports are behaviour-tree enum glue; `SkirmishManager::DebugTriggerEvent`
-  does nothing observable outside a running skirmish. **Consequence: replicated
-  damage hurts NPCs but does not make them fight back.**
+- **Aggro / stimulus injection via reflection/native surfaces.** No reachable
+  surface. `xgen` reflected = two read-only properties; `XBehaviorModule` =
+  empty; XGenAIModule's 1,784 exports are behaviour-tree enum glue;
+  `SkirmishManager::DebugTriggerEvent` does nothing observable outside a
+  running skirmish. **The proven path remains WO-15/16/17's native faction
+  `SetParent` attach — the only mechanism that has ever produced a real NPC
+  perceiving and attacking a ghost.**
+- **Aggro via Lua `AI.*` binds — WO-20, partially real, not sufficient.**
+  Re-tested with a corrected method (real native addresses recovered via a
+  Lua-closure walk, not a guessed call signature — `WO-20-aggro-findings.md`).
+  `AI.AddPersonallyHostile`/`AI.IsPersonallyHostile` and
+  `AI.SetAttentiontarget`/`AI.AddAggressiveTarget` write genuine, verified
+  engine state (confirmed by independent getters, not fault-free returns).
+  `AI.SetFactionOf` and `AI.CreateStimulusEvent` remain inert under every
+  argument shape tried (4 and 5 variants respectively). **None of the
+  working ones, alone or combined, caused a real NPC to move toward or
+  attack a ghost** — writing this state is not sufficient to make an NPC act
+  on it. **Consequence unchanged: replicated damage hurts NPCs but does not
+  make them fight back**, and the native faction-attach mechanism is still
+  the only proven lever for real aggro.
 - **Attacker attribution.** `TakeDamage`'s `Attacker` parameter creates no
   combat history — `HasCombatHistoryWithSoul(player, 30s)` returned false after
   a hit landed.
@@ -237,6 +252,15 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   `PlayerSoul` returns an `I_Soul*` base subobject. Compare by GUID.
 - Even GUID comparison is not enough for "is this the player" — a second soul
   named "Dude", with its own GUID, sits at the player's exact position.
+
+**Lua sandbox**
+
+- **This mod's embedded Lua uses 32-bit float numbers, not doubles.**
+  `tostring()` on a value above ~16.7M (2^24) prints in scientific notation
+  with low digits already gone, and integer-ish arithmetic (hashing,
+  checksums) silently corrupts above that range — a `%2147483647` string
+  hash collapsed 7 of 9 test inputs onto the same output. Keep any Lua
+  integer arithmetic's intermediate values under 2^24; see `WO-20-faces.md`.
 
 **Pipe / IPC**
 

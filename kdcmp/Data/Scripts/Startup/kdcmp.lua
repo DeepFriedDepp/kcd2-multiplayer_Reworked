@@ -1317,24 +1317,37 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     -- is the real, in-use top-level tree WO-16 read off live NPCs/animals;
     -- it runs real perception without breaking ForceMount (WO-16, Phase 0.2/0.3).
     local mbt = KCD2MP.aggroEnabled and "IdleSeq" or ""
+
+    -- WO-20: deterministic real face. Keyed on the Steam name if it has
+    -- already arrived (KCD2MP_SetGhostName runs at Handshake time on the
+    -- server, before any Position packet -- see docs/WO-20-faces.md -- so in
+    -- practice it almost always has), falling back to the same "Player<id>"
+    -- string the nameplate itself falls back to so a spawn is never blocked
+    -- waiting on the name.
+    local faceKey = KCD2MP.ghostNames[id] or ("Player" .. tostring(id))
+    local facePick = KCD2MP_PickFaceForPlayer(faceKey)
+
     local entity = nil
     pcall(function()
         XGenAIModule.SpawnEntity{
             Name      = name,
-            ClassName = "NPC",
+            ClassName = facePick.className,
             Pos       = {x, y, z},
-            Properties = { esFaction = "Civilians", esModularBehaviorTree = mbt },
+            Properties = { esFaction = "Civilians", esModularBehaviorTree = mbt,
+                           guidSharedSoulId = facePick.guid },
         }
         entity = System.GetEntityByName(name)
     end)
     if not entity then
         System.LogAlways("[KCD2-MP] XGenAI spawn failed, fallback System.SpawnEntity")
         local ok2, e2 = pcall(System.SpawnEntity, {
-            class = "NPC", position = pos, name = name,
-            properties = { esFaction = "Civilians" },
+            class = facePick.className, position = pos, name = name,
+            properties = { esFaction = "Civilians", guidSharedSoulId = facePick.guid },
         })
         if ok2 then entity = e2 end
     end
+    System.LogAlways(string.format("[KCD2-MP] face pick for '%s': key=%s class=%s soul=%s guid=%s",
+        id, faceKey, facePick.className, facePick.soulName, facePick.guid))
 
     if not entity then
         System.LogAlways("[KCD2-MP] SpawnEntity failed for ghost id=" .. tostring(id))
@@ -1349,10 +1362,23 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
 
     System.LogAlways("[KCD2-MP] Spawned entityId=" .. tostring(entity.id))
 
-    -- Apply white/red armor preset (ClothingPreset first, then WeaponPreset + visor)
-    local p = KCD2MP.armorPresets.white_red
-    pcall(function() entity.actor:EquipClothingPreset(p.preset) end)
-    pcall(function() entity.actor:EquipWeaponPreset(p.weapons) end)
+    -- Apply white/red armor preset (ClothingPreset first, then WeaponPreset + visor).
+    --
+    -- WO-20: white_red's item list is entirely male mesh variants ("_m0X").
+    -- Confirmed live: an NPC_Female entity fault-freely accepts the preset
+    -- call (pcall ok=true, no error) but nothing renders and
+    -- EquippedArmorsByClassId reads back EMPTY afterwards -- not just missing
+    -- the preset items, but stripped of the soul's own authored default
+    -- outfit too, leaving her in the bare base layer. A plain NPC_Female
+    -- spawned with NO preset call keeps her own default outfit fine (also
+    -- confirmed live). So the preset call is actively destructive on a
+    -- female-classed ghost, not merely ineffective -- skip it for her and
+    -- let the soul's own authored outfit stand. The male path is unchanged.
+    if facePick.className ~= "NPC_Female" then
+        local p = KCD2MP.armorPresets.white_red
+        pcall(function() entity.actor:EquipClothingPreset(p.preset) end)
+        pcall(function() entity.actor:EquipWeaponPreset(p.weapons) end)
+    end
     local ghostName = name
     Script.SetTimer(800, function()
         pcall(function() System.ExecuteCommand("closeVisorOn " .. ghostName) end)
@@ -1409,6 +1435,8 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         entity = entity,
         entityId = entity.id,
         istate = istate,
+        facePick = facePick,
+        faceKey = faceKey,
     }
 
     -- Schedule name apply after entity fully inits (soul may not be ready at spawn time).
@@ -3127,6 +3155,109 @@ KCD2MP.armorPresets = {
         preset = "dc000002-0000-0000-0000-000000000000",
     },
 }
+
+-- ===== WO-20 — deterministic face roster (guidSharedSoulId) =====
+--
+-- The appearance lever -- binding a spawned NPC's guidSharedSoulId spawn
+-- property to a real soul's SharedSoulGuid, which makes the engine build a
+-- full distinct head+body+hair+beard automatically -- is Jefferson25625's
+-- find (AppearanceApi.md, github.com/DeepFriedDepp/kcd2-exports fork, used
+-- with permission). Confirmed live against this project's own build
+-- (docs/WO-20-faces.md), not trusted from their doc.
+--
+-- Their own soul_roster.lua (the actual 48-soul GUID list) was never
+-- committed to the repo -- prose only, same pattern WO-18 found for their
+-- whole C# stack. So this roster is our own: 48 real, hand-placed commoner
+-- souls (24 male, 24 female), pulled live from this save's own SoulsByName
+-- and spread across settlements for visual variety. SharedSoulGuid is the
+-- authored, cross-session-stable key (NATIVE-PLUGIN-findings.md), so these
+-- values hold regardless of which save or session picks them.
+KCD2MP.faceRoster = {
+    male = {
+        {"tbuk_man_5",   "82d455d8-5a4c-4210-8cc4-b11c363bbd27"},
+        {"tkop_man_1",   "f5587d56-3305-4138-99f9-5c3b7aeca709"},
+        {"tkop_man_2",   "81a2ef00-57d1-4759-85a4-3f79d888dd63"},
+        {"tneb_man_11",  "43b076df-4be8-f9d9-e2e4-dd5cafd0db96"},
+        {"tneb_man_18",  "4a5baae4-2667-2892-178d-b47b10e562b3"},
+        {"tpod_man_1",   "4e628918-2a38-c1ea-c786-2424123506ae"},
+        {"tpod_man_5",   "4f45df7c-4667-77a0-a415-d03b0cd1e293"},
+        {"tsem_man_21",  "4072c96a-3bb5-f744-078c-8ef89203a49c"},
+        {"tsem_man_22",  "46356c7b-ab60-1377-e8e4-514c8a8dcfbb"},
+        {"tsla_man_2",   "4166b913-6b12-1965-cbb6-509a49250ba6"},
+        {"ttac_man_8",   "fd1af8c5-c500-4add-b0b6-6c0505fe80c2"},
+        {"ttac_man_9",   "69dfede7-a999-43dd-9dfa-5bf0c5aefe01"},
+        {"ttkc_man_26",  "cfa65480-f361-4cf8-80c5-1900b7846bc8"},
+        {"ttkc_man_3",   "4b4c6520-21a6-6125-d814-564837f165a2"},
+        {"ttro_man_30",  "40fd3055-48be-a9f5-de48-0b882695cca5"},
+        {"ttro_man_59",  "7e4881d6-ffb7-416f-bbbe-49bc622747b2"},
+        {"tvez_man_20",  "2f825ed0-1d9b-4df0-ad90-d6e2b136ce04"},
+        {"tvez_man_21",  "4badc882-824c-407e-b823-059fa3e5df5b"},
+        {"tvid_man_3",   "48ea5c5c-fcbb-6a90-be4d-8b7f7ad6a4ac"},
+        {"tvid_man_7",   "6947a43f-30eb-49bd-9997-44396f01fcba"},
+        {"tzda_man_6",   "94babc16-7944-4729-b13b-cdfb5e51da93"},
+        {"tzda_man_9",   "aefb7006-ca4d-4d4e-b624-b351459806b4"},
+        {"tzel_man_10",  "8158f557-018e-4016-95a4-024bb060bd18"},
+        {"tzel_man_7",   "271ac033-a516-4928-b1f7-825bc57c46e3"},
+    },
+    female = {
+        {"prepadeni_woman_1", "f9eeaaef-b0f7-437d-b5cc-043121267e87"},
+        {"tpod_woman_3",      "cbea36af-a25c-4aa0-8ae4-d6b5a2fcc3f3"},
+        {"tsem_woman_12",     "46ec6bf1-3bac-85d6-8ee7-f90b1b25a4a8"},
+        {"tsem_woman_8",      "456dc2bd-1ede-2372-7ee7-fed064e80ea8"},
+        {"tsem_woman_9",      "4187a4bf-c27a-dd4b-c348-7bec934968ad"},
+        {"tsla_woman_1",      "4e9bdbd4-885f-b50b-3940-d9ff9a000382"},
+        {"ttac_woman_3",      "48de9403-4fa6-32c3-7dd7-007ef5dc1489"},
+        {"ttac_woman_4",      "49daaf6f-5119-420a-b7c6-33825b912bb3"},
+        {"ttac_woman_7",      "ddf4ac93-d15d-4728-8083-16cf46f68444"},
+        {"ttkc_woman_17",     "f9a94c81-d804-44ab-9d0e-9c4decefbcd0"},
+        {"ttkc_woman_6",      "4763a986-8361-a712-61d9-bf6dd706ddb6"},
+        {"ttkc_woman_9",      "7ac037fe-60ca-4212-a39f-0093cff270ba"},
+        {"ttro_woman_10",     "ab87afbe-498c-42c3-ab3e-bef003b273be"},
+        {"ttro_woman_11",     "1b21ebf4-0ccd-450e-b182-8703a01c6ff8"},
+        {"ttro_woman_12",     "7759e6b2-6a88-4f30-a28f-bee35104370b"},
+        {"tvez_woman_2",      "488e80ea-f98d-d0e1-8dc7-4359d4701b8d"},
+        {"tvez_woman_3",      "00ec8c08-21d3-4f65-8c84-cf28958f0cde"},
+        {"tvez_woman_5",      "9349eb0d-91e3-4f48-94bd-6ef73370036e"},
+        {"tvid_woman_1",      "4bb85c62-b0f9-c430-27e5-2ecfd254df90"},
+        {"tzda_woman_1",      "450fc04c-4a9d-a6c9-0af0-dc60678c39a9"},
+        {"tzda_woman_4",      "e9cca65b-2a67-4b12-b892-673ffbcb61dc"},
+        {"tzel_woman_1",      "4b80b89a-45f3-8861-ecc7-b67cc7c6f185"},
+        {"tzel_woman_2",      "45032153-51cb-db4a-9ea0-69431518519a"},
+        {"tzel_woman_3",      "499b3100-8025-ece1-c741-ef13d59db783"},
+    },
+}
+
+-- djb2-style string hash. Pure +/*/% arithmetic, deliberately no bitwise
+-- ops -- this mod's sandbox is stripped Lua 5.1, which has no bit library.
+--
+-- WO-20 correction, found live: this engine's embedded Lua uses 32-bit
+-- FLOAT numbers, not doubles -- confirmed by probing KCD2MP_HashString with
+-- a %2147483647 modulus (the obvious choice) and watching tostring(h) print
+-- in scientific notation ("1.93453e+08") with the low digits already gone,
+-- which then made "h % 2" parity flip unpredictably and sent every test
+-- name to the same roster slot (or an out-of-range one). Float32 is only
+-- exact for integers up to 2^24 (~16.7M), so every intermediate value here
+-- is kept under a 65521 modulus (largest prime below 2^16) -- h*33 then
+-- tops out around 2.16M, safely inside the exact range.
+function KCD2MP_HashString(s)
+    local h = 5381 % 65521
+    for i = 1, #s do
+        h = (h * 33 + string.byte(s, i)) % 65521
+    end
+    return h
+end
+
+-- Deterministic per-player face pick: same name key -> same soul, every
+-- time, in this or any future session. Gender and the individual soul are
+-- both derived from the same hash so one name always resolves to one look.
+function KCD2MP_PickFaceForPlayer(nameKey)
+    local h = KCD2MP_HashString(tostring(nameKey or ""))
+    local isFemale = (h % 2) == 0
+    local list = isFemale and KCD2MP.faceRoster.female or KCD2MP.faceRoster.male
+    local idx = (math.floor(h / 2) % #list) + 1
+    local pick = list[idx]
+    return { className = isFemale and "NPC_Female" or "NPC", soulName = pick[1], guid = pick[2] }
+end
 
 -- Split "a,b,c" -> {"a","b","c"}, trims whitespace
 local function splitCSV(s)
