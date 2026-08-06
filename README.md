@@ -39,18 +39,27 @@ never "probably fine."
 | Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
 **NPC aggro (`mp_enable_aggro`) — known limits, v1 scope, not bugs:**
-- **One-sided.** A hostile NPC can hurt an aggro'd ghost; the ghost cannot hurt
-  back. Its weapon visibly draws (`human:DrawWeapon()`, a real native call,
-  confirmed on screen) but `CombatSoul.HasMeleeWeapon` never reflects it and
-  its bare behaviour tree never throws a punch. No lever for real two-way
-  combat was found — see `docs/WO-16-release-candidate.md`.
-- **A sustained fight can leave the ghost stuck floored.** Real combat damage
-  can trigger a genuine stagger/knockdown reaction with no recovery behaviour
-  to bring it back up, because the ghost's behaviour tree is a bare dispatcher
-  with none of a real NPC's archetype-specific recovery branches. The RPG
-  layer still considers it alive and standing throughout (`IsDead`/
-  `IsUnconscious` both stay false) — root-caused, not fixed, this session; see
-  `docs/WO-16-release-candidate.md`.
+- **One-sided.** A hostile NPC can hurt an aggro'd ghost; the ghost has not been
+  observed to hurt back. Since WO-22 a ghost carries a real soul and brain, and
+  it does now *act* — it reacts to being confronted, evades, and will flee a
+  fight it is losing — but no ghost has been seen to land a blow. See
+  `docs/WO-22-brain-lead.md`.
+  *(Correction to an earlier claim here: `CombatSoul.HasMeleeWeapon` does flip
+  when there is a real equipped weapon to draw — WO-21. It simply confers no
+  ability to fight back.)*
+- **A knocked-out ghost now gets back up — fixed in WO-22.** Previously a
+  sustained fight could leave a ghost unconscious forever: the knockdown was
+  registered correctly, but no wake-up behaviour ever ran, because the ghost
+  had no Warhorse brain. Ghosts are now spawned soul-backed
+  (`XGenAIModule.SpawnEntity{ SharedSoulGuid = ... }`), which supplies the
+  `npc_basic_switch` subbrain the recovery branches live in. Measured recovery:
+  under a minute. See `docs/WO-22-brain-lead.md`.
+  *(An earlier claim here — that the RPG layer never registers the knockdown
+  and `IsDead`/`IsUnconscious` both stay false — was wrong; WO-21 observed
+  `IsUnconscious=true` throughout. The problem was always the missing wake-up.)*
+- **Hitting another player's ghost in a town is a crime.** A ghost is a real
+  `Civilians`-faction NPC, so attacking one inside a settlement can draw guard
+  aggro onto *you*. New since WO-22 gave ghosts real souls; not yet addressed.
 - **One hostile faction for all of v1**, a real bandit faction confirmed
   hostile to ordinary townsfolk (WO-16) — not a nuanced per-NPC-type system.
 - **The hostile-faction attach depends on a playthrough-specific donor soul**

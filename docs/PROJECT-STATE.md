@@ -200,9 +200,18 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   surface. `xgen` reflected = two read-only properties; `XBehaviorModule` =
   empty; XGenAIModule's 1,784 exports are behaviour-tree enum glue;
   `SkirmishManager::DebugTriggerEvent` does nothing observable outside a
-  running skirmish. **The proven path remains WO-15/16/17's native faction
-  `SetParent` attach — the only mechanism that has ever produced a real NPC
-  perceiving and attacking a ghost.**
+  running skirmish. **The shipped path remains WO-15/16/17's native faction
+  `SetParent` attach.**
+
+  **WO-22 amendment — a second, unshipped mechanism exists.** A ghost spawned
+  with a hostile soul's `SharedSoulGuid` inherits that soul row's own
+  `factionName` and was attacked by real guards within seconds, with **no
+  native attach and no DLL injection**, and with no dependence on a donor NPC
+  being loaded in the save (the GUID comes from table data, not save data —
+  which dissolves the donor-soul fragility recorded in the README's aggro
+  limits). Observed as a side effect of WO-22's brain testing; **not tested as
+  a replacement for the shipped mechanism, and not wired into the mod.** Do not
+  read this bullet as "aggro is closed" any more.
 - **Aggro via Lua `AI.*` binds — WO-20, partially real, not sufficient.**
   Re-tested with a corrected method (real native addresses recovered via a
   Lua-closure walk, not a guessed call signature — `WO-20-aggro-findings.md`).
@@ -342,15 +351,27 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   `System.GetEntitiesByClass("DiceInteractor")` returned nine world tables with
   the player standing 1.2 m from one and the next 512.9 m away. No proximity
   heuristic and no config-flag fallback was needed.
-- **Ghost behaviour-tree trade-off.** `KCD2MP_SpawnGhost` passes
-  `esModularBehaviorTree=""` deliberately so the scheduler does not fight
-  `ForceMount` during riding. A ghost *with* a tree genuinely perceives (it
-  appears in `PerceptionHistory`). **WO-16 tested the trade-off directly**: a
-  populated tree (`"IdleSeq"`) broke neither basic ghost behaviour nor
-  `ForceMount` in testing, and combined with a hostile faction attach (the
-  fix from WO-15), produced real, spontaneous aggro from an ordinary nearby
-  NPC — see `WO-16-findings.md`. Still undecided: whether/how to change the
-  mod's default spawn behaviour; that decision was explicitly deferred.
+- **Ghost brains — RESOLVED in WO-22, and the old trade-off was never real.**
+  `esModularBehaviorTree` is inert and `"IdleSeq"` names no behaviour tree
+  anywhere in the shipped game data (WO-21, reconfirmed twice in WO-22 against
+  extracted retail `Scripts.pak` and a retail Lua state dump). The
+  `""`-versus-`"IdleSeq"` trade-off this entry used to describe was a
+  distinction without a difference.
+
+  What actually gives a ghost a brain is a **soul**: `brain_id` is a column on
+  the soul row in `Libs/Tables/rpg/soul__*.xml`. `XGenAIModule.SpawnEntity`
+  takes a **top-level** `SharedSoulGuid` (its parameter table is flat — there
+  is no `Properties` key in it), and passing the GUID nested inside
+  `Properties`, as this mod did until WO-22, bound no soul at all.
+  `KCD2MP_SpawnGhost` now passes it correctly. Ghosts get their roster soul's
+  face, faction identity, reputation log, combat level and brain — and recover
+  from being knocked unconscious, which is A1 fixed.
+
+  `SchedulerProxyName` is deliberately **not** passed: it is what would make a
+  ghost select its own activities and walk away from where `KCD2MP_InterpTick`
+  puts it. It is not needed for the recovery fix. `ForceMount` is unaffected —
+  re-tested against a real horse in every spawn shape. See
+  `docs/WO-22-brain-lead.md`.
 - **`kdcmp.lua` is a ~2,400-line monolith.** Much of the ghost plumbing is
   redundant if the DLL ever renders players directly. The animation tables and
   speed thresholds are empirical data — port them, never regenerate them.
