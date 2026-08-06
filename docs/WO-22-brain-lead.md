@@ -286,10 +286,41 @@ carrying the real soul, real faction, real reputation log and real combat
 level. There is a middle configuration between "inert prop" and "autonomous
 NPC", and it is one parameter wide.
 
-What is **not** established: whether a soul-only ghost (no proxy) also
-recovers from unconsciousness. A1's fix was demonstrated on the
-proxy-carrying configuration only. That is the single most important open
-question for turning this into a shipped change, and it is one test.
+### The soul-only configuration also recovers — tested, n=2
+
+Run at the human's direction immediately after the above, as the one test that
+gated turning this into a shipped change.
+
+`wo22U` — commoner soul `4209f87f-…`, top-level `SharedSoulGuid`, **no
+`SchedulerProxyName`**, health set to 4, knocked out unarmed by the human.
+Soul binding verified first (`SharedSoulGuid` reads back the donor,
+`FactionNode.UIName` = `soul_ui_name_varlet`), and stationarity verified for a
+full minute before the knockdown — position byte-identical across 6 samples.
+
+| cycle | went unconscious | conscious again | upper bound on recovery |
+|---|---|---|---|
+| 1 | 09:00:41 | 09:01:35 | **≤ 54 s** |
+| 2 | 09:07:08 | 09:07:34 | **≤ 26 s** |
+
+Both times it stood back up — Z returned to exactly ground level — and then
+**stayed put**: byte-identical position for the following 3½ minutes, with no
+independent movement at any point in either cycle.
+
+**This is the configuration the project wants.** A1's fix, with none of the
+position-sync cost, and `ForceMount` already confirmed working on this same
+shape (`wo22S`, above).
+
+Two honest caveats:
+
+- Recovery here was **much faster** than the proxied case (≤54 s and ≤26 s
+  versus 7 m 35 s). n=1 proxied against n=2 soul-only, single location, single
+  session. The plausible reading is that a proxied NPC has a scheduler activity
+  to re-acquire before it counts as recovered while a proxy-less one simply
+  stands up, but that is inference, not measurement.
+- Health did **not** regenerate here (held at exactly 4.0 through both cycles),
+  where the proxied ghost ticked 4.0 → 4.1. Whatever drives regen appears to
+  sit on the scheduler side. Minor, but it means "health frozen" is not by
+  itself the A1 signature — the unconsciousness ending is.
 
 ---
 
@@ -338,13 +369,15 @@ runtime-only and removed at the end of the session (verified: none remain).
    one-line fix that turns the face roster from decorative into real. It also
    confers faction and combat level, which has consequences worth thinking
    about before shipping.
-2. `SchedulerProxyName` is what buys A1's fix and costs position-sync
-   authority. Whether the mod wants that trade — or wants it only while a
-   ghost is knocked down — is a design call.
-3. Test whether a soul-only ghost (no proxy) also recovers. If it does, the
-   whole benefit lands with none of the position-sync cost.
-4. `PROJECT-STATE.md`'s A1 entry ("an aggro'd ghost knocked unconscious never
+2. **`SchedulerProxyName` should not be passed.** It is not what buys A1's
+   fix — the soul alone does that — and it is the sole cause of the
+   position-sync conflict. Ship `SharedSoulGuid`, omit the proxy.
+3. `PROJECT-STATE.md`'s A1 entry ("an aggro'd ghost knocked unconscious never
    wakes up") is now conditional on the brainless spawn shape, and should say so.
+4. Aggro could come from the soul row's own `factionName` rather than the
+   native `SetParent` attach. Untested as a replacement, but it would remove
+   the DLL-injection dependency and the "donor not loaded in this save"
+   fragility in one move. Worth a WO of its own.
 
 ## Licensing
 

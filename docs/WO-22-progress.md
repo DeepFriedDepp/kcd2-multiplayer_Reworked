@@ -68,12 +68,16 @@ answered.
 soul-plus-proxy ghosts all mount the same horse. (One intermediate reading this
 session said otherwise; that was an occupied-horse confound, corrected on
 re-run.) The position-sync conflict **is** real and confirmed by construction —
-a scheduler-linked ghost walks away continuously. Crucially the two are
-separable: `SharedSoulGuid` **without** `SchedulerProxyName` gives the real
-soul, faction and combat level while the ghost stays byte-stationary.
+a scheduler-linked ghost walks away continuously.
 
-Full detail, evidence and the one open question that gates any shipped change:
-`docs/WO-22-brain-lead.md`.
+**The two are separable, and that settles the shipping question.** Tested at
+the human's direction after the above: `wo22U`, top-level `SharedSoulGuid` with
+**no** `SchedulerProxyName`, knocked out unarmed twice — recovered both times
+(**≤54 s** and **≤26 s**), stood back up, and stayed byte-stationary throughout,
+before and after. So the soul alone buys A1's fix; the scheduler proxy buys only
+the position-sync conflict. **Ship `SharedSoulGuid`, omit the proxy.**
+
+Full detail and evidence: `docs/WO-22-brain-lead.md`.
 
 ---
 
