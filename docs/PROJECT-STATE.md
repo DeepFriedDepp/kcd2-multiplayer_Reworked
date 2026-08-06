@@ -225,6 +225,35 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   on it. **Consequence unchanged: replicated damage hurts NPCs but does not
   make them fight back**, and the native faction-attach mechanism is still
   the only proven lever for real aggro.
+
+  **WO-25 amendments.** Three findings, live-verified 2026-08-06
+  (`docs/WO-25-findings.md`):
+  1. **The two Lua binds add nothing, isolated cleanly.** WO-24's Phase 3
+     test was confounded (already-hostile soul). Re-run on a genuinely
+     non-hostile commoner soul: `AddPersonallyHostile`/`SetAttentiontarget`
+     write real, verified state but produce zero observable engagement
+     (`AttentionTargetType`/`PeakThreatLevel` stuck at 0 over 65s). The
+     soul-row `factionName` remains the only proven lever for real aggro.
+  2. **A real essential-NPC protection exists and was live-verified against
+     actual lethal damage.** `soul_vip_class_id` (`Libs/Tables/rpg/
+     soul_vip_class.xml`) is a real field on every soul row — 95% of
+     ~8,198 souls carry none, the rest carry graduated protection
+     (`immortality`, `untouchable`, etc). Live A/B test: a ghost bound to a
+     real quest NPC's soul (Petr Mailer, `vip_class_id=4`) survived 200
+     lethal damage at 1 HP (`IsDead=false`); an identical hit killed an
+     unprotected control NPC outright (`IsDead=true`). This is a genuine,
+     working guardrail for any future aggro work, not just a data label.
+  3. **Soul-row hostility (the WO-22/24 lead) is still not wired into the
+     mod**, and shipping it as originally proposed hit a real design
+     conflict: it requires swapping a ghost's `SharedSoulGuid` to a
+     hostile-faction soul, which also destroys WO-20's deterministic
+     face-roster appearance (no proven lever sets faction hostility
+     independent of soul identity — `AI.SetFactionOf` remains confirmed
+     inert). The project's actual long-term goal — connected players
+     staying fully "Henry," cosmetically and functionally, with automatic
+     reactive combat engagement rather than a manual toggle — needs a
+     different technical approach than anything found across
+     WO-20/22/24/25, and is its own future WO.
 - **Attacker attribution.** `TakeDamage`'s `Attacker` parameter creates no
   combat history — `HasCombatHistoryWithSoul(player, 30s)` returned false after
   a hit landed.
