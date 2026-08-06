@@ -254,6 +254,37 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
      reactive combat engagement rather than a manual toggle — needs a
      different technical approach than anything found across
      WO-20/22/24/25, and is its own future WO.
+
+  **WO-26 amendments — the premise of most of the above is now wrong**
+  (`docs/WO-26-findings.md`, live 2026-08-06):
+  1. **The shipped default ghost already engages, reactively, with no toggle
+     and no hostile faction.** Tested for the first time. A ghost spawned by
+     `KCD2MP_SpawnGhost`'s exact current shape (roster `SharedSoulGuid`,
+     `Civilians`, `aggroEnabled=false`, no `AI.*` binds) treats being attacked
+     as a crime, arms itself unprompted, and took the human from **100 to 57
+     HP in one exchange**. As an uninvolved bystander it engaged a hostile
+     ghost, pursued it **340 m** and killed it (`IsDead=true`, read from the
+     API). **WO-22's A2 gate ("the ghost fights back is not demonstrated") is
+     superseded**, and WO-25's Phase 4 face/soul conflict is moot — it only
+     arises if hostility must come from swapping `SharedSoulGuid`, and it does
+     not. Untested clause: whether a ghost de-escalates after a fight ends.
+  2. **A connected player cannot be Henry.** `Player` is a distinct class at
+     three layers (entity class with its own `player.lua` and `type="Player"`,
+     which `NPC.lua` lacks; `AIOBJECT_PLAYER`=100 vs `AIOBJECT_ACTOR`=5 live;
+     soul class `player`, id 5, carried by exactly 3 shipped souls). A second
+     `Player`-class entity **spawns malformed (no archetype, no faction) and
+     crashed the game** within ~52 error frames — observed, BugSplat fired.
+     The structural reason is `SoulList::PlayerSoul`, a **single read-only
+     `Soul*`** holding `player_henry`, which Lua cannot reach. Do not
+     re-derive this.
+  3. **`AI.GetAttentionTargetType` / `AI.GetPeakThreatLevel` are not
+     engagement indicators** and must not be cited as evidence again. Both
+     read exactly 0 through genuine, damage-dealing combat. WO-25's Phase 2
+     conclusion still stands on its no-movement/no-damage evidence.
+  4. **"A soul-only ghost is byte-stationary" (WO-22) holds only while idle.**
+     In combat it ranges hundreds of metres — a real, unmeasured conflict with
+     `KCD2MP_InterpTick`'s 50 ms position stream, and the genuine remaining
+     engineering problem here.
 - **Attacker attribution.** `TakeDamage`'s `Attacker` parameter creates no
   combat history — `HasCombatHistoryWithSoul(player, 30s)` returned false after
   a hit landed.
