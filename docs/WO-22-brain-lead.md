@@ -235,6 +235,38 @@ soul-backed, scheduler-linked one. WO-21's re-root-cause ("the wake-up
 branches live in `npc_basic_switch`, the subbrain the ghost does not have") was
 correct, and giving the ghost that subbrain is what fixed it.
 
+### Recovery on the *shipped* path is inferred, not measured
+
+The fix was applied, built, installed and verified live through the real
+unmodified `KCD2MP_SpawnGhost` (see the commit trail): a ghost spawned by the
+mod now reads back its roster soul's `SharedSoulGuid`
+(`40fd3055-…` = `ttro_man_30`, previously all-zeroes), `CombatLevel` 0.6488
+instead of `-1`, `FactionNode.UIName` = `soul_ui_name_soldier`, the white/red
+armour preset still applied, and position byte-stable across 45 s.
+
+**A knockdown-and-recovery cycle on a mod-spawned ghost was attempted and could
+not be completed.** A1's recovery evidence therefore remains `wo22U`'s two
+cycles — same spawn shape, but spawned directly rather than through
+`KCD2MP_SpawnGhost`, and without the armour preset and `DrawWeapon` calls the
+real path adds. Nothing observed suggests those interfere. Stated plainly: the
+shipped path's recovery is **inferred from an identical spawn shape, not
+measured on the shipped path itself.**
+
+The reason it could not be completed is itself a finding, and a
+product-relevant one:
+
+**A shipped ghost is a `Civilians`-faction NPC standing in a settlement, so the
+player cannot attack it without committing a crime.** The attempt drew guard
+aggro onto the player and had to be abandoned. This is not a testing
+inconvenience to work around — it is what will happen to real players who
+punch each other's ghosts in a town, and it is new since ghosts started
+carrying real souls and real faction identity. Worth its own look before this
+reaches users.
+
+Anyone closing this gap later should **not** do it by punching a ghost in a
+settlement. Better options: do it well outside any settlement's guard
+coverage, or let a hostile NPC do the knocking down instead of the player.
+
 ## Gate — A2, and the WO-20 binds
 
 **A2: PARTIAL, and not via the WO-20 binds.**

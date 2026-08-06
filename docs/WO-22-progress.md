@@ -77,6 +77,19 @@ the human's direction after the above: `wo22U`, top-level `SharedSoulGuid` with
 before and after. So the soul alone buys A1's fix; the scheduler proxy buys only
 the position-sync conflict. **Ship `SharedSoulGuid`, omit the proxy.**
 
+**The fix is applied, built, installed and verified live.** A ghost spawned
+through the real unmodified `KCD2MP_SpawnGhost` now reads back its roster
+soul's `SharedSoulGuid` (previously all-zeroes), real `CombatLevel` and faction
+identity, keeps its armour preset, and stays byte-stationary.
+
+**One gap, stated plainly:** a knockdown-and-recovery cycle on a *mod-spawned*
+ghost was attempted and could not be completed, so the shipped path's recovery
+is inferred from an identical spawn shape rather than measured on the shipped
+path itself. The reason is product-relevant and new: a ghost is now a
+`Civilians`-faction NPC, so **the player attacking one in a settlement commits
+a crime and draws guards.** That will happen to real players who punch each
+other's ghosts in a town. Worth its own look before release.
+
 Full detail and evidence: `docs/WO-22-brain-lead.md`.
 
 ---
