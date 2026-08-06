@@ -1306,18 +1306,6 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
 
     System.LogAlways(string.format("[KCD2-MP] Spawning ghost '%s' at %.1f,%.1f,%.1f", id, x, y, z))
 
-    -- XGenAIModule.SpawnEntity gives the entity a proper soul (defaultSoulArchetype="NPC"),
-    -- which enables human:Mount() for horse riding. Fallback to System.SpawnEntity if needed.
-    -- OPTION B: esModularBehaviorTree="" tries to spawn NPC without a scheduler so
-    -- SchedulerSubbrain doesn't fight ForceMount ("No valid scheduler behavior" error).
-    --
-    -- WO-17: KCD2MP.aggroEnabled=false (the default) keeps this byte-for-byte
-    -- the empty string every ghost has always spawned with -- this is the
-    -- one non-negotiable regression this WO protects. When true, "IdleSeq"
-    -- is the real, in-use top-level tree WO-16 read off live NPCs/animals;
-    -- it runs real perception without breaking ForceMount (WO-16, Phase 0.2/0.3).
-    local mbt = KCD2MP.aggroEnabled and "IdleSeq" or ""
-
     -- WO-20: deterministic real face. Keyed on the Steam name if it has
     -- already arrived (KCD2MP_SetGhostName runs at Handshake time on the
     -- server, before any Position packet -- see docs/WO-20-faces.md -- so in
@@ -1327,14 +1315,43 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     local faceKey = KCD2MP.ghostNames[id] or ("Player" .. tostring(id))
     local facePick = KCD2MP_PickFaceForPlayer(faceKey)
 
+    -- WO-22: SharedSoulGuid is a TOP-LEVEL parameter of SpawnEntity's table, not
+    -- something nested under Properties. Warhorse's own shipped scriptbind doc
+    -- (C_ScriptBindXGenAIModule__SpawnEntity) gives a flat table -- Name,
+    -- SharedSoulGuid, SoulArchetypeName, ClassName, Pos, Rot, NoAI,
+    -- SchedulerProxyName, ... -- with no Properties key in it at all.
+    --
+    -- Passing it nested, as this did until WO-22, binds NO soul: the spawned
+    -- ghost's SharedSoulGuid reads back all-zeroes and it gets an arbitrary
+    -- engine-generated appearance. That is why every ghost was brainless --
+    -- a Warhorse brain is a column on the soul row (brain_id in
+    -- Libs/Tables/rpg/soul__*.xml), so no soul means no brain.
+    --
+    -- Passed correctly, the ghost gets the roster soul's real face, faction
+    -- identity, reputation log and combat level -- and, verified live, it
+    -- RECOVERS from being knocked unconscious (<=54s and <=26s over two
+    -- cycles) where a brainless ghost stayed down forever. That is A1 from
+    -- WO-16-release-candidate.md, fixed. See docs/WO-22-brain-lead.md.
+    --
+    -- SchedulerProxyName is deliberately NOT passed. It is what would make the
+    -- ghost pick its own activities and walk off under its own power, which
+    -- fights KCD2MP_InterpTick's position stream. It is not needed for the
+    -- recovery fix -- the soul alone buys that -- so a ghost spawned this way
+    -- stays byte-stationary, exactly as before. ForceMount is unaffected
+    -- (re-tested against a real horse on this exact shape).
+    --
+    -- esModularBehaviorTree is gone rather than emptied: WO-21 proved it is
+    -- inert and that "IdleSeq" names no tree anywhere in the shipped game
+    -- data. It was never a live variable, so the aggro toggle's switch on it
+    -- was a no-op. Aggro still works -- it comes from the native faction
+    -- attach, as it always actually did.
     local entity = nil
     pcall(function()
         XGenAIModule.SpawnEntity{
-            Name      = name,
-            ClassName = facePick.className,
-            Pos       = {x, y, z},
-            Properties = { esFaction = "Civilians", esModularBehaviorTree = mbt,
-                           guidSharedSoulId = facePick.guid },
+            Name           = name,
+            ClassName      = facePick.className,
+            Pos            = {x, y, z},
+            SharedSoulGuid = facePick.guid,
         }
         entity = System.GetEntityByName(name)
     end)
