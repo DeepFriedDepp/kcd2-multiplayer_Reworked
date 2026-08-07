@@ -1296,9 +1296,135 @@ function KCD2MP_EnableAggro(arg)
     return true
 end
 
+-- WO-27: verified entity removal.
+--
+-- System.RemoveEntity has been observed returning without error while the
+-- entity is still alive and still in the world -- seen in WO-25 and again in
+-- WO-26, where it took four passes to clear three ghosts. A single call is
+-- therefore not evidence of removal, so this reads the entity back and
+-- retries, and reports what actually happened rather than that the call did
+-- not throw.
+--
+-- Two lookups, both by keys that survive the entity's lifetime: the entity id
+-- captured at spawn, and the SPAWN name ("kcd2mp_<id>") -- which is also the
+-- key the RPG SoulList files the ghost's soul under. The display name is
+-- deliberately not used: it is not a key anything can be looked up by.
+local function mp_remove_entity_verified(entityId, spawnName, label)
+    local function alive()
+        local e = nil
+        if entityId then pcall(function() e = System.GetEntity(entityId) end) end
+        if (not e) and spawnName then
+            pcall(function() e = System.GetEntityByName(spawnName) end)
+        end
+        return e
+    end
+
+    for pass = 1, 4 do
+        local e = alive()
+        if not e then
+            if pass > 1 then
+                mp_log(string.format("RemoveEntity %s gone after %d pass(es)", tostring(label), pass - 1))
+            end
+            return true
+        end
+        pcall(function() System.RemoveEntity(e.id or entityId) end)
+    end
+
+    local e = alive()
+    if e then
+        mp_log(string.format("RemoveEntity %s STILL ALIVE after 4 passes (entityId=%s name=%s)",
+            tostring(label), tostring(entityId), tostring(spawnName)))
+        return false
+    end
+    return true
+end
+
+-- WO-27: how many ghost entities actually exist right now, counted from the
+-- world rather than from KCD2MP.ghosts. The bookkeeping table is exactly what
+-- the leak got wrong, so a count taken from it would agree with itself and
+-- prove nothing. Returns registered, live, and the list of live spawn names.
+function KCD2MP_GhostAudit()
+    local registered, live, names = 0, 0, {}
+
+    for gid, g in pairs(KCD2MP.ghosts) do
+        registered = registered + 1
+        local e = nil
+        if g.entityId then pcall(function() e = System.GetEntity(g.entityId) end) end
+        if e then
+            live = live + 1
+            table.insert(names, "kcd2mp_" .. tostring(gid))
+        end
+    end
+
+    -- Orphans: an entity still in the world under a spawn name that no longer
+    -- has a KCD2MP.ghosts row. This is the shape the leak actually took.
+    for probe = 0, 32 do
+        if not KCD2MP.ghosts[tostring(probe)] and not KCD2MP.ghosts[probe] then
+            local e = nil
+            pcall(function() e = System.GetEntityByName("kcd2mp_" .. probe) end)
+            if e then
+                live = live + 1
+                table.insert(names, "kcd2mp_" .. probe .. " (ORPHAN)")
+            end
+        end
+    end
+
+    mp_log(string.format("GhostAudit registered=%d live=%d [%s]",
+        registered, live, table.concat(names, ", ")))
+    return registered, live
+end
+
+-- WO-27: which player a ghost belongs to, as a key that survives a reconnect.
+--
+-- The connection id does NOT: the relay hands out a fresh byte per connection,
+-- so the same human coming back is a different id, and the old id's row is
+-- never touched again. That is the whole leak -- WO-26 found three registered
+-- ghosts (ids 1, 2, 3) that were all one player, all wearing the same Steam
+-- nick, two of them orphaned.
+--
+-- The Steam nick is the only stable identity that reaches Lua: it arrives in
+-- the 0x03 Name packet at handshake time, before the first Position packet
+-- (docs/WO-20-faces.md), and it is already what KCD2MP_PickFaceForPlayer keys
+-- the face roster on. When it has NOT arrived, this falls back to
+-- "Player<id>", which is per-connection and so cannot dedupe -- an honest
+-- limit, not a silent one: two nameless reconnects will still leak, and the
+-- fallback is logged at spawn.
+local function mp_ghost_identity(id)
+    return KCD2MP.ghostNames[id]
+end
+
+-- Removes any ghost belonging to the same player under a DIFFERENT connection
+-- id. Called before a spawn, so a reconnect replaces its predecessor instead
+-- of orphaning it.
+function KCD2MP_RemoveStaleGhostsForPlayer(identity, keepId)
+    if not identity then return 0 end
+    local doomed = {}
+    for gid, g in pairs(KCD2MP.ghosts) do
+        if gid ~= keepId and g.identity == identity then
+            table.insert(doomed, gid)
+        end
+    end
+    for _, gid in ipairs(doomed) do
+        mp_log(string.format("Reconnect: '%s' returned as id=%s -- removing stale ghost id=%s",
+            tostring(identity), tostring(keepId), tostring(gid)))
+        KCD2MP_RemoveGhost(gid)
+    end
+    return #doomed
+end
+
 function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     if KCD2MP.ghosts[id] then
         KCD2MP_RemoveGhost(id)
+    end
+
+    -- WO-27: same player, new connection id. Must run BEFORE the spawn, so
+    -- there is never a moment with two ghosts for one person.
+    local identity = mp_ghost_identity(id)
+    if identity then
+        KCD2MP_RemoveStaleGhostsForPlayer(identity, id)
+    else
+        mp_log("SpawnGhost id=" .. tostring(id) ..
+               " has no Steam nick yet -- reconnect dedupe cannot run for this spawn")
     end
 
     local pos = {x=x, y=y, z=z}
@@ -1312,8 +1438,20 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     -- practice it almost always has), falling back to the same "Player<id>"
     -- string the nameplate itself falls back to so a spawn is never blocked
     -- waiting on the name.
-    local faceKey = KCD2MP.ghostNames[id] or ("Player" .. tostring(id))
+    local faceKey = identity or ("Player" .. tostring(id))
     local facePick = KCD2MP_PickFaceForPlayer(faceKey)
+
+    -- WO-27: an entity may still be standing under this exact spawn name with
+    -- no KCD2MP.ghosts row behind it -- after a save load, after the mod
+    -- reinitialised, or after a RemoveEntity that silently did nothing.
+    -- Spawning over it would leave the old one in the world untracked, which
+    -- is the other half of how WO-26 found three ghosts for one player.
+    local preexisting = nil
+    pcall(function() preexisting = System.GetEntityByName(name) end)
+    if preexisting then
+        mp_log("SpawnGhost: untracked entity already named " .. name .. " -- removing it first")
+        mp_remove_entity_verified(preexisting.id, name, name)
+    end
 
     -- WO-22: SharedSoulGuid is a TOP-LEVEL parameter of SpawnEntity's table, not
     -- something nested under Properties. Warhorse's own shipped scriptbind doc
@@ -1454,6 +1592,11 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         istate = istate,
         facePick = facePick,
         faceKey = faceKey,
+        -- WO-27: nil until the Steam nick has arrived. Refreshed by
+        -- KCD2MP_SetGhostName if the name turns up after the spawn, so a late
+        -- name still arms the reconnect dedupe for the NEXT reconnect.
+        identity = identity,
+        spawnName = name,
     }
 
     -- Schedule name apply after entity fully inits (soul may not be ready at spawn time).
@@ -1489,21 +1632,39 @@ function KCD2MP_ApplyGhostName(id, name)
     local ok1 = pcall(function() e.soul.name = name end)
     -- Attempt 2: soul.sName (alternative field name seen in some CryEngine versions)
     local ok2 = pcall(function() e.soul.sName = name end)
-    -- Attempt 3: entity display name (used in some HUD contexts)
-    local ok3 = pcall(function() e:SetName(name) end)
+
+    -- WO-27: `e:SetName(name)` USED to be attempt 3 here, and is deliberately
+    -- gone. It renamed the entity away from "kcd2mp_<id>" -- the name it was
+    -- spawned under and, critically, the key the RPG SoulList continues to
+    -- file its soul under. Confirmed live in WO-26: after the rename,
+    -- SoulsByName/Player91 404s while SoulsByName/kcd2mp_91 resolves. So the
+    -- rename made every by-name lookup -- ours and the agent's -- miss the
+    -- entity it was trying to find, including the ones that clean it up.
+    --
+    -- Nothing wanted it. The nameplate a player actually sees is drawn by this
+    -- mod from KCD2MP.ghostNames (see KCD2MP_InterpTick's labelCache write),
+    -- and the game's own NPC nameplate reads soul.name, which attempt 1 sets.
 
     -- Read back to verify assignment succeeded
     local after = nil
     pcall(function() after = e.soul and e.soul.name end)
 
-    mp_log(string.format("ApplyName id=%s name=%s ok1=%s ok2=%s ok3=%s before=%s after=%s",
-        id, name, tostring(ok1), tostring(ok2), tostring(ok3), tostring(before), tostring(after)))
+    mp_log(string.format("ApplyName id=%s name=%s ok1=%s ok2=%s before=%s after=%s",
+        id, name, tostring(ok1), tostring(ok2), tostring(before), tostring(after)))
 end
 
 -- Store name; if ghost already exists apply with short delay, else applied at spawn (1.5s).
 function KCD2MP_SetGhostName(id, name)
     KCD2MP.ghostNames[id] = name
     local ghost = KCD2MP.ghosts[id]
+    -- WO-27: a ghost that spawned before its nick arrived has identity=nil and
+    -- could not be deduped. Backfill it now, and sweep any older ghost that
+    -- turns out to belong to this same player, so the leak is closed even in
+    -- the race where the Position packet beat the Name packet.
+    if ghost then
+        ghost.identity = name
+        KCD2MP_RemoveStaleGhostsForPlayer(name, id)
+    end
     if ghost and ghost.entity then
         -- Ghost already alive when name packet arrives — apply after 300ms
         local captId = id
@@ -2430,8 +2591,14 @@ function KCD2MP_RemoveGhost(id)
     if not ghost then return end
     -- Remove horse ghost first (if riding)
     KCD2MP_RemoveHorse(id)
-    if ghost.entityId then
-        pcall(function() System.RemoveEntity(ghost.entityId) end)
+    -- WO-27: was a single unchecked System.RemoveEntity. It returns without
+    -- error while leaving the entity standing, which is how orphans survived
+    -- every "removal" the mod thought it had done. Look the entity up by the
+    -- spawn name -- NOT the display name, which since WO-26 is known not to be
+    -- a key anything resolves by (and which this mod no longer sets).
+    local spawnName = ghost.spawnName or ("kcd2mp_" .. tostring(id))
+    if ghost.entityId or spawnName then
+        mp_remove_entity_verified(ghost.entityId, spawnName, "ghost " .. tostring(id))
     end
     KCD2MP.ghosts[id] = nil
     KCD2MP.labelCache[id] = nil

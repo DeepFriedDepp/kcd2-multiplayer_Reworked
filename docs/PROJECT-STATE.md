@@ -285,6 +285,23 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
      In combat it ranges hundreds of metres — a real, unmeasured conflict with
      `KCD2MP_InterpTick`'s 50 ms position stream, and the genuine remaining
      engineering problem here.
+
+  **WO-27 amendment — what `mp_enable_aggro` actually does, live-verified
+  in both states** (`docs/WO-27-findings.md`). The toggle does **not** gate
+  the reactive combat above — that fires with `aggroEnabled=false`, as WO-26
+  already showed. What it gates is the older, still-real WO-15/16/17
+  mechanism: `SetFactionHostileAsync`, a native `SetParent` attach of the
+  ghost onto a real hostile bandit faction (`trosecko_enemies_bandits_
+  prepadeniAmbushers_group1`), triggered whenever a ghost lands or receives a
+  hit while the toggle is on, held ~20s, then released. Confirmed by reading
+  `FactionNode/Parent/Name` before and after an identical hit in both toggle
+  states: off leaves the ghost's ordinary faction untouched; on flips it to
+  the bandit faction. **Effect on top of the always-on reactive combat:**
+  proactive, faction-wide recognition — any nearby NPC hostile to that
+  faction, not just whoever the ghost is already fighting, can target it
+  unprompted. Off, engagement stays limited to whoever directly attacks the
+  ghost or is already fighting near it. The `DrawWeapon` cosmetic call
+  (WO-17) remains gated the same way and is still cosmetic-only.
 - **Attacker attribution.** `TakeDamage`'s `Attacker` parameter creates no
   combat history — `HasCombatHistoryWithSoul(player, 30s)` returned false after
   a hit landed.

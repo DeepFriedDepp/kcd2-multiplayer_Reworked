@@ -26,7 +26,8 @@ never "probably fine."
 | Ghost presence (position/animation/nameplates) | **Working**, including while *you* are in a menu — ghosts keep moving instead of freezing and snapping, measured at 6–7 m of real ghost travel during a menu that previously froze them dead. A peer who is *themselves* in a menu is tagged **`[in menu]`** on their nameplate, confirmed on screen. Your own nameplates stay hidden during your own menu, as before — see below |
 | Appearance sync (ghosts mirror your real equipped armor and weapons) | **Working** against synthetic peers and in real single-machine play — per-item, not a fixed costume; **unverified** with a second real human. Weapons go through the same mechanism as armor and were human-confirmed on screen across swords, an axe, a mace, shield+sword and a crossbow. Individual equip/unequip calls occasionally take several seconds to a couple of minutes to actually land under load — a **known rough edge**, not silently broken, see below |
 | Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human |
-| NPC aggro on ghosts (`mp_enable_aggro`) | **Working, opt-in, off by default** — decided locally per player, no session invite needed. When on, a ghost that lands or receives a hit gets temporarily attached to one hostile faction, so nearby NPCs recognize and can attack it, then reverts automatically ~20s after combat quiets down. Verified end-to-end (synthetic peer → relay → agent → native plugin → game) and via repeated live fights; **unverified** with a second real human. **Known limits, not bugs** — see below |
+| Reactive ghost combat (self-defense, joining nearby fights) | **Working, always on, no toggle** — since WO-22 gave ghosts a real soul and brain, a ghost defends itself when attacked (treats it as a crime, arms itself unprompted, lands real damage) and will join a fight already happening near it, entirely independent of `mp_enable_aggro` below. Live-verified: took a real player from 100 to 57 HP in a single exchange, and separately pursued and killed another ghost 340 m from where both spawned. This was shipped since WO-22 and undocumented as a player-facing feature until WO-26/WO-27 found it. See `docs/WO-26-findings.md`. Its position is still pinned by `KCD2MP_InterpTick` during a real networked session, so it cannot step, close, or retreat — a real, unresolved gap, see `docs/WO-26-shared-combat-design.md` |
+| NPC aggro on ghosts (`mp_enable_aggro`) | **Working, opt-in, off by default** — this does NOT turn the reactive combat above on or off; that already happens regardless. What the toggle actually gates is *proactive, faction-wide* hostility: when on, a ghost that lands or receives a hit gets attached to one real hostile faction for ~20s, so *any* nearby NPC of an opposing faction — not just whoever it's already fighting — can recognize and attack it unprompted. When off, that native attach never fires, live-confirmed by reading the ghost's `FactionNode/Parent/Name` before and after a hit in both states (WO-27). Verified end-to-end (synthetic peer → relay → agent → native plugin → game) via a live on/off A/B comparison and via repeated live fights; **unverified** with a second real human. **Known limits, not bugs** — see below |
 | Voice chat | **Working**, proximity-based |
 | Session framework (invites/accept/decline) | **Working** |
 | Dice engine (Farkle) | **Working** — 59/59 unit tests |
@@ -39,14 +40,16 @@ never "probably fine."
 | Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
 **NPC aggro (`mp_enable_aggro`) — known limits, v1 scope, not bugs:**
-- **One-sided.** A hostile NPC can hurt an aggro'd ghost; the ghost has not been
-  observed to hurt back. Since WO-22 a ghost carries a real soul and brain, and
-  it does now *act* — it reacts to being confronted, evades, and will flee a
-  fight it is losing — but no ghost has been seen to land a blow. See
-  `docs/WO-22-brain-lead.md`.
+- **~~One-sided~~ — wrong, corrected in WO-26.** This used to claim a hostile
+  NPC can hurt an aggro'd ghost but the ghost never hurts back. Live-tested
+  since and false: a plain soul-backed ghost took a real player from 100 to
+  57 HP in a single exchange, and separately killed another ghost outright in
+  a real duel. See `docs/WO-26-findings.md`. This is true with the toggle
+  **off** — fighting back was never gated behind `mp_enable_aggro`, only
+  *who else joins in* is (see the status table above).
   *(Correction to an earlier claim here: `CombatSoul.HasMeleeWeapon` does flip
-  when there is a real equipped weapon to draw — WO-21. It simply confers no
-  ability to fight back.)*
+  when there is a real equipped weapon to draw — WO-21. It confers real
+  fighting ability, not just a visual.)*
 - **A knocked-out ghost now gets back up — fixed in WO-22.** Previously a
   sustained fight could leave a ghost unconscious forever: the knockdown was
   registered correctly, but no wake-up behaviour ever ran, because the ghost
@@ -395,12 +398,15 @@ Things that are genuinely missing or impossible, as opposed to untested:
   but a save has not finished loading and that injected instance declines to
   start the pipe, with no second attempt. Observed directly, in the same run
   that verified the liveness fix. See `docs/WO-10-injection-fix.md`.
-- **NPC aggro** — *closed with evidence, not a to-do.* Replicated damage
-  lands and can kill NPCs, but nothing reachable makes an NPC's AI react to
-  it. They never fight back.
-- **Faction manipulation** — *closed with evidence.* Writing faction
-  ownership through the reflection layer corrupts a pointer the game owns and
-  crashes it.
+- **NPC aggro — this entry was wrong, corrected in WO-26.** It used to claim
+  replicated damage lands and can kill NPCs but nothing makes them fight
+  back. False: a soul-backed ghost fights back for real (see the status table
+  above) and a hostile NPC's AI engages a ghost fully — the only thing ever
+  missing was the ghost's ability to *move* while doing it, which is a
+  position-sync limit (`KCD2MP_InterpTick`), not an AI one.
+- **Faction manipulation** — *closed with evidence, then reopened and fixed
+  (WO-15).* The crash was a diagnosed calling-convention bug, not an inherent
+  unsafety; the fix underpins the `mp_enable_aggro` native attach above.
 - **Reading the vanilla dice minigame's live state** — *closed with
   evidence.* That is why our dice is a separate engine rather than a mirror.
 - **The master server (server browser backend)** — the Python service has
