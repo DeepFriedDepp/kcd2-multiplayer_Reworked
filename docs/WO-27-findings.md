@@ -269,6 +269,71 @@ was never saved over.
 - `docs/WO-27-findings.md` (this file)
 - `docs/WO-27-progress.md`
 
+---
+
+## Addendum — a real live incident, found before push, fixed
+
+While finishing up (post-commit, pre-push), the human reported an NPC
+("Housemaid") visibly attached to their character. Live investigation found
+an active, ongoing incident, not a leftover from earlier testing:
+
+**Root cause: two `KcdMpClient.exe` agent processes were running
+simultaneously**, both connected to the relay under the same local player
+identity (`M31`). One (PID 11920) was a survivor from *before* this
+session's game restart (the launcher process itself, PID 10860, was never
+restarted — only the game was, per the WO-27 Lua deploy steps above); the
+other (PID 10664) was started fresh when the human clicked Connect again
+after relaunching. Both stayed alive and both believed they owned the ghost
+for identity `M31`.
+
+**Consequence: an unbounded reconnect/respawn war.** `kcd.log` shows
+~4,000 `Spawning ghost` events over roughly the 10 minutes both agents
+coexisted — each agent's periodic reconnect attempt tried to remove the
+other's ghost (failing every time, `RemoveEntity ghost N STILL ALIVE after 4
+passes`, logged identically on every single attempt) and then spawned a
+replacement anyway, at the player's own position — which is exactly what
+"an NPC is attached to me" looks like from inside the game.
+
+**Immediate mitigation:** killed the stray process (PID 11920). The spam
+stopped immediately — confirmed by clean, unbroken `[KCD2-MP-DATA]` position
+ticks in `kcd.log` afterward, with no further `Spawning`/`Reconnect` lines.
+A `KCD2MP_GhostAudit()` call and a direct `System.GetEntitiesInSphere` sweep
+within 10 m of the player both then read zero ghost entities, and the human
+confirmed live that the visible NPC was gone. The "STILL ALIVE after 4
+passes" log line, given every single attempt reported it identically, is
+suspected to be a same-frame read-back artifact (`mp_remove_entity_verified`
+retries synchronously with no yield between passes, so a queued
+`RemoveEntity` may not be observable as gone until a later frame) rather
+than proof every removal genuinely failed — the world came up clean once the
+duplicate-agent condition stopped forcing constant retries, which would not
+happen if removal were reliably failing outright.
+
+**Root-cause fix, not just the symptom:** `KCDMP_launcher/Pages/Home.razor.cs`'s
+`ConnectToGame` unconditionally did `Process.Start(agentStartInfo)` with
+**no check for an already-running agent** — the exact gap that let two
+processes coexist. Added `StopExistingAgent()` (mirrors the existing
+`StopHostedRelay()` pattern in the same file): kills the launcher's own
+tracked `agentProcess` if still alive, then sweeps
+`Process.GetProcessesByName("KcdMpClient")` for any other survivor and kills
+those too, so it's robust even across a launcher restart. Called
+immediately before starting a new agent in `ConnectToGame`. Only one agent
+should ever represent one local player to a relay; this makes that true by
+construction instead of by luck.
+
+Build verified (`dotnet build KCDMP_launcher/KCDMP_launcher.csproj`,
+succeeded, one pre-existing unrelated warning). **Not yet live-tested**
+end-to-end (would need another close-game/relaunch/reconnect cycle) — the
+running launcher (PID 10860) still has the pre-fix code in memory; the fix
+takes effect on the launcher's next restart. Recommend a live
+close-game → relaunch → Connect → close-game-again → relaunch → Connect
+cycle before or shortly after shipping, specifically checking
+`Get-Process KcdMpClient` never shows more than one instance.
+
+This was caught before push, not after — but it is the same class of bug
+this WO's Phase 2 fixed in Lua (duplicate identity, unreliable removal), one
+layer up the stack, and it fully explains why Phase 2's own controlled test
+(which only ever ran one agent) did not catch it.
+
 ## Draft release-note language
 
 > **Aggro toggle behavior clarified, ghost duplication on reconnect fixed.**
@@ -280,6 +345,11 @@ was never saved over.
 > default), a ghost still fights back when attacked, just without that wider
 > recognition. Separately, reconnecting no longer leaves a duplicate ghost
 > behind — a player who disconnects and rejoins now cleanly replaces their
-> old ghost instead of leaving it stranded.
+> old ghost instead of leaving it stranded. The launcher also no longer lets
+> a second agent start alongside one already running, which used to be able
+> to cause exactly that kind of duplicate under the right timing.
 
-Ready for the human to assign a version and ship when chosen.
+Ready for the human to assign a version and ship when chosen — **recommend
+one more live close/relaunch/Connect cycle to confirm the launcher fix
+before shipping**, since it hasn't been end-to-end verified live yet (see
+the addendum above).

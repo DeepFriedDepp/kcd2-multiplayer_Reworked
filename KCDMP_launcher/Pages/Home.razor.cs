@@ -78,6 +78,15 @@ namespace KCDMP_launcher.Pages
         private ServerInfo? pendingServer = null;
         private string? pendingDllPath = null;
         private string launchStatusMessage = "";
+        // WO-27: the agent started by ConnectToGame, tracked so a later Connect
+        // (e.g. after the game was closed and relaunched without restarting the
+        // launcher) can kill the old one first instead of leaving it running
+        // alongside a new one. Two agents both claiming the same local player
+        // identity to the relay was observed live to cause an infinite
+        // reconnect/respawn war -- ~4000 spawn cycles in ~10 minutes -- because
+        // neither side's ghost could ever be cleanly removed while the other
+        // kept reasserting it. See docs/WO-27-findings.md.
+        private Process? agentProcess = null;
         #endregion
 
         #region Filter State
@@ -607,7 +616,8 @@ namespace KCDMP_launcher.Pages
                     WorkingDirectory = Path.GetDirectoryName(agentPath)
                 };
 
-                Process.Start(agentStartInfo);
+                StopExistingAgent();
+                agentProcess = Process.Start(agentStartInfo);
 
                 launchStage = LaunchStage.Connected;
                 launchStatusMessage = "Connected. You can close this once you're playing.";
@@ -767,6 +777,45 @@ namespace KCDMP_launcher.Pages
         }
 
         private void CancelPendingConnect() => ResetLaunchState();
+
+        // WO-27: kill any agent this launcher already started, plus a
+        // by-name sweep for any other KcdMpClient.exe still running (e.g.
+        // orphaned by a launcher window that survived a game restart, which
+        // is what actually happened live). Only one agent should ever
+        // represent this local player to a relay at a time -- a second one
+        // fights the first over the same ghost identity forever, since
+        // neither's removal of the other's ghost can ever stick while the
+        // other keeps respawning it. Called right before starting a new
+        // agent, not on every failure path, so a Connect retry that never
+        // got as far as starting an agent does not kill an unrelated one.
+        private void StopExistingAgent()
+        {
+            try
+            {
+                if (agentProcess != null && !agentProcess.HasExited)
+                {
+                    agentProcess.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to stop the tracked agent process");
+            }
+            agentProcess = null;
+
+            try
+            {
+                foreach (var proc in Process.GetProcessesByName("KcdMpClient"))
+                {
+                    try { proc.Kill(); }
+                    catch (Exception ex) { Log.Warning(ex, "Failed to stop stray KcdMpClient.exe (pid {Pid})", proc.Id); }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to enumerate KcdMpClient.exe processes");
+            }
+        }
 
         // Host flow: start a local relay, show the address a friend needs to
         // join it, and launch the game connected to it (127.0.0.1, since the

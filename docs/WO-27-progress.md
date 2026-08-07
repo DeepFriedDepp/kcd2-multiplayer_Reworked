@@ -54,6 +54,22 @@ disposable at session start.
 8. Cleanup: verified every test ghost (ids 2, 3, 5, 6, 7, 8) gone by
    individual read-back, not by script exit code.
 
+## Addendum — caught a live incident before push
+
+After the initial commit, the human reported an NPC visibly attached to
+their character. Not a leftover — an active incident: two `KcdMpClient.exe`
+agents were simultaneously connected under the same identity (one survived
+this session's game restart because only the game, not the launcher, was
+restarted; the other was started fresh on reconnect), locked in an
+unbounded reconnect/respawn war (~4000 spawn events). Killed the stray
+process to stop it immediately, confirmed clean via `KCD2MP_GhostAudit`, a
+direct proximity sweep, and the human's own visual confirmation. Then fixed
+the actual gap — `ConnectToGame` in `KCDMP_launcher/Pages/Home.razor.cs` had
+no check for an existing agent before starting a new one — by adding
+`StopExistingAgent()`. Full account and the reasoning behind it in
+`docs/WO-27-findings.md`'s addendum. **Not yet live-verified end-to-end**;
+the running launcher won't have this fix until it restarts.
+
 ## Judgement calls worth flagging
 
 - **Did not redo Phase 2's fix from scratch.** Found it already written,
