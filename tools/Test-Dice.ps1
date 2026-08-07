@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Exercises WO-5 dice (Farkle) against a running relay, relay only.
 
@@ -37,7 +37,7 @@ $P = @{
     SessionLeave = 0x10; SessionEnd = 0x11
     DiceIntent = 0x16; DiceState = 0x17; DiceError = 0x18; DiceEnd = 0x19
 }
-$PROTOCOL_VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 $KIND_DICE = 0x01
 
 $INTENT_ROLL = 0x00; $INTENT_KEEP = 0x01; $INTENT_BANK = 0x02; $INTENT_FORFEIT = 0x03

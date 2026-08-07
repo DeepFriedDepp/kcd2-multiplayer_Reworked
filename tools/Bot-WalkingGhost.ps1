@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Connects a synthetic peer to the relay that walks a slow circle around the
     real player, so a human can watch a remote ghost actually move.
@@ -48,7 +48,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$PROTOCOL_VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 $T_HANDSHAKE = 0x00
 $T_POSITION  = 0x01
 $T_PAUSEUP   = 0x1C

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Exercises the WO-11 pause-mitigation relay packets against a running relay.
 
@@ -42,7 +42,7 @@ $P = @{
     Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09
     PauseUp = 0x1C; PauseDown = 0x1D
 }
-$PROTOCOL_VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 $STATE_ENTERED = 1
 $STATE_EXITED  = 0
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     WO-28 relay-level tests for the shared player combat layer (0x1F-0x25):
     continuous player health, NPC->player hits, player death, and the
@@ -46,7 +46,8 @@ $PLAYER_STATE_UP = 0x1F; $PLAYER_STATE_DOWN = 0x20
 $PLAYER_HIT_UP   = 0x21; $PLAYER_HIT_DOWN   = 0x22
 $PLAYER_DEATH_UP = 0x23; $PLAYER_DEATH_DOWN = 0x24
 $COMBAT_ROLE     = 0x25
-$VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
+$VERSION = $PROTOCOL_VERSION
 
 $script:pass = 0; $script:fail = 0
 function Check([string] $name, [bool] $ok, [string] $detail = '') {

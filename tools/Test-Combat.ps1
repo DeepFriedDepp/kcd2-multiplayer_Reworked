@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Exercises the WO-4 combat replication packets against a running relay.
 
@@ -32,7 +32,7 @@ $P = @{
     Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09
     DamageUp = 0x12; DamageDown = 0x13; DeathUp = 0x14; DeathDown = 0x15
 }
-$PROTOCOL_VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 $SOUL_GUID_LEN = 16
 
 $script:pass = 0

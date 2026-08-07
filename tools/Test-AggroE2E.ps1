@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     End-to-end reactive aggro: synthetic peer -> relay -> agent -> DLL -> game.
 
@@ -31,7 +31,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'KcdApi.ps1')
 
-$VERSION    = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
+$VERSION    = $PROTOCOL_VERSION
 $HANDSHAKE  = 0x00
 $POSITION   = 0x01
 $DAMAGE_UP  = 0x12

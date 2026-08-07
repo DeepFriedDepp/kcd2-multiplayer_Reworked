@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Exercises the WO-19 release-version handshake layer against a running relay.
 
@@ -31,7 +31,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $P = @{ Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09; ReleaseVersion = 0x1E }
-$PROTOCOL_VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 
 $script:pass = 0
 $script:fail = 0

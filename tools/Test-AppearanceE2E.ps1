@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     End-to-end appearance replication: synthetic peer -> relay -> agent -> ghost.
 
@@ -65,7 +65,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'KcdApi.ps1')
 
 $HANDSHAKE = 0x00; $ACK = 0xFF; $POSITION = 0x01; $APPEARANCE_UP = 0x1A
-$VERSION = 5
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
+$VERSION = $PROTOCOL_VERSION
 
 function Send-Packet($stream, [byte] $type, [byte[]] $payload) {
     if ($null -eq $payload) { $payload = @() }

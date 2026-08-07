@@ -427,6 +427,27 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ## 7. Still open
 
+- **`Test-AppearanceE2E.ps1` fails: 2 of 5 item classes never equip.** Newly
+  visible, 2026-08-07. That script had drifted to protocol version 5 against a
+  relay speaking 6 and so could not handshake at all; nobody had run it since
+  the bump. With the pin fixed (see below) it now runs the full flow and
+  reproducibly leaves `belt_2slot` (`7da54a04-…`) and `GambesonShort02`
+  (`993d563a-…`) unequipped, at the default settle window and a shortened one
+  alike — so it is not the documented "equips take a while under load"
+  flakiness. **Not a WO-28 regression**: that diff contains no changes to the
+  appearance path. Leading hypothesis, untested: the slot exclusivity the
+  script's own header already documents for `Hood08`, whose shape would have
+  changed in WO-22 when ghosts started inheriting their roster soul's outfit.
+
+- **Protocol version pins in `tools\` are now derived, not copied.**
+  `tools/ProtocolVersion.ps1` reads `Protocol.Version` out of `Protocol.cs`;
+  every synthetic-peer script dot-sources it. Three of eleven had silently
+  drifted (`Test-AppearanceE2E` 5, `Test-CombatE2E` 3, `Bot-DiceOpponent` 4).
+  The relay refuses a mismatch outright, so a drifted pin does not degrade — it
+  cannot connect, and reads like "the relay is down". Scripts that deliberately
+  test a mismatch express it as `$PROTOCOL_VERSION + 1`, so they keep working.
+  **Do not reintroduce a literal version byte in a new script.**
+
 - **Launcher end-to-end run.** The wiring itself is **done** — commit `54af330`
   rewrote `LaunchGame` to start the Modding Tools build, wait for `WHGame.dll`,
   run the injector, check its exit code, and then start `KcdMpClient.exe`. The

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     WO-27 Gate 2: reconnect a synthetic peer under the SAME identity multiple
     times WITHOUT closing the prior TCP connection first, and confirm exactly
@@ -33,7 +33,8 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'KcdApi.ps1')
 
-$VERSION    = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
+$VERSION    = $PROTOCOL_VERSION
 $HANDSHAKE  = 0x00
 $POSITION   = 0x01
 $ACK        = 0xFF

@@ -122,6 +122,27 @@ confirmed by instrument and by eye.
 
 ## Loose end for whoever picks this up
 
-`tools/Test-AppearanceE2E.ps1` still pins protocol version 5 and would be
-refused at handshake today (the relay speaks 6). Untouched by this WO and not
-a regression from it, but it will fail if anyone runs it.
+**Three test scripts had silently drifted off the protocol version and could
+not connect at all** — `Test-AppearanceE2E.ps1` pinned 5, `Test-CombatE2E.ps1`
+pinned 3, `Bot-DiceOpponent.ps1` pinned 4, against a relay speaking 6. The
+relay refuses a mismatch outright, so these did not fail subtly; they could not
+handshake. Fixed by deriving the number from `Protocol.cs` in a shared
+`tools/ProtocolVersion.ps1` rather than copying it into eleven scripts, since
+three independent drifts is a mechanism problem rather than three typos.
+
+**That fix made a real, previously-invisible failure visible.**
+`Test-AppearanceE2E.ps1` now connects and runs the whole flow, and reports
+**2 of 5 item classes never equip** (`belt_2slot` and `GambesonShort02`) —
+reproducibly, at the default settle window as well as a shortened one, so it is
+not the known "equips take a while under load" flakiness.
+
+This is **not a WO-28 regression**: the WO-28 diff contains zero changes to the
+appearance path (every appearance mention in it is a comment or unchanged
+context). The likeliest explanation is the same slot-exclusivity the script's
+own header already documents for `Hood08` — a ghost's spawn-time outfit
+occupying the slot — which would have changed shape in WO-22 when ghosts began
+inheriting their roster soul's own appearance. That is a guess and is labelled
+as one; nobody could run this test to find out until now.
+
+**It deserves its own investigation and was deliberately not folded into this
+WO.**

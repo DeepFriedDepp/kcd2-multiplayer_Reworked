@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     WO-28 end-to-end: shared player health, death, and the Flow B damage
     sensor's three guards -- synthetic peer -> relay -> agent -> game.
@@ -56,7 +56,8 @@ $ErrorActionPreference = 'Stop'
 
 $HANDSHAKE = 0x00; $ACKTYPE = 0xFF; $POSITION = 0x01; $GHOST = 0x02
 $PLAYER_STATE_UP = 0x1F; $PLAYER_DEATH_UP = 0x23
-$VERSION = 6
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
+$VERSION = $PROTOCOL_VERSION
 
 $script:pass = 0; $script:fail = 0
 function Check([string] $name, [bool] $ok, [string] $detail = '') {
