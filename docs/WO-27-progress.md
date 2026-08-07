@@ -66,9 +66,13 @@ process to stop it immediately, confirmed clean via `KCD2MP_GhostAudit`, a
 direct proximity sweep, and the human's own visual confirmation. Then fixed
 the actual gap — `ConnectToGame` in `KCDMP_launcher/Pages/Home.razor.cs` had
 no check for an existing agent before starting a new one — by adding
-`StopExistingAgent()`. Full account and the reasoning behind it in
-`docs/WO-27-findings.md`'s addendum. **Not yet live-verified end-to-end**;
-the running launcher won't have this fix until it restarts.
+`StopExistingAgent()`. Full account and the reasoning behind it in `docs/WO-27-findings.md`'s
+addendum. **Live-verified end-to-end afterward**: published and deployed the
+fix, then deliberately reproduced the failure precondition (fresh launcher,
+untracked stray agent already running) and clicked Connect — the stray was
+killed, exactly one agent survived, and the new session's `kcd.log` shows
+none of the original incident's signature lines (`Spawning ghost`,
+`Reconnect:`, `STILL ALIVE`).
 
 ## Judgement calls worth flagging
 

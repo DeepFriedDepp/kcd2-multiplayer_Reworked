@@ -321,13 +321,31 @@ should ever represent one local player to a relay; this makes that true by
 construction instead of by luck.
 
 Build verified (`dotnet build KCDMP_launcher/KCDMP_launcher.csproj`,
-succeeded, one pre-existing unrelated warning). **Not yet live-tested**
-end-to-end (would need another close-game/relaunch/reconnect cycle) — the
-running launcher (PID 10860) still has the pre-fix code in memory; the fix
-takes effect on the launcher's next restart. Recommend a live
-close-game → relaunch → Connect → close-game-again → relaunch → Connect
-cycle before or shortly after shipping, specifically checking
-`Get-Process KcdMpClient` never shows more than one instance.
+succeeded, one pre-existing unrelated warning). `dotnet publish` (Release,
+`FolderProfile`) and deployed over the installed launcher at
+`%LOCALAPPDATA%\KCDMP\`.
+
+**Live-verified end-to-end.** Deliberately reproduced the failure precondition
+rather than the exact original sequence: a freshly-started launcher (so its
+`agentProcess` field is `null`, unaware of any existing agent) with an
+already-running, untracked `KcdMpClient.exe` left over from before it started
+— the same shape the original incident had, since a fresh launcher process
+can never have the old agent in its tracked field regardless of how it got
+into that state. Loaded into `playline2`, clicked Connect:
+
+```
+before Connect: KcdMpClient.exe pid=16124 (untracked by this launcher instance)
+after  Connect: KcdMpClient.exe pid=10300 (16124 gone)
+```
+
+`kcd.log` for the new session (324+ lines) contains **zero** `Spawning
+ghost`, `Reconnect:`, or `STILL ALIVE` lines — the failure signature from the
+original incident is entirely absent. `KCD2MP_GhostAudit()` reads
+`registered=0 live=0 []`. `StopExistingAgent()`'s by-name sweep is confirmed
+doing the actual work here, not just the tracked-field kill (which had
+nothing to act on, `agentProcess` being `null` on a fresh launcher) — that
+sweep is what makes the fix robust across a launcher restart, which is
+exactly the condition that caused the original incident.
 
 This was caught before push, not after — but it is the same class of bug
 this WO's Phase 2 fixed in Lua (duplicate identity, unreliable removal), one
@@ -349,7 +367,6 @@ layer up the stack, and it fully explains why Phase 2's own controlled test
 > a second agent start alongside one already running, which used to be able
 > to cause exactly that kind of duplicate under the right timing.
 
-Ready for the human to assign a version and ship when chosen — **recommend
-one more live close/relaunch/Connect cycle to confirm the launcher fix
-before shipping**, since it hasn't been end-to-end verified live yet (see
-the addendum above).
+Ready for the human to assign a version and ship when chosen. The launcher
+fix is now live-verified (see the addendum above) — nothing further blocks
+shipping.
