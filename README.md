@@ -413,65 +413,6 @@ Things that are genuinely missing or impossible, as opposed to untested:
   `KCDMP_launcher.exe` from some other directory and it will read and write
   its settings there instead.
 
-### Still needs a human, and has not had one
-
-Nothing in this list has been executed. It is not a list of things believed
-to work — it is the list of things nobody has watched happen.
-
-**Two machines, two people — the real test.** Everything below is single-
-machine or synthetic:
-
-- [ ] Host on one PC, join from another, both load saves and connect.
-- [ ] Each sees the other's ghost, hears proximity voice, and lands shared
-      combat damage both ways.
-- [ ] One player changes into a visibly different outfit **or draws a
-      different weapon** and the other's ghost updates to match within the
-      poll interval or the heartbeat (or instantly via `mp_sync_appearance`),
-      with no animation glitch.
-- [ ] Weapon pairings beyond the ones already watched on screen — a
-      two-handed weapon, or a crossbow plus a sidearm. Shield+sword was
-      confirmed to render together; whether anything hides anything else is
-      otherwise unknown.
-- [ ] One player opens a menu while **mounted** and the other watches: does
-      the ghost's horse keep moving with its rider, or does only one of the
-      two update? The horse transform is on the same pump as the rider by
-      design, but a mounted peer during a menu has never been watched.
-- [ ] A full dice match played to completion on both screens.
-- [ ] The same, with one player on a different network over a VPN overlay
-      (see [docs/NETWORKING.md](docs/NETWORKING.md)).
-
-**One machine, one person:**
-
-- [ ] Launcher → HOST → START GAME → load a save → CONNECT, confirming
-      `kcdmp-native.log` shows a `MAIN: <n> frames after ~<ms> ms -- tick is
-      live` line with a nonzero count for that run's pid, and that
-      `KcdMpClient.exe` starts. (Cold-start injection by hand is verified;
-      the same thing driven by the launcher's own button is not.)
-- [ ] The `[in menu]` nameplate tag seen from the *other* side of a real
-      two-machine session — it was confirmed on screen against a synthetic
-      peer, never against a second human's real menu.
-- [ ] The deliberate failure case: click CONNECT *before* loading a save, and
-      confirm you get an explicit message within ~8s rather than a silent
-      half-connected state. Note the two sides now disagree on purpose — the
-      launcher gives up waiting after 8s, while the injected plugin keeps
-      polling for up to 5 minutes and may well go live afterwards. What that
-      looks like to a player has not been watched.
-- [ ] Whether `~` is actually the console key on your keyboard layout — the
-      dice instructions above assume it.
-- [ ] The installer's interactive wizard, including the Modding-Tools gate.
-      Checklist: [docs/INSTALLER-TESTING.md](docs/INSTALLER-TESTING.md) tier 2.
-
-**A machine that is not a development machine** — out of reach for this
-project, which has exactly one PC:
-
-- [ ] Fresh Windows with no WebView2 runtime: the installer's download and
-      install of it has never been observed running.
-- [ ] A PC with no Steam, and a PC with Steam but no Kingdom Come.
-- [ ] A non-ASCII Windows username.
-
-Full checklist and what each tier does and does not cover:
-[docs/INSTALLER-TESTING.md](docs/INSTALLER-TESTING.md).
-
 ### Reporting a bug
 
 The launcher's status bar has a **REPORT BUG** button — it opens either the
