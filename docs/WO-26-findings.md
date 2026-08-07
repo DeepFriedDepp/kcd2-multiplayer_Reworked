@@ -411,7 +411,22 @@ That is the real gap between here and "small battles to giant ones", and it is
 a wire-protocol problem, not an AI problem. The AI half is already solved and
 has been since WO-22 — Phase 0 proved it.
 
-### Gate 3 — not shipped, and the reason has changed
+### Gate 3 — human decision recorded, design written, nothing implemented
+
+Presented the finding and the options. **The human's recorded decision: "Design
+it now, implement next session."** The design is
+`docs/WO-26-shared-combat-design.md` — three flows (continuous player health,
+NPC→player hits, player death), an explicit authority model, a build order, and
+a section on what it deliberately does not deliver.
+
+The single most important thing that design records, and the thing most likely
+to sink a naive implementation: **each peer runs an independent world
+simulation and NPCs have never been synchronised.** "Shared battles" in the
+sense of everyone watching the same fight is not what this delivers, and should
+not be described as if it were. What it delivers is one agreed answer about who
+got hurt and who died.
+
+### The old Gate 3 question is dead
 
 Nothing was implemented. The decision now in front of the human is **not**
 "which aggro mechanism" — that question is dead, engagement already works. It
