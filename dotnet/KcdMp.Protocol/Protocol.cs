@@ -199,7 +199,96 @@ namespace KcdMp.Wire;
 /// See <see cref="ReleaseVersionCompare"/> for how a receiver turns two of
 /// these strings into "who's behind."
 ///
-/// Free type bytes for new features: 0x1F and up.
+/// Shared player combat layer (WO-28). Replicates a *player's own* health,
+/// hits taken from NPCs, and death -- the gap WO-26 Phase 3 measured: the
+/// emit line carried position, rotation and two booleans, so when a test
+/// ghost was killed the player it represented kept playing at full health.
+///
+/// The existing combat layer (0x12-0x15) cannot carry this and Protocol's own
+/// comment above already says why: its targetGuid is only a valid cross-client
+/// key because it names *authored* content, and every player's real Henry
+/// carries the same SharedSoulGuid (4c2dcffb-... = player_henry, confirmed
+/// live in WO-26 Phase 1) so it cannot distinguish one player from another
+/// even in principle. Players are addressed by ghostId here instead.
+///
+/// C→S  0x1F  PlayerStateUp:   [health:4f][stamina:4f][flags:1]              (9)
+/// S→C  0x20  PlayerStateDown: [ghostId:1][health:4f][stamina:4f][flags:1]   (10)
+///              flags bit 0: isUnconscious
+///                   bit 1: isBleeding
+///
+/// Flow A, continuous player health. Deliberately a separate, low-rate pair
+/// rather than widening Position (0x01) / Ghost (0x02): those are the hottest
+/// packets in the protocol and health changes far less often than position.
+/// Sent on a change beyond <see cref="Protocol.PlayerStateHealthThreshold"/>,
+/// rate-limited to <see cref="Protocol.PlayerStateMinIntervalMs"/>, plus a slow
+/// unconditional heartbeat (<see cref="Protocol.PlayerStateHeartbeatSeconds"/>)
+/// so a peer who joins after the last real change still converges -- the relay
+/// is stateless and replays nothing, exactly as for appearance.
+///
+/// A receiver renders this and does not compute it: a player's health is
+/// authoritative on that player's own machine (Rule 1), and it is the only
+/// rule that cannot produce a disagreement which fails to self-correct.
+///
+/// C→S  0x21  PlayerHitUp:   [targetGhostId:1][health:4f][stamina:4f][flags:1]  (10)
+/// S→C  0x22  PlayerHitDown: [health:4f][stamina:4f][flags:1]                   (9)
+///
+/// Flow B, an NPC hurt a player. health/stamina are *loss amounts* (positive
+/// magnitudes), matching CombatSoul::TakeDamage's own argument semantics, not
+/// absolute values -- see the DLL's apply_damage. PlayerHitUp says "the ghost
+/// representing player N lost this much in my world"; the relay routes it to
+/// player N alone (it is NOT a broadcast) and drops the targetGhostId, since
+/// the recipient does not need to be told it is about themselves.
+///
+/// Each peer runs an independent single-player simulation, so if every peer's
+/// local NPCs generated hits against their local copy of every ghost, N peers
+/// would produce N damage streams for one conceptual fight and multiply the
+/// damage by N. NPC-versus-player combat is therefore authoritative on exactly
+/// one client (Rule 2) -- see 0x25 below, which is how a client knows whether
+/// it is that one.
+///
+/// C→S  0x23  PlayerDeathUp:   []                    (0) -- "I died"
+/// S→C  0x24  PlayerDeathDown: [ghostId:1]           (1)
+///
+/// Flow C, a player died. Sent by the dying player's own client (Rule 1) and
+/// never inferred by a peer from health reaching zero, for exactly the reason
+/// 0x14 already gives: two clients computing "dead" from slightly divergent
+/// health eventually disagree, and that disagreement does not self-correct.
+/// Idempotent -- a repeat for an already-dead player is ignored.
+///
+/// What death *does* is settled outside this protocol: the player who died
+/// reloads their own most recent save, ordinary single-player behaviour. Every
+/// player has always run a fully separate save and there is no mechanism to
+/// sync one player's save state to another's, so nobody else's world reverts.
+/// Peers simply see that player's ghost reappear wherever their save point put
+/// them once their game is back. See docs/WO-28-findings.md Phase 0 for what a
+/// mid-session reload actually does to the connection and the mod's Lua state.
+///
+/// S→C  0x25  CombatRole: [isDamageAuthority:1]      (1)
+///
+/// Which client currently holds Rule 2's NPC→player damage authority. The
+/// design this implements (docs/WO-26-shared-combat-design.md s3) names the
+/// role but not how a client learns it holds it, and the agent has no notion
+/// of "host" of its own -- ClientConfig only knows a relay address, and
+/// inferring authority from that address being loopback would break silently
+/// for anyone who starts the agent by hand. So the relay says so explicitly:
+/// it designates the lowest-id ready client and sends this on assignment and
+/// on every change (including when the holder leaves and it moves on).
+///
+/// This is the relay's only piece of derived per-session state, and it is not
+/// world state -- it is a fact about the connection set the relay already
+/// tracks. Both ends gate on it: a non-holder never sends PlayerHitUp, and the
+/// relay drops a PlayerHitUp from a non-holder anyway.
+///
+/// Free type bytes for new features: 0x26 and up.
+///
+/// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
+/// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
+/// silently ignores 0x20/0x22/0x24/0x25 (the receive loop's dispatch falls
+/// through on an unknown type), so such a session degrades -- ghost health
+/// stops updating, NPC hits stop crossing -- rather than breaking. Bumping
+/// would instead make the relay hard-refuse those clients at Handshake, which
+/// is a worse outcome for a strictly optional feature, and it would invalidate
+/// the version pin in every existing test script for no benefit.
 ///
 /// This file lives in the shared KcdMp.Protocol project (net8.0, no
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
@@ -233,6 +322,9 @@ public static class Protocol
     public const byte DiceIntent     = 0x16;
     public const byte AppearanceUp   = 0x1A;
     public const byte PauseUp        = 0x1C;
+    public const byte PlayerStateUp  = 0x1F;
+    public const byte PlayerHitUp    = 0x21;
+    public const byte PlayerDeathUp  = 0x23;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -253,6 +345,10 @@ public static class Protocol
     public const byte AppearanceDown   = 0x1B;
     public const byte PauseDown        = 0x1D;
     public const byte ReleaseVersion   = 0x1E;
+    public const byte PlayerStateDown  = 0x20;
+    public const byte PlayerHitDown    = 0x22;
+    public const byte PlayerDeathDown  = 0x24;
+    public const byte CombatRole       = 0x25;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -317,6 +413,64 @@ public static class Protocol
 
     /// <summary>Default Farkle target score, used when the Invite config omits it.</summary>
     public const int DefaultDiceTargetScore = 4000;
+
+    // ---- Shared player combat layer (WO-28) ----
+
+    /// <summary>Exact PlayerStateUp (0x1F) payload length.</summary>
+    public const int PlayerStateUpPayloadLen = 4 + 4 + 1;
+
+    /// <summary>Exact PlayerStateDown (0x20) payload length.</summary>
+    public const int PlayerStateDownPayloadLen = 1 + PlayerStateUpPayloadLen;
+
+    /// <summary>Exact PlayerHitUp (0x21) payload length.</summary>
+    public const int PlayerHitUpPayloadLen = 1 + 4 + 4 + 1;
+
+    /// <summary>Exact PlayerHitDown (0x22) payload length.</summary>
+    public const int PlayerHitDownPayloadLen = 4 + 4 + 1;
+
+    /// <summary>Exact PlayerDeathUp (0x23) payload length -- it carries nothing; the relay knows who sent it.</summary>
+    public const int PlayerDeathUpPayloadLen = 0;
+
+    /// <summary>Exact PlayerDeathDown (0x24) payload length.</summary>
+    public const int PlayerDeathDownPayloadLen = 1;
+
+    /// <summary>Exact CombatRole (0x25) payload length.</summary>
+    public const int CombatRolePayloadLen = 1;
+
+    /// <summary>PlayerState flag: the player is knocked out but not dead.</summary>
+    public const byte PlayerStateFlagUnconscious = 0x01;
+
+    /// <summary>PlayerState flag: the player is bleeding.</summary>
+    public const byte PlayerStateFlagBleeding = 0x02;
+
+    /// <summary>
+    /// How much a player's health or stamina must move before it is worth a
+    /// PlayerStateUp. Small enough that a real hit always crosses it, large
+    /// enough that ordinary regeneration does not turn this into a second
+    /// position stream.
+    /// </summary>
+    public const float PlayerStateHealthThreshold = 0.5f;
+
+    /// <summary>
+    /// Floor on the interval between two PlayerStateUp packets, so a sustained
+    /// fight sends at roughly 4 Hz rather than at the emitter's ~50 Hz.
+    /// </summary>
+    public const int PlayerStateMinIntervalMs = 250;
+
+    /// <summary>
+    /// How often the player-state layer resends unconditionally, so a peer who
+    /// joined after this player's last real health change still converges. Same
+    /// reasoning as <see cref="AppearanceHeartbeatSeconds"/> -- the relay is
+    /// stateless and neither remembers nor replays it for a late joiner.
+    /// </summary>
+    public const int PlayerStateHeartbeatSeconds = 10;
+
+    /// <summary>
+    /// A stamina reading this agent could not obtain. Sent rather than zero so
+    /// a receiver can tell "no stamina reading available on that build" from
+    /// "that player is exhausted", and never renders a fake zero.
+    /// </summary>
+    public const float UnknownStat = -1f;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

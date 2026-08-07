@@ -9,7 +9,24 @@ namespace KcdMp.Client;
 /// <param name="Z">World Z.</param>
 /// <param name="RotZ">Yaw in radians.</param>
 /// <param name="IsRiding">True while mounted.</param>
-public readonly record struct PlayerState(float X, float Y, float Z, float RotZ, bool IsRiding);
+/// <param name="Health">
+/// The player's own health (WO-28 Flow A), or null when this transport cannot
+/// see it. Null is "unknown, leave it alone" and must never be rendered as
+/// zero: the HTTP transport never reads it, and a v1 emit line from an older
+/// kdcmp.pak does not carry it. Only the mod's own v2 emit line supplies it.
+/// </param>
+/// <param name="Stamina">Stamina, same nullability contract as <paramref name="Health"/>.</param>
+/// <param name="IsDead">
+/// True when the mod reported the player as dead. Read from the emitter rather
+/// than inferred from <paramref name="Health"/> reaching zero -- see Protocol's
+/// 0x23 documentation for why death is never computed from a health value.
+/// Null when the transport cannot see it.
+/// </param>
+/// <param name="IsUnconscious">Knocked out but not dead. Null when unknown.</param>
+public readonly record struct PlayerState(
+    float X, float Y, float Z, float RotZ, bool IsRiding,
+    float? Health = null, float? Stamina = null,
+    bool? IsDead = null, bool? IsUnconscious = null);
 
 /// <summary>
 /// The channel between the agent and its local game instance.

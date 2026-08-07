@@ -173,7 +173,39 @@ Added `0x12`–`0x15` (Damage/Death, both directions) in v3, `0x16`–`0x19`
 duplicated** — it moved to a shared `KcdMp.Protocol` project (net8.0 classlib,
 namespace `KcdMp.Wire` to avoid a name collision with the `Protocol` class
 itself) that both `KcdMp.Client` and `KcdMp.Server` reference. One copy, kept
-in sync with itself by construction. Next free type byte: **`0x1C`**.
+in sync with itself by construction.
+
+Since then: `0x1C`–`0x1D` (PauseUp/PauseDown, WO-11), `0x1E` (ReleaseVersion,
+WO-19), and `0x1F`–`0x25` (shared player combat, WO-28).
+
+**Next free type byte: `0x26`.** *(This line previously said `0x1C`, which was
+already three features stale. `Protocol.cs`'s own "free type bytes" comment is
+the authority — check it there, not here.)*
+
+**WO-28 — shared player combat, `0x1F`–`0x25`** (`docs/WO-28-findings.md`).
+Replicates a *player's own* health, hits taken from NPCs, and death. Addressed
+by `ghostId`, never by soul GUID: every player's real Henry carries the same
+`SharedSoulGuid` (`4c2dcffb-…` = `player_henry`), so a soul GUID cannot
+distinguish one player from another even in principle.
+
+- `0x1F`/`0x20` PlayerState — the owner's authoritative health/stamina,
+  broadcast. Rendered by receivers, never computed by them.
+- `0x21`/`0x22` PlayerHit — **routed to one recipient, not broadcast**, and
+  carries *loss amounts*, not absolute values.
+- `0x23`/`0x24` PlayerDeath — sent by the dying client only, never inferred
+  from health reaching zero.
+- `0x25` CombatRole — which client holds NPC→player damage authority. The
+  relay designates the lowest-id ready client; without exactly one holder, N
+  peers generate N damage streams for one fight and damage multiplies by N.
+
+`Protocol.Version` stays at **6**: the layer is additive and an older client
+ignores it, so a mixed session degrades rather than being hard-refused at
+Handshake.
+
+**The emit line is now `v2`** — `… <flags> <health> <stamina>`, flags gaining
+bit 2 (dead) and bit 3 (unconscious). `LogTailGameTransport` parses `v1` and
+`v2` both, because the pak and the agent install separately; a `v1` line means
+"health unknown", which is never rendered as a zero.
 
 ### Test scripts (`tools\`)
 
@@ -182,6 +214,9 @@ in sync with itself by construction. Next free type byte: **`0x1C`**.
 | `Test-Combat.ps1` | relay forwarding, 14/14 | relay only |
 | `Test-Pipe.ps1` | pipe → DLL → NPC | game + DLL |
 | `Test-AppearanceE2E.ps1` | appearance sync end-to-end, synthetic peer → relay → agent → ghost | relay + agent + game (no DLL) |
+| `Test-PlayerCombat.ps1` | WO-28 player health/hit/death routing and the damage-authority gate, 21/21 | relay only (starts its own) |
+| `Test-PlayerVitalsE2E.ps1` | WO-28 end-to-end: ghost health renders, death tags, `v1` compat, all three Flow B guards + a positive control, 17/17 | relay + agent + game (no DLL) |
+| `Test-ReloadBehaviour.ps1` | what a mid-session save reload does to the connection, the mod's timer chains and ghost entities | relay + agent + game + a human to reload |
 | `Test-CombatE2E.ps1` | inbound, full chain | everything |
 | `Test-CombatOutbound.ps1` | outbound, full chain | everything |
 | `Test-Sessions.ps1` | WO-2 sessions, 23/23 | relay only |

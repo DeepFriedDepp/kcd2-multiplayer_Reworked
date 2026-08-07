@@ -85,6 +85,12 @@ public class TcpSocketService : BackgroundService
 						client.Name ?? $"id={client.Id}", _clientHandler.ClientCount);
 					if (client.IsReady)
 						_broadcastService.BroadcastDisconnect(client);
+
+					// WO-28: losing a client can move NPC→player damage
+					// authority -- it does whenever the holder is the one who
+					// left. Announced after RemoveClient above, so the role is
+					// recomputed over the set that actually remains.
+					_broadcastService.BroadcastCombatRole();
 				}, CancellationToken.None);
 			}
 		}

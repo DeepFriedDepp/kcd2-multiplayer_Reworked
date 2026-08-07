@@ -8,6 +8,28 @@ KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
 KCD2MP.ghostNames = {}          -- id → steam name (received via 0x03 Name packet from server)
 KCD2MP.ghostInMenu = {}         -- id → true while that player has a menu open (WO-13, set by agent on 0x1D)
+
+-- ===== Shared player combat (WO-28) =====
+-- id → {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
+-- the agent from a PlayerStateDown (0x20). Rendered, never computed here: a
+-- player's health is authoritative on that player's own machine, and that is
+-- the only rule about it that cannot produce a disagreement which fails to
+-- self-correct (docs/WO-26-shared-combat-design.md s3, Rule 1).
+KCD2MP.ghostHealth = {}
+KCD2MP.ghostDead = {}           -- id → true after a PlayerDeathDown (0x24); idempotent
+
+-- Flow B damage sensor. id → last sampled LOCAL health of that ghost entity in
+-- THIS world, and a one-shot skip flag set whenever an inbound authoritative
+-- value is written over it. Only ever populated while KCD2MP.hitSensorOn.
+KCD2MP.ghostHpSeen = {}
+KCD2MP.ghostHpSkip = {}
+
+-- Rule 2: only ONE client's NPC simulation may generate NPC→player hits, or N
+-- peers produce N independent damage streams for one conceptual fight and the
+-- damage multiplies by N. The relay designates that client and the agent sets
+-- this from a CombatRole (0x25) packet. Off until told otherwise -- a client
+-- that has not been told it holds authority must never assume it does.
+KCD2MP.hitSensorOn = false
 KCD2MP.labelCache = {}          -- id → {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
 KCD2MP.horseGhosts = {}         -- id → {entity, entityId} horse ghost per player
@@ -100,19 +122,103 @@ end
 -- and the rate becomes whatever this timer runs at.
 --
 -- Line format, space separated, fixed field count:
---   [KCD2-MP-DATA] v1 <seq> <clock> <x> <y> <z> <rotZ> <flags>
+--   [KCD2-MP-DATA] v2 <seq> <clock> <x> <y> <z> <rotZ> <flags> <health> <stamina>
 --
 --   seq    monotonic, so the tailer can spot drops and reordering
 --   clock  os.clock() at emit, so the agent can age the sample
---   flags  bit0 riding, bit1 sneaking
+--   flags  bit0 riding, bit1 sneaking, bit2 dead, bit3 unconscious   (2 and 3 are v2)
 --
 -- The version token is first so the parser can reject anything it does not
 -- understand rather than misread it. Bump it on any field change.
+--
+-- WO-28 Flow A raised this v1 -> v2, appending health and stamina. WO-26
+-- Phase 3 measured why: the line carried position, rotation and two booleans,
+-- so when a test ghost was killed the player it represented kept playing at
+-- full health and no peer had any way to know otherwise.
+--
+-- The agent parses BOTH versions (LogTailGameTransport). The pak and the agent
+-- are separately installed and update independently, so a new agent reading an
+-- old pak's v1 lines is an ordinary state, not a broken one: it degrades to
+-- "health unknown" rather than rejecting every line.
+--
+-- Death rides here as a flag bit rather than as its own event line because the
+-- emitter already runs at ~50 Hz and this costs nothing. It is still the
+-- *dying player's own client* that declares the death on the wire (Protocol
+-- 0x23) -- a peer never infers it from the health field reaching zero.
 KCD2MP.emitRunning = false
 KCD2MP.emitSeq = 0
 KCD2MP.emitIntervalMs = 20
 
-local EMIT_VERSION = "v1"
+local EMIT_VERSION = "v2"
+
+-- -1 = "no reading available", never a fake zero. Mirrors Protocol.UnknownStat
+-- on the agent side; a receiver must be able to tell "this build cannot read
+-- stamina" from "that player is exhausted".
+local STAT_UNKNOWN = -1
+
+-- Every binding below was enumerated and read live against the running game
+-- (2026-08-07) rather than guessed, because the obvious names are wrong here:
+--
+--   player.actor:GetHealth()          -> 100        (also used by WO-26)
+--   player.soul:GetState("stamina")   -> 126.667
+--   player.actor:IsDead()             -> false
+--   player.actor:IsUnconscious()      -> present on the actor metatable
+--
+-- and, confirmed NOT to exist on this build, so nothing should reach for them
+-- again: player.actor:GetStamina, player.soul:IsDead, player.soul:IsUnconscious,
+-- player:IsDead, player.human:IsDead, and GetState("dead"/"unconscious") --
+-- the last two return nil rather than erroring, which is the more dangerous
+-- shape: a pcall around them succeeds and yields a falsey "not dead" that was
+-- never actually measured.
+--
+-- Reads the local player's own health/stamina/liveness. Every read is pcall'd
+-- individually: a binding that disappears in a future patch must degrade one
+-- field, not blank the whole state line and stop position sync with it.
+function KCD2MP_ReadSelfVitals()
+    local health, stamina = STAT_UNKNOWN, STAT_UNKNOWN
+    local dead, unconscious = false, false
+    if not player then return health, stamina, dead, unconscious end
+
+    if player.actor then
+        pcall(function() health = player.actor:GetHealth() end)
+        -- Death is read, never derived from health reaching zero: KCD2 has a
+        -- real unconscious state distinct from death (WO-22's A1 was an
+        -- unending unconsciousness that the knockdown had registered
+        -- correctly), so "health is 0" and "dead" are genuinely different
+        -- facts and only one of them should make peers see a death.
+        pcall(function() dead = player.actor:IsDead() and true or false end)
+        pcall(function() unconscious = player.actor:IsUnconscious() and true or false end)
+    end
+
+    if player.soul then
+        pcall(function()
+            local v = player.soul:GetState("stamina")
+            if type(v) == "number" then stamina = v end
+        end)
+    end
+
+    -- Test override (mp_fake_death). Deliberately applied last and only ever
+    -- forces "dead" ON: Gate 2 needs a death that peers can observe end to end,
+    -- and the only alternative is asking a human to actually die on a real
+    -- save. It can never mask a REAL death into looking alive, which is the
+    -- one direction that would be dangerous to have in shipped code.
+    if KCD2MP.fakeDeadUntil and os.clock() < KCD2MP.fakeDeadUntil then
+        dead = true
+    end
+
+    return health, stamina, dead, unconscious
+end
+
+-- Reports this player as dead for `secs` seconds (default 20), so Flow C can be
+-- observed end to end without a real death and a real save reload. Local only:
+-- it changes what this client says about itself, which is exactly the thing
+-- Rule 1 makes authoritative, so peers react to it identically to a real death.
+function KCD2MP_FakeDeath(secs)
+    local n = tonumber(secs) or 20
+    KCD2MP.fakeDeadUntil = os.clock() + n
+    mp_log(string.format("FAKE_DEATH reporting dead for %.0fs", n))
+    KCD2MP_ShowInteractionMsg(string.format("Reporting death for %ds (test)", n))
+end
 
 -- Builds and writes one state line. Returns false when the player is not in a
 -- state worth reporting (no world, mid-load).
@@ -127,13 +233,17 @@ function KCD2MP_EmitState()
     pcall(function() ang = player:GetWorldAngles() end)
     local rotZ = ang and ang.z or 0
 
+    local health, stamina, dead, unconscious = KCD2MP_ReadSelfVitals()
+
     local flags = 0
     if KCD2MP.isRiding      then flags = flags + 1 end
     if KCD2MP.playerSneaking then flags = flags + 2 end
+    if dead                 then flags = flags + 4 end
+    if unconscious          then flags = flags + 8 end
 
     KCD2MP.emitSeq = KCD2MP.emitSeq + 1
-    System.LogAlways(string.format("[KCD2-MP-DATA] %s %d %.3f %.3f %.3f %.3f %.4f %d",
-        EMIT_VERSION, KCD2MP.emitSeq, os.clock(), pos.x, pos.y, pos.z, rotZ, flags))
+    System.LogAlways(string.format("[KCD2-MP-DATA] %s %d %.3f %.3f %.3f %.3f %.4f %d %.2f %.2f",
+        EMIT_VERSION, KCD2MP.emitSeq, os.clock(), pos.x, pos.y, pos.z, rotZ, flags, health, stamina))
     return true
 end
 
@@ -1968,6 +2078,138 @@ function KCD2MP_SetGhostMenuState(id, inMenu)
     mp_log("GHOST_MENU id=" .. id .. " inMenu=" .. tostring(inMenu and true or false))
 end
 
+-- ===== Shared player combat (WO-28) =====
+
+-- Flow A receiver. Called by the agent from a PlayerStateDown (0x20): this is
+-- the owner's own authoritative health, so it is stored and rendered, never
+-- reconciled against whatever this world's local copy of that ghost thinks.
+--
+-- It deliberately does NOT write the ghost entity's own health. Lua health
+-- writes are inert in this sandbox (docs/PROJECT-STATE.md s2), and the ghost's
+-- local health is a separate, local fact -- worlds are not shared, and the
+-- honest deliverable is that every peer can SEE the right number, not that two
+-- simulations are made to agree. What players actually read is the nameplate,
+-- which this drives.
+--
+-- It does, however, reset the Flow B sensor baseline and skip one sample. That
+-- is guard 2 from the design doc: an externally-written health shows up as a
+-- delta on the next sample and would otherwise be re-reported as a fresh hit,
+-- echoing forever. Implemented here rather than at the write site so it holds
+-- whether or not a health write ever lands.
+function KCD2MP_SetGhostHealth(id, health, stamina, flags)
+    id = tostring(id)
+    KCD2MP.ghostHealth[id] = {
+        h = tonumber(health) or -1,
+        s = tonumber(stamina) or -1,
+        flags = tonumber(flags) or 0,
+        at = os.clock(),
+    }
+    KCD2MP.ghostHpSkip[id] = true
+end
+
+-- Flow C receiver. Called by the agent from a PlayerDeathDown (0x24).
+-- Idempotent: a repeat for an already-dead player changes nothing, which is
+-- the contract Protocol 0x24 states.
+--
+-- The ghost entity is deliberately left standing. That player is reloading
+-- their own most recent save and will be back in the world within seconds to a
+-- minute; removing and respawning the entity would cost a full spawn cycle
+-- (and, before WO-27's dedupe fix, was exactly how duplicates appeared). The
+-- nameplate says what happened instead, and the ordinary position stream moves
+-- the ghost to wherever their save point put them once their game is back.
+function KCD2MP_SetGhostDead(id, dead)
+    id = tostring(id)
+    local was = KCD2MP.ghostDead[id] and true or false
+    local now = dead and true or false
+    KCD2MP.ghostDead[id] = now or nil
+    if was ~= now then
+        mp_log("GHOST_DEATH id=" .. id .. " dead=" .. tostring(now))
+    end
+end
+
+-- Rule 2 gate, set by the agent from a CombatRole (0x25) packet. When off, the
+-- per-ghost health sampling in KCD2MP_InterpTick does not run at all -- the
+-- cost is skipped as well as the send, and a client that was never told it
+-- holds authority cannot generate a hit by accident.
+function KCD2MP_SetHitSensor(on)
+    local now = on and true or false
+    if KCD2MP.hitSensorOn ~= now then
+        mp_log("HIT_SENSOR " .. (now and "on (this client holds NPC damage authority)" or "off"))
+    end
+    KCD2MP.hitSensorOn = now
+    if not now then
+        KCD2MP.ghostHpSeen = {}
+        KCD2MP.ghostHpSkip = {}
+    end
+end
+
+-- Reports everything this WO added, in one place, so a live check needs one
+-- command rather than a hand-written Lua chunk. Logs rather than returns: the
+-- console swallows return values.
+function KCD2MP_ReportVitals()
+    local h, s, d, u = KCD2MP_ReadSelfVitals()
+    System.LogAlways(string.format(
+        "[KCD2-MP] VITALS self health=%.1f stamina=%.1f dead=%s unconscious=%s emitter=%s hitSensor=%s",
+        h, s, tostring(d), tostring(u), EMIT_VERSION, tostring(KCD2MP.hitSensorOn)))
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        local hs = KCD2MP.ghostHealth[id]
+        local localHp = "?"
+        if ghost and ghost.entity and ghost.entity.actor then
+            pcall(function() localHp = string.format("%.1f", ghost.entity.actor:GetHealth()) end)
+        end
+        System.LogAlways(string.format(
+            "[KCD2-MP] VITALS ghost %s name=%s owner_health=%s owner_stamina=%s dead=%s local_health=%s seen=%s",
+            tostring(id), tostring(KCD2MP.ghostNames[id] or "?"),
+            hs and string.format("%.1f", hs.h) or "none",
+            hs and string.format("%.1f", hs.s) or "none",
+            tostring(KCD2MP.ghostDead[id] and true or false), localHp,
+            KCD2MP.ghostHpSeen[id] and string.format("%.1f", KCD2MP.ghostHpSeen[id]) or "none"))
+    end
+end
+
+-- Smallest health drop worth reporting as a hit. Below this it is sampling
+-- noise or regeneration rounding, not a blow.
+local HIT_MIN_DELTA = 0.05
+
+-- Flow B sensor, called once per ghost per interp tick.
+--
+-- Guards, in the order docs/WO-26-shared-combat-design.md s4 lists them by how
+-- easily they are got wrong:
+--   1. host-only -- KCD2MP.hitSensorOn, checked by the caller and again here.
+--   2. a delta caused by an inbound authoritative write is not a hit --
+--      KCD2MP_SetGhostHealth sets ghostHpSkip, consumed below.
+--   3. only NEGATIVE deltas are hits. Regeneration is not a hit.
+local function sampleGhostHealth(id, ghost)
+    if not KCD2MP.hitSensorOn then return end
+    if not (ghost and ghost.entity and ghost.entity.actor) then return end
+
+    local hp = nil
+    pcall(function() hp = ghost.entity.actor:GetHealth() end)
+    if type(hp) ~= "number" then return end
+
+    local prev = KCD2MP.ghostHpSeen[id]
+    KCD2MP.ghostHpSeen[id] = hp
+
+    -- Guard 2: one sample is swallowed after an external write, then the
+    -- baseline is simply whatever we just read. Note this consumes the flag
+    -- even on the first-ever sample, which is correct -- there is no prior
+    -- value to have lost.
+    if KCD2MP.ghostHpSkip[id] then
+        KCD2MP.ghostHpSkip[id] = nil
+        return
+    end
+    if prev == nil then return end   -- first sample only primes the baseline
+
+    local delta = prev - hp          -- positive = lost health
+    if delta < HIT_MIN_DELTA then return end   -- guard 3: covers 0 and negatives
+
+    -- Reported as a loss amount, matching CombatSoul::TakeDamage's own argument
+    -- semantics on the other end. Stamina is not sampled: there is no confirmed
+    -- Lua stamina binding (see probeStaminaReader), and inventing one here would
+    -- make a receiver drain a real player's stamina on a guess.
+    KCD2MP_EmitEvent("ghost_hit", string.format("%s %.2f", tostring(id), delta))
+end
+
 function KCD2MP_LabelTick()
     if not KCD2MP.labelRunning then return end
     Script.SetTimer(8, KCD2MP_LabelTick)
@@ -2485,6 +2727,27 @@ function KCD2MP_InterpTick(arg)
                 if KCD2MP.ghostInMenu[id] then
                     displayName = displayName .. " [in menu]"
                 end
+                -- WO-28 Flow C, before health: a dead player's remaining
+                -- number is stale by definition, so saying "dead" and a health
+                -- figure at once would be two answers to one question.
+                if KCD2MP.ghostDead[id] then
+                    displayName = displayName .. " [dead - reloading]"
+                else
+                    -- WO-28 Flow A. This is the owner's own authoritative
+                    -- health, not this world's local copy of the ghost --
+                    -- see KCD2MP_SetGhostHealth.
+                    local hs = KCD2MP.ghostHealth[id]
+                    if hs and hs.h and hs.h >= 0 then
+                        displayName = string.format("%s  %d HP", displayName, math.floor(hs.h + 0.5))
+                        if hs.s and hs.s >= 0 then
+                            displayName = string.format("%s / %d ST", displayName, math.floor(hs.s + 0.5))
+                        end
+                    end
+                end
+                -- WO-28 Flow B: sample this ghost's LOCAL health for
+                -- NPC-inflicted damage. No-op unless this client holds
+                -- NPC→player damage authority.
+                sampleGhostHealth(id, ghost)
                 local labelZ = sz + (istate.isRiding and 1.1 or 1.8)
                 local labelSize = 0  -- 0 = hidden (too far)
                 if _playerPos then
@@ -2584,6 +2847,62 @@ function KCD2MP_Tick()
     end
 end
 
+-- ===== Ghost reconciliation after a save load (WO-28 Phase 0) =====
+--
+-- Measured live, 2026-08-07: loading a save destroys every ghost ENTITY in the
+-- world, but KCD2MP.ghosts keeps holding the entity table it was given at spawn
+-- time. That table stays non-nil -- it is a Lua value, and nothing about the
+-- world unload reaches in and clears it -- so KCD2MP_UpdateGhost's own
+-- "spawn if missing" test (`if not ghost or not ghost.entity`) reads as
+-- "present" forever and the ghost is never respawned.
+--
+-- What that looks like in game, in the human's own words while it was
+-- happening: *"the ghost is invisible for me but I can see its nametag
+-- continuing in the same path"* -- because istate keeps taking position
+-- packets and KCD2MP_InterpTick keeps writing labelCache from it, with no
+-- body under the label. It never recovers on its own.
+--
+-- The check has to be a real world lookup by spawn name (never the display
+-- name -- WO-26 established that is not a key anything resolves by), which is
+-- too expensive for the 20 ms interp path. So the agent calls this on a slow
+-- cadence instead, the same shape as WO-13's KCD2MP_StartInterp re-arm.
+--
+-- Deliberately drops only the bookkeeping rather than calling
+-- KCD2MP_RemoveGhost: there is no entity left to remove, the display name and
+-- menu/health/death tags are all still correct for that player, and the very
+-- next position packet respawns the body through the ordinary path.
+function KCD2MP_ReconcileGhosts()
+    local fixed = 0
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        if ghost and ghost.entity then
+            local spawnName = ghost.spawnName or ("kcd2mp_" .. tostring(id))
+            local live = nil
+            pcall(function() live = System.GetEntityByName(spawnName) end)
+            if not live then
+                mp_log("RECONCILE id=" .. tostring(id) .. " entity '" .. spawnName ..
+                       "' is gone from the world (save load?) -- clearing so it respawns")
+                -- The horse half is destroyed by the same unload and tracked
+                -- separately, so it has to be dropped too or a remounting
+                -- ghost would sit on a horse that no longer exists.
+                KCD2MP.horseGhosts[id] = nil
+                KCD2MP.ghosts[id] = nil
+                KCD2MP.labelCache[id] = nil
+                -- The Flow B baseline belonged to the destroyed entity. A
+                -- fresh one starts at full health, so keeping it would read as
+                -- a large positive delta -- harmless (guard 3 drops it) but
+                -- meaningless, and clearing it is what makes that certain.
+                KCD2MP.ghostHpSeen[id] = nil
+                KCD2MP.ghostHpSkip[id] = nil
+                fixed = fixed + 1
+            end
+        end
+    end
+    if fixed > 0 then
+        System.LogAlways("[KCD2-MP] Reconcile: " .. fixed .. " ghost(s) had lost their entity; will respawn")
+    end
+    return fixed
+end
+
 -- ===== Ghost Remove =====
 
 function KCD2MP_RemoveGhost(id)
@@ -2605,6 +2924,15 @@ function KCD2MP_RemoveGhost(id)
     -- A player who disconnects while in a menu must not leave a stale
     -- "[in menu]" tag behind for whoever next reuses this ghost id (WO-13).
     KCD2MP.ghostInMenu[id] = nil
+    -- Same reasoning for every WO-28 per-ghost fact: relay ids are reassigned
+    -- per connection, so a leftover health figure, death tag or sampler
+    -- baseline would be attributed to whoever next gets this id. The sampler
+    -- baseline especially -- a stale one would read as an enormous first
+    -- delta and fire a fake hit at the new occupant.
+    KCD2MP.ghostHealth[id] = nil
+    KCD2MP.ghostDead[id] = nil
+    KCD2MP.ghostHpSeen[id] = nil
+    KCD2MP.ghostHpSkip[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
     -- wrong (false). Re-probe on next riding ghost (free NPC → correct results).
@@ -3902,6 +4230,11 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
     System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
+
+    -- Shared player combat (WO-28)
+    System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")
+    System.AddCCommand("mp_fake_death",  'KCD2MP_FakeDeath("%LINE")', "WO-28: report yourself dead for N seconds (default 20) so peers can be observed reacting -- test only")
+    System.AddCCommand("mp_reconcile",   "KCD2MP_ReconcileGhosts()", "WO-28: respawn any ghost whose entity was destroyed by a save load")
 
     -- Dice overlay (WO-6). These console commands are the SUPPORTED path: the
     -- keybinds below them are unverified action-name guesses, exactly as WO-2's

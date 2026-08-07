@@ -111,6 +111,13 @@ public class ClientSession
             _broadcastService.BroadcastReleaseVersion(this);
             _broadcastService.SendAllReleaseVersionsTo(this);
 
+            // WO-28: this client only just became ready, so the damage-authority
+            // answer may have changed for it (it is the first client) or stayed
+            // put (it is not). Told to everyone either way -- see
+            // BroadcastCombatRole for why the current answer goes to all, not a
+            // delta to the two whose answer moved.
+            _broadcastService.BroadcastCombatRole();
+
             // --- Position receive loop ---
             // Payload length is now exact: the version byte replaced the old
             // 16-vs-17-byte sniffing, and a v1 peer always sends 17.
@@ -192,6 +199,45 @@ public class ClientSession
                     var body = new byte[Protocol.PauseUpPayloadLen];
                     await ReadExactAsync(body);
                     _broadcastService.BroadcastPause(this, body);
+                    continue;
+                }
+
+                // --- Shared player combat layer (WO-28) ---
+                // Lengths exact, same discipline as the combat layer above: a
+                // short packet forwarded on becomes a call into the receiving
+                // client's game.
+                if (type == Protocol.PlayerStateUp && payloadLen == Protocol.PlayerStateUpPayloadLen)
+                {
+                    var body = new byte[Protocol.PlayerStateUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.BroadcastPlayerState(this, body);
+                    continue;
+                }
+
+                if (type == Protocol.PlayerHitUp && payloadLen == Protocol.PlayerHitUpPayloadLen)
+                {
+                    var body = new byte[Protocol.PlayerHitUpPayloadLen];
+                    await ReadExactAsync(body);
+                    // Routed to one recipient, not broadcast -- and dropped
+                    // outright unless this client currently holds Rule 2's
+                    // damage authority. The sending agent gates on this too;
+                    // enforcing it here as well means a hand-run or buggy peer
+                    // cannot inject NPC damage into someone else's game.
+                    if (!_clientHandler.IsDamageAuthority(this))
+                    {
+                        _logger.Warning("[!] '{Name}' (id={Id}) sent PlayerHitUp without holding damage authority -- dropped.",
+                            Name, Id);
+                        continue;
+                    }
+                    _broadcastService.RoutePlayerHit(this, body);
+                    continue;
+                }
+
+                if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
+                {
+                    // Carries nothing: the relay already knows who sent it.
+                    _logger.Information("[death] '{Name}' (id={Id}) reported their own death.", Name, Id);
+                    _broadcastService.BroadcastPlayerDeath(this);
                     continue;
                 }
 
@@ -301,6 +347,45 @@ public class ClientSession
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.PauseDown, payload));
     }
+
+    // -------------------------------------------------------------------------
+    // Shared player combat layer (WO-28)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Thread-safe: enqueue a PlayerStateDown (0x20). The body is the upstream
+    /// [health][stamina][flags] payload verbatim, prefixed with whose health it is.
+    /// </summary>
+    public void EnqueuePlayerState(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.PlayerStateDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a PlayerHitDown (0x22). The upstream body's leading
+    /// targetGhostId is deliberately dropped -- this only ever reaches the
+    /// player it names, who does not need telling it is about themselves.
+    /// </summary>
+    public void EnqueuePlayerHit(byte[] upstreamBody)
+    {
+        var payload = new byte[Protocol.PlayerHitDownPayloadLen];
+        Buffer.BlockCopy(upstreamBody, 1, payload, 0, Protocol.PlayerHitDownPayloadLen);
+        EnqueueRaw(BuildPacket(Protocol.PlayerHitDown, payload));
+    }
+
+    /// <summary>Thread-safe: enqueue a PlayerDeathDown (0x24). Idempotent at the receiver.</summary>
+    public void EnqueuePlayerDeath(byte sourceId) =>
+        EnqueueRaw(BuildPacket(Protocol.PlayerDeathDown, [sourceId]));
+
+    /// <summary>
+    /// Thread-safe: enqueue a CombatRole (0x25) telling this client whether it
+    /// currently holds Rule 2's NPC→player damage authority.
+    /// </summary>
+    public void EnqueueCombatRole(bool isDamageAuthority) =>
+        EnqueueRaw(BuildPacket(Protocol.CombatRole, [isDamageAuthority ? (byte)1 : (byte)0]));
 
     // -------------------------------------------------------------------------
     // Dice layer (WO-5)

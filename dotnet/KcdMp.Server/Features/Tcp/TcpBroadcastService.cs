@@ -108,6 +108,73 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a PlayerStateUp (0x1F) to all other ready clients as a
+    /// PlayerStateDown (0x20) (WO-28 Flow A). Idempotent at the receiver like
+    /// Appearance -- it is current state, not an event, so a duplicate or a
+    /// stale resend is harmless.
+    /// </summary>
+    public void BroadcastPlayerState(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueuePlayerState(source.Id, body);
+    }
+
+    /// <summary>
+    /// Routes a PlayerHitUp (0x21) to the single player it names, as a
+    /// PlayerHitDown (0x22) (WO-28 Flow B).
+    ///
+    /// **Not a broadcast.** This is a hit taken by one specific player, and
+    /// only their own client may act on it (Rule 1: a player's health is
+    /// authoritative on their own machine). Everyone else learns about it the
+    /// ordinary way, from that player's next Flow A broadcast.
+    ///
+    /// A hit naming an unknown or departed id is dropped silently: the sender
+    /// sampled a ghost that has since disconnected, which is a race, not an
+    /// error. A hit a client aims at itself is dropped too -- its own game
+    /// already applied it.
+    /// </summary>
+    public void RoutePlayerHit(ClientSession source, byte[] body)
+    {
+        byte targetId = body[0];
+        if (targetId == source.Id) return;
+
+        foreach (var target in _clientHandler.GetClients())
+            if (target.IsReady && target.Id == targetId)
+            {
+                target.EnqueuePlayerHit(body);
+                return;
+            }
+    }
+
+    /// <summary>
+    /// Relays a PlayerDeathUp (0x23) to all other ready clients as a
+    /// PlayerDeathDown (0x24) (WO-28 Flow C). Idempotent at the receiver.
+    /// </summary>
+    public void BroadcastPlayerDeath(ClientSession source)
+    {
+        foreach (var target in Others(source))
+            target.EnqueuePlayerDeath(source.Id);
+    }
+
+    /// <summary>
+    /// Tells every ready client whether it currently holds Rule 2's NPC→player
+    /// damage authority (0x25, WO-28).
+    ///
+    /// Called whenever the connection set changes -- a join or a disconnect can
+    /// both move the role. Sent unconditionally to everyone rather than only to
+    /// the two clients whose answer changed: it is one byte on a rare event,
+    /// and "tell everyone the current answer" cannot leave a client holding a
+    /// stale yes, which is the failure that would actually hurt (two authorities
+    /// at once is exactly the N-damage-streams problem the role exists to stop).
+    /// </summary>
+    public void BroadcastCombatRole()
+    {
+        var authority = _clientHandler.DamageAuthority;
+        foreach (var target in _clientHandler.GetClients().Where(c => c.IsReady))
+            target.EnqueueCombatRole(ReferenceEquals(target, authority));
+    }
+
+    /// <summary>
     /// Broadcasts a Disconnect (0x06) packet to all remaining clients so they can remove the ghost.
     /// </summary>
     public void BroadcastDisconnect(ClientSession disconnected)

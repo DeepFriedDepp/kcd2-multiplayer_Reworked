@@ -47,6 +47,41 @@ public class ClientHandler
 	}
 
 	/// <summary>
+	/// The client currently holding Rule 2's NPC→player damage authority
+	/// (WO-28), or null when nobody is connected yet.
+	///
+	/// Only one client's NPC simulation may generate hits against players, or
+	/// N peers produce N independent damage streams for one conceptual fight
+	/// and the damage multiplies by N -- see Protocol's 0x21 documentation.
+	///
+	/// Defined as the lowest-id ready client. That is the session host in
+	/// practice (the host's own agent connects to its local relay first), but
+	/// it is deliberately defined on the connection set rather than on who
+	/// started the relay process, because the relay cannot observe the latter
+	/// and because it must keep having an answer after the host leaves.
+	/// Derived on read from state the handler already keeps -- no world state
+	/// is introduced here.
+	/// </summary>
+	public ClientSession? DamageAuthority
+	{
+		get
+		{
+			lock (_lock)
+			{
+				ClientSession? best = null;
+				foreach (var c in _clients)
+					if (c.IsReady && (best is null || c.Id < best.Id))
+						best = c;
+				return best;
+			}
+		}
+	}
+
+	/// <summary>True if <paramref name="client"/> currently holds damage authority.</summary>
+	public bool IsDamageAuthority(ClientSession client) =>
+		ReferenceEquals(DamageAuthority, client);
+
+	/// <summary>
 	/// Returns the current player count.
 	/// </summary>
 	public int ClientCount

@@ -144,6 +144,38 @@ public partial class GameBridge(ClientConfig config)
     private CancellationTokenSource? _interpPumpCts;
     private readonly object _interpPumpLock = new();
 
+    // ---- Shared player combat (WO-28) ----
+
+    // Flow A outbound: the last health/stamina actually put on the wire, plus
+    // when. Both are needed because the send rule is "changed materially OR the
+    // heartbeat is due" -- a peer who joins mid-session has missed every change
+    // and would otherwise render no health at all until this player next gets
+    // hit, exactly as for appearance.
+    private float? _lastSentHealth, _lastSentStamina;
+    private byte _lastSentVitalFlags;
+    private DateTime _lastPlayerStateSentUtc = DateTime.MinValue;
+
+    // Flow C: latched on the emitter reporting death, cleared when it reports
+    // the player alive again (which is what a completed save reload looks like
+    // from here). The latch is what makes PlayerDeathUp idempotent at the
+    // source -- the emitter reports "dead" at ~50 Hz for as long as the death
+    // screen is up, and every one of those must not be a packet.
+    private bool _sentDeathForThisLife;
+
+    // Rule 2. Set from a CombatRole (0x25) packet; false until the relay says
+    // otherwise, so a client that was never told cannot assume it holds
+    // authority. Mirrored into the mod (KCD2MP_SetHitSensor) so the sampling
+    // cost is skipped as well as the send.
+    private bool _isDamageAuthority;
+
+    // WO-28 Phase 0. A save load destroys every ghost ENTITY in the world while
+    // leaving KCD2MP.ghosts still holding a stale, non-nil Lua reference to it,
+    // so KCD2MP_UpdateGhost's "spawn if missing" check never fires again and
+    // the ghost stays permanently bodiless -- observed live: the nameplate kept
+    // walking its path with nothing under it. Re-verified on the same slow
+    // cadence as the interp re-arm; see the position loop.
+    private const int ReconcileGhostsEveryTicks = 500;
+
     /// <summary>
     /// How often the position loop re-arms the mod's Script.SetTimer loops.
     /// The loop runs at roughly the emit interval, so a few hundred ticks is
@@ -156,6 +188,11 @@ public partial class GameBridge(ClientConfig config)
     // themselves (OnGameEvent, the tail transport's own event thread) can
     // still trigger a send.
     private Func<Task>? _sendPauseIfChanged;
+
+    // Same idiom for WO-28 Flow B: the mod reports a ghost health drop on the
+    // log-tail event channel, which is read on the tail loop's own thread and
+    // has no access to this connection's stream.
+    private Func<byte, float, float, Task>? _sendPlayerHit;
 
     public async Task RunAsync(CancellationToken ct = default)
     {
@@ -377,6 +414,16 @@ public partial class GameBridge(ClientConfig config)
         _localAutoPaused = false;
         _localManualPaused = false;
         _lastSentPauseState = null;
+        // WO-28: relay ids are per-connection, so nothing about who was hurt,
+        // dead, or authoritative survives a reconnect. _isDamageAuthority
+        // especially: it is the relay's to grant and it will re-grant it (or
+        // not) on this connection's own handshake.
+        _lastSentHealth = null;
+        _lastSentStamina = null;
+        _lastSentVitalFlags = 0;
+        _lastPlayerStateSentUtc = DateTime.MinValue;
+        _sentDeathForThisLife = false;
+        _isDamageAuthority = false;
         StopInterpPump();
 
         // --- Interaction layer ---
@@ -469,6 +516,7 @@ public partial class GameBridge(ClientConfig config)
         // never fires. Re-subscribed per connection like _combat.OnLocalHit
         // above, since the handler closes over this connection's stream.
         _sendPauseIfChanged = () => SendPauseIfChangedAsync(stream, cts.Token);
+        _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
         void OnLocalPauseDetected(bool paused)
         {
             _localAutoPaused = paused;
@@ -508,7 +556,38 @@ public partial class GameBridge(ClientConfig config)
                 // and makes the recovery automatic rather than a restart.
                 if (tickCount % ReArmInterpEveryTicks == 0)
                 {
-                    try { await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end"); }
+                    // WO-28 Phase 0 found this was only half a fix. WO-13
+                    // re-armed the interp loop and stopped there, but a save
+                    // load kills the *emitter's* Script.SetTimer chain too --
+                    // and the emitter is this client's only outbound channel.
+                    // Measured live: after one reload the interp loop recovered
+                    // in ~17 s while the emitter stayed dead for the rest of
+                    // the session (heartbeat age climbing past 120 s), so the
+                    // player transmitted no position at all and simply vanished
+                    // for every peer, permanently. StartEmitter is idempotent
+                    // and liveness-checked exactly like StartInterp, so calling
+                    // it on the same cadence costs a stamp comparison.
+                    //
+                    // The transport's own latch has to be cleared as well or
+                    // its StartAsync would never re-issue the command either.
+                    try
+                    {
+                        await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end");
+                        await ExecLuaAsync($"if KCD2MP_StartEmitter then KCD2MP_StartEmitter({config.EmitIntervalMs}) end");
+                    }
+                    catch { }
+                }
+
+                // WO-28 Phase 0. A save load destroys every ghost entity while
+                // KCD2MP.ghosts keeps a stale, non-nil reference to it, so
+                // KCD2MP_UpdateGhost's own "spawn if missing" test never fires
+                // again. Observed live: the nameplate carried on walking its
+                // path with no body under it, indefinitely. The mod cannot
+                // notice on its own without paying a world lookup on the hot
+                // 20 ms path, so it is asked on a slow cadence from here.
+                if (tickCount % ReconcileGhostsEveryTicks == 0)
+                {
+                    try { await ExecLuaAsync("if KCD2MP_ReconcileGhosts then KCD2MP_ReconcileGhosts() end"); }
                     catch { }
                 }
 
@@ -518,7 +597,16 @@ public partial class GameBridge(ClientConfig config)
 
                 if (state.HasValue)
                 {
-                    var (x, y, z, rotZ, riding) = state.Value;
+                    var st = state.Value;
+                    float x = st.X, y = st.Y, z = st.Z, rotZ = st.RotZ;
+                    bool riding = st.IsRiding;
+
+                    // WO-28 Flows A and C ride the same sample the position
+                    // push already reads, so neither adds a read of its own.
+                    // Both are no-ops on a v1 emit line, where Health/IsDead
+                    // are null -- "unknown, leave it alone".
+                    await SendPlayerStateIfChangedAsync(stream, st, cts.Token);
+                    await SendDeathIfNewAsync(stream, st, cts.Token);
 
                     // Update voice local position and recalculate all player volumes.
                     if (_voice != null)
@@ -563,6 +651,7 @@ public partial class GameBridge(ClientConfig config)
             if (_transport is LogTailGameTransport tailForPause2)
                 tailForPause2.PauseStateChanged -= OnLocalPauseDetected;
             _sendPauseIfChanged = null;
+            _sendPlayerHit = null;
 
             // Stop pumping the interp tick. Nothing else would: the pump is
             // driven off the local menu signal, and a menu that is still open
@@ -942,6 +1031,218 @@ public partial class GameBridge(ClientConfig config)
         catch (Exception ex) { Console.WriteLine($"[menu] ghost {sourceGhostId} tag failed: {ex.Message}"); }
     }
 
+    // -------------------------------------------------------------------------
+    // Shared player combat (WO-28)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Flow A: puts this player's own health on the wire (0x1F) when it has
+    /// moved materially, rate-limited, plus a slow unconditional heartbeat.
+    ///
+    /// Silently does nothing when the sample carries no health -- a v1 emit
+    /// line from an older kdcmp.pak, or the HTTP transport, which never reads
+    /// it. That is the whole of this layer's mixed-version story: an old pak
+    /// means peers see no health for this player, not a broken session.
+    ///
+    /// The heartbeat exists for the same reason appearance has one: the relay
+    /// is stateless and replays nothing, so a peer who joins after this
+    /// player's last real health change would otherwise render no health at
+    /// all until the next time they got hit.
+    /// </summary>
+    private async Task SendPlayerStateIfChangedAsync(NetworkStream stream, PlayerState st, CancellationToken ct)
+    {
+        if (st.Health is not { } health) return;
+        float stamina = st.Stamina ?? Protocol.UnknownStat;
+
+        byte flags = 0;
+        if (st.IsUnconscious == true) flags |= Protocol.PlayerStateFlagUnconscious;
+        // Bleeding has no confirmed read on this build -- it is a buff, and the
+        // mod's emitter does not sample the buff list. The bit stays clear
+        // rather than being faked from low health, which would be a guess a
+        // receiver could not tell from a measurement.
+
+        var now = DateTime.UtcNow;
+        bool changed = _lastSentHealth is null
+            || Math.Abs(_lastSentHealth.Value - health) >= Protocol.PlayerStateHealthThreshold
+            || (stamina >= 0 && _lastSentStamina is not null
+                && Math.Abs(_lastSentStamina.Value - stamina) >= Protocol.PlayerStateHealthThreshold)
+            || flags != _lastSentVitalFlags;
+        bool heartbeatDue = (now - _lastPlayerStateSentUtc).TotalSeconds >= Protocol.PlayerStateHeartbeatSeconds;
+
+        if (!changed && !heartbeatDue) return;
+        // The rate limit applies to change-driven sends only. A heartbeat is
+        // already slower than it by two orders of magnitude, and letting the
+        // limiter swallow one would defeat the point of having it.
+        if (changed && !heartbeatDue
+            && (now - _lastPlayerStateSentUtc).TotalMilliseconds < Protocol.PlayerStateMinIntervalMs) return;
+
+        var packet = new byte[3 + Protocol.PlayerStateUpPayloadLen];
+        packet[0] = Protocol.PlayerStateUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PlayerStateUpPayloadLen);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(3), health);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(7), stamina);
+        packet[11] = flags;
+        try
+        {
+            await stream.WriteAsync(packet, ct);
+            if (changed)
+                Console.WriteLine($"[vitals] sent health={health:F1} stamina={stamina:F1} flags={flags}");
+            _lastSentHealth = health;
+            _lastSentStamina = stamina;
+            _lastSentVitalFlags = flags;
+            _lastPlayerStateSentUtc = now;
+        }
+        catch (Exception ex) { Console.WriteLine($"[vitals] send failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Flow C: declares this player's own death (0x23) exactly once per life.
+    ///
+    /// Sent by the dying player's own client and never inferred by a peer from
+    /// health reaching zero -- see Protocol's 0x23 documentation. The emitter
+    /// reports "dead" on every frame for as long as the death screen is up, so
+    /// the latch here is what makes that one packet rather than fifty a second;
+    /// the receiver treats a repeat as idempotent anyway, but flooding the relay
+    /// to rely on that would be rude.
+    ///
+    /// The latch clears when the emitter reports the player alive again, which
+    /// is what a completed save reload looks like from here. That is also why
+    /// this reads IsDead rather than tracking a one-way "has died" bit: a player
+    /// reloads and lives again in the same session, repeatedly.
+    /// </summary>
+    private async Task SendDeathIfNewAsync(NetworkStream stream, PlayerState st, CancellationToken ct)
+    {
+        if (st.IsDead is not { } dead) return;   // v1 line: no opinion either way
+
+        if (!dead)
+        {
+            if (_sentDeathForThisLife)
+                Console.WriteLine("[death] local player is alive again -- ready to report a future death");
+            _sentDeathForThisLife = false;
+            return;
+        }
+
+        if (_sentDeathForThisLife) return;
+        _sentDeathForThisLife = true;
+
+        var packet = new byte[3];
+        packet[0] = Protocol.PlayerDeathUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PlayerDeathUpPayloadLen);
+        try
+        {
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine("[death] local player died -- told the relay");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[death] send failed: {ex.Message}");
+            _sentDeathForThisLife = false;   // unsent: let the next tick try again
+        }
+    }
+
+    /// <summary>
+    /// Flow B outbound: an NPC in THIS world hurt the ghost standing in for
+    /// player <paramref name="targetGhostId"/>, so tell that player (0x21).
+    ///
+    /// Only reached when this client holds Rule 2's damage authority -- gated
+    /// both here and in the mod, which does not even sample ghost health
+    /// otherwise, and again at the relay, which drops a PlayerHitUp from a
+    /// non-holder. Three gates for one rule because getting it wrong does not
+    /// look like a bug: it looks like players taking N times the damage they
+    /// should in an N-peer session.
+    ///
+    /// <paramref name="healthLoss"/> is a positive loss amount, matching
+    /// CombatSoul::TakeDamage's own argument semantics on the receiving end.
+    /// </summary>
+    private async Task SendPlayerHitAsync(NetworkStream stream, byte targetGhostId,
+                                          float healthLoss, float staminaLoss, CancellationToken ct)
+    {
+        if (!_isDamageAuthority)
+        {
+            Console.WriteLine($"[playerhit] not the damage authority -- discarding a {healthLoss:F1} delta on ghost {targetGhostId}");
+            return;
+        }
+        if (healthLoss <= 0) return;   // guard 3, again: regeneration is not a hit
+
+        var packet = new byte[3 + Protocol.PlayerHitUpPayloadLen];
+        packet[0] = Protocol.PlayerHitUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PlayerHitUpPayloadLen);
+        packet[3] = targetGhostId;
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(4), healthLoss);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(8), staminaLoss);
+        packet[12] = 0;
+        try
+        {
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine($"[playerhit] ghost {targetGhostId} lost {healthLoss:F1} here -- told its owner");
+        }
+        catch (Exception ex) { Console.WriteLine($"[playerhit] send failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Flow B inbound: the damage authority says an NPC in its world hurt this
+    /// player, so apply it to the real local Henry (0x22).
+    ///
+    /// Applied through the DLL, not Lua, for the same reason all damage is:
+    /// Lua health writes are inert (docs/PROJECT-STATE.md s2). The soul is
+    /// addressed by <see cref="PlayerHenrySharedSoulGuid"/> -- the same value on
+    /// every installation, which is precisely why it is useless as a
+    /// cross-client *identifier* (WO-26 Phase 1) and exactly right as a local
+    /// "the player, here" lookup.
+    ///
+    /// No echo is possible from this: the damage lands on the local player, and
+    /// the outbound sampler that could re-report it (the DLL's) deliberately
+    /// excludes the player from its tracked set, while the mod's ghost sampler
+    /// only ever looks at ghosts.
+    ///
+    /// The recipient does not reply. Their next Flow A broadcast carries the
+    /// new authoritative health, which is what corrects everyone -- including
+    /// the sender, whose own locally-damaged ghost health is deliberately not
+    /// treated as the truth.
+    /// </summary>
+    private async Task ApplyPlayerHitAsync(float healthLoss, float staminaLoss, CancellationToken ct)
+    {
+        if (healthLoss <= 0 && staminaLoss <= 0) return;
+
+        // A stamina reading the sender could not obtain arrives as
+        // Protocol.UnknownStat; passing that straight into TakeDamage would
+        // *restore* stamina, so it is floored rather than forwarded.
+        float st = staminaLoss > 0 ? staminaLoss : 0f;
+        bool applied = await _combat.ApplyDamageAsync(PlayerHenrySharedSoulGuid, st, healthLoss,
+                                                     suppressHitReaction: false, ct);
+        if (applied)
+            Console.WriteLine($"[playerhit] took {healthLoss:F1} damage from an NPC in the authority's world");
+        else
+            Console.WriteLine($"[playerhit] {healthLoss:F1} damage NOT applied -- KCDMP.dll is not injected, so " +
+                              "NPC hits from other players' worlds cannot reach this player");
+    }
+
+    /// <summary>
+    /// The local player's soul id. Identical on every installation
+    /// (4c2dcffb-dea1-6263-72d7-b39f4db2d8b5 = player_henry, read live in
+    /// WO-26 Phase 1), which makes it useless for telling one player from
+    /// another on the wire -- and exactly right for "the player, in this
+    /// process", which is all Flow B's receiver needs.
+    /// </summary>
+    private static readonly Guid PlayerHenrySharedSoulGuid =
+        new("4c2dcffb-dea1-6263-72d7-b39f4db2d8b5");
+
+    /// <summary>
+    /// Applies a CombatRole (0x25): the relay saying whether this client now
+    /// holds NPC→player damage authority. Pushed into the mod so the ghost
+    /// health sampling is not merely ignored but never runs.
+    /// </summary>
+    private async Task ApplyCombatRoleAsync(bool isAuthority, CancellationToken ct)
+    {
+        if (_isDamageAuthority == isAuthority) return;
+        _isDamageAuthority = isAuthority;
+        Console.WriteLine(isAuthority
+            ? "[role] this client now holds NPC->player damage authority"
+            : "[role] this client no longer holds NPC->player damage authority");
+        try { await ExecLuaAsync($"if KCD2MP_SetHitSensor then KCD2MP_SetHitSensor({(isAuthority ? "true" : "false")}) end"); }
+        catch (Exception ex) { Console.WriteLine($"[role] could not tell the mod: {ex.Message}"); }
+    }
+
     private static async Task SendAppearanceAsync(NetworkStream stream, Guid[] itemClasses, CancellationToken ct)
     {
         int payloadLen = 1 + itemClasses.Length * Protocol.ItemClassLen;
@@ -1078,6 +1379,45 @@ public partial class GameBridge(ClientConfig config)
                     bool paused = payload[1] == Protocol.PauseStateEntered;
                     await ApplyPeerPauseAsync(sourceId, paused, ct);
                 }
+                else if (type == Protocol.PlayerStateDown && payloadLen == Protocol.PlayerStateDownPayloadLen)
+                {
+                    // WO-28 Flow A: [ghostId:1][health:4f][stamina:4f][flags:1]
+                    // Rendered, not reconciled -- a player's health is
+                    // authoritative on their own machine, so this is simply
+                    // what that ghost's health IS.
+                    byte  sourceId = payload[0];
+                    float health   = ReadFloat(payload, 1);
+                    float stamina  = ReadFloat(payload, 5);
+                    byte  vflags   = payload[9];
+                    await ApplyGhostVitalsAsync(sourceId, health, stamina, vflags, ct);
+                }
+                else if (type == Protocol.PlayerHitDown && payloadLen == Protocol.PlayerHitDownPayloadLen)
+                {
+                    // WO-28 Flow B: [health:4f][stamina:4f][flags:1] -- loss
+                    // amounts. No ghost id: the relay routed this to us
+                    // precisely because it is about us.
+                    float healthLoss  = ReadFloat(payload, 0);
+                    float staminaLoss = ReadFloat(payload, 4);
+                    await ApplyPlayerHitAsync(healthLoss, staminaLoss, ct);
+                }
+                else if (type == Protocol.PlayerDeathDown && payloadLen == Protocol.PlayerDeathDownPayloadLen)
+                {
+                    // WO-28 Flow C: [ghostId:1]. Idempotent -- the mod's own
+                    // setter only logs on an actual transition.
+                    byte sourceId = payload[0];
+                    string who = _ghostNames.TryGetValue(sourceId, out var dn) ? dn : $"player {sourceId}";
+                    Console.WriteLine($"[death] {who} died and is reloading their own save");
+                    try
+                    {
+                        await ExecLuaAsync($"KCD2MP_SetGhostDead(\"{sourceId}\", true)");
+                        await ExecLuaAsync($"if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"{EscapeLua(who)} died\") end");
+                    }
+                    catch { }
+                }
+                else if (type == Protocol.CombatRole && payloadLen == Protocol.CombatRolePayloadLen)
+                {
+                    await ApplyCombatRoleAsync(payload[0] != 0, ct);
+                }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
                     // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
@@ -1124,6 +1464,31 @@ public partial class GameBridge(ClientConfig config)
         }
         catch { /* game might have unloaded */ }
     }
+
+    /// <summary>
+    /// Pushes a peer's authoritative health onto their ghost's nameplate
+    /// (WO-28 Flow A), and clears the death tag when they report themselves
+    /// alive -- a completed save reload is exactly "their vitals started
+    /// arriving again", so nothing else has to detect the end of a death.
+    /// </summary>
+    private async Task ApplyGhostVitalsAsync(byte ghostId, float health, float stamina, byte flags, CancellationToken ct)
+    {
+        string h = health.ToString("F1", CultureInfo.InvariantCulture);
+        string s = stamina.ToString("F1", CultureInfo.InvariantCulture);
+        try
+        {
+            await ExecLuaAsync($"KCD2MP_SetGhostHealth(\"{ghostId}\",{h},{s},{flags})");
+            // Health arriving means that player's game is running and they are
+            // in a world -- so any death tag from before their reload is stale.
+            // Cheap: batched with the call above into the same flush.
+            await ExecLuaAsync($"KCD2MP_SetGhostDead(\"{ghostId}\", false)");
+        }
+        catch { /* game might have unloaded */ }
+    }
+
+    /// <summary>Escapes a string for embedding in a Lua double-quoted literal.</summary>
+    private static string EscapeLua(string s) =>
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     private async Task SetGhostNameAsync(string ghostId, string ghostName)
     {
@@ -1177,6 +1542,31 @@ public partial class GameBridge(ClientConfig config)
                         _ = DetachGhostAggroAsync(id, CancellationToken.None);
                 }
                 break;
+
+            case "ghost_hit":
+            {
+                // WO-28 Flow B: "<ghostId> <healthLoss>". The mod samples each
+                // ghost's local health in KCD2MP_InterpTick and reports drops
+                // -- it only samples at all while this client holds damage
+                // authority, so reaching here already implies the host-only
+                // gate, which SendPlayerHitAsync then checks again anyway.
+                //
+                // Stamina is deliberately absent: there is no confirmed Lua
+                // stamina binding on this build, and inventing a number here
+                // would drain a real player's stamina on a guess.
+                var bits = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (bits.Length < 2
+                    || !byte.TryParse(bits[0], out byte hitGhostId)
+                    || !float.TryParse(bits[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float loss))
+                {
+                    Console.WriteLine($"[playerhit] malformed ghost_hit '{arg}'");
+                    break;
+                }
+                var send = _sendPlayerHit;
+                if (send is null) break;
+                _ = send(hitGhostId, loss, 0f);
+                break;
+            }
 
             case "appearance_sync":
                 // mp_sync_appearance (WO-9): the honest floor. Forces the next

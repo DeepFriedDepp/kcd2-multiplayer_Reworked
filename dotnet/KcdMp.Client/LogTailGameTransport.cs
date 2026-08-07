@@ -30,7 +30,28 @@ public sealed class LogTailGameTransport : IGameTransport
 {
     /// <summary>Emitted by KCD2MP_EmitState. Must match the Lua EMIT_VERSION.</summary>
     private const string Tag = "[KCD2-MP-DATA]";
-    private const string Version = "v1";
+
+    /// <summary>
+    /// The original WO-1 line: <c>v1 &lt;seq&gt; &lt;clock&gt; &lt;x&gt; &lt;y&gt; &lt;z&gt; &lt;rotZ&gt; &lt;flags&gt;</c>.
+    /// </summary>
+    private const string VersionV1 = "v1";
+
+    /// <summary>
+    /// WO-28 Flow A: the same line plus <c>&lt;health&gt; &lt;stamina&gt;</c>, and two
+    /// more flag bits (dead, unconscious).
+    ///
+    /// **Both versions are parsed, deliberately.** An agent and a kdcmp.pak are
+    /// separate installables that update independently -- the pak is rebuilt by
+    /// tools/Build-And-Install-Mod.ps1 and the agent by the installer -- so a
+    /// new agent reading an old pak's v1 lines is a real, ordinary state, not a
+    /// broken one. It degrades to "health unknown": position keeps working and
+    /// PlayerStateUp is simply never sent, rather than the tail rejecting every
+    /// line and the transport looking like a missing mod.
+    /// </summary>
+    private const string VersionV2 = "v2";
+
+    /// <summary>The emitter version of the most recent line parsed, for diagnostics.</summary>
+    public string? EmitterVersion { get; private set; }
 
     /// <summary>
     /// Discrete player actions, emitted by KCD2MP_EmitEvent on the same log
@@ -358,11 +379,13 @@ public sealed class LogTailGameTransport : IGameTransport
         var rest = line[(tagIdx + Tag.Length)..].Trim();
 
         // v1 <seq> <clock> <x> <y> <z> <rotZ> <flags>
-        Span<Range> fields = stackalloc Range[9];
+        // v2 <seq> <clock> <x> <y> <z> <rotZ> <flags> <health> <stamina>
+        Span<Range> fields = stackalloc Range[11];
         int n = SplitOnSpaces(rest, fields);
         if (n < 8) return;
 
-        if (!rest[fields[0]].SequenceEqual(Version)) return; // unknown emitter version
+        bool isV2 = rest[fields[0]].SequenceEqual(VersionV2);
+        if (!isV2 && !rest[fields[0]].SequenceEqual(VersionV1)) return; // unknown emitter version
 
         if (!long.TryParse(rest[fields[1]], NumberStyles.Integer, CultureInfo.InvariantCulture, out long seq)) return;
         if (!float.TryParse(rest[fields[3]], NumberStyles.Float, CultureInfo.InvariantCulture, out float x)) return;
@@ -370,6 +393,30 @@ public sealed class LogTailGameTransport : IGameTransport
         if (!float.TryParse(rest[fields[5]], NumberStyles.Float, CultureInfo.InvariantCulture, out float z)) return;
         if (!float.TryParse(rest[fields[6]], NumberStyles.Float, CultureInfo.InvariantCulture, out float rotZ)) return;
         if (!int.TryParse(rest[fields[7]], NumberStyles.Integer, CultureInfo.InvariantCulture, out int flags)) return;
+
+        // Health/stamina stay null on a v1 line, and on a v2 line whose trailing
+        // fields are missing or malformed. Null means "unknown, leave it alone"
+        // all the way up -- it is never coerced to a zero that would read as a
+        // dead player. The mod sends Protocol.UnknownStat (-1) for a reading it
+        // could not obtain at all (no stamina binding on this build), which is
+        // passed through as-is for the same reason.
+        float? health = null, stamina = null;
+        bool? isDead = null, isUnconscious = null;
+        if (isV2)
+        {
+            if (n >= 10
+                && float.TryParse(rest[fields[8]], NumberStyles.Float, CultureInfo.InvariantCulture, out float h)
+                && float.TryParse(rest[fields[9]], NumberStyles.Float, CultureInfo.InvariantCulture, out float st))
+            {
+                health = h;
+                stamina = st;
+            }
+            // Flag bits 2 and 3 exist only in v2, so they are only trusted
+            // there -- a v1 emitter leaves them clear, which would otherwise
+            // read as a positive "not dead" it never actually asserted.
+            isDead = (flags & 0x04) != 0;
+            isUnconscious = (flags & 0x08) != 0;
+        }
 
         lock (_stateLock)
         {
@@ -379,8 +426,10 @@ public sealed class LogTailGameTransport : IGameTransport
                 FramesDropped += seq - _latestSeq - 1;
 
             _latestSeq = seq;
-            _latest = new PlayerState(x, y, z, rotZ, (flags & 0x01) != 0);
+            _latest = new PlayerState(x, y, z, rotZ, (flags & 0x01) != 0,
+                                      health, stamina, isDead, isUnconscious);
             _latestAtUtc = DateTime.UtcNow;
+            EmitterVersion = isV2 ? VersionV2 : VersionV1;
             FramesReceived++;
         }
     }
@@ -397,7 +446,9 @@ public sealed class LogTailGameTransport : IGameTransport
         Span<Range> fields = stackalloc Range[4];
         int n = SplitOnSpaces(rest, fields, limit: 3);
         if (n < 3) return;
-        if (!rest[fields[0]].SequenceEqual(Version)) return;
+        // The event channel has its own version, still v1: WO-28 changed the
+        // state line's shape, not this one.
+        if (!rest[fields[0]].SequenceEqual(VersionV1)) return;
 
         string name = rest[fields[2]].ToString();
         string arg = n > 3 ? rest[fields[3]].ToString().Trim() : string.Empty;
