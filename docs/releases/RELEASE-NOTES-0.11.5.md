@@ -42,6 +42,11 @@ Since `0.10.0`. Full detail lives in the [README](../../README.md) and `docs/`.
 
 ## Known limits
 
-- NPCs themselves are not synchronised — only who got hurt and who died.
+- **Fighting the same NPC together works, but each of you is fighting your
+  own copy of it.** There's no single shared version deciding who it's mad
+  at. Damage and death carry over between you (enough hits between you both
+  and it dies for everyone), but whether it turns on your friend too is up
+  to *their* local copy noticing the fight, not something sent over the
+  network.
 - A ghost's own attacks aren't replicated back to its owner.
 - Nothing here has been tested with two real players on two real machines.
