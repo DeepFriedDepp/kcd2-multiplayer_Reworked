@@ -341,6 +341,109 @@ works." That decision is recorded as pending.
 
 ---
 
+## Phase 3 — `InterpTick` vs a fighting ghost, measured
+
+Run after the crash and restart, at the human's direction: *"I do not care what
+we need to do to achieve the goal of true shared aggro and shared combat… as
+seamless as we can make this is the goal to make it so the host and all joining
+players can partake in small battles to giant ones."* Still no shipped code
+changed — this is the measurement that decides what the change should be.
+
+Setup, on the **real shipped path** this time: `KCD2MP_SpawnGhost(91, …)`, so
+the ghost is registered in `KCD2MP.ghosts` and `KCD2MP_InterpTick` is streaming
+onto it (`interpRunning=true`, tick chain confirmed live by a climbing
+`_tickN`). Soul binding verified through the shipped path:
+`SharedSoulGuid = 69dfede7-a999-43dd-9dfa-5bf0c5aefe01` (`ttac_man_9`),
+`CombatLevel = 0.687241256`. A hostile bandit ghost (`wo26H`, `75ec27f8-…`)
+11 m away, on the same terrain level, with the human present and watching.
+
+### Result: the ghost is a valid target, its AI engages, and it cannot fight
+
+```
+17:08:20  hp=100.0  atk=1  melee=true   pos=2379.8083,2256.4834,131.01125
+          buffs=[crime_interrupt_confronting, interrupt_deafness, ...]
+17:08:25  hp=80.0   atk=1  melee=true   pos=2379.8083,2256.4834,131.01125  injured_torso
+17:08:32  hp=23.8   atk=1  melee=true   pos=2379.8083,2256.4834,131.01125  injured_head, low_health
+17:08:41  hp=0.0    DEAD   melee=true   pos=2379.8083,2256.4834,131.01125  bleeding, morale_context
+```
+
+**The position is byte-identical in every sample, from full health through
+death.** Not approximately — the same 7-decimal string, 14 samples, ~21 s,
+while the ghost was killed where it stood. Meanwhile `AttackersCount=1`,
+`HasMeleeWeapon=true`, `crime_interrupt_confronting` and `morale_context` are
+all set: the combat AI was fully engaged and issuing decisions the whole time.
+
+Human's account: the bandit hit them first, *"then went for the guard spawn.
+The bandit killed the guard and then ran off, guard dead."*
+
+So `InterpTick` does not stop the ghost being **targeted**, and does not stop
+its AI **engaging**. It stops the ghost **moving** — and a KCD2 melee fight is
+almost entirely footwork. The ghost could not step, close, circle, or retreat.
+It is a punching bag with a combat brain.
+
+The human's read on seeing this was *"feels like we have backtracked."* It is
+the opposite: this is the measurement Phase 0 flagged as the open question, and
+it came back with a clean, unambiguous answer on the first run.
+
+### What this actually implies for shared combat
+
+The pin is not a bug to remove. In a real session the ghost's position **should**
+come from the remote player's own Henry, who is doing real dodging and footwork
+on their own machine. A ghost that moved under its own AI would fight its owner.
+
+Which relocates the problem, and this is the important part:
+
+**The ghost should be a damage *sensor*, not a combatant — and the wire
+protocol has no channel for that.** Read directly from `kdcmp.lua:128-140`, the
+outbound emitter sends exactly one line:
+
+```
+[KCD2-MP-DATA] v1 <seq> <clock> <x> <y> <z> <rotZ> <flags>
+                                              flags: 1=riding, 2=sneaking
+```
+
+**Position, rotation, and two booleans. No health, no damage, no combat
+state, no death.** So when `kcd2mp_91` was killed above, nothing about that
+reached the player it represents. The remote player would have kept playing at
+full health while their body lay dead in the host's world.
+
+That is the real gap between here and "small battles to giant ones", and it is
+a wire-protocol problem, not an AI problem. The AI half is already solved and
+has been since WO-22 — Phase 0 proved it.
+
+### Gate 3 — not shipped, and the reason has changed
+
+Nothing was implemented. The decision now in front of the human is **not**
+"which aggro mechanism" — that question is dead, engagement already works. It
+is whether to extend the wire protocol with a health/damage channel, which is a
+larger change than this WO scoped and touches `dotnet/`, the relay, and the
+protocol version.
+
+### Side-finding: ghosts leak on reconnect, and it is live
+
+While setting this up, `KCD2MP.ghosts` held **three** registered ghosts (ids 1,
+2, 3) that were all the same player: three distinct entity ids, all renamed to
+the same Steam nick `M31` by `KCD2MP_ApplyGhostName`, two of class
+`NPC_Female` and one `NPC` (so the face pick is not deterministic for one
+player across reconnects either). All three had `istate` targets equal to the
+host's own position, which is what the human saw as *"some type of NPC is
+attached to me."* They were cleared, and **regenerated within minutes** — so
+this is an active leak, not stale state.
+
+Two contributing mechanics worth recording:
+
+- `KCD2MP_SpawnGhost`'s dedupe (`kdcmp.lua:1300`) keys on the connection id, so
+  a reconnect under a new id orphans the old ghost permanently.
+- `ApplyGhostName`'s `e:SetName(name)` renames the entity away from
+  `kcd2mp_<id>` while the RPG `SoulList` key stays `kcd2mp_<id>`. Confirmed
+  live: `SoulsByName/Player91` 404s while `SoulsByName/kcd2mp_91` resolves.
+  Any removal path that looks the entity up by its spawn name cannot find it.
+- `System.RemoveEntity` returned `ok=true` with the entity still alive, again —
+  the WO-25 unreliability, reproduced. It took four passes to clear three
+  ghosts.
+
+Filed as separate work; not fixed here.
+
 ## Cleanup
 
 All WO-26 test entities removed and confirmed by name sweep before the crash:
