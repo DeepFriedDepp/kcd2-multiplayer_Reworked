@@ -69,22 +69,46 @@ isolated field verified to hold 0 actors within 60 m.
   hostile soul. It does not — engagement is already reactive on the roster
   soul.
 
+## Phase 3, after the restart — measured, then designed
+
+The game was restarted after the Phase 1 crash and the work continued, at the
+human's direction: *"I do not care what we need to do to achieve the goal of
+true shared aggro and shared combat… as seamless as we can make this."*
+
+- **Measured `InterpTick` against a fighting ghost** on the real shipped path
+  (`KCD2MP_SpawnGhost`, registered, interp streaming). The ghost was a valid
+  target and its combat AI fully engaged, but its position was **byte-identical
+  across all 14 samples from 100 HP through death** — killed where it stood
+  because it cannot step, close or retreat.
+- **Concluded the pin is correct, not a bug.** A ghost must mirror its owner's
+  real footwork rather than fight it. That relocates the problem: the ghost
+  should be a damage *sensor*, and the outbound emitter carries only position,
+  rotation and two booleans. No health, no damage, no death.
+- **Wrote `docs/WO-26-shared-combat-design.md`** at the human's explicit
+  instruction (*"Design it now, implement next session"*). Nothing implemented.
+
 ## Open, ranked
 
-1. **`InterpTick` vs a fighting ghost.** The real remaining engineering
-   problem, and unmeasured. A ghost that fights moves hundreds of metres while
-   the position stream overwrites it every 50 ms. Nothing here tested the two
-   together.
-2. **Does a ghost de-escalate?** The one clause of the WO's goal not
+1. **Ghost leak on reconnect — fix first.** Three registered ghosts for one
+   player, actively regenerating, all stacked on the host. The shared-combat
+   design keys on `ghostId` and would misroute damage while this is live.
+   Filed as separate work.
+2. **Implement the shared-combat design**, in its own stated order: player
+   health first, then death, then NPC→player hits.
+3. **Does a ghost de-escalate?** The one clause of the WO's goal not
    established. Needs a fight that ends without the player leaving.
-3. **What the aggro toggle and the native `SetParent` attach are still for**,
+4. **What the aggro toggle and the native `SetParent` attach are still for**,
    now that engagement is automatic without them.
-4. **Player-proximity gating of AI.** Observed (nothing happened at 340 m with
+5. **Player-proximity gating of AI.** Observed (nothing happened at 340 m with
    the player airborne; engagement resumed ~25 s after landing) but distance
    and flycam changed together, so not attributed.
+6. **Should a ghost's own AI be allowed to attack?** Raised in the design's §5
+   and deliberately left open — a ghost currently kills NPCs its owner never
+   attacked, invisibly to everyone else.
 
 ## Next session should
 
-Read `docs/WO-26-findings.md` Phase 0 first, then decide item 1 above. Do not
-re-derive Phase 1 — a second `Player` entity crashes the game, and the reason
-is a single-slot `PlayerSoul` pointer that Lua cannot reach.
+Read `docs/WO-26-findings.md` Phase 0, then `docs/WO-26-shared-combat-design.md`
+in full — including its §2 and §7, which are the parts that constrain what is
+buildable. Do not re-derive Phase 1: a second `Player` entity crashes the game,
+and the reason is a single-slot `PlayerSoul` pointer that Lua cannot reach.
