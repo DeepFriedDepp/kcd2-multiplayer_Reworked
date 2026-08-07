@@ -24,12 +24,14 @@ never "probably fine."
 | Agent (`KcdMpClient.exe`) | **Working** |
 | Native plugin + injection | **Working** — the liveness race that used to make early injection silently no-op is fixed and verified by a real cold-start injection (the DLL now polls for the game's tick instead of sampling once, and picked the tick up 42s after hooking where it previously aborted at 1s). One **residual gap** remains in the step immediately after it — see below |
 | Ghost presence (position/animation/nameplates) | **Working**, including while *you* are in a menu — ghosts keep moving instead of freezing and snapping, measured at 6–7 m of real ghost travel during a menu that previously froze them dead. A peer who is *themselves* in a menu is tagged **`[in menu]`** on their nameplate, confirmed on screen. Your own nameplates stay hidden during your own menu, as before — see below |
+| Ghost faces | **Working** — each connected player is deterministically assigned one of 48 real, hand-placed NPC faces from the game's own roster (the same name always gets the same face, including across reconnects), instead of every ghost sharing one generic look |
+| Reconnecting | **Fixed** — rejoining under a new connection used to orphan your old ghost instead of replacing it, leaving stray duplicate ghosts stacked on top of you; identity, not connection id, now decides which ghost is yours. A related launcher bug is fixed alongside it: closing only the game (not the launcher) and reconnecting could start a second agent process on top of a stale one, with the two fighting over the same ghost forever — visible in-game as an NPC seemingly attached to the player. The launcher now stops any existing agent before starting a new one |
 | Appearance sync (ghosts mirror your real equipped armor and weapons) | **Working** against synthetic peers and in real single-machine play — per-item, not a fixed costume; **unverified** with a second real human. Weapons go through the same mechanism as armor and were human-confirmed on screen across swords, an axe, a mace, shield+sword and a crossbow. Individual equip/unequip calls occasionally take several seconds to a couple of minutes to actually land under load — a **known rough edge**, not silently broken, see below |
 | Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human |
 | Shared player health and death | **Working** — every player's own health and stamina now reach everyone else, so a peer's ghost shows their real `HP`/`ST` on its nameplate instead of looking permanently healthy while its owner is being killed. A player who dies is announced explicitly by their own game (never guessed from health hitting zero) and their ghost is tagged **`[dead - reloading]`**, clearing by itself once they are back in the world. Live-verified end to end on one machine, 17/17. **What death does is ordinary single-player behaviour: you reload your own most recent save.** Nobody else's world reverts — every player has always had a completely separate save, and this mod has never had, and is not getting, a way to sync one player's save into another's |
-| NPC hits on a player crossing between players | **Built, guards verified, cross-machine step UNVERIFIED.** An NPC attacking your ghost in someone else's world reports the damage back to you, so NPC combat can hurt a remote player rather than only their stand-in. Exactly one client holds this authority at a time (the relay assigns it) — without that, every player's own NPCs would independently damage everyone and multiply the damage by the player count. All three guards around it are individually verified live, plus a positive control. The actual hit crossing two machines was **not** tested: there is one machine here and no second player. See `docs/WO-28-findings.md` |
+| NPC hits on a player crossing between players | **Built, guards verified, cross-machine step UNVERIFIED.** An NPC attacking your ghost in someone else's world reports the damage back to you, so NPC combat can hurt a remote player rather than only their stand-in. Exactly one client holds this authority at a time (the relay assigns it) — without that, every player's own NPCs would independently damage everyone and multiply the damage by the player count. All three guards around it are individually verified live, plus a positive control. The actual hit crossing two machines was **not** tested: there is one machine here and no second player. **This does not synchronise NPCs themselves** — each player still sees their own local version of any fight; what's shared is only who got hurt and who died, never the NPC's position, animation or AI state. See `docs/WO-28-findings.md` |
 | Recovering from a mid-session save reload | **Fixed this release, live-verified.** Loading a save used to permanently stop that player transmitting at all — they simply vanished for everyone else for the rest of the session — and destroyed every other player's ghost body in their world while leaving the floating nameplate walking around with nothing under it. Both were measured (dead for 197s and 187s respectively, still going when the test ended) and both now recover on their own in about 14 seconds |
-| Reactive ghost combat (self-defense, joining nearby fights) | **Working, always on, no toggle** — since WO-22 gave ghosts a real soul and brain, a ghost defends itself when attacked (treats it as a crime, arms itself unprompted, lands real damage) and will join a fight already happening near it, entirely independent of `mp_enable_aggro` below. Live-verified: took a real player from 100 to 57 HP in a single exchange, and separately pursued and killed another ghost 340 m from where both spawned. This was shipped since WO-22 and undocumented as a player-facing feature until WO-26/WO-27 found it. See `docs/WO-26-findings.md`. Its position is still pinned by `KCD2MP_InterpTick` during a real networked session, so it cannot step, close, or retreat — a real, unresolved gap, see `docs/WO-26-shared-combat-design.md` |
+| Reactive ghost combat (self-defense, joining nearby fights) | **Working, always on, no toggle** — since WO-22 gave ghosts a real soul and brain, a ghost defends itself when attacked (treats it as a crime, arms itself unprompted, lands real damage) and will join a fight already happening near it, entirely independent of `mp_enable_aggro` below. Live-verified: took a real player from 100 to 57 HP in a single exchange, and separately pursued and killed another ghost 340 m from where both spawned. This was shipped since WO-22 and undocumented as a player-facing feature until WO-26/WO-27 found it. See `docs/WO-26-findings.md`. Its position is still pinned by `KCD2MP_InterpTick` during a real networked session, so it cannot step, close, or retreat — a real, unresolved gap, see `docs/WO-26-shared-combat-design.md`. **A ghost's own attacks are not replicated to its owner** — a remote player's character can kill NPCs in your world that its owner never actually attacked, invisibly to them. Deliberately left alone; see `docs/WO-26-shared-combat-design.md` §5 |
 | NPC aggro on ghosts (`mp_enable_aggro`) | **Working, opt-in, off by default** — this does NOT turn the reactive combat above on or off; that already happens regardless. What the toggle actually gates is *proactive, faction-wide* hostility: when on, a ghost that lands or receives a hit gets attached to one real hostile faction for ~20s, so *any* nearby NPC of an opposing faction — not just whoever it's already fighting — can recognize and attack it unprompted. When off, that native attach never fires, live-confirmed by reading the ghost's `FactionNode/Parent/Name` before and after a hit in both states (WO-27). Verified end-to-end (synthetic peer → relay → agent → native plugin → game) via a live on/off A/B comparison and via repeated live fights; **unverified** with a second real human. **Known limits, not bugs** — see below |
 | Voice chat | **Working**, proximity-based |
 | Session framework (invites/accept/decline) | **Working** |
@@ -39,7 +41,7 @@ never "probably fine."
 | Emotes | **Not implemented** |
 | Duelling | **Not implemented** — the wire protocol reserves a slot for it, nothing behind it |
 | Master server (server browser backend) | **Built but unverified** — the .NET side is tested against a stub of its contract; the Python service itself has never been run on a machine that touched this project |
-| Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below |
+| Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below. Shares the in-game dice overlay's art direction (aged parchment, oak, gold) across every screen rather than looking like a generic dark app; has a **REPORT BUG** button in the status bar that opens this project's GitHub Issues or Discord; and warns you before you connect if you and your peer are on different mod versions, naming which side needs to update |
 | Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
 **NPC aggro (`mp_enable_aggro`) — known limits, v1 scope, not bugs:**
@@ -151,7 +153,7 @@ or your Steam setup is unusual.
 Everyone you play with needs the same version, not just the host — an old and
 a new build won't connect to each other.
 
-Download **`KCDMP-DirectInstall-0.10.0.zip`** from the release and unzip it. It
+Download **`KCDMP-DirectInstall-0.11.5.zip`** from the release and unzip it. It
 contains two folders, `App` and `Mod`:
 
 1. Copy the **`App`** folder's contents into your existing install folder
@@ -165,7 +167,7 @@ contains two folders, `App` and `Mod`:
 
 Close the launcher first. That's it — no need to run Setup.exe again, and
 nothing else on your PC is touched. Prefer a full reinstall? Running
-`KCDMP-Setup-0.10.0.exe` over the top does that and keeps your settings too.
+`KCDMP-Setup-0.11.5.exe` over the top does that and keeps your settings too.
 
 **Building the installer yourself:**
 
@@ -356,14 +358,18 @@ dotnet run --project dotnet\KcdMp.Server -- --port 7778   # in one window
 powershell -File tools\Test-Combat.ps1
 powershell -File tools\Test-Sessions.ps1 -IncludeTimeout
 powershell -File tools\Test-Dice.ps1
+powershell -File tools\Test-PlayerCombat.ps1
 dotnet test dotnet\KcdMp.Farkle.Tests
 ```
 
 `tools\Test-Pipe.ps1` additionally needs the real game running with the
-plugin injected — see the script header. `tools\Test-AppearanceE2E.ps1`
-needs the real game and a running agent, but **not** the native plugin —
-appearance sync never touches the DLL or the pipe, only the reflection
-debug API.
+plugin injected — see the script header. `tools\Test-AppearanceE2E.ps1` and
+`tools\Test-PlayerVitalsE2E.ps1` need the real game and a running agent, but
+**not** the native plugin — appearance sync and player vitals never touch the
+DLL or the pipe, only the reflection debug API. `tools\Test-ReloadBehaviour.ps1`
+needs all of that plus a human to reload a save mid-test. Every synthetic-peer
+script derives its wire-protocol version from `tools\ProtocolVersion.ps1`
+rather than hardcoding it — never add a new literal version byte to a script.
 
 ## What's left undone, what still needs a human, and reporting bugs
 
