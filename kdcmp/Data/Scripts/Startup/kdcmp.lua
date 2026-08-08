@@ -1384,13 +1384,20 @@ end
 -- WO-17: mp_enable_aggro on|off. Opt-in, off by default, decided locally on
 -- this client only -- it does not need the other player's agreement, the
 -- same way dice needed a session invite/accept but this does not, because it
--- only changes how THIS player's world treats an incoming ghost. Affects
--- every ghost spawned AFTER the toggle flips; an already-spawned ghost keeps
--- whatever tree it spawned with (respawn it, e.g. by having the peer
--- reconnect, to pick up a change). The agent hears about this via the same
--- log-tail event channel invite_accept already uses (KCD2MP_EmitEvent) --
--- it, not Lua, is what actually decides when to attach a ghost to the
--- hostile faction, since that write only exists in native code.
+-- only changes how THIS player's world treats an incoming ghost. The agent
+-- hears about this via the same log-tail event channel invite_accept already
+-- uses (KCD2MP_EmitEvent) -- it, not Lua, is what actually decides when to
+-- attach a ghost to the hostile faction, since that write only exists in
+-- native code.
+--
+-- WO-27: this is a single live flag (GameBridge._aggroEnabled), checked at
+-- hit-time for every ghost, not baked in per-ghost at spawn -- flipping it
+-- takes effect on the very next hit for every ghost already in the world, no
+-- respawn or reconnect needed. Reactive combat itself (a ghost defending
+-- itself, joining a nearby fight) is unconditional and always on regardless
+-- of this toggle (WO-26); what this toggle adds is a ~20s native hostile-
+-- faction attach so nearby NPCs recognize the ghost as an enemy generally,
+-- not just whoever it's already fighting (WO-27's live A/B test).
 function KCD2MP_EnableAggro(arg)
     local s = tostring(arg or ""):lower()
     if s:find("on") then KCD2MP.aggroEnabled = true
@@ -1591,8 +1598,12 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     -- esModularBehaviorTree is gone rather than emptied: WO-21 proved it is
     -- inert and that "IdleSeq" names no tree anywhere in the shipped game
     -- data. It was never a live variable, so the aggro toggle's switch on it
-    -- was a no-op. Aggro still works -- it comes from the native faction
-    -- attach, as it always actually did.
+    -- was a no-op. A soul-backed ghost's reactive combat (self-defense,
+    -- joining nearby fights) comes from the engine's own AI/soul/brain
+    -- system once SharedSoulGuid is bound here, and is always on regardless
+    -- of the aggro toggle (WO-26). The toggle's own effect is a separate,
+    -- additive native hostile-faction attach applied at hit-time, not at
+    -- spawn (WO-27) -- see KCD2MP_EnableAggro above.
     local entity = nil
     pcall(function()
         XGenAIModule.SpawnEntity{
@@ -1650,12 +1661,16 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     end)
 
     -- WO-17: human:DrawWeapon() is a real, visually-confirmed native mutation
-    -- (unlike EquipWeaponPreset, which is cosmetic-only, WO-9) -- it does NOT
-    -- flip CombatSoul.HasMeleeWeapon on an NPC (confirmed live: that flag
-    -- tracks the AI's own combat-engagement state, not the item-in-hand
-    -- visual), so this does not grant real retaliation capability. It only
-    -- makes an aggro-flagged ghost look combat-ready rather than sheathed,
-    -- which is worth doing for free since the call is proven harmless.
+    -- (unlike EquipWeaponPreset, which is cosmetic-only, WO-9). WO-17's own
+    -- claim that it never flips CombatSoul.HasMeleeWeapon was disproved by
+    -- WO-21: on a male ghost with a real equipped weapon item, this call does
+    -- flip HasMeleeWeapon=true, and WO-22/23 confirmed it holds true for
+    -- soul-backed, brained ghosts. On a female ghost (no weapon item to draw)
+    -- the flag correctly stays false -- that is the item being absent, not a
+    -- broken call. Whether a ghost actually lands a blow is a separate,
+    -- emergent AI-brain decision (morale, odds, context) that this call does
+    -- not control either way (WO-22/23: every hostile ghost tested so far
+    -- chose to flee rather than fight, being outnumbered).
     if KCD2MP.aggroEnabled then
         Script.SetTimer(1000, function()
             local g = KCD2MP.ghosts[id]
