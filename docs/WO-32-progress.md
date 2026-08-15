@@ -46,6 +46,17 @@
 7. Cost measured: ~4 pkt/s (~150 B/s) observed for 5 NPCs, 740 B/s worst
    case — less than one player position stream. Extrapolation and the real
    (client-side) scaling ceiling are in the findings.
+8a. **Half-applied-install incident + hardening** (same session, after the
+   0.11.8 artifacts were first built): the user's Setup run half-applied
+   because this session's leftover E2E processes were running. Fixed by a
+   clean re-run; then three defence layers built so testers never hit it
+   silently — install-time process gate, post-install manifest verification
+   (observed `verify: PASS (1019 files)` on a real silent install), and a
+   launcher startup check comparing every sibling DLL's version stamp.
+   `Test-Installer.ps1`'s cleanup was also found to delete the real mod
+   deployment on every run — now snapshots and restores it. Suites: 41/41,
+   21/21, Farkle 59/59. See the findings addendum.
+
 8. Shipped shape: `mp_npc_sync`, 5 NPCs / 30 m. Human's decision, verbatim:
    *"Turn it on by default, and document how to turn it OFF. If it is Off by
    default then nobody is ever going to know how to enable it."* Default

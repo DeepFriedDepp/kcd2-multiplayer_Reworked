@@ -7,4 +7,15 @@
     <RootNamespace>KcdMp.Wire</RootNamespace>
   </PropertyGroup>
 
+  <!--
+    WO-32 follow-up: stamp from the repo VERSION like Client/Server/launcher
+    already do, so the launcher's partial-install check can compare this DLL's
+    version against its own. Reads only, never writes VERSION (VERSIONING.md).
+  -->
+  <PropertyGroup>
+    <VersionFileContent Condition="Exists('$(MSBuildThisFileDirectory)..\..\VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\..\VERSION').Trim())</VersionFileContent>
+    <Version Condition="'$(VersionFileContent)' != ''">$(VersionFileContent)</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
 </Project>

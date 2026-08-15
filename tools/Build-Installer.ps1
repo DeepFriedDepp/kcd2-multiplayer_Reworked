@@ -70,6 +70,23 @@ if (-not (Test-Path (Join-Path $payload "KCDMP_launcher.exe"))) {
     throw "release payload incomplete: $payload\KCDMP_launcher.exe not found (run without -SkipPublish)"
 }
 
+# WO-32 follow-up: write a size manifest of the payload so the installer can
+# verify, after installing, that every file actually landed. Motivated by a
+# real half-applied install: Setup 0.11.8 ran while agent/relay processes were
+# alive, silently left KcdMpClient.dll and KcdMpServer.dll on an old build,
+# and the newly-shipped NPC sync was inert with no error anywhere. The
+# manifest is written AFTER publish so it describes exactly what ships, and
+# it ships inside the payload itself so the post-install check needs no
+# second source of truth. Format: <relative path>|<size>, one per line.
+$manifestPath = Join-Path $payload "install-manifest.txt"
+Remove-Item $manifestPath -ErrorAction SilentlyContinue   # never list a stale self
+$payloadFull = (Get-Item $payload).FullName
+$lines = Get-ChildItem $payloadFull -Recurse -File | ForEach-Object {
+    "{0}|{1}" -f $_.FullName.Substring($payloadFull.Length + 1), $_.Length
+}
+Set-Content -Path $manifestPath -Value $lines -Encoding ASCII
+Write-Host "Install manifest: $($lines.Count) files"
+
 $iss = Join-Path $root "installer\KCDMP.iss"
 Write-Host "Compiling $iss (version $Version) ..."
 & $iscc "/DAppVersion=$Version" $iss

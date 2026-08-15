@@ -286,6 +286,59 @@ the Phase 0 bound stays until someone measures it.
 
 ---
 
+## Addendum — the half-applied-install hardening (same session)
+
+The user's first run of Setup 0.11.8 half-applied: the pak, Protocol and
+launcher updated while `KcdMpClient.dll`/`KcdMpServer.dll` silently stayed on
+an old build (this session's own leftover E2E relay/agent processes were
+running at install time), leaving NPC sync inert with no error anywhere.
+Found by the WO-34 session; confirmed here by file sizes; fixed by the user
+re-running Setup with everything closed (`Verify-Install.ps1`: all pass).
+
+Three defence layers were then built so testers can never hit this silently:
+
+1. **Install-time process gate** (`installer/KCDMP.iss`): Setup refuses to
+   install while the launcher, agent, relay, or the game is running —
+   interactive gets Retry/Cancel with an explanation; silent installs kill
+   the project's own processes (mirroring silent uninstall's documented
+   behaviour) but never the game, aborting instead.
+2. **The install proves itself**: `Build-Installer.ps1` writes an
+   `install-manifest.txt` (path|size for all 1,019 payload files) into the
+   payload; post-install, Setup compares every file on disk against it and
+   writes `install-verify.txt` (PASS/FAIL + details), with a message box on
+   interactive failures. Observed working on a real silent install:
+   `verify: PASS (1019 files)` in the install log.
+3. **The launcher detects a mixed install at startup**: every shipped .NET
+   assembly is now stamped from the repo `VERSION` (Protocol and Farkle were
+   missing the stamp; added), and the launcher compares each sibling DLL's
+   `InformationalVersion` against its own on startup, surfacing a mismatch in
+   the existing version-mismatch modal. Warns, deliberately does not block: a
+   false positive that strands a tester is worse than a warned mismatch. This
+   is the layer the wire protocol cannot provide — a mixed install is inside
+   one machine.
+
+Verified: installer lifecycle suite 41/41 (including the manifest
+verification running on its real silent install), detection suite 21/21,
+Farkle 59/59. Honest limits: the gate's silent kill-ours and abort-on-game
+paths and the interactive Retry/Cancel dialog are code-reviewed but not
+exercised (consistent with the wizard itself being listed unverified in
+README); the launcher banner's mismatch path has not been triggered against a
+deliberately mixed install.
+
+Two side-findings from the same work:
+
+- **`Test-Installer.ps1` was deleting the dev machine's real mod deployment
+  on every run** — its header promised "restores the previous state" but its
+  cleanup just deleted `Mods\kdcmp` (observed: the freshly installed 0.11.8
+  pak vanished after a 41/41 pass). It now snapshots any pre-existing mod
+  deployment before the first install and restores it in cleanup — exercised
+  live in the very next run.
+- **The sandbox this assistant runs in redirects `%LocalAppData%`** (a probe
+  write to the real path appeared under the `Packages\...\LocalCache` copy),
+  so install verification and installer runs must be done by the user in a
+  normal shell — recorded in the project memory so future sessions don't
+  trust their own reads there.
+
 ## What this closes and what it leaves open
 
 **Closed:**

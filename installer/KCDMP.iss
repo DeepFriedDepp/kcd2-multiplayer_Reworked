@@ -505,6 +505,99 @@ begin
   end;
 end;
 
+{ Kills this project's own processes (never the game). Shared by the silent
+  install gate below and by silent uninstall -- unattended means unattended,
+  and the launcher only writes settings.json when the user presses Save, so
+  there is no in-flight state to lose. }
+procedure KillOursQuietly();
+var
+  I, ResultCode: Integer;
+  Names: array[0..2] of String;
+begin
+  Names[0] := 'KCDMP_launcher.exe';
+  Names[1] := 'KcdMpClient.exe';
+  Names[2] := 'KcdMpServer.exe';
+  for I := 0 to 2 do
+    Exec(ExpandConstant('{cmd}'), '/c taskkill /f /im "' + Names[I] + '"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+{ WO-32 follow-up -- the install-time process gate.
+
+  A real 0.11.8 install half-applied: Setup ran while agent/relay processes
+  were alive, CloseApplications did not catch them (they were running from a
+  dev tree rather than the install directory, but the DLLs still failed to
+  be overwritten, without an error), and the result was a
+  launcher on the new build with an agent on the old one -- the newly-shipped
+  feature silently inert. See docs/WO-32-findings.md. So: refuse to install
+  while ANY of this project's processes, or the game, is running, no matter
+  where they run from. Interactive gets Retry/Cancel; silent kills our own
+  processes (mirroring InitializeUninstall's documented behaviour) but never
+  the game -- an unattended install has no business closing someone's game. }
+function FirstInstallBlocker(): String;
+var
+  I, ResultCode: Integer;
+  Names: array[0..3] of String;
+begin
+  Result := '';
+  Names[0] := 'KCDMP_launcher.exe';
+  Names[1] := 'KcdMpClient.exe';
+  Names[2] := 'KcdMpServer.exe';
+  Names[3] := 'KingdomCome.exe';
+
+  for I := 0 to 3 do
+    if Exec(ExpandConstant('{cmd}'),
+            '/c tasklist /fi "imagename eq ' + Names[I] + '" /nh | find /i "' + Names[I] + '"',
+            '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      if ResultCode = 0 then
+      begin
+        Result := Names[I];
+        Exit;
+      end;
+end;
+
+{ Returns '' when clear to install, or an abort message. }
+function EnsureNothingRunning(): String;
+var
+  Blocker: String;
+begin
+  Result := '';
+
+  Blocker := FirstInstallBlocker();
+  while Blocker <> '' do
+  begin
+    if WizardSilent then
+    begin
+      if Blocker = 'KingdomCome.exe' then
+      begin
+        Result := 'The game (KingdomCome.exe) is running. Setup cannot safely replace files while it is. Close the game and run Setup again.';
+        Exit;
+      end;
+      KillOursQuietly();
+      Sleep(1500);
+      Blocker := FirstInstallBlocker();
+      if Blocker <> '' then
+      begin
+        Result := Blocker + ' is still running and could not be closed. Close it and run Setup again.';
+        Exit;
+      end;
+      Break;
+    end;
+
+    if MsgBox(Blocker + ' is still running.' + #13#10#13#10 +
+              'Installing over running programs is how an update half-applies: some files' + #13#10 +
+              'update, the ones in use silently do not, and the result looks installed but' + #13#10 +
+              'is a mix of two versions.' + #13#10#13#10 +
+              'Close it (launcher, agent, relay, and the game), then click Retry.',
+              mbConfirmation, MB_RETRYCANCEL) <> IDRETRY then
+    begin
+      Result := 'Setup was cancelled because ' + Blocker + ' was still running.';
+      Exit;
+    end;
+    Blocker := FirstInstallBlocker();
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Target: String;
@@ -518,6 +611,10 @@ begin
               'Install "Kingdom Come: Deliverance II Modding tools" from Steam and run Setup again.';
     Exit;
   end;
+
+  { The process gate, before anything is written -- see its comment above. }
+  Result := EnsureNothingRunning();
+  if Result <> '' then Exit;
 
   Result := EnsureWebView2();
   if Result <> '' then Exit;
@@ -582,10 +679,92 @@ begin
   SaveStringsToUTF8FileWithoutBOM(Path, Lines, False);
 end;
 
+{ WO-32 follow-up -- the install proves itself before declaring success.
+
+  Build-Installer.ps1 writes install-manifest.txt (<relative path>|<size>)
+  into the payload after publish, so it ships inside the install directory
+  and describes exactly what this Setup carried. Comparing sizes on disk
+  against it catches the silent skip that produced the half-applied 0.11.8
+  install: a file that could not be overwritten keeps its old size and shows
+  up here, instead of Setup finishing green over a mix of two versions.
+
+  The verdict is always written to install-verify.txt beside the launcher
+  (the automated suites and tools\Verify-Install.ps1 can read it);
+  interactive failures also get a message box. Size, not hash: no streaming hash here,
+  and every stale-vs-built pair observed differed in size. }
+procedure VerifyInstalledFiles();
+var
+  Manifest, Failures: TArrayOfString;
+  Verdict: TArrayOfString;
+  I, FailCount: Integer;
+  Line, RelPath, FullPath: String;
+  Bar: Integer;
+  WantSize, GotSize: Int64;
+begin
+  if not LoadStringsFromFile(ExpandConstant('{app}\install-manifest.txt'), Manifest) then
+  begin
+    Log('verify: install-manifest.txt missing -- nothing to check against');
+    Exit;
+  end;
+
+  FailCount := 0;
+  SetArrayLength(Failures, 0);
+  for I := 0 to GetArrayLength(Manifest) - 1 do
+  begin
+    Line := Trim(Manifest[I]);
+    if Line = '' then Continue;
+    Bar := Pos('|', Line);
+    if Bar = 0 then Continue;
+    RelPath := Copy(Line, 1, Bar - 1);
+    WantSize := StrToInt64Def(Copy(Line, Bar + 1, MaxInt), -1);
+    if WantSize < 0 then Continue;
+
+    FullPath := ExpandConstant('{app}\') + RelPath;
+    GotSize := -1;
+    if not FileSize64(FullPath, GotSize) then GotSize := -1;
+    if GotSize <> WantSize then
+    begin
+      FailCount := FailCount + 1;
+      SetArrayLength(Failures, FailCount);
+      if GotSize < 0 then
+        Failures[FailCount - 1] := RelPath + '  (missing)'
+      else
+        Failures[FailCount - 1] := RelPath + '  (' + IntToStr(GotSize) + ' bytes, expected ' + IntToStr(WantSize) + ')';
+      Log('verify FAIL: ' + Failures[FailCount - 1]);
+    end;
+  end;
+
+  if FailCount = 0 then
+  begin
+    SetArrayLength(Verdict, 1);
+    Verdict[0] := 'PASS  all files match the install manifest';
+    SaveStringsToFile(ExpandConstant('{app}\install-verify.txt'), Verdict, False);
+    Log('verify: PASS (' + IntToStr(GetArrayLength(Manifest)) + ' files)');
+    Exit;
+  end;
+
+  SetArrayLength(Verdict, FailCount + 1);
+  Verdict[0] := 'FAIL  ' + IntToStr(FailCount) + ' file(s) did not install correctly:';
+  for I := 0 to FailCount - 1 do
+    Verdict[I + 1] := '  ' + Failures[I];
+  SaveStringsToFile(ExpandConstant('{app}\install-verify.txt'), Verdict, False);
+
+  if not WizardSilent then
+    MsgBox('Setup finished, but ' + IntToStr(FailCount) + ' file(s) did not install correctly -- ' +
+           'most likely something was still using them.' + #13#10#13#10 +
+           'First affected file: ' + Failures[0] + #13#10#13#10 +
+           'Close the launcher, the agent, the relay and the game, then run this installer again.' + #13#10 +
+           'The full list is in install-verify.txt in the install folder.',
+           mbError, MB_OK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
+    VerifyInstalledFiles();
     SeedSettings();
+  end;
 end;
 
 { ----------------------------------------------------------- uninstalling }
@@ -618,19 +797,6 @@ begin
         Result := True;
         Exit;
       end;
-end;
-
-procedure KillOursQuietly();
-var
-  I, ResultCode: Integer;
-  Names: array[0..2] of String;
-begin
-  Names[0] := 'KCDMP_launcher.exe';
-  Names[1] := 'KcdMpClient.exe';
-  Names[2] := 'KcdMpServer.exe';
-  for I := 0 to 2 do
-    Exec(ExpandConstant('{cmd}'), '/c taskkill /f /im "' + Names[I] + '"',
-         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 { Runs before anything is removed, and returning False aborts cleanly with

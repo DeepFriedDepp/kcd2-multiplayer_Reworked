@@ -67,6 +67,23 @@ if (Test-Path $regKey) {
 if (Test-Path $WorkDir) { Remove-Item $WorkDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
+# WO-32 follow-up: the header always promised "restores the previous state
+# afterwards" but the cleanup below simply deleted the mod folder -- so every
+# run of this suite silently uninstalled the dev machine's real mod deployment
+# (observed for real: the freshly-installed 0.11.8 pak vanished after a 41/41
+# pass). Snapshot whatever mod deployment exists before the first install so
+# cleanup can put it back instead of just deleting.
+$modBackup = $null
+$preModsPath = $null
+foreach ($lib in @("D:\SteamLibrary\steamapps\common\KCD2Mod", "C:\Program Files (x86)\Steam\steamapps\common\KCD2Mod")) {
+    if (Test-Path (Join-Path $lib "Mods\kdcmp")) { $preModsPath = Join-Path $lib "Mods\kdcmp"; break }
+}
+if ($preModsPath) {
+    $modBackup = Join-Path $WorkDir "mod-backup"
+    Copy-Item $preModsPath $modBackup -Recurse -Force
+    Write-Host "Snapshotted existing mod deployment: $preModsPath"
+}
+
 Write-Host "Setup under test: $SetupExe"
 Write-Host ""
 
@@ -201,6 +218,10 @@ if ($modsPath -and (Test-Path $modsPath)) {
     Remove-Item $modsPath -Recurse -Force
     Write-Host ""
     Write-Host "Cleaned up test mod deployment at $modsPath"
+}
+if ($modBackup -and (Test-Path $modBackup) -and $preModsPath) {
+    Copy-Item $modBackup $preModsPath -Recurse -Force
+    Write-Host "Restored the pre-test mod deployment at $preModsPath"
 }
 
 Write-Host ""

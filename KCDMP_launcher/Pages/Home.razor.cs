@@ -190,9 +190,27 @@ namespace KCDMP_launcher.Pages
             LoadSettings();
             LoadCustomServers();
             CheckGamePathOnStartup();
+            CheckInstallIntegrity();
             Globals.OnStyleChanged += OnStyleChanged;
             await EnsureLocalMasterServerAsync();
             await RefreshApp();
+        }
+
+        /// <summary>
+        /// WO-32 follow-up: a mixed install (some DLLs from one build, some
+        /// from another -- the half-applied-installer failure) is invisible
+        /// to the wire protocol because the mix is inside one machine, so
+        /// the launcher checks for it the moment it starts. Reuses the
+        /// version-mismatch modal: same shape of problem, same "someone
+        /// needs to update" conversation, just with yourself.
+        /// </summary>
+        private void CheckInstallIntegrity()
+        {
+            var problem = InstallIntegrity.CheckForPartialInstall();
+            if (problem is null) return;
+            Log.Warning("Partial install detected: {Problem}", problem);
+            versionMismatchMessage = problem;
+            showVersionMismatch = true;
         }
 
         private void OnStyleChanged() => _ = ApplyStyleProfile();

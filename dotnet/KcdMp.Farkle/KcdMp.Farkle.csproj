@@ -7,4 +7,11 @@
     <RootNamespace>KcdMp.Farkle</RootNamespace>
   </PropertyGroup>
 
+  <!-- WO-32 follow-up: stamped like KcdMp.Protocol (see its comment). -->
+  <PropertyGroup>
+    <VersionFileContent Condition="Exists('$(MSBuildThisFileDirectory)..\..\VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\..\VERSION').Trim())</VersionFileContent>
+    <Version Condition="'$(VersionFileContent)' != ''">$(VersionFileContent)</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
 </Project>
