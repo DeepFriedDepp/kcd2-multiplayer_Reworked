@@ -10,8 +10,16 @@
     .csproj), builds the native plugin/injector if not already built, and
     copies everything the launcher's AppSettings defaults expect to find
     beside it (KCDMP.dll, KCDMP_LauncherInjector.exe, KcdMpClient.exe,
-    KcdMpServer.exe, KcdMpMasterServer.exe + their appsettings) into one
-    folder.
+    KcdMpServer.exe + their appsettings) into one folder.
+
+    KcdMpMasterServer.exe goes into its own MasterServer\ subfolder instead
+    of being flat-merged like the rest (WO-35). Confirmed live: flat-merging
+    it let a later Copy-Item -- even a partial one republishing only the
+    launcher -- silently overwrite one of its dependency DLLs with an
+    incompatible version from another project's own bundle, crashing it with
+    "Could not load Microsoft.Extensions.Configuration.Abstractions" on next
+    launch. Isolating it removes the hazard rather than requiring every
+    future partial update to remember not to trigger it.
 
     The native DLL statically links its C++ runtime
     (CMAKE_MSVC_RUNTIME_LIBRARY = MultiThreaded in native/CMakeLists.txt), so
@@ -74,10 +82,14 @@ Copy-Item "$serverPublish\*" $OutDir -Recurse -Force
 # --- Master server (WO-35): auto-started by the launcher itself, not just
 #     the relay -- see AppSettings.MasterServerPath / Home.razor.cs's
 #     EnsureLocalMasterServerAsync. Must be present for the default
-#     MasterServerUrl (a loopback address) to ever have anything answering it. ---
+#     MasterServerUrl (a loopback address) to ever have anything answering it.
+#     Its own subfolder, not flat-merged -- see the .SYNOPSIS note above for
+#     why; AppModels.cs's MasterServerPath default matches this path. ---
 Publish-Project (Join-Path $root "dotnet\KcdMp.MasterServer\KcdMp.MasterServer.csproj") "bin\Release\net8.0\publish"
 $masterServerPublish = $script:PublishDir
-Copy-Item "$masterServerPublish\*" $OutDir -Recurse -Force
+$masterServerOutDir = Join-Path $OutDir "MasterServer"
+New-Item -ItemType Directory -Path $masterServerOutDir -Force | Out-Null
+Copy-Item "$masterServerPublish\*" $masterServerOutDir -Recurse -Force
 
 # --- Native plugin + injector ---
 $nativeDll = Join-Path $root "native\build\KCDMP\KCDMP.dll"

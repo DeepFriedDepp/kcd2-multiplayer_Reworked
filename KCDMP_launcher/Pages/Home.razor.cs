@@ -949,7 +949,7 @@ namespace KCDMP_launcher.Pages
             string masterServerPath = ResolveAgainstLauncher(settings.MasterServerPath);
             if (!File.Exists(masterServerPath))
             {
-                Log.Warning("Master server executable not found at: {Path}. The server browser will show a connection error until one is installed or Settings -> Master Server URL points elsewhere.", masterServerPath);
+                Log.Warning("Master server executable not found at: {Path}. The status bar will read \"Master: Offline\" until one is installed or Settings -> Master Server URL points elsewhere.", masterServerPath);
                 return;
             }
 
@@ -978,13 +978,22 @@ namespace KCDMP_launcher.Pages
                 // exactly what this replaces, found live: the process started
                 // and kept running, but RefreshApp's request landed before
                 // Kestrel had actually opened the port.
-                var deadline = DateTime.UtcNow.AddSeconds(5);
+                var deadline = DateTime.UtcNow.AddSeconds(8);
                 var up = false;
                 while (DateTime.UtcNow < deadline)
                 {
                     if (hostedMasterServerProcess.HasExited)
                     {
-                        Log.Warning("Local master server process exited early (code {Code}).", hostedMasterServerProcess.ExitCode);
+                        // The most common real reason: two launcher instances
+                        // both decided to start one (this check and
+                        // Process.Start above are not atomic together), and
+                        // this one lost the port to the other. That other
+                        // instance's copy is a perfectly good master server,
+                        // so check for it once before giving up rather than
+                        // reporting a failure that is not actually happening.
+                        Log.Information("This launcher's own master server process exited early (code {Code}); checking whether another instance already claimed the port.",
+                            hostedMasterServerProcess.ExitCode);
+                        up = await IsMasterServerRespondingAsync(uri);
                         break;
                     }
 
@@ -999,11 +1008,11 @@ namespace KCDMP_launcher.Pages
 
                 if (up)
                 {
-                    Log.Information("Local master server is up on port {Port}.", uri.Port);
+                    Log.Information("Master server is up on port {Port}.", uri.Port);
                 }
                 else
                 {
-                    Log.Warning("Local master server did not answer on port {Port} within 5s; giving up for this launch.", uri.Port);
+                    Log.Warning("Local master server did not answer on port {Port} within 8s; giving up for this launch.", uri.Port);
                     hostedMasterServerProcess = null;
                 }
             }
@@ -1185,6 +1194,7 @@ namespace KCDMP_launcher.Pages
             catch { }
 
             MigrateStaleMasterServerUrl();
+            MigrateStaleMasterServerPath();
         }
 
         /// <summary>
@@ -1202,6 +1212,18 @@ namespace KCDMP_launcher.Pages
             "http://localhost:5100",                      // WO-35's first pass -- see AppModels.cs
         ];
 
+        /// <summary>
+        /// Same idea as <see cref="MigrateStaleMasterServerUrl"/>: a
+        /// settings.json saved before the master server got its own
+        /// MasterServer\ subfolder (see AppModels.cs and
+        /// tools/Publish-Release.ps1) would otherwise keep pointing at a bare
+        /// filename that no longer exists there.
+        /// </summary>
+        private static readonly string[] KnownStaleMasterServerPaths =
+        [
+            "KcdMpMasterServer.exe", // flat-merged, pre-subfolder-isolation
+        ];
+
         private void MigrateStaleMasterServerUrl()
         {
             if (Array.IndexOf(KnownStaleMasterServerUrls, settings.MasterServerUrl) >= 0)
@@ -1209,6 +1231,15 @@ namespace KCDMP_launcher.Pages
                 settings.MasterServerUrl = new AppSettings().MasterServerUrl;
             }
         }
+
+        private void MigrateStaleMasterServerPath()
+        {
+            if (Array.IndexOf(KnownStaleMasterServerPaths, settings.MasterServerPath) >= 0)
+            {
+                settings.MasterServerPath = new AppSettings().MasterServerPath;
+            }
+        }
+
         private void SaveSettings()
         {
             try

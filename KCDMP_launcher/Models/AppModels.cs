@@ -108,11 +108,15 @@ namespace KCDMP_launcher.Models
         // The master server executable (WO-35), auto-started alongside the
         // launcher itself -- not on Host, unlike RelayPath -- whenever
         // MasterServerUrl names a loopback address, since a default install
-        // otherwise has nothing answering it there and the browser always
-        // shows "Could not connect to Master Server!". See
-        // Home.razor.cs's EnsureLocalMasterServerAsync. Same resolution rule
-        // as RelayPath/AgentPath/DllPath.
-        public string MasterServerPath { get; set; } = "KcdMpMasterServer.exe";
+        // otherwise has nothing answering it there. See Home.razor.cs's
+        // EnsureLocalMasterServerAsync. Resolved the same way as
+        // RelayPath/AgentPath/DllPath (relative to the launcher), but in its
+        // own subfolder rather than flat-merged with everything else:
+        // confirmed live, sharing a folder let another project's publish
+        // step silently overwrite one of its dependency DLLs with an
+        // incompatible version, crashing it on next launch. See
+        // tools/Publish-Release.ps1, which places it here.
+        public string MasterServerPath { get; set; } = "MasterServer\\KcdMpMasterServer.exe";
 
         // TCP port the locally-hosted relay listens on, and what a joining
         // friend needs in their own address bar. Matches KcdMp.Server's own

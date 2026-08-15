@@ -94,13 +94,27 @@ namespace KCDMP_launcher.Services
             return pingTime;
         }
 
+        /// <summary>
+        /// The master server is optional -- a launcher with a host's address
+        /// joins without it -- so nothing here ever surfaces a popup. A
+        /// missing or unreachable master used to raise a blocking "Could not
+        /// connect to Master Server!" error dialog on every single launch for
+        /// as long as nothing answered it, which is confusing for exactly the
+        /// non-technical users this feature is supposed to help (WO-35). Any
+        /// failure here is logged to app.log only; the caller just gets an
+        /// empty list, indistinguishable from "the master is fine and nobody
+        /// is hosting" -- which is also why the status bar's Master:
+        /// Online/Offline (Globals.IsMasterOnline, set from
+        /// IsMasterServerOnlineAsync) exists as the one place this is still
+        /// visible, passively rather than as an interruption.
+        /// </summary>
         public async Task<List<ServerInfo>> GetServersFromMasterAsync(string masterUrl)
         {
             var resultList = new List<ServerInfo>();
 
             if (!TryBuildMasterUri(masterUrl, MasterApi.ListPath, out var uri, out var uriError))
             {
-                _uiService?.ShowError(uriError);
+                Log.Warning("Master Server URL could not be used: {Error}", uriError);
                 return resultList;
             }
 
@@ -115,8 +129,9 @@ namespace KCDMP_launcher.Services
 
                 if (response.ApiVersion != MasterApi.Version)
                 {
-                    _uiService?.ShowError(
-                        $"The master server speaks master API v{response.ApiVersion}; this launcher speaks v{MasterApi.Version}. Update whichever is older.");
+                    Log.Warning(
+                        "The master server speaks master API v{TheirVersion}; this launcher speaks v{OurVersion}. Update whichever is older.",
+                        response.ApiVersion, MasterApi.Version);
                     return resultList;
                 }
 
@@ -143,11 +158,11 @@ namespace KCDMP_launcher.Services
             }
             catch (HttpRequestException ex)
             {
-                _uiService?.LogError(ex, $"Could not connect to Master Server!");
+                Log.Debug(ex, "Could not connect to the master server (non-fatal, the feature is optional): {Message}", ex.Message);
             }
             catch (Exception ex)
             {
-                _uiService?.LogError(ex, $"Error fetching server list!");
+                Log.Warning(ex, "Error fetching the server list from the master (non-fatal): {Message}", ex.Message);
             }
 
             return resultList;

@@ -161,6 +161,46 @@ immediately from content read earlier in the same session. Flagging this as
 a mistake, not something to repeat -- there was no need to touch a real file
 to answer a question I already had evidence for.
 
+## Round 5: remove the error dialog entirely, and the real "sometimes" cause
+
+Human: still intermittent, and asked for the error to never show at all,
+"remove it from the launcher entirely."
+
+1. `NetService.GetServersFromMasterAsync`'s three failure paths (bad URL,
+   API version mismatch, connect failure) no longer call
+   `UiService.ShowError`/`LogError` -- they log to `app.log` only (`Log.Debug`
+   for the ordinary "nothing's there" case, `Log.Warning` for the two that
+   indicate real misconfiguration). The master server is optional by design;
+   nothing about it should ever interrupt the player. The status bar's
+   `Master: Online/Offline` (wired up in round 4) remains the one passive,
+   non-blocking place this is still visible.
+2. Hardened `EnsureLocalMasterServerAsync` against the TOCTOU race between
+   two launcher instances: the responsiveness check and `Process.Start` are
+   not atomic, so a losing instance's own copy can exit immediately after the
+   other one claims the port. It now re-checks for a responding master once
+   before giving up in that case, and the poll deadline moved 5s -> 8s for
+   extra cold-start margin.
+3. **The real, structural cause of "doesn't always work":** reproduced live
+   via a routine partial redeploy (publishing just the launcher and copying
+   only its files over the install). `KcdMpMasterServer.exe` crashed with
+   `Could not load Microsoft.Extensions.Configuration.Abstractions,
+   Version=10.0.0.0` -- a later Copy-Item into the shared, flat-merged
+   install folder had overwritten one of its dependency DLLs with an
+   incompatible version from another project's own bundle. This is not a
+   one-off; it is the same DLL-probe-collision *class* already hit twice this
+   WO (Serilog.Sinks.File, twice), now demonstrated to be triggerable by any
+   partial update to the shared folder, not just a full from-scratch publish
+   done wrong. Fixed structurally rather than procedurally: `KcdMpMasterServer.exe`
+   now gets its own `MasterServer\` subfolder instead of being flat-merged
+   with everything else (`tools/Publish-Release.ps1`, `AppModels.MasterServerPath`
+   default updated to match, `MigrateStaleMasterServerPath` added for an
+   existing settings.json that saved the old bare-filename default).
+
+Re-verified live on the real install: the isolated copy starts and answers
+cleanly (confirmed both by running it directly and through the real
+launcher), and a normal `dotnet publish`-only redeploy of the launcher no
+longer touches or can touch its dependencies at all.
+
 ## Note for the human, unrelated to this work
 
 `git status` shows `kdcmp/Data/kdcmp.pak` as modified (same size, different
