@@ -233,6 +233,30 @@ public class ClientSession
                     continue;
                 }
 
+                // --- NPC sync layer (WO-32) ---
+                // [nameLen:1][name][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1].
+                // Validated against the declared nameLen like Appearance's
+                // itemCount, and dropped unless the sender holds Rule 2's
+                // authority -- one world dictates NPC state, same enforcement
+                // point as PlayerHitUp.
+                if (type == Protocol.NpcStateUp
+                    && payloadLen >= 1 + 1 + Protocol.NpcStateFixedTail
+                    && payloadLen <= 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (body[0] != payloadLen - 1 - Protocol.NpcStateFixedTail)
+                        continue;   // nameLen disagrees with the framing: malformed, drop
+                    if (!_clientHandler.IsDamageAuthority(this))
+                    {
+                        _logger.Warning("[!] '{Name}' (id={Id}) sent NpcStateUp without holding world authority -- dropped.",
+                            Name, Id);
+                        continue;
+                    }
+                    _broadcastService.BroadcastNpcState(this, body);
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -362,6 +386,18 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.PlayerStateDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue an NpcStateDown (0x27, WO-32). The body is the
+    /// upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueNpcState(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.NpcStateDown, payload));
     }
 
     /// <summary>

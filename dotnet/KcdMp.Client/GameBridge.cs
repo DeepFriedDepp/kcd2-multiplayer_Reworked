@@ -194,6 +194,16 @@ public partial class GameBridge(ClientConfig config)
     // has no access to this connection's stream.
     private Func<byte, float, float, Task>? _sendPlayerHit;
 
+    // NPC sync (WO-32): set per connection like _sendPlayerHit; carries one
+    // npc_state event line from the mod onto the wire as an NpcStateUp (0x26).
+    private Func<string, float, float, float, float, float, byte, Task>? _sendNpcState;
+
+    // The only characters that appear in authored entity names. Enforced both
+    // before sending (our own emitter should never produce anything else) and
+    // before an inbound name is interpolated into a Lua call -- relay data must
+    // not be able to inject Lua.
+    private static readonly Regex NpcNamePattern = new("^[A-Za-z0-9_]+$", RegexOptions.Compiled);
+
     public async Task RunAsync(CancellationToken ct = default)
     {
         var http = new HttpGameTransport(config.GameApiBase);
@@ -517,6 +527,7 @@ public partial class GameBridge(ClientConfig config)
         // above, since the handler closes over this connection's stream.
         _sendPauseIfChanged = () => SendPauseIfChangedAsync(stream, cts.Token);
         _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
+        _sendNpcState = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token);
         void OnLocalPauseDetected(bool paused)
         {
             _localAutoPaused = paused;
@@ -574,6 +585,12 @@ public partial class GameBridge(ClientConfig config)
                     {
                         await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end");
                         await ExecLuaAsync($"if KCD2MP_StartEmitter then KCD2MP_StartEmitter({config.EmitIntervalMs}) end");
+                        // WO-32: the NPC-sync emit chain dies on a save load
+                        // like every other Script.SetTimer chain (WO-13). Its
+                        // own liveness stamp makes this a no-op while healthy.
+                        // The puppet chain needs no re-arm: any inbound
+                        // NpcStateDown restarts it via KCD2MP_ApplyNpcState.
+                        await ExecLuaAsync("if KCD2MP_StartNpcSync and KCD2MP.npcSync and KCD2MP.npcSync.enabled then KCD2MP_StartNpcSync() end");
                     }
                     catch { }
                 }
@@ -652,6 +669,7 @@ public partial class GameBridge(ClientConfig config)
                 tailForPause2.PauseStateChanged -= OnLocalPauseDetected;
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
+            _sendNpcState = null;
 
             // Stop pumping the interp tick. Nothing else would: the pump is
             // driven off the local menu signal, and a menu that is still open
@@ -1154,6 +1172,47 @@ public partial class GameBridge(ClientConfig config)
     /// <paramref name="healthLoss"/> is a positive loss amount, matching
     /// CombatSoul::TakeDamage's own argument semantics on the receiving end.
     /// </summary>
+    /// <summary>
+    /// NPC sync (WO-32): puts one tracked NPC's state on the wire (0x26).
+    /// Rate limiting and change detection live in the mod's emitter, not here
+    /// -- by the time an npc_state event reaches this method it is already
+    /// worth sending. The mod also gates emission on KCD2MP.hitSensorOn (only
+    /// the Rule 2 authority samples at all) and the relay drops an NpcStateUp
+    /// from a non-authority anyway, the same two-layer defence PlayerHitUp has.
+    /// </summary>
+    private async Task SendNpcStateAsync(NetworkStream stream, string npcName,
+                                         float x, float y, float z, float rotZ,
+                                         float health, byte flags, CancellationToken ct)
+    {
+        if (!_isDamageAuthority)
+        {
+            Console.WriteLine($"[npcsync] not the world authority -- discarding state for '{npcName}'");
+            return;
+        }
+        if (!NpcNamePattern.IsMatch(npcName) || npcName.Length > Protocol.MaxNpcNameLen)
+        {
+            Console.WriteLine($"[npcsync] refusing to send malformed NPC name '{npcName}'");
+            return;
+        }
+
+        byte[] nameBytes = Encoding.UTF8.GetBytes(npcName);
+        int payloadLen = 1 + nameBytes.Length + Protocol.NpcStateFixedTail;
+        var packet = new byte[3 + payloadLen];
+        packet[0] = Protocol.NpcStateUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payloadLen);
+        packet[3] = (byte)nameBytes.Length;
+        nameBytes.CopyTo(packet, 4);
+        int o = 4 + nameBytes.Length;
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o), x);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 4), y);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 8), z);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 12), rotZ);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 16), health);
+        packet[o + 20] = flags;
+        try { await stream.WriteAsync(packet, ct); }
+        catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
+    }
+
     private async Task SendPlayerHitAsync(NetworkStream stream, byte targetGhostId,
                                           float healthLoss, float staminaLoss, CancellationToken ct)
     {
@@ -1418,6 +1477,34 @@ public partial class GameBridge(ClientConfig config)
                 {
                     await ApplyCombatRoleAsync(payload[0] != 0, ct);
                 }
+                else if (type == Protocol.NpcStateDown
+                         && payloadLen >= 1 + 1 + 1 + Protocol.NpcStateFixedTail
+                         && payloadLen <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
+                {
+                    // NPC sync (WO-32): [sourceGhostId:1][nameLen:1][name][x][y][z][rotZ][health][flags]
+                    // The name is validated before interpolation -- it crosses
+                    // into a Lua string literal and relay data must not be able
+                    // to inject code. A name for an entity not loaded in this
+                    // world is handled (ignored) on the Lua side.
+                    int nameLen = payload[1];
+                    if (payloadLen == 2 + nameLen + Protocol.NpcStateFixedTail)
+                    {
+                        string npcName = Encoding.UTF8.GetString(payload, 2, nameLen);
+                        if (NpcNamePattern.IsMatch(npcName))
+                        {
+                            int o = 2 + nameLen;
+                            float nx    = ReadFloat(payload, o);
+                            float ny    = ReadFloat(payload, o + 4);
+                            float nz    = ReadFloat(payload, o + 8);
+                            float nrot  = ReadFloat(payload, o + 12);
+                            float nhp   = ReadFloat(payload, o + 16);
+                            byte nflags = payload[o + 20];
+                            await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
+                                "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6}) end",
+                                npcName, nx, ny, nz, nrot, nhp, nflags));
+                        }
+                    }
+                }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
                     // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
@@ -1565,6 +1652,29 @@ public partial class GameBridge(ClientConfig config)
                 var send = _sendPlayerHit;
                 if (send is null) break;
                 _ = send(hitGhostId, loss, 0f);
+                break;
+            }
+
+            case "npc_state":
+            {
+                // NPC sync (WO-32): "<name> <x> <y> <z> <rotZ> <health> [flags]"
+                // from KCD2MP_NpcSyncTick. The mod only emits while it is the
+                // world authority (KCD2MP.hitSensorOn) and mp_npc_sync is on.
+                var f = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (f.Length < 6
+                    || !float.TryParse(f[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsx)
+                    || !float.TryParse(f[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsy)
+                    || !float.TryParse(f[3], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsz)
+                    || !float.TryParse(f[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsrot)
+                    || !float.TryParse(f[5], NumberStyles.Float, CultureInfo.InvariantCulture, out float nshp))
+                {
+                    Console.WriteLine($"[npcsync] malformed npc_state '{arg}'");
+                    break;
+                }
+                byte nsflags = f.Length > 6 && byte.TryParse(f[6], out byte nf) ? nf : (byte)0;
+                var sendNpc = _sendNpcState;
+                if (sendNpc is null) break;
+                _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
                 break;
             }
 

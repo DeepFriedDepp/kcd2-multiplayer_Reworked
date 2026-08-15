@@ -120,6 +120,19 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays an NpcStateUp (0x26) from the world authority to all other ready
+    /// clients as an NpcStateDown (0x27) (WO-32). Idempotent at the receiver:
+    /// it is current state, not an event -- a duplicate simply re-targets the
+    /// receiver's interp toward the same position. The caller has already
+    /// verified the sender holds Rule 2's authority.
+    /// </summary>
+    public void BroadcastNpcState(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueNpcState(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

@@ -176,11 +176,13 @@ itself) that both `KcdMp.Client` and `KcdMp.Server` reference. One copy, kept
 in sync with itself by construction.
 
 Since then: `0x1C`–`0x1D` (PauseUp/PauseDown, WO-11), `0x1E` (ReleaseVersion,
-WO-19), and `0x1F`–`0x25` (shared player combat, WO-28).
+WO-19), `0x1F`–`0x25` (shared player combat, WO-28), and `0x26`–`0x27`
+(NPC sync, WO-32 — real hand-placed NPCs streamed from the world authority,
+behind `mp_npc_sync`, off by default; see `docs/WO-32-findings.md`).
 
-**Next free type byte: `0x26`.** *(This line previously said `0x1C`, which was
-already three features stale. `Protocol.cs`'s own "free type bytes" comment is
-the authority — check it there, not here.)*
+**Next free type byte: `0x28`.** *(This line has been stale twice now.
+`Protocol.cs`'s own "free type bytes" comment is the authority — check it
+there, not here.)*
 
 **WO-28 — shared player combat, `0x1F`–`0x25`** (`docs/WO-28-findings.md`).
 Replicates a *player's own* health, hits taken from NPCs, and death. Addressed

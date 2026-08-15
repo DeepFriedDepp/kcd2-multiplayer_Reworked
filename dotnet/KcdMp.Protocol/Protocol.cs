@@ -303,7 +303,42 @@ namespace KcdMp.Wire;
 /// tracks. Both ends gate on it: a non-holder never sends PlayerHitUp, and the
 /// relay drops a PlayerHitUp from a non-holder anyway.
 ///
-/// Free type bytes for new features: 0x26 and up.
+/// ---- NPC sync layer (WO-32) ----
+///
+/// C→S  0x26  NpcStateUp:   [nameLen:1][name:UTF-8][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
+/// S→C  0x27  NpcStateDown: [sourceGhostId:1] + the upstream body verbatim
+///
+/// One hand-placed NPC's position/state, streamed by the world authority so
+/// every peer's local copy of that NPC mirrors the authority's copy instead of
+/// running its own schedule. WO-32's live finding is what makes this a stream
+/// and not a one-shot: a single external position write on a real NPC lands
+/// and is then reverted by the engine to the NPC's schedule anchor within
+/// ~1.5 s, while a continuous 50 ms write stream holds completely -- so the
+/// receiver drives the NPC every interp tick for as long as packets keep
+/// arriving, and simply stops when they stop, at which point the engine
+/// restores the NPC to its own schedule on its own (observed: back on anchor
+/// within 3 s, dialogue intact, no crime/faction side effects).
+///
+/// Addressed by entity NAME, not SharedSoulGuid: hand-placed NPCs' names are
+/// authored level content, byte-identical on every install (same reason soul
+/// GUIDs are a valid key for 0x12), and the receiving side is Lua, where
+/// System.GetEntityByName is the only cheap lookup -- a GUID would have to be
+/// resolved through the REST API on every apply. Runtime-spawned entities
+/// (ghosts, kcd2mp_*) are excluded by the emitter; names are validated
+/// [A-Za-z0-9_]+ before being interpolated into Lua.
+///
+/// Authority: reuses Rule 2's holder (0x25). The relay drops an NpcStateUp
+/// from any client that is not the current damage authority -- one world
+/// dictates NPC state, which is the same single-authority shape and the same
+/// enforcement point as PlayerHitUp. The emitting mod gates on the same flag
+/// (KCD2MP.hitSensorOn), so a non-authority never sends in the first place.
+///
+/// A receiver that has no entity by that name loaded (different streaming
+/// state, different world area) ignores the packet -- there is nothing to
+/// drive and nothing to create. This layer moves EXISTING NPCs; it never
+/// spawns one.
+///
+/// Free type bytes for new features: 0x28 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -349,6 +384,7 @@ public static class Protocol
     public const byte PlayerStateUp  = 0x1F;
     public const byte PlayerHitUp    = 0x21;
     public const byte PlayerDeathUp  = 0x23;
+    public const byte NpcStateUp     = 0x26;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -373,6 +409,7 @@ public static class Protocol
     public const byte PlayerHitDown    = 0x22;
     public const byte PlayerDeathDown  = 0x24;
     public const byte CombatRole       = 0x25;
+    public const byte NpcStateDown     = 0x27;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -460,6 +497,25 @@ public static class Protocol
 
     /// <summary>Exact CombatRole (0x25) payload length.</summary>
     public const int CombatRolePayloadLen = 1;
+
+    // ---- NPC sync layer (WO-32) ----
+
+    /// <summary>
+    /// Upper bound on an NPC entity name in an NpcState packet. Real authored
+    /// names ("ttkc_man_16", "ttkc_inkeeper") top out well under 32; this is
+    /// headroom plus a cap so a malformed nameLen cannot desync framing.
+    /// </summary>
+    public const int MaxNpcNameLen = 64;
+
+    /// <summary>
+    /// NpcStateUp (0x26) payload bytes after the variable-length name:
+    /// x, y, z, rotZ, health (4f each) + flags. Full payload length is
+    /// 1 (nameLen) + name + this.
+    /// </summary>
+    public const int NpcStateFixedTail = 4 + 4 + 4 + 4 + 4 + 1;
+
+    /// <summary>NpcState flag: the NPC is dead in the authority's world.</summary>
+    public const byte NpcStateFlagDead = 0x01;
 
     /// <summary>PlayerState flag: the player is knocked out but not dead.</summary>
     public const byte PlayerStateFlagUnconscious = 0x01;

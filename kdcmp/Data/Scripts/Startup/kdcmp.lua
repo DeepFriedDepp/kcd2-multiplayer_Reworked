@@ -1503,6 +1503,285 @@ function KCD2MP_EnableAggro(arg)
     return true
 end
 
+-- ===== NPC sync (WO-32) =====
+--
+-- One player's world dictating what nearby hand-placed NPCs are doing in
+-- everyone's world. Built on WO-32's live findings, all observed on a real
+-- NPC (ttkc_man_16), not a ghost:
+--
+--   * A single external SetWorldPos LANDS but the engine restores the NPC to
+--     its byte-identical schedule anchor within ~1.5 s. One write is nothing.
+--   * A continuous 50 ms write stream WINS completely -- the NPC tracked an
+--     external drive across metres with no AI suppression of any kind, while
+--     dialogue, crime state and nearby NPCs stayed completely undisturbed.
+--   * When the stream stops, the engine restores the NPC to its own schedule
+--     by itself (back on anchor within 3 s, talkable, no side effects). So
+--     "release" is simply: stop writing.
+--   * StartAnimation works on a real NPC exactly as on a ghost, and without
+--     it the NPC slides in whatever pose its current activity holds.
+--
+-- Emitting side (the Rule 2 world authority only): a slow tick tracks up to
+-- npcSync.maxTracked NPCs within npcSync.radius of the player and emits an
+-- npc_state event line per NPC on movement, on a health change, or on a slow
+-- heartbeat. Runtime-spawned entities (ghosts, horses) are excluded -- this
+-- layer moves EXISTING authored NPCs, it never creates or names one.
+--
+-- Receiving side: KCD2MP_ApplyNpcState targets a puppet entry; a 50 ms tick
+-- (same cadence family as the ghost interp) lerps the local copy of that NPC
+-- toward the stream and drives a walk/run animation from the rendered speed.
+-- A puppet that stops receiving packets for releaseS seconds is dropped and
+-- the engine takes the NPC back -- that is the whole restore path, verified
+-- live before this was built.
+KCD2MP.npcSync = {
+    enabled    = false,   -- mp_npc_sync on|off, emit side, off by default
+    radius     = 30,      -- metres around the local player (WO-32 Phase 0 bound)
+    maxTracked = 5,       -- hard cap on synced NPCs (WO-32 Phase 0/2 bound)
+    emitMs     = 250,     -- per-NPC emit cadence (4 Hz) -- position lerp on the
+                          -- receiver smooths the gaps, same as ghost interp
+    scanMs     = 2000,    -- how often the tracked set is rebuilt
+    moveEps    = 0.05,    -- metres; below this nothing is emitted
+    heartbeatS = 2.0,     -- unconditional resend so a late joiner converges
+    releaseS   = 3.0,     -- receiver: packet age at which a puppet is released
+}
+KCD2MP.npcSyncRunning  = false
+KCD2MP._npcSyncAliveAt = nil
+KCD2MP.npcTracked      = {}   -- name -> {lastX,lastY,lastZ,lastRot,lastHp,lastSentAt}
+KCD2MP._npcScanAt      = 0
+
+KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
+KCD2MP.npcPuppetRunning  = false
+KCD2MP._npcPuppetAliveAt = nil
+
+function KCD2MP_EnableNpcSync(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.npcSync.enabled = true
+    elseif s:find("off") then
+        KCD2MP.npcSync.enabled = false
+        KCD2MP.npcTracked = {}   -- drop bookkeeping so re-enabling starts fresh
+    else
+        mp_log("mp_npc_sync: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    if KCD2MP.npcSync.enabled then KCD2MP_StartNpcSync() end
+    mp_log("NPC-SYNC " .. (KCD2MP.npcSync.enabled and "ENABLED" or "disabled")
+        .. " radius=" .. KCD2MP.npcSync.radius .. "m max=" .. KCD2MP.npcSync.maxTracked)
+    KCD2MP_ShowInteractionMsg("NPC sync: " .. (KCD2MP.npcSync.enabled and "ON" or "OFF"))
+    return true
+end
+
+-- Is this entity one of ours (a ghost or a ghost's horse)? Checked by
+-- reference against the registries, NOT by name -- KCD2MP_ApplyGhostName
+-- renames ghost entities to the player's nick (WO-26), so a name prefix
+-- test would miss every renamed ghost.
+local function mp_is_mod_entity(e)
+    for _, g in pairs(KCD2MP.ghosts) do
+        if g.entity == e then return true end
+    end
+    for _, h in pairs(KCD2MP.horseGhosts or {}) do
+        if h.entity == e then return true end
+    end
+    return false
+end
+
+-- Rebuild the tracked set: the maxTracked nearest live human NPCs within
+-- radius. Names not re-selected simply age out of KCD2MP.npcTracked (their
+-- entries are dropped so a re-entering NPC re-heartbeats immediately).
+local function mp_npc_rescan()
+    if not player then return end
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return end
+
+    local found = {}
+    local ents = System.GetEntitiesInSphere(pp, KCD2MP.npcSync.radius) or {}
+    for _, e in ipairs(ents) do
+        local cls = e.class
+        if (cls == "NPC" or cls == "NPC_Female") and not mp_is_mod_entity(e)
+           and not KCD2MP.npcPuppets[e:GetName() or ""] then
+            local name = e:GetName()
+            -- Only plain authored names travel: they are the cross-client
+            -- key, and anything else (spaces, renames) could not be looked
+            -- up on the other side anyway.
+            if name and string.find(name, "^[%w_]+$") then
+                local ep = e:GetWorldPos()
+                local dx, dy = ep.x - pp.x, ep.y - pp.y
+                table.insert(found, { name = name, e = e, d2 = dx*dx + dy*dy })
+            end
+        end
+    end
+    table.sort(found, function(a, b) return a.d2 < b.d2 end)
+
+    local keep = {}
+    for i = 1, math.min(#found, KCD2MP.npcSync.maxTracked) do
+        local name = found[i].name
+        keep[name] = true
+        if not KCD2MP.npcTracked[name] then
+            KCD2MP.npcTracked[name] = {}
+            mp_log("NPC-SYNC tracking " .. name)
+        end
+    end
+    for name in pairs(KCD2MP.npcTracked) do
+        if not keep[name] then
+            KCD2MP.npcTracked[name] = nil
+            mp_log("NPC-SYNC untracking " .. name)
+        end
+    end
+end
+
+function KCD2MP_NpcSyncTick()
+    if not KCD2MP.npcSyncRunning then return end
+    Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)  -- reschedule FIRST
+    KCD2MP._npcSyncAliveAt = os.clock()
+
+    -- Gate at tick time, not start time: mp_npc_sync can flip and authority
+    -- can migrate mid-session, and both must take effect without a restart.
+    if not KCD2MP.npcSync.enabled then return end
+    if not KCD2MP.hitSensorOn then return end   -- only the Rule 2 authority emits
+
+    local now = os.clock()
+    if (now - (KCD2MP._npcScanAt or 0)) * 1000 >= KCD2MP.npcSync.scanMs then
+        KCD2MP._npcScanAt = now
+        pcall(mp_npc_rescan)
+    end
+
+    for name, t in pairs(KCD2MP.npcTracked) do
+        pcall(function()
+            local e = System.GetEntityByName(name)
+            if not e then KCD2MP.npcTracked[name] = nil; return end
+            local p = e:GetWorldPos()
+            local rot = 0
+            pcall(function() rot = e:GetWorldAngles().z or 0 end)
+            local hp, dead = -1, false
+            if e.actor then
+                pcall(function() hp = e.actor:GetHealth() or -1 end)
+                pcall(function() dead = e.actor:IsDead() == true end)
+            end
+
+            local moved = not t.lastX
+                or math.abs(p.x - t.lastX) > KCD2MP.npcSync.moveEps
+                or math.abs(p.y - t.lastY) > KCD2MP.npcSync.moveEps
+                or math.abs(p.z - t.lastZ) > KCD2MP.npcSync.moveEps
+            local hpChanged = t.lastHp and hp >= 0 and math.abs(hp - t.lastHp) > 0.5
+            local heartbeat = not t.lastSentAt or (now - t.lastSentAt) >= KCD2MP.npcSync.heartbeatS
+
+            if moved or hpChanged or heartbeat or (dead and not t.sentDead) then
+                local flags = dead and 1 or 0
+                KCD2MP_EmitEvent("npc_state", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
+                    name, p.x, p.y, p.z, rot, hp, flags))
+                t.lastX, t.lastY, t.lastZ, t.lastRot = p.x, p.y, p.z, rot
+                t.lastHp, t.lastSentAt, t.sentDead = hp, now, dead
+            end
+        end)
+    end
+end
+
+function KCD2MP_StartNpcSync()
+    if tickAlive(KCD2MP.npcSyncRunning, KCD2MP._npcSyncAliveAt) then return end
+    KCD2MP.npcSyncRunning = true
+    KCD2MP._npcSyncAliveAt = os.clock()
+    mp_log("NPC-SYNC emit tick started (" .. KCD2MP.npcSync.emitMs .. "ms)")
+    Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)
+end
+
+-- Receiving side. Called by the agent for each NpcStateDown (0x27). Never
+-- spawns anything: an NPC not loaded in this world is simply not ours to move.
+function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
+    local e = System.GetEntityByName(name)
+    if not e then return end
+
+    local p = KCD2MP.npcPuppets[name]
+    if not p then
+        local cur = e:GetWorldPos()
+        p = { cx = cur.x, cy = cur.y, cz = cur.z, cr = rot, animTag = "idle" }
+        KCD2MP.npcPuppets[name] = p
+        mp_log("NPC-SYNC puppet start " .. name)
+    end
+    p.tx, p.ty, p.tz, p.tr = x, y, z, rot
+    p.hp = hp
+    p.dead = (tonumber(flags) or 0) >= 1
+    p.lastPacketAt = os.clock()
+    KCD2MP_StartNpcPuppet()
+end
+
+function KCD2MP_NpcPuppetTick()
+    if not KCD2MP.npcPuppetRunning then return end
+    Script.SetTimer(50, KCD2MP_NpcPuppetTick)  -- reschedule FIRST
+    KCD2MP._npcPuppetAliveAt = os.clock()
+
+    local now = os.clock()
+    local any = false
+    for name, p in pairs(KCD2MP.npcPuppets) do
+        pcall(function()
+            -- Release on silence: the engine restores the NPC to its own
+            -- schedule the moment we stop writing (observed live, WO-32).
+            if (now - (p.lastPacketAt or 0)) > KCD2MP.npcSync.releaseS then
+                KCD2MP.npcPuppets[name] = nil
+                mp_log("NPC-SYNC release " .. name .. " (stream silent)")
+                return
+            end
+            any = true
+
+            local e = System.GetEntityByName(name)
+            if not e then return end
+
+            -- WO-34's corpse lesson, applied on both death sources: if the
+            -- authority says dead, or this world's copy died locally, stop
+            -- driving -- a corpse must not be dragged around.
+            local locallyDead = false
+            if e.actor then pcall(function() locallyDead = e.actor:IsDead() == true end) end
+            if p.dead or locallyDead then return end
+
+            -- Same teleport-vs-lerp shape as the ghost interp: snap on a big
+            -- gap, smooth otherwise.
+            local dx, dy = (p.tx or p.cx) - p.cx, (p.ty or p.cy) - p.cy
+            if dx*dx + dy*dy > 25.0 then
+                p.cx, p.cy, p.cz, p.cr = p.tx, p.ty, p.tz, p.tr
+            else
+                p.cx = p.cx + dx * 0.5
+                p.cy = p.cy + dy * 0.5
+                p.cz = p.tz or p.cz
+                p.cr = p.tr or p.cr
+            end
+
+            e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
+            pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
+
+            -- Animation from rendered speed, exactly the ghost thresholds.
+            -- Without this the NPC slides in its current activity pose
+            -- (observed live: a seated NPC slid sitting).
+            local spd = math.sqrt(dx*dx + dy*dy) * 0.5 / 0.050
+            local tag, anim
+            if     spd >= 5.5 then tag, anim = "sprint", "3d_relaxed_sprint_turn_strafe"
+            elseif spd >= 3.0 then tag, anim = "run",    "3d_relaxed_run_turn_strafe"
+            elseif spd >= 0.3 then tag, anim = "walk",   "3d_relaxed_walk_turn_strafe"
+            else                    tag, anim = "idle",   "relaxed_idle_both" end
+            pcall(function() e:StartAnimation(0, anim, 0, 0.15, 1.0, true) end)
+            if p.animTag ~= tag then
+                p.animTag = tag
+                mp_log(string.format("NPC-SYNC anim %s -> %s spd=%.2f", name, tag, spd))
+            end
+        end)
+    end
+
+    -- Nothing left to drive: let the chain die. A future packet restarts it.
+    if not any then
+        local empty = true
+        for _ in pairs(KCD2MP.npcPuppets) do empty = false; break end
+        if empty then
+            KCD2MP.npcPuppetRunning = false
+            mp_log("NPC-SYNC puppet tick stopped (no puppets)")
+        end
+    end
+end
+
+function KCD2MP_StartNpcPuppet()
+    if tickAlive(KCD2MP.npcPuppetRunning, KCD2MP._npcPuppetAliveAt) then return end
+    KCD2MP.npcPuppetRunning = true
+    KCD2MP._npcPuppetAliveAt = os.clock()
+    mp_log("NPC-SYNC puppet tick started (50ms)")
+    Script.SetTimer(50, KCD2MP_NpcPuppetTick)
+end
+
 -- WO-27: verified entity removal.
 --
 -- System.RemoveEntity has been observed returning without error while the
@@ -4442,6 +4721,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
     System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
+
+    -- NPC sync (WO-32)
+    System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%LINE")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")
 
     -- Shared player combat (WO-28)
     System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")
