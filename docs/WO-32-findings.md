@@ -276,10 +276,13 @@ the Phase 0 bound stays until someone measures it.
   oddity, not state corruption — no penalty crosses machines. The full
   "whose crime state wins" question remains open and is WO-36's natural
   neighbour.
-- **Shipped shape: off-by-default toggle (`mp_npc_sync`), bounded 5 NPCs/30 m.**
-  The WO's final gate — ship on-by-default versus keep as a tested,
-  toggleable feature — was put to the human at session end;
-  their answer is recorded in WO-32-progress.md.
+- **Shipped shape: ON by default, bounded 5 NPCs/30 m, `mp_npc_sync off` to
+  disable.** The WO's final gate was put to the human at session end; their
+  recorded decision: *"Turn it on by default, and document how to turn it
+  OFF. If it is Off by default then nobody is ever going to know how to
+  enable it."* Documented in README.md's feature table. The off switch only
+  matters on the world authority's machine — only that client emits, and the
+  relay drops NPC state from everyone else regardless.
 
 ---
 

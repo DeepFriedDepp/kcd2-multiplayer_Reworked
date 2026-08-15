@@ -46,5 +46,11 @@
 7. Cost measured: ~4 pkt/s (~150 B/s) observed for 5 NPCs, 740 B/s worst
    case — less than one player position stream. Extrapolation and the real
    (client-side) scaling ceiling are in the findings.
-8. Shipped shape: `mp_npc_sync`, **off by default**, 5 NPCs / 30 m.
-   Human's decision on default-on vs. flag: PENDING-DECISION
+8. Shipped shape: `mp_npc_sync`, 5 NPCs / 30 m. Human's decision, verbatim:
+   *"Turn it on by default, and document how to turn it OFF. If it is Off by
+   default then nobody is ever going to know how to enable it."* Default
+   flipped to ON, off-switch documented in README.md. Note: the default-on
+   pak was rebuilt with `-NoInstall` (game was running); it is NOT the build
+   that ran the 15/15 E2E — that ran with the identical code path enabled by
+   the console command instead of the default. The only untested delta is
+   the initial value of one boolean.

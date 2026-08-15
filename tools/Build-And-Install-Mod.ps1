@@ -56,20 +56,26 @@ Write-Host '=== KCD2-MP build and install ===' -ForegroundColor Cyan
 # KcdMpServer, KcdMpClient, KCDMP_launcher and KCDMP_LauncherInjector, so a
 # running relay used to be reported as "the game is still running" and blocked
 # the build. The game's process is KingdomCome and nothing else.
-$running = Get-Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.ProcessName -match '^KingdomCome' }
-if ($running) {
-    Write-Host 'FAILED: the game is still running.' -ForegroundColor Red
-    $running | ForEach-Object { "  pid $($_.Id)  $($_.ProcessName)" }
-    Write-Host '  Close it first: the pak is locked while it runs, and Mods\ is only read at startup.'
-    exit 1
-}
+# The game only holds the INSTALLED pak open (<ModdingTools>\Mods\...), never
+# the repo copy this step writes -- so a -NoInstall build is safe while the
+# game runs (WO-32 needed exactly that), and only the install step is gated.
+if (-not $NoInstall) {
+    $running = Get-Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ProcessName -match '^KingdomCome' }
+    if ($running) {
+        Write-Host 'FAILED: the game is still running.' -ForegroundColor Red
+        $running | ForEach-Object { "  pid $($_.Id)  $($_.ProcessName)" }
+        Write-Host '  Close it first: the pak is locked while it runs, and Mods\ is only read at startup.'
+        Write-Host '  (To rebuild only the repo pak while the game runs, pass -NoInstall.)'
+        exit 1
+    }
 
-try {
-    $null = Invoke-WebRequest -Uri 'http://localhost:1403/api/rpg/Calendar?depth=1' -UseBasicParsing -TimeoutSec 3
-    Write-Host 'FAILED: the debug API is still answering on 1403, so the game is up.' -ForegroundColor Red
-    exit 1
-} catch { }   # not answering is what we want
+    try {
+        $null = Invoke-WebRequest -Uri 'http://localhost:1403/api/rpg/Calendar?depth=1' -UseBasicParsing -TimeoutSec 3
+        Write-Host 'FAILED: the debug API is still answering on 1403, so the game is up.' -ForegroundColor Red
+        exit 1
+    } catch { }   # not answering is what we want
+}
 
 # --- rebuild the pak --------------------------------------------------------
 

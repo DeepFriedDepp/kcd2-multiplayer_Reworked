@@ -1533,7 +1533,14 @@ end
 -- the engine takes the NPC back -- that is the whole restore path, verified
 -- live before this was built.
 KCD2MP.npcSync = {
-    enabled    = false,   -- mp_npc_sync on|off, emit side, off by default
+    enabled    = true,    -- mp_npc_sync on|off. ON by default (human's WO-32
+                          -- decision: "if it is off by default then nobody is
+                          -- ever going to know how to enable it"). Turn OFF
+                          -- with `mp_npc_sync off` in the console -- only
+                          -- meaningful on the session's world authority, since
+                          -- only that client emits. Non-authority clients are
+                          -- unaffected either way: the relay drops NpcStateUp
+                          -- from them regardless.
     radius     = 30,      -- metres around the local player (WO-32 Phase 0 bound)
     maxTracked = 5,       -- hard cap on synced NPCs (WO-32 Phase 0/2 bound)
     emitMs     = 250,     -- per-NPC emit cadence (4 Hz) -- position lerp on the
