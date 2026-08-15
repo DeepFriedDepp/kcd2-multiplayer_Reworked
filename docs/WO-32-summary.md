@@ -64,6 +64,37 @@ extrapolates to ~7.4 KB/s on the wire (trivial); the true ceiling is the
 receiving client's apply path, unmeasured past 5 NPCs, which is why the cap
 stays.
 
+## The extra work this session: release 0.11.8 and the installer hardening
+
+The same session also shipped the release and fixed a failure it caused:
+
+- **VERSION `0.11.8`** (user-chosen), carrying WO-32 (NPC sync), WO-33 (dice
+  wagers), WO-34 (bandit roster + walking-corpse fixes) and WO-35 (C# master
+  server) — all four verified present *inside* the built artifacts by
+  extracting and scanning them, not by trusting the source tree.
+  `KCDMP-Setup-0.11.8.exe` and `KCDMP-DirectInstall-0.11.8.zip` are in
+  `release\`, upload is the user's.
+- **A real half-applied install, caught and closed.** The user's first Setup
+  run silently left the agent and relay DLLs on an old build (this session's
+  own leftover test processes were running at install time) — NPC sync would
+  have been inert for any tester it happened to, with no error anywhere.
+  Three defence layers now ship:
+  1. **Setup refuses to install over a running stack** (launcher/agent/relay/
+     game) — Retry/Cancel interactively; silent installs close our own
+     processes but abort rather than touch the game.
+  2. **Every install proves itself**: a 1,019-file size manifest ships in the
+     payload, every file is compared after install, and the verdict lands in
+     `install-verify.txt` (plus an error box on interactive failures).
+  3. **The launcher detects a mixed install at startup** by comparing every
+     sibling DLL's version stamp against its own — the check the wire
+     protocol can never do, because the mix is inside one machine.
+  Both user-facing paths were **verified live by the user**: a clean install
+  (verdict PASS) and a deliberate re-run with the launcher open (gate fired).
+- **A suite bug that had been biting silently**: `Test-Installer.ps1` deleted
+  the real mod deployment from the game folder on every run while claiming to
+  restore it. It now snapshots and restores — observed working.
+- Suites after all of it: installer 41/41, detection 21/21, Farkle 59/59.
+
 ## Still open (honest list)
 
 - Not tested with a second real human (same standing as every cross-machine

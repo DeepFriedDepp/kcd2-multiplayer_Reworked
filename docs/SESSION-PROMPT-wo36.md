@@ -4,6 +4,52 @@ Paste everything below the rule into a fresh session, working directory
 `C:\Users\Jonasty\Documents\KCD2_MP`. Prefix commits `WO-36:`.
 
 Written at the end of WO-34, which found this and could not close it.
+Revised after WO-32, which changed the terrain this WO walks on. Four
+carry-overs, applied below, not optional reading:
+
+1. **NPC sync now exists and is ON by default** (`0x26`/`0x27`, WO-32). Up to
+   5 hand-placed NPCs within 30 m of the session's world authority (WO-28's
+   Rule 2 holder — in practice the host) are position/animation/health-driven
+   in everyone else's world. Two consequences for this WO: (a) crime
+   measurements on a non-authority machine must be taken with `mp_npc_sync
+   off` (or as the authority) unless the sync interaction is what's being
+   tested, because a puppeted guard's position is externally driven; (b) the
+   per-machine crime asymmetry (Phase 1) is now *visible* — a synced guard can
+   be seen chasing a criminal that does not exist in the observer's world.
+   WO-32 shipped that as a stated simplification, not an answer; this WO is
+   where the answer gets decided.
+2. **A brand-new, untested question WO-32 created — added to Phase 1:** while
+   an NPC is being puppeted (its position stream winning against its AI), can
+   it still act as a crime participant in the *local* world — witness a crime,
+   respond as a guard, initiate an arrest? WO-32 observed that pure position
+   driving contacts nothing (no crime buffs, dialogue intact after release,
+   nearby NPCs indifferent) but never committed a crime in front of a
+   puppeted NPC. A guard that goes blind while synced would be a real
+   gameplay hole on every non-authority machine, silently.
+3. **Verify the environment before trusting any wire-adjacent result.** WO-32
+   lost a full E2E run to a stale relay from `%LocalAppData%\KCDMP` silently
+   skipping unknown packet types — check `Get-Process KcdMpServer,KcdMpClient
+   | Select-Object Path` matches the repo build before believing anything
+   crosses the wire. Related: the assistant's sandbox redirects
+   `%LocalAppData%`, so anything involving the installed app (installs,
+   Verify-Install.ps1) is the human's to run, not the session's.
+4. **The live-testing discipline that worked in WO-32, kept:** a positive
+   control in the same session (WO-34's rule, applied to a real NPC pair in
+   WO-32), verification against engine-resolved state only, and — new —
+   `tools/Test-NpcSyncE2E.ps1` as the template for a synthetic-peer test that
+   needs the peer to *hold authority* (its Phase 3 documents the
+   agent-restart trick that moves the role).
+
+Facts WO-32 established that this WO can lean on: a real hand-placed NPC
+needs no AI suppression to be externally driven (a 50 ms stream wins), and
+stopping the stream is a complete release — the engine restores the NPC's
+schedule within ~3 s with no crime/faction/dialogue side effects observed.
+`ttkc_man_16` (varlet, civilian crime role, clean faction ancestry, no quest
+references) is a pre-vetted test NPC with `ttkc_man_10` as its control; the
+vetting method is in WO-32-findings Phase 0. `KCD2MP.npcPuppets` /
+`KCD2MP.npcTracked` are the live sync tables; `mp_npc_sync on|off` is the
+toggle (authority side only). VERSION is `0.11.8` as of WO-32 — and as
+always, no session touches it unasked (`docs/VERSIONING.md`).
 
 ---
 
@@ -110,6 +156,14 @@ Determine, with real evidence:
   cannot see and cannot clear?** If A murders someone in front of B's ghost, is
   B implicated? Vanilla has witness and accomplice logic; whether a ghost can be
   a witness *for* or an accomplice *to* a crime is completely unknown.
+- **New since WO-32 — the puppeted-guard question** (carry-over 2 above):
+  commit a crime in front of an NPC while it is actively being driven by the
+  sync stream, on a non-authority machine. Does it witness? Does a puppeted
+  guard respond, or is it blind for as long as the stream runs? Test both
+  during the drive and immediately after release, against the same NPC
+  unpuppeted as the control. If puppeted NPCs are blind, say plainly what
+  that means for the default-on setting: every synced guard near the
+  authority is a non-guard in everyone else's world.
 
 This phase is the strongest candidate for a genuinely new bug rather than a
 design question. Weight it accordingly.
@@ -156,6 +210,12 @@ from what you actually measure rather than from this list:
   a player draws on or steals from another player's ghost. Cheap, preserves
   freedom, and matches the human's stated instinct that emergent chaos is fine
   as long as it is not a trap.
+
+Whatever the options turn out to be, present them **sync-aware**: WO-32 made
+NPC positions shared while crime state stayed per-machine, and the human
+should decide those two facts together, not separately — "whose crime state
+wins when the NPCs are shared" is the same product decision as "what does
+mistreating a ghost cost", seen from the other side.
 
 ## What this session does NOT do
 
