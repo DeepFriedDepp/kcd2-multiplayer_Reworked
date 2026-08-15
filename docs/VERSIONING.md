@@ -58,6 +58,8 @@ Confirmed from `git log --follow -- VERSION`, not assumed:
 | `0.9.5` | WO-17 | + WO-15/16 — NPC aggro on ghosts (opt-in). User-chosen. Never published as its own GitHub release. |
 | `0.10.0` | WO-19 | + launcher visual refresh, bug-report modal, version-mismatch notice. User-chosen. First release to actually publish everything since `0.9.2` — see `docs/releases/RELEASE-NOTES-0.10.0.md`. |
 | `0.11.5` | WO-29 | + WO-20/22/26/27/28 — real per-player ghost faces, the soul/brain fix and reactive combat, reconnect + launcher duplicate-agent fixes, shared player health/death/NPC-hits, and both save-reload bugs. User-chosen. See `docs/releases/RELEASE-NOTES-0.11.5.md`. |
+| `0.11.6` | WO-34 | + WO-34 — bandit-soul roster fix, walking-corpse fix. User-chosen, DirectInstall test build. |
+| `0.11.8` | WO-32 | + WO-32 — NPC sync (`0x26`/`0x27`, on by default, `mp_npc_sync off` to disable), and WO-33/35 already on `main` (dice wagers on the wire; C# master server). User-chosen. |
 
 `0.9.2` was stated by the user explicitly. It is the label for everything on
 `main` as of WO-14 — WO-9, WO-10 and WO-13 together — not an increment
