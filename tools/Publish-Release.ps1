@@ -4,13 +4,14 @@
     no .NET runtime install, no manual DLL copying.
 
 .DESCRIPTION
-    Publishes KCDMP_launcher, KcdMpClient and KcdMpServer as self-contained
-    win-x64 (via each project's FolderProfile.pubxml -- see
+    Publishes KCDMP_launcher, KcdMpClient, KcdMpServer and KcdMpMasterServer
+    as self-contained win-x64 (via each project's FolderProfile.pubxml -- see
     docs/WO-7-progress.md for why that's set on the profile and not the
     .csproj), builds the native plugin/injector if not already built, and
     copies everything the launcher's AppSettings defaults expect to find
     beside it (KCDMP.dll, KCDMP_LauncherInjector.exe, KcdMpClient.exe,
-    KcdMpServer.exe + its appsettings) into one folder.
+    KcdMpServer.exe, KcdMpMasterServer.exe + their appsettings) into one
+    folder.
 
     The native DLL statically links its C++ runtime
     (CMAKE_MSVC_RUNTIME_LIBRARY = MultiThreaded in native/CMakeLists.txt), so
@@ -69,6 +70,14 @@ Copy-Item "$clientPublish\*" $OutDir -Recurse -Force
 Publish-Project (Join-Path $root "dotnet\KcdMp.Server\KcdMp.Server.csproj") "bin\Release\net8.0\publish"
 $serverPublish = $script:PublishDir
 Copy-Item "$serverPublish\*" $OutDir -Recurse -Force
+
+# --- Master server (WO-35): auto-started by the launcher itself, not just
+#     the relay -- see AppSettings.MasterServerPath / Home.razor.cs's
+#     EnsureLocalMasterServerAsync. Must be present for the default
+#     MasterServerUrl (a loopback address) to ever have anything answering it. ---
+Publish-Project (Join-Path $root "dotnet\KcdMp.MasterServer\KcdMp.MasterServer.csproj") "bin\Release\net8.0\publish"
+$masterServerPublish = $script:PublishDir
+Copy-Item "$masterServerPublish\*" $OutDir -Recurse -Force
 
 # --- Native plugin + injector ---
 $nativeDll = Join-Path $root "native\build\KCDMP\KCDMP.dll"

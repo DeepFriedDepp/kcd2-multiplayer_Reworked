@@ -144,3 +144,22 @@ thing before trusting it.
 `(ip_address, port)`. There is no `migrations/` directory, so a fresh database
 gets these from `db.create_all()`. An **existing** database needs a migration
 (`migrate.sh`) — `create_all` does not alter tables that already exist.
+
+### WO-35: replaced by a C# master server
+
+Everything above described the Flask service, which was never run on any
+machine that touched this project — the "never verified" caveat throughout
+this section was the actual cause of the launcher's confusing "Master Server
+not found" error for non-technical users. `kcd2_master_server/` is gone;
+`dotnet/KcdMp.MasterServer/` replaces it, contributed by a community member
+and adopted after a full contract comparison, safety review, and live
+end-to-end test (relay → master → launcher, all three with their real
+production code) — see `docs/WO-35-findings.md` and `docs/MASTER-SERVER.md`.
+
+It is not a drop-in: the transport changed from HTTP POST/GET polling to one
+WebSocket held open per relay, the listing JSON changed from a bare
+snake_case array to a wrapped, versioned, camelCase object, and expiry changed
+from a 5-minute `last_seen` staleness window to immediate delisting when the
+relay's connection closes (live-verified at ~1 second). `MasterServerUrl`'s
+default changed to `http://localhost:5100` (a base URL now, not an endpoint
+path) and `MasterRegistrationService` was replaced by `MasterAnnounceService`.

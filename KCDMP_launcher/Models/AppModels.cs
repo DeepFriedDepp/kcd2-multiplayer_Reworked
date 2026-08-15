@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using KCDMP_launcher.Services;
 
@@ -6,10 +5,16 @@ namespace KCDMP_launcher.Models
 {
     public class ServerInfo
     {
-        public string? Token { get; set; } = null; // Unique identifier for the server, will be used for caching mods profiles.
+        public string? Token { get; set; } = null; // The master server's listing id (WO-35), or null for a manually-added server.
         public string Name { get; set; } = "";
         public string Ip { get; set; } = "";
         public int Port { get; set; }
+
+        // The relay's own /api/information port, as the master server
+        // published it (WO-35). 0 for a manually-added server, which falls
+        // back to AppSettings.ServerInfoPort instead -- there is nothing to
+        // publish it for one of those.
+        public int InfoPort { get; set; } = 0;
 
         public string MapName { get; set; } = "";
         public int Players { get; set; } = 0;
@@ -17,29 +22,6 @@ namespace KCDMP_launcher.Models
         public int Ping { get; set; } = -1;
 
         public bool IsOnline { get; set; } = false;
-    }
-
-    // DTO for one entry of GET /servers/servers_list.
-    //
-    // The field names are Server.to_dict() in the master server's models.py,
-    // not a guess: it emits "ip_address" and "map_name", so the "ip" this used
-    // to bind never matched and every server arrived with a blank address.
-    public class MasterServerEntry
-    {
-        [JsonPropertyName("name")]
-        public string Name { get; set; } = "";
-
-        [JsonPropertyName("ip_address")]
-        public string Ip { get; set; } = "";
-
-        [JsonPropertyName("port")]
-        public int Port { get; set; }
-
-        [JsonPropertyName("map_name")]
-        public string MapName { get; set; } = "";
-
-        [JsonPropertyName("tags")]
-        public List<string> Tags { get; set; } = new();
     }
 
     public class DedicatedServerInfoData
@@ -80,11 +62,16 @@ namespace KCDMP_launcher.Models
         // injector needs the target's modules loaded, not just a live pid.
         public int InjectDelaySeconds { get; set; } = 20;
 
-        // The master server's listing endpoint. The Flask app registers the
-        // blueprint at url_prefix="/servers" with a "/servers_list" route, so
-        // the "/api/servers" this used to default to was never a real URL.
+        // Where the master server IS, not an endpoint on it (WO-35: the C#
+        // master server replaces the old Flask service) -- the launcher
+        // appends MasterApi.ListPath itself, tolerating a URL that already
+        // names it. 127.0.0.1 rather than "localhost": resolving "localhost"
+        // tried this machine's IPv6 loopback first, which sat in SYN_SENT
+        // rather than refusing outright, and made the very first fetch of
+        // every launch look like the master could not be reached even once
+        // it was actually up. Confirmed live -- see docs/WO-35-findings.md.
         // !IMPORTANT change the host in release
-        public string MasterServerUrl { get; set; } = "http://localhost:5000/servers/servers_list";
+        public string MasterServerUrl { get; set; } = "http://127.0.0.1:5100";
 
         // The relay's HTTP listener for /api/information, which is a different
         // port from the TCP port peers connect on. The master server records
@@ -117,6 +104,15 @@ namespace KCDMP_launcher.Models
         // Same resolution rule as AgentPath/DllPath: relative means "next to
         // the launcher", which is where a packaged release puts it.
         public string RelayPath { get; set; } = "KcdMpServer.exe";
+
+        // The master server executable (WO-35), auto-started alongside the
+        // launcher itself -- not on Host, unlike RelayPath -- whenever
+        // MasterServerUrl names a loopback address, since a default install
+        // otherwise has nothing answering it there and the browser always
+        // shows "Could not connect to Master Server!". See
+        // Home.razor.cs's EnsureLocalMasterServerAsync. Same resolution rule
+        // as RelayPath/AgentPath/DllPath.
+        public string MasterServerPath { get; set; } = "KcdMpMasterServer.exe";
 
         // TCP port the locally-hosted relay listens on, and what a joining
         // friend needs in their own address bar. Matches KcdMp.Server's own

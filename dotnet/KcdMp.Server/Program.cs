@@ -46,7 +46,7 @@ class Program
 
 		// Announces this relay to a master server. Does nothing unless
 		// MasterServer:Url is set.
-		builder.Services.AddHostedService<MasterRegistrationService>();
+		builder.Services.AddHostedService<MasterAnnounceService>();
 
 		builder.Services.AddSingleton<ClientHandler>();
 		builder.Services.AddSingleton<TcpBroadcastService>();

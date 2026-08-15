@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>KcdMpMasterServer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog" Version="4.3.1" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <!-- Not used by appsettings.json, which only writes to Console. It is here
+         so this can run from the packaged release folder (WO-35): that folder
+         is a flat merge of four self-contained publishes, and the launcher
+         brings Serilog.Sinks.File with it for its own logging.
+         Serilog.Settings.Configuration probes every Serilog.*.dll it finds
+         beside the executable, and a self-contained host refuses to load an
+         assembly that is not in that app's own .deps.json, confirmed live:
+         this crashed with "Could not load Serilog.Sinks.File" purely because
+         a neighbour's DLL was in the folder, the exact failure
+         KcdMp.Server.csproj already documents for the same reason.
+         Referencing it puts the assembly in KcdMpMasterServer.deps.json and
+         the probe succeeds. Version matches the launcher's so the merge
+         stays one file. -->
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="appsettings.Development.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MasterApi: the announce/listing contract, shared with the relay and
+         the launcher rather than restated here. -->
+    <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="KcdMp.Wire" />
+  </ItemGroup>
+
+</Project>

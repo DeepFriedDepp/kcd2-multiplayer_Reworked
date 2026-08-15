@@ -5,6 +5,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using KCDMP_launcher.Components.Shared;
 using KCDMP_launcher.Models;
+using KcdMp.Wire;
 using Microsoft.AspNetCore.Components;
 
 namespace KCDMP_launcher.Services
@@ -97,34 +98,47 @@ namespace KCDMP_launcher.Services
         {
             var resultList = new List<ServerInfo>();
 
-            if (string.IsNullOrWhiteSpace(masterUrl) || !Uri.TryCreate(masterUrl, UriKind.Absolute, out _))
+            if (!TryBuildMasterUri(masterUrl, MasterApi.ListPath, out var uri, out var uriError))
             {
-                _uiService?.ShowError("Invalid Master Server URL in settings.");
+                _uiService?.ShowError(uriError);
                 return resultList;
             }
 
             try
             {
-                var dtoList = await _httpClient.GetFromJsonAsync<List<MasterServerEntry>>(masterUrl);
+                var response = await _httpClient.GetFromJsonAsync<ServerListResponse>(uri, MasterApi.Json);
 
-                if (dtoList != null)
+                if (response is null)
                 {
-                    foreach (var entry in dtoList)
+                    return resultList;
+                }
+
+                if (response.ApiVersion != MasterApi.Version)
+                {
+                    _uiService?.ShowError(
+                        $"The master server speaks master API v{response.ApiVersion}; this launcher speaks v{MasterApi.Version}. Update whichever is older.");
+                    return resultList;
+                }
+
+                foreach (var entry in response.Servers)
+                {
+                    resultList.Add(new ServerInfo
                     {
-                        resultList.Add(new ServerInfo
-                        {
-                            Name = entry.Name,
-                            Ip = entry.Ip,
-                            Port = entry.Port,
-                            // The master already knows the map from
-                            // registration, so show it rather than a
-                            // placeholder. The live poll refreshes it.
-                            MapName = entry.MapName,
-                            Ping = -1,
-                            Players = 0,
-                            MaxPlayers = 0
-                        });
-                    }
+                        // The master's listing id, kept for future use (mods
+                        // profile caching) -- see AppModels.ServerInfo.Token.
+                        Token = entry.Id,
+                        Name = entry.Name,
+                        Ip = entry.Address,
+                        Port = entry.Port,
+                        InfoPort = entry.InfoPort,
+                        // The master already knows the map and player counts
+                        // from the relay's own push, so show them rather than
+                        // a placeholder. The live poll below refreshes them.
+                        MapName = entry.MapName,
+                        Players = entry.Players,
+                        MaxPlayers = entry.MaxPlayers,
+                        Ping = -1,
+                    });
                 }
             }
             catch (HttpRequestException ex)
@@ -137,6 +151,65 @@ namespace KCDMP_launcher.Services
             }
 
             return resultList;
+        }
+
+        /// <summary>
+        /// The operator configures where the master server IS
+        /// ("http://master.example.com:5100"), not the path within it -- the
+        /// path belongs to the API (WO-35, <see cref="MasterApi"/>), same rule
+        /// the relay's own MasterAnnounceService follows. Tolerates a URL that
+        /// already names the endpoint, so an operator who copied one out of
+        /// the docs is not punished for it.
+        /// </summary>
+        private static bool TryBuildMasterUri(string configured, string path, out Uri uri, out string error)
+        {
+            uri = null!;
+
+            if (string.IsNullOrWhiteSpace(configured) || !Uri.TryCreate(configured.Trim(), UriKind.Absolute, out var parsed))
+            {
+                error = "Invalid Master Server URL in settings.";
+                return false;
+            }
+
+            var existingPath = parsed.AbsolutePath.TrimEnd('/');
+
+            var builder = new UriBuilder(parsed)
+            {
+                Path = existingPath.EndsWith(path, StringComparison.OrdinalIgnoreCase)
+                    ? existingPath
+                    : existingPath + path,
+            };
+
+            uri = builder.Uri;
+            error = "";
+            return true;
+        }
+
+        /// <summary>
+        /// Is the master server actually reachable, regardless of whether it
+        /// is listing anyone -- what the launcher's status bar shows (WO-35).
+        /// A separate, cheap request rather than inferred from
+        /// <see cref="GetServersFromMasterAsync"/>'s result: an empty list is
+        /// what "the master is fine and nobody is hosting" looks like too, and
+        /// the two must not be shown as the same thing. Mirrors exactly what
+        /// <c>MasterApi.StatusPath</c>'s own doc comment says it is for.
+        /// </summary>
+        public async Task<bool> IsMasterServerOnlineAsync(string masterUrl)
+        {
+            if (!TryBuildMasterUri(masterUrl, MasterApi.StatusPath, out var uri, out _))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var response = await _httpClient.GetAsync(uri);
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>

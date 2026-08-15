@@ -8,6 +8,24 @@
     <AssemblyName>KcdMpServer</AssemblyName>
   </PropertyGroup>
 
+  <!--
+    WO-35: stamp this build with the repo's own VERSION file, the same way
+    KcdMp.Client.csproj and KCDMP_launcher.csproj already do. Without this the
+    relay's AssemblyInformationalVersionAttribute falls back to the SDK's own
+    "1.0.0+git-commit-hash" default, which is what MasterAnnounceService's
+    ReleaseVersion read and published; the relay had simply never had a
+    reason to read its own version before there was a releaseVersion field to
+    put it in. Reads only, never writes VERSION. See docs/VERSIONING.md.
+  -->
+  <PropertyGroup>
+    <VersionFileContent Condition="Exists('$(MSBuildThisFileDirectory)..\..\VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\..\VERSION').Trim())</VersionFileContent>
+    <Version Condition="'$(VersionFileContent)' != ''">$(VersionFileContent)</Version>
+    <!-- Otherwise the SDK appends "+<git-commit-hash>" to InformationalVersion,
+         which both looks wrong in the browser and breaks a Major.Minor.Patch
+         comparison outright. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
   <ItemGroup>
     <!-- Microsoft.Extensions.DependencyInjection / .Hosting are supplied by the
          Microsoft.NET.Sdk.Web framework reference; explicit PackageReferences

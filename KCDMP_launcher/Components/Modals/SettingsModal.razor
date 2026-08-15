@@ -51,6 +51,11 @@
                 </div>
 
                 <div class="kcd-input-group">
+                    <label class="kcd-label">Master Server Path (auto-started when this URL is loopback)</label>
+                    <input class="kcd-input" @bind="Settings.MasterServerPath" />
+                </div>
+
+                <div class="kcd-input-group">
                     <label class="kcd-label">Server Info Port</label>
                     <input class="kcd-input" type="number" @bind="Settings.ServerInfoPort" />
                 </div>

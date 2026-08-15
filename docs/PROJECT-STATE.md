@@ -418,7 +418,8 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 - **.NET SDK is user-scope, not on PATH:**
   `$env:DOTNET_ROOT = "$env:USERPROFILE\.dotnet-sdk8"; $env:PATH = "$env:DOTNET_ROOT;$env:PATH"`. Stay on net8.0.
 - **MSVC Build Tools installed**, not on PATH; `native\Build-Native.ps1` finds them.
-- **No Python** — the Flask master server cannot be run or tested here.
+- **No Python** — moot as of WO-35: the Flask master server is gone, replaced
+  by `dotnet/KcdMp.MasterServer/`.
 - **One machine, one copy of the game, no second player.** Synthetic TCP peers
   and the pipe test cover everything except a real second client. This is why
   every feature needs a headless test path.
@@ -450,21 +451,27 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 - **Launcher end-to-end run.** The wiring itself is **done** — commit `54af330`
   rewrote `LaunchGame` to start the Modding Tools build, wait for `WHGame.dll`,
-  run the injector, check its exit code, and then start `KcdMpClient.exe`. The
-  master-server chain is closed too (`MasterRegistrationService`, corrected URL
-  and DTO field names, upsert plus `last_seen` on the Python side).
+  run the injector, check its exit code, and then start `KcdMpClient.exe`.
 
   What remains is **verification**: the launcher has never been run against a
   real game launch. Its pieces are exercised individually by
   `tools\Test-CombatOutbound.ps1`, but its own sequencing has only been
-  reviewed. The `WHGame.dll` wait is a reasoned choice, not a measured one. The
-  Python master server has never been executed at all — there is no Python on
-  this machine, so `servers.py` and `models.py` were validated against a stub
-  mimicking the Flask contract. See `LAUNCHING.md`.
+  reviewed. The `WHGame.dll` wait is a reasoned choice, not a measured one.
 
   *(This bullet previously claimed the launcher still booted the base game and
   never started the agent. That was already false when written — `54af330`
   precedes the commit that added this document.)*
+
+- **Master-server chain (WO-35): done and live-verified, unlike the rest of
+  this bullet list.** The never-run Flask service is gone, replaced by a
+  community-contributed `dotnet/KcdMp.MasterServer/` (WebSocket announce, not
+  HTTP polling — see `docs/MASTER-SERVER.md`). Adopting it required rewriting
+  both ends that talked to the old contract: the relay's
+  `MasterRegistrationService` → `MasterAnnounceService`, and the launcher's
+  `NetService.GetServersFromMasterAsync`/DTOs. Verified live: the real master,
+  the real relay, and the real launcher `NetService` code all run together —
+  announce, live player-count update, and delisting within ~1s of the relay
+  disconnecting, all observed, not inferred. See `docs/WO-35-findings.md`.
 - **Dice (WO-5/WO-6) real-game verification.** The relay/protocol/engine layers
   are proven headless (`Test-Dice.ps1`, the Farkle xUnit suite), and the
   agent-side IPC was verified with two real `KcdMpClient.exe` processes and a

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -60,6 +61,10 @@ namespace KCDMP_launcher.Pages
         private Process? hostedRelayProcess = null;
         private List<string> hostLanAddresses = new List<string>();
         private string hostErrorMessage = "";
+        #endregion
+
+        #region Master server state (WO-35)
+        private Process? hostedMasterServerProcess = null;
         #endregion
 
         #region Launch/connect state
@@ -186,6 +191,7 @@ namespace KCDMP_launcher.Pages
             LoadCustomServers();
             CheckGamePathOnStartup();
             Globals.OnStyleChanged += OnStyleChanged;
+            await EnsureLocalMasterServerAsync();
             await RefreshApp();
         }
 
@@ -360,6 +366,11 @@ namespace KCDMP_launcher.Pages
             isLoading = true;
             StateHasChanged();
 
+            // Independent of the list fetch below: an empty list is what "the
+            // master is fine and nobody is hosting" looks like too, and the
+            // status bar must not show that as "offline" (WO-35).
+            Globals.IsMasterOnline = await NetService.IsMasterServerOnlineAsync(settings.MasterServerUrl);
+
             var fetchedServers = await NetService.GetServersFromMasterAsync(settings.MasterServerUrl);
             servers = fetchedServers;
             StateHasChanged();
@@ -369,8 +380,12 @@ namespace KCDMP_launcher.Pages
                 server.Ping = await NetService.SendPingServerAsync(server.Ip);
 
                 // The info endpoint is a different port from the one peers
-                // connect on; see AppSettings.ServerInfoPort.
-                var details = await NetService.GetDedicatedServerInfoAsync(server.Ip, settings.ServerInfoPort);
+                // connect on. The master server (WO-35) now publishes each
+                // relay's real one; fall back to the configured guess only
+                // for a manually-added server, which the master never told
+                // us about.
+                var infoPort = server.InfoPort > 0 ? server.InfoPort : settings.ServerInfoPort;
+                var details = await NetService.GetDedicatedServerInfoAsync(server.Ip, infoPort);
 
                 if (details != null)
                 {
@@ -896,6 +911,145 @@ namespace KCDMP_launcher.Pages
         }
 
         /// <summary>
+        /// Starts the master server locally, alongside the launcher itself,
+        /// so a default install has something answering MasterServerUrl
+        /// instead of showing "Could not connect to Master Server!" on every
+        /// launch (WO-35). Unlike the relay, this runs unconditionally at
+        /// startup rather than only on Host -- the browser fetches the list
+        /// immediately in OnInitializedAsync, before the player has done
+        /// anything.
+        ///
+        /// Only when the configured URL is loopback: pointing MasterServerUrl
+        /// at a friend's real address means their instance is the one meant
+        /// to answer, and starting a private, empty one of our own here would
+        /// just be a wasted background process that nobody's relay announces
+        /// to.
+        /// </summary>
+        private async Task EnsureLocalMasterServerAsync()
+        {
+            Log.Debug("EnsureLocalMasterServerAsync: MasterServerUrl = \"{Url}\"", settings.MasterServerUrl);
+
+            if (!Uri.TryCreate(settings.MasterServerUrl, UriKind.Absolute, out var uri) || !IsLoopbackHost(uri.Host))
+            {
+                Log.Debug("EnsureLocalMasterServerAsync: not a loopback URL, not starting a local instance.");
+                return;
+            }
+
+            if (await IsMasterServerRespondingAsync(uri))
+            {
+                Log.Debug("EnsureLocalMasterServerAsync: something is already answering on port {Port}.", uri.Port);
+                return;
+            }
+
+            if (hostedMasterServerProcess != null && !hostedMasterServerProcess.HasExited)
+            {
+                return;
+            }
+
+            string masterServerPath = ResolveAgainstLauncher(settings.MasterServerPath);
+            if (!File.Exists(masterServerPath))
+            {
+                Log.Warning("Master server executable not found at: {Path}. The server browser will show a connection error until one is installed or Settings -> Master Server URL points elsewhere.", masterServerPath);
+                return;
+            }
+
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = masterServerPath,
+                    Arguments = $"--urls http://0.0.0.0:{uri.Port}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(masterServerPath)
+                };
+                hostedMasterServerProcess = Process.Start(startInfo);
+                if (hostedMasterServerProcess is null)
+                {
+                    Log.Warning("Process.Start returned null for the master server; not retrying this launch.");
+                    return;
+                }
+                Log.Information("Starting local master server: {Path} (pid {Pid})", masterServerPath, hostedMasterServerProcess.Id);
+
+                // Polled rather than a single fixed delay: a self-contained
+                // ASP.NET Core app's cold start (JIT, Kestrel bind) can take
+                // longer than any one guessed wait, and a single check right
+                // after Process.Start can race RefreshApp's first fetch --
+                // exactly what this replaces, found live: the process started
+                // and kept running, but RefreshApp's request landed before
+                // Kestrel had actually opened the port.
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                var up = false;
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (hostedMasterServerProcess.HasExited)
+                    {
+                        Log.Warning("Local master server process exited early (code {Code}).", hostedMasterServerProcess.ExitCode);
+                        break;
+                    }
+
+                    if (await IsMasterServerRespondingAsync(uri))
+                    {
+                        up = true;
+                        break;
+                    }
+
+                    await Task.Delay(200);
+                }
+
+                if (up)
+                {
+                    Log.Information("Local master server is up on port {Port}.", uri.Port);
+                }
+                else
+                {
+                    Log.Warning("Local master server did not answer on port {Port} within 5s; giving up for this launch.", uri.Port);
+                    hostedMasterServerProcess = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not start the local master server");
+                hostedMasterServerProcess = null;
+            }
+        }
+
+        /// <summary>Cheap liveness probe: is anything answering the master API at all, ours or someone else's.</summary>
+        private static async Task<bool> IsMasterServerRespondingAsync(Uri baseUri)
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+                using var response = await http.GetAsync(new Uri(baseUri, MasterApi.StatusPath));
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsLoopbackHost(string host) =>
+            host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            (System.Net.IPAddress.TryParse(host, out var ip) && System.Net.IPAddress.IsLoopback(ip));
+
+        private void StopHostedMasterServer()
+        {
+            try
+            {
+                if (hostedMasterServerProcess != null && !hostedMasterServerProcess.HasExited)
+                {
+                    hostedMasterServerProcess.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to stop the hosted master server process");
+            }
+            hostedMasterServerProcess = null;
+        }
+
+        /// <summary>
         /// Both builds name their executable KingdomCome.exe, so the filename
         /// cannot tell them apart, and neither can WHGame.dll — retail ships
         /// that one too. What actually differs is that the Modding Tools build
@@ -1017,6 +1171,7 @@ namespace KCDMP_launcher.Pages
         {
             versionPollCts?.Cancel();
             StopHostedRelay();
+            StopHostedMasterServer();
             Environment.Exit(0);
         }
 
@@ -1024,7 +1179,36 @@ namespace KCDMP_launcher.Pages
         private void LoadFavorites() { try { if (File.Exists(FavoritesFileName)) favoriteIps = JsonSerializer.Deserialize<HashSet<string>>(File.ReadAllText(FavoritesFileName)) ?? new(); } catch { } }
         private void SaveFavorites() { try { File.WriteAllText(FavoritesFileName, JsonSerializer.Serialize(favoriteIps)); } catch { } }
 
-        private void LoadSettings() { try { if (File.Exists(SettingsFileName)) settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsFileName)) ?? new(); } catch { } }
+        private void LoadSettings()
+        {
+            try { if (File.Exists(SettingsFileName)) settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsFileName)) ?? new(); }
+            catch { }
+
+            MigrateStaleMasterServerUrl();
+        }
+
+        /// <summary>
+        /// An existing settings.json predating WO-35 has the old Flask-shaped
+        /// default baked in ("http://localhost:5000/servers/servers_list") --
+        /// a fresh AppSettings() only supplies the new default
+        /// (EnsureLocalMasterServerAsync's own logic) for a settings.json that
+        /// does not exist yet. Migrated only when it is exactly that known old
+        /// literal, never when it looks like something the player configured
+        /// on purpose.
+        /// </summary>
+        private static readonly string[] KnownStaleMasterServerUrls =
+        [
+            "http://localhost:5000/servers/servers_list", // pre-WO-35 (Flask)
+            "http://localhost:5100",                      // WO-35's first pass -- see AppModels.cs
+        ];
+
+        private void MigrateStaleMasterServerUrl()
+        {
+            if (Array.IndexOf(KnownStaleMasterServerUrls, settings.MasterServerUrl) >= 0)
+            {
+                settings.MasterServerUrl = new AppSettings().MasterServerUrl;
+            }
+        }
         private void SaveSettings()
         {
             try

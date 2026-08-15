@@ -40,7 +40,7 @@ never "probably fine."
 | In-game dice UI | **Working** — played to completion against a scripted opponent; **unverified** with two real humans |
 | Emotes | **Not implemented** |
 | Duelling | **Not implemented** — the wire protocol reserves a slot for it, nothing behind it |
-| Master server (server browser backend) | **Built but unverified** — the .NET side is tested against a stub of its contract; the Python service itself has never been run on a machine that touched this project |
+| Master server (server browser backend) | **Working, live-tested** (WO-35) — a community-contributed C# service (`dotnet/KcdMp.MasterServer/`) replaced the never-run Flask service. Relay↔master↔launcher exercised end-to-end with the real code on all three sides: announce, live update, and delisting within ~1s of a relay disconnecting |
 | Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below. Shares the in-game dice overlay's art direction (aged parchment, oak, gold) across every screen rather than looking like a generic dark app; has a **REPORT BUG** button in the status bar that opens this project's GitHub Issues or Discord; and warns you before you connect if you and your peer are on different mod versions, naming which side needs to update |
 | Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md` |
 
@@ -286,7 +286,7 @@ cross-machine game-API traffic, only the relay TCP connection.
 | `native/KCDMP/` | The injected plugin (C++) |
 | `native/KCDMP_LauncherInjector/` | The injector executable |
 | `KCDMP_launcher/` | The desktop launcher (Photino/Blazor) |
-| `kcd2_master_server/` | Flask + SQLAlchemy server-discovery service |
+| `dotnet/KcdMp.MasterServer/` | `KcdMpMasterServer.exe`, the server-discovery backend (WO-35) — see `docs/MASTER-SERVER.md` |
 | `docs/` | Design notes and session handoffs — start with `docs/PROJECT-STATE.md` |
 
 ## Building from source
@@ -314,11 +314,12 @@ Run things directly during development:
 dotnet run --project dotnet\KcdMp.Server
 dotnet run --project dotnet\KcdMp.Client -- --host localhost --name PC1
 dotnet run --project KCDMP_launcher
+dotnet run --project dotnet\KcdMp.MasterServer
 ```
 
-The master server is a separate Python service (`kcd2_master_server/`);
-never run on the machine this fork was developed on, so treat it as
-reviewed, not proven — see the status table above.
+The master server (`dotnet/KcdMp.MasterServer/`) is optional — a relay and
+launcher with each other's address connect directly and never touch it. See
+`docs/MASTER-SERVER.md` for how to point a relay and the launcher at one.
 
 ## Testing
 
