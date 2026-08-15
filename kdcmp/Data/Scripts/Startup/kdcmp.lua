@@ -2182,6 +2182,34 @@ function KCD2MP_ReportVitals()
     end
 end
 
+-- WO-34 issue D. Is this ghost a body rather than a stand-in right now?
+--
+-- Two independent ways it happens, and the reported one is the second:
+--
+--   1. The OWNER died and their client sent 0x23, so every peer got 0x24 and
+--      set KCD2MP.ghostDead. The entity here is untouched and still standing
+--      (KCD2MP_SetGhostDead deliberately leaves it), but it no longer stands
+--      for anybody who is playing.
+--   2. An NPC killed the ghost in THIS world. No packet is involved at all --
+--      worlds are not shared (docs/WO-26-shared-combat-design.md s2), so the
+--      owner may be alive and well and completely unaware. Nothing in the mod
+--      had ever looked at the ghost entity's own death state, which is why
+--      this case went unnoticed through WO-28.
+--
+-- The IsDead() read is per-ghost per-20ms-tick, which is the same cadence and
+-- the same object sampleGhostHealth already calls GetHealth() on, so it adds
+-- one native call to a path that was already making one. pcall'd and treated
+-- as "not dead" on failure: guessing a ghost is dead would freeze a live
+-- player in place, which is far worse than a corpse that slides for one more
+-- reconcile cycle.
+function mp_ghost_is_corpse(id, ghost)
+    if KCD2MP.ghostDead[id] then return true end
+    if not (ghost and ghost.entity and ghost.entity.actor) then return false end
+    local dead = false
+    pcall(function() dead = ghost.entity.actor:IsDead() and true or false end)
+    return dead
+end
+
 -- Smallest health drop worth reporting as a hit. Below this it is sampling
 -- noise or regeneration rounding, not a blow.
 local HIT_MIN_DELTA = 0.05
@@ -2600,8 +2628,29 @@ function KCD2MP_InterpTick(arg)
 
             -- When nativeMounted, the engine links NPC to horse - skip manual NPC SetWorldPos.
             -- We only update horse position; rider follows automatically.
+            --
+            -- WO-34 issue D: a corpse must not be dragged. Position sync is an
+            -- always-on channel, entirely separate from the 0x23/0x24 death
+            -- notification, so until now a ghost that had died -- either
+            -- because its owner died, or because an NPC killed it in THIS
+            -- world -- kept having SetWorldPos written onto it every 20 ms and
+            -- slid around the map tracking a live player. Reported from a real
+            -- two-player session: "once the NPC killed his stand in the dead
+            -- body moved around where he did."
+            --
+            -- Frozen means: stop writing position and stop driving animation,
+            -- but keep the nameplate -- moved onto the body's ACTUAL world
+            -- position, not the incoming stream's, or the label would fly off
+            -- and leave a nameless corpse behind (the WO-28 Q3 failure shape).
+            -- istate keeps integrating normally underneath, so when the ghost
+            -- is recycled it starts from the current stream position.
             local ok = true
-            if not istate.nativeMounted then
+            local frozen = mp_ghost_is_corpse(id, ghost)
+            if frozen then
+                local wp = nil
+                pcall(function() wp = ghost.entity:GetWorldPos() end)
+                if wp then x, y, sz = wp.x, wp.y, wp.z end
+            elseif not istate.nativeMounted then
                 local _, err = pcall(function()
                     ghost.entity:SetWorldPos({x=x, y=y, z=sz})
                     ghost.entity:SetWorldAngles({x=0, y=0, z=r})
@@ -2619,7 +2668,12 @@ function KCD2MP_InterpTick(arg)
                 local rendSpeed = math.sqrt(movedDx*movedDx + movedDy*movedDy) / 0.020
                 istate.smoothedSpeed = lerpVal(istate.smoothedSpeed or 0, rendSpeed, 0.4)
 
-                if istate.isRiding then
+                if frozen then
+                    -- WO-34 issue D: no animation on a corpse. Driving walk/run
+                    -- onto a dead actor is what made the reported body look
+                    -- like it was walking around rather than lying where it
+                    -- fell. The horse half is skipped for the same reason.
+                elseif istate.isRiding then
                     -- One-time riding diagnostic when interp tick first sees this ghost riding.
                     -- (% 50 == 1 never fires: interp=20ms, packets=10ms → only even counts seen)
                     if not istate._rideFirstTick then
@@ -2893,9 +2947,38 @@ function KCD2MP_ReconcileGhosts()
             local spawnName = ghost.spawnName or ("kcd2mp_" .. tostring(id))
             local live = nil
             pcall(function() live = System.GetEntityByName(spawnName) end)
-            if not live then
+            -- WO-34 issue D, the other half of the freeze. A ghost an NPC
+            -- killed in THIS world is a corpse for good -- death is a one-way
+            -- transition (WO-25 Phase 3: SetState health writes do not reverse
+            -- IsDead) -- so freezing alone would leave its owner permanently
+            -- invisible here while they carry on playing. Recycled through the
+            -- same path a save-load-destroyed entity takes: drop the
+            -- bookkeeping, let the next position packet spawn a fresh body.
+            --
+            -- Only the ENTITY being dead triggers this. A ghost whose OWNER
+            -- died (KCD2MP.ghostDead, tagged "[dead - reloading]") is still a
+            -- perfectly good standing body and must NOT be recycled -- WO-28
+            -- chose to leave it exactly so a player back in seconds does not
+            -- cost a full spawn cycle, and that reasoning is unchanged.
+            local corpse = false
+            if live and live.actor then
+                pcall(function() corpse = live.actor:IsDead() and true or false end)
+            end
+            if live and corpse then
                 mp_log("RECONCILE id=" .. tostring(id) .. " entity '" .. spawnName ..
-                       "' is gone from the world (save load?) -- clearing so it respawns")
+                       "' is DEAD in this world -- removing the body so a fresh ghost respawns")
+                -- Remove the corpse rather than abandoning it. An untracked
+                -- body is what WO-27 spent a session cleaning up, and this one
+                -- is also a real lootable/grabbable object that another player
+                -- can commit corpseViolation on (docs/WO-34-findings.md).
+                mp_remove_entity_verified(ghost.entityId, spawnName, "ghost corpse " .. tostring(id))
+                live = nil
+            end
+            if not live then
+                if not corpse then
+                    mp_log("RECONCILE id=" .. tostring(id) .. " entity '" .. spawnName ..
+                           "' is gone from the world (save load?) -- clearing so it respawns")
+                end
                 -- The horse half is destroyed by the same unload and tracked
                 -- separately, so it has to be dropped too or a remounting
                 -- ghost would sit on a horse that no longer exists.
@@ -3694,16 +3777,42 @@ KCD2MP.armorPresets = {
 --
 -- Their own soul_roster.lua (the actual 48-soul GUID list) was never
 -- committed to the repo -- prose only, same pattern WO-18 found for their
--- whole C# stack. So this roster is our own: 48 real, hand-placed commoner
--- souls (24 male, 24 female), pulled live from this save's own SoulsByName
--- and spread across settlements for visual variety. SharedSoulGuid is the
--- authored, cross-session-stable key (NATIVE-PLUGIN-findings.md), so these
--- values hold regardless of which save or session picks them.
+-- whole C# stack. So this roster is our own: real, hand-placed souls pulled
+-- live from this save's own SoulsByName and spread across settlements for
+-- visual variety. SharedSoulGuid is the authored, cross-session-stable key
+-- (NATIVE-PLUGIN-findings.md), so these values hold regardless of which save
+-- or session picks them.
+--
+-- WO-34: it was 48 (24 male, 24 female) and it is now 43 (19 male, 24
+-- female). Five of the male entries were NOT commoners -- tbuk_man_5,
+-- tkop_man_1, tkop_man_2, tzda_man_6 and tzda_man_9 were bandits, and are
+-- gone. Read off the shipped tables, not inferred:
+--
+--   soul__tkop.xml   factionName = trosecko_enemies_bandits_campKopanina
+--                    social_class_id = 38  voice_group_name = Bandits
+--   social_class.xml 38 -> social_class_name "bandit", soul_crime_role_id 3
+--   soul_crime_role  3  -> "renegade"
+--   FactionTree.xml  ancestor trosecko_enemies carries Labels="publicEnemy"
+--                    and reputation="-1" toward every trosecko settlement,
+--                    outskirt, miller and ally faction
+--   text_ui_soul.xml soul_ui_name_ruffian -> "Ruffian"
+--
+-- Until WO-22 this was harmless: the GUID was passed nested under Properties
+-- and bound no soul at all, so the roster was decorative and the faction
+-- never applied. WO-22 made SharedSoulGuid a real top-level parameter, which
+-- turned five of these slots into genuinely hostile public enemies. Live
+-- two-player report (WO-34): players hostile to each other on sight, one
+-- attacked by ambient NPCs, bandit combat barks, and a corpse labelled
+-- "Ruffian". KCD2MP_SpawnGhost's AI.ChangeParameter(..., "Civilians")
+-- override does not defeat the soul row.
+--
+-- Removing rather than replacing takes the male #list from 24 to 19, and
+-- KCD2MP_PickFaceForPlayer's modulus is over #list, so EVERY male player's
+-- face changes with this build, not only the five. Accepted deliberately
+-- (see docs/WO-34-findings.md); appearance stability across a version was
+-- already broken once by WO-22 for the same underlying reason.
 KCD2MP.faceRoster = {
     male = {
-        {"tbuk_man_5",   "82d455d8-5a4c-4210-8cc4-b11c363bbd27"},
-        {"tkop_man_1",   "f5587d56-3305-4138-99f9-5c3b7aeca709"},
-        {"tkop_man_2",   "81a2ef00-57d1-4759-85a4-3f79d888dd63"},
         {"tneb_man_11",  "43b076df-4be8-f9d9-e2e4-dd5cafd0db96"},
         {"tneb_man_18",  "4a5baae4-2667-2892-178d-b47b10e562b3"},
         {"tpod_man_1",   "4e628918-2a38-c1ea-c786-2424123506ae"},
@@ -3721,8 +3830,6 @@ KCD2MP.faceRoster = {
         {"tvez_man_21",  "4badc882-824c-407e-b823-059fa3e5df5b"},
         {"tvid_man_3",   "48ea5c5c-fcbb-6a90-be4d-8b7f7ad6a4ac"},
         {"tvid_man_7",   "6947a43f-30eb-49bd-9997-44396f01fcba"},
-        {"tzda_man_6",   "94babc16-7944-4729-b13b-cdfb5e51da93"},
-        {"tzda_man_9",   "aefb7006-ca4d-4d4e-b624-b351459806b4"},
         {"tzel_man_10",  "8158f557-018e-4016-95a4-024bb060bd18"},
         {"tzel_man_7",   "271ac033-a516-4928-b1f7-825bc57c46e3"},
     },
