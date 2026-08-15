@@ -56,6 +56,15 @@ public class SessionManager
 		/// <summary>The live Farkle engine, once Kind == Dice and the session is Active. Null otherwise.</summary>
 		public FarkleGame? DiceGame { get; set; }
 
+		/// <summary>
+		/// The agreed wager in whole groschen (WO-33), read from OpenConfig at
+		/// Invite time -- fixed for the life of the session, exactly like
+		/// TargetScore. 0 means no stake. The relay never touches either
+		/// player's actual currency; this is only carried so it can be echoed
+		/// back on DiceEnd for each client to apply locally.
+		/// </summary>
+		public int WagerAmount { get; init; }
+
 		public bool Involves(ClientSession c) => Initiator == c || Acceptor == c;
 		public ClientSession Other(ClientSession c) => Initiator == c ? Acceptor : Initiator;
 	}
@@ -90,6 +99,10 @@ public class SessionManager
 				return null;
 			}
 
+			int wager = openConfig.Length >= 10
+				? BinaryPrimitives.ReadInt32LittleEndian(openConfig.AsSpan(6, 4))
+				: 0;
+
 			var session = new Session
 			{
 				Id = NextId(),
@@ -97,13 +110,14 @@ public class SessionManager
 				Initiator = from,
 				Acceptor = target,
 				OpenConfig = openConfig,
+				WagerAmount = wager,
 			};
 			_sessions[session.Id] = session;
 
-			_logger.Information("[session {Id}] {From} invited {To} to {Kind}",
-				session.Id, from.Name, target.Name, kind);
+			_logger.Information("[session {Id}] {From} invited {To} to {Kind} (wager {Wager})",
+				session.Id, from.Name, target.Name, kind, wager);
 
-			target.EnqueueInviteReceived(session.Id, from.Id, kind);
+			target.EnqueueInviteReceived(session.Id, from.Id, kind, openConfig);
 			return session;
 		}
 	}
@@ -219,8 +233,8 @@ public class SessionManager
 			lock (_lock) _sessions.Remove(sessionId);
 
 			var outcome = game.Outcome == FarkleOutcome.Player0Won ? DiceOutcome.InitiatorWon : DiceOutcome.AcceptorWon;
-			session.Initiator.EnqueueDiceEnd(sessionId, outcome, game.Scores[0], game.Scores[1]);
-			session.Acceptor.EnqueueDiceEnd(sessionId, outcome, game.Scores[0], game.Scores[1]);
+			session.Initiator.EnqueueDiceEnd(sessionId, outcome, game.Scores[0], game.Scores[1], session.WagerAmount);
+			session.Acceptor.EnqueueDiceEnd(sessionId, outcome, game.Scores[0], game.Scores[1], session.WagerAmount);
 
 			session.Initiator.EnqueueSessionEnd(sessionId, SessionEndReason.Completed);
 			session.Acceptor.EnqueueSessionEnd(sessionId, SessionEndReason.Completed);
@@ -312,10 +326,13 @@ public class SessionManager
 
 	/// <summary>
 	/// Builds the Farkle engine for a newly-accepted dice session from the
-	/// Invite's opaque config: [targetScore:2 LE][debugSeedOverride:4 LE, optional].
-	/// The seed override only exists in a debug build -- in release, those
-	/// trailing bytes (if a client sends them at all) are simply never read,
-	/// which is what "refuse the override in release" means in practice.
+	/// Invite's opaque config: [targetScore:2 LE][debugSeedOverride:4 LE, optional]
+	/// [wagerAmount:4 LE, optional] (WagerAmount is read separately, in
+	/// <see cref="Invite"/>, not here -- this method only ever builds engine
+	/// state, never wager state). The seed override only exists in a debug
+	/// build -- in release, those trailing bytes (if a client sends them at
+	/// all) are simply never read, which is what "refuse the override in
+	/// release" means in practice.
 	/// </summary>
 	private static FarkleGame CreateDiceGame(byte[] openConfig)
 	{

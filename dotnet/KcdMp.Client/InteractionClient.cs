@@ -2,8 +2,12 @@ using System.Buffers.Binary;
 
 namespace KcdMp.Client;
 
-/// <summary>An invite waiting on this player's answer.</summary>
-public sealed record PendingInvite(ushort SessionId, byte FromGhostId, InteractionKind Kind, DateTime ReceivedUtc);
+/// <summary>
+/// An invite waiting on this player's answer. WagerAmount (WO-33) is decoded
+/// from the Invite's opaque config, forwarded on InviteReceived -- 0 for no
+/// stake, or for any kind that does not use one.
+/// </summary>
+public sealed record PendingInvite(ushort SessionId, byte FromGhostId, InteractionKind Kind, DateTime ReceivedUtc, int WagerAmount = 0);
 
 /// <summary>A session both players agreed to.</summary>
 public sealed record ActiveSession(ushort SessionId, byte PeerGhostId, InteractionKind Kind, SessionRole Role);
@@ -56,9 +60,22 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
     // Outbound
     // -------------------------------------------------------------------------
 
-    /// <summary>Invites another player. The relay refuses if either side is busy.</summary>
-    public Task InviteAsync(byte targetGhostId, InteractionKind kind, CancellationToken ct = default) =>
-        sendPacket(Protocol.Invite, [targetGhostId, (byte)kind], ct);
+    /// <summary>
+    /// Invites another player. The relay refuses if either side is busy.
+    /// config carries kind-specific open-time settings (WO-5's dice target
+    /// score, WO-33's dice wager) -- opaque to this layer, same as
+    /// SessionEvent's payload.
+    /// </summary>
+    public Task InviteAsync(byte targetGhostId, InteractionKind kind, byte[]? config = null, CancellationToken ct = default)
+    {
+        config ??= [];
+        var payload = new byte[3 + config.Length];
+        payload[0] = targetGhostId;
+        payload[1] = (byte)kind;
+        payload[2] = (byte)config.Length;
+        config.CopyTo(payload, 3);
+        return sendPacket(Protocol.Invite, payload, ct);
+    }
 
     /// <summary>
     /// Answers the pending invite. Does nothing when there is none, so a
@@ -125,11 +142,23 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
         {
             case Protocol.InviteReceived when payload.Length >= 4:
             {
+                // config trailer added WO-33: [configLen:1][config:configLen],
+                // same shape Invite itself sends. A pre-WO-33 relay never
+                // appends it, so payload.Length == 4 there and wager stays 0.
+                int wager = 0;
+                if (payload.Length >= 5)
+                {
+                    int configLen = payload[4];
+                    if (payload.Length >= 5 + configLen && configLen >= 10)
+                        wager = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(5 + 6, 4));
+                }
+
                 var invite = new PendingInvite(
                     BinaryPrimitives.ReadUInt16LittleEndian(payload),
                     payload[2],
                     (InteractionKind)payload[3],
-                    DateTime.UtcNow);
+                    DateTime.UtcNow,
+                    wager);
 
                 lock (_lock) _pending = invite;
                 InviteReceived?.Invoke(invite);

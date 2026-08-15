@@ -43,7 +43,18 @@ namespace KcdMp.Wire;
 /// kind-specific open-time settings the same way SessionEvent carries
 /// kind-specific in-play events -- opaque to this layer, interpreted only by
 /// whichever kind reads it. Dice's config is
-/// [targetScore:2 LE][debugSeedOverride:4 LE, optional, debug relay builds only].
+/// [targetScore:2 LE][debugSeedOverride:4 LE, optional, debug relay builds only]
+/// [wagerAmount:4 LE, optional] (WO-33). wagerAmount sits after the debug
+/// field rather than replacing it, so the fixed offsets already read by
+/// <c>CreateDiceGame</c> do not move; a config shorter than 10 bytes means no
+/// wager (0), same optional-trailing-field idiom as everything else on this
+/// wire. In whole groschen, since <c>Inventory.AddMoney</c>/<c>RemoveMoney</c>
+/// take a float but the board only ever deals in whole numbers.
+///
+/// InviteReceived (0x0B) carries the same [configLen:1][config:configLen]
+/// trailer as Invite itself (WO-33) -- added so the invitee can see the
+/// stakes (and check their own balance) before answering, not just after
+/// accepting. Optional and trailing, same backward-compat idiom.
 ///
 /// Combat layer (WO-4). Replicates damage and death against shared NPCs.
 /// C→S  0x12  Damage: [targetGuid:16][stamina:4f][health:4f][flags:1]  (25 bytes)
@@ -101,9 +112,22 @@ namespace KcdMp.Wire;
 ///              sender only. The game state is unchanged; retry with a
 ///              corrected intent.
 /// S→C  0x19  DiceEnd:    [sessionId:2][outcome:1][scoreInitiator:4][scoreAcceptor:4]
+///              [wagerAmount:4 LE, optional]
 ///              outcome: 0=Initiator won, 1=Acceptor won. Sent to both
 ///              participants, immediately followed by a normal SessionEnd
 ///              (Completed) that removes the session.
+///
+///              wagerAmount (WO-33) is the amount agreed at invite time,
+///              echoed back rather than requiring either client to remember
+///              it from the original Invite/InviteReceived. Each client
+///              applies it to its OWN local currency only, once, right here
+///              -- winner Inventory.AddMoney, loser Inventory.RemoveMoney,
+///              never a cross-save write. This is also why a mid-match
+///              disconnect is safe by construction: SessionEnd(PeerDisconnected)
+///              fires instead of DiceEnd in that case, and nothing in this
+///              layer ever applies a wager outside this one packet handler.
+///              Absent (payload &lt; 15 bytes) means no wager, same optional-
+///              trailing-field idiom as everything else here.
 ///
 /// Appearance layer (WO-9 armor, WO-10 weapons). Replicates the local
 /// player's currently-equipped clothing/armor AND weapons onto their ghost,

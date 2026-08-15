@@ -330,10 +330,15 @@ KCD2MP.diceTurn = nil          -- {text} -- optional glanceable hint; the launch
 local INVITE_TIMEOUT   = 30    -- matches the relay's invite expiry
 local MSG_TIMEOUT      = 5
 
--- Called by the agent when a peer invites this player.
-function KCD2MP_ShowInvite(sid, who, kind)
-    KCD2MP.invite = { sid = sid, who = tostring(who), kind = tostring(kind), shownAt = os.clock() }
-    mp_log("INVITE from " .. tostring(who) .. " (" .. tostring(kind) .. ") session " .. tostring(sid))
+-- Called by the agent when a peer invites this player. wager (WO-33) is
+-- groschen at stake, 0 for none -- shown in the prompt so the player knows
+-- what's riding on it before answering, and checked against player.inventory:GetMoney()
+-- in KCD2MP_AcceptInvite before an accept is actually sent.
+function KCD2MP_ShowInvite(sid, who, kind, wager)
+    KCD2MP.invite = { sid = sid, who = tostring(who), kind = tostring(kind),
+                       wager = tonumber(wager) or 0, shownAt = os.clock() }
+    mp_log("INVITE from " .. tostring(who) .. " (" .. tostring(kind) .. ") session " .. tostring(sid)
+        .. " wager=" .. tostring(KCD2MP.invite.wager))
 end
 
 function KCD2MP_HideInvite()
@@ -350,6 +355,22 @@ function KCD2MP_AcceptInvite()
         mp_log("No invite to accept")
         return false
     end
+
+    -- WO-33: refuse locally, before the match ever starts, rather than
+    -- discovering mid-game that a loss can't actually be paid. RemoveMoney
+    -- itself already refuses to go negative (per the shipped scriptbind docs),
+    -- but that's a safety net, not a substitute for telling the player why.
+    local wager = KCD2MP.invite.wager or 0
+    if wager > 0 then
+        local ok, have = pcall(function() return player.inventory:GetMoney() end)
+        if not ok or not have or have < wager then
+            mp_log("Cannot accept: wager " .. tostring(wager) .. " exceeds balance "
+                .. tostring(ok and have or "?"))
+            KCD2MP_ShowInteractionMsg("Not enough groschen for that wager")
+            return false
+        end
+    end
+
     KCD2MP_EmitEvent("invite_accept", KCD2MP.invite.sid)
     KCD2MP_HideInvite()
     KCD2MP_ShowInteractionMsg("Accepted")
@@ -402,10 +423,12 @@ end
 
 -- Invites the nearest ghost. Lua picks the target because it already has both
 -- the player's position and every ghost's; the agent only knows relay ids.
--- kindStr is "dice" or "duel".
-function KCD2MP_InviteNearest(kindStr)
+-- kindStr is "dice" or "duel". wagerAmount (WO-33) is dice-only groschen,
+-- ignored for any other kind.
+function KCD2MP_InviteNearest(kindStr, wagerAmount)
     kindStr = tostring(kindStr or ""):gsub("%s+", "")
     if kindStr == "" then kindStr = "dice" end
+    wagerAmount = tonumber(wagerAmount) or 0
 
     local ppos = player and player:GetWorldPos()
     if not ppos then return false end
@@ -427,9 +450,13 @@ function KCD2MP_InviteNearest(kindStr)
         return false
     end
 
-    mp_log("Inviting ghost " .. tostring(bestId) .. " to " .. kindStr)
-    KCD2MP_EmitEvent("invite_send", tostring(bestId) .. " " .. kindStr)
-    KCD2MP_ShowInteractionMsg("Invite sent")
+    local payload = tostring(bestId) .. " " .. kindStr
+    if kindStr == "dice" then payload = payload .. " " .. tostring(math.floor(wagerAmount)) end
+
+    mp_log("Inviting ghost " .. tostring(bestId) .. " to " .. kindStr
+        .. (kindStr == "dice" and (" wager=" .. tostring(wagerAmount)) or ""))
+    KCD2MP_EmitEvent("invite_send", payload)
+    KCD2MP_ShowInteractionMsg(wagerAmount > 0 and ("Invite sent (wager " .. wagerAmount .. ")") or "Invite sent")
     return true
 end
 
@@ -442,8 +469,9 @@ function KCD2MP_DrawInteractionUI()
             KCD2MP.invite = nil
         else
             local left = math.ceil(INVITE_TIMEOUT - (os.clock() - inv.shownAt))
-            System.DrawText(10, 60, inv.who .. " invites you to " .. inv.kind .. "  (" .. left .. "s)", 2)
-            System.DrawText(10, 84, "mp_accept  /  mp_decline", 1.6)
+            local stake = (inv.wager and inv.wager > 0) and ("  for " .. inv.wager .. " groschen") or ""
+            System.DrawText(10, 60, inv.who .. " invites you to " .. inv.kind .. stake .. "  (" .. left .. "s)", 2)
+            System.DrawText(10, 84, "F11 accept / F12 decline  (or mp_accept / mp_decline)", 1.6)
         end
     end
 
@@ -540,6 +568,12 @@ KCD2MP.dice = {
     -- hud.ShowInfoText is confirmed rendering. hud.ShowDiceScore is confirmed
     -- INERT outside the native minigame, so it is not used at all.
     native    = { modal = false, infotext = true, sting = false },
+
+    -- WO-33: groschen staked on the NEXT invite this client sends, set via
+    -- mp_dice_wager. Purely local until it rides the Invite config -- the
+    -- relay never computes or holds it, only echoes it back on DiceEnd so
+    -- each client can apply it to its own Inventory. 0 = no stake.
+    wagerAmount = 0,
 
     -- --- authoritative state, straight off the wire -------------------------
     role      = 0,             -- OUR SessionRole: 0 initiator, 1 acceptor
@@ -998,16 +1032,47 @@ function KCD2MP_DiceError(reason)
     KCD2MP_DiceRender()
 end
 
--- outcome: "win" or "lose".
-function KCD2MP_DiceEnd(outcome, s0, s1)
+-- outcome: "win" or "lose". wager (WO-33) is the agreed groschen stake,
+-- echoed by the relay on the wire DiceEnd packet itself -- see Protocol.cs.
+-- Applied here, once, to THIS client's own Inventory only: winner gains,
+-- loser loses, never a write into the peer's save. This function is reached
+-- only for a match that ran to a clean conclusion -- a mid-match disconnect
+-- fires KCD2MP_DiceClose via SessionEnded instead (GameBridge.cs), never
+-- this, so a dropped connection can never move money on either side.
+function KCD2MP_DiceEnd(outcome, s0, s1, wager)
     D.scores[0] = tonumber(s0) or D.scores[0]
     D.scores[1] = tonumber(s1) or D.scores[1]
     D.outcome   = tostring(outcome or "lose")
     D.sel, D.hold, D.err = {}, nil, nil
-    say((D.outcome == "win") and "The wager is thine."
-                              or (D.peer .. " takes the pot."))
+
+    -- Live-checked this session (WO-33): the "Inventory" scriptbind the
+    -- vendor docs describe as a global table does not exist in this sandbox
+    -- at all. What IS real: player.inventory:GetMoney()/RemoveMoney(n) are
+    -- genuine entity-scoped methods, confirmed with a controlled before/after
+    -- read (7.9 -> 5.9 groschen for RemoveMoney(2)). There is no AddMoney
+    -- anywhere reachable, on this object or via RTTR reflection. The win
+    -- side instead uses ItemUtils.AddMoneyToInventory(who, amount), a real
+    -- function the shipped game's own Scripts/Utils/ItemUtils.lua defines --
+    -- money is a stackable item (guid 5ef63059-...) under the hood, and this
+    -- is Warhorse's own sanctioned way to hand someone more of it, built on
+    -- ItemManager.CreateItem + entity.inventory:AddItem, both independently
+    -- proven elsewhere in this project (docs/kcd2_lua_api.md).
+    wager = tonumber(wager) or 0
+    if wager > 0 then
+        local ok, err
+        if D.outcome == "win" then
+            ok, err = pcall(function() ItemUtils.AddMoneyToInventory(player, wager) end)
+        else
+            ok, err = pcall(function() player.inventory:RemoveMoney(wager) end)
+        end
+        mp_log("DICE wager " .. wager .. " " .. (D.outcome == "win" and "added" or "removed")
+            .. " ok=" .. tostring(ok) .. " err=" .. tostring(err))
+    end
+
+    say((D.outcome == "win") and ("The wager is thine." .. (wager > 0 and (" +" .. wager .. " groschen.") or ""))
+                              or (D.peer .. " takes the pot." .. (wager > 0 and (" -" .. wager .. " groschen.") or "")))
     KCD2MP_DiceRender()
-    mp_log("DICE match ended: " .. D.outcome)
+    mp_log("DICE match ended: " .. D.outcome .. " wager=" .. wager)
 end
 
 -- ===== demo: review the board without a second player =======================
@@ -1358,7 +1423,32 @@ end
 --
 -- The seat's table id rides along on the invite: it is what lets the acceptor be
 -- placed at the SAME table rather than merely at some table of their own.
+-- WO-33: mp_dice_wager <amount>. Purely local -- takes effect on the NEXT
+-- mp_dice/F9 invite this client sends, and does nothing to any invite already
+-- pending. A negative or unparsable amount is treated as 0 (no wager) rather
+-- than faulting; groschen are whole numbers here, so this floors.
+function KCD2MP_SetDiceWager(line)
+    local n = tonumber(tostring(line or ""):match("%-?%d+")) or 0
+    KCD2MP.dice.wagerAmount = math.max(0, math.floor(n))
+    KCD2MP_ShowInteractionMsg("Dice wager set to " .. KCD2MP.dice.wagerAmount)
+    mp_log("Dice wager set to " .. KCD2MP.dice.wagerAmount)
+end
+
 function KCD2MP_InviteDiceAtTable()
+    -- WO-33: check our OWN balance before sending, not after the peer accepts.
+    -- RemoveMoney at DiceEnd would refuse anyway if this were skipped, but a
+    -- match that couldn't have been paid for should never start.
+    local wager = KCD2MP.dice.wagerAmount or 0
+    if wager > 0 then
+        local ok, have = pcall(function() return player.inventory:GetMoney() end)
+        if not ok or not have or have < wager then
+            KCD2MP_ShowInteractionMsg("Not enough groschen for that wager")
+            mp_log("Refusing dice invite: wager " .. tostring(wager) .. " exceeds balance "
+                .. tostring(ok and have or "?"))
+            return false
+        end
+    end
+
     local seat, d, tid = KCD2MP_NearestSeat()
     if not seat and KCD2MP.dice.requireTable then
         -- fall back to a real dice table before refusing
@@ -1376,7 +1466,7 @@ function KCD2MP_InviteDiceAtTable()
     else
         KCD2MP.dice.seat = nil
     end
-    return KCD2MP_InviteNearest("dice")
+    return KCD2MP_InviteNearest("dice", wager)
 end
 
 -- ===== Ghost NPC Spawn =====
@@ -4362,6 +4452,7 @@ local ok, err = pcall(function()
     -- keybinds below them are unverified action-name guesses, exactly as WO-2's
     -- accept/decline were. Everything here is reachable without a working key.
     System.AddCCommand("mp_dice",        "KCD2MP_InviteDiceAtTable()", "Challenge the nearest player to dice -- only at a real dice table")
+    System.AddCCommand("mp_dice_wager",  'KCD2MP_SetDiceWager("%LINE")', "WO-33: set groschen staked on the next dice invite this client sends (0 = none)")
     System.AddCCommand("mp_dice_cast",   "KCD2MP_DiceConfirm()",       "Cast, or set aside the marked dice (depends on phase)")
     System.AddCCommand("mp_dice_mark",   'KCD2MP_DiceMark("%LINE")',   "Mark/unmark a die on the board: mp_dice_mark 1..6")
     System.AddCCommand("mp_dice_unmark_all", "KCD2MP_DiceUnmarkAll()", "Clear every pending mark without rerolling")
@@ -4407,25 +4498,33 @@ local AXIS_ACTIONS = {
     move_lx=true, move_ly=true,
 }
 
--- Accept/decline keybinds (WO-2).
+-- Accept/decline keybinds (WO-2, real binds added WO-33).
 --
--- These action names are UNVERIFIED GUESSES. The project rule is not to invent
--- API names, and the same applies to action ids, so the console commands
--- mp_accept / mp_decline are the supported path and these are a convenience that
--- may simply never fire. To find the real names: set KCD2MP.logActions = true,
--- press the key you want, and read the ACT lines out of kcd.log.
-local ACCEPT_ACTIONS  = { ["dialog_answer1"] = true, ["confirm"] = true, ["ui_accept"] = true }
-local DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_cancel"] = true }
+-- dialog_answer1/2 etc. below are UNVERIFIED GUESSES, kept only because
+-- removing them costs nothing and they might someday turn out real. The
+-- actual primary path, added WO-33, reuses kcd2mp_dice_bank (F11) /
+-- kcd2mp_dice_yield (F12) -- keys already live-verified safe and wired
+-- end-to-end for in-match bank/yield (WO-6 comment block in
+-- keybindSuperactions.xml). Reusing them costs zero new key-testing risk:
+-- outside an active match (KCD2MP.dice.open false) these two actions are
+-- never consumed by the dice-board block below, so they fall through here
+-- unclaimed. mp_accept / mp_decline remain the documented console fallback.
+local ACCEPT_ACTIONS  = { ["dialog_answer1"] = true, ["confirm"] = true, ["ui_accept"] = true,
+                           ["kcd2mp_dice_bank"] = true }
+local DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_cancel"] = true,
+                           ["kcd2mp_dice_yield"] = true }
 
--- Dice-invite keybind (WO-5). Same unverified-guess situation as accept/decline
--- above: not gated behind any of our own UI state (there is nothing to gate on
--- when *sending* an invite), so a wrong guess means this fires on whatever the
--- action really does elsewhere -- KCD2MP_InviteNearest is harmless to call
--- spuriously (worst case, an unwanted invite the other player just declines).
--- Picked from the same dialog_answerN family already accepted above rather
--- than a fresh guess, since dialog trees rarely go past two answers.
--- mp_invite dice is the verified, always-working fallback.
-local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = true }
+-- Dice-invite keybind (WO-5, real bind added WO-33). dialog_answer3/4 are the
+-- same kind of unverified guess as above, kept harmlessly. The real primary
+-- path reuses kcd2mp_dice_cast (F9) -- same reasoning as accept/decline: F9
+-- is already proven safe and unclaimed outside an active match, since the
+-- dice-board block below only consumes it (as "confirm/cast") when
+-- KCD2MP.dice.open is true and returns early. KCD2MP_InviteDiceAtTable
+-- itself refuses unless a DiceInteractor entity is actually in range, so a
+-- spurious F9 press elsewhere in the world is a no-op, not an unwanted
+-- invite. mp_invite dice remains the documented console fallback.
+local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = true,
+                               ["kcd2mp_dice_cast"] = true }
 
 -- Dice overlay keys (WO-6).
 --

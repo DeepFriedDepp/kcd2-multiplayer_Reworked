@@ -955,6 +955,15 @@
 	     since these are fixed defaults, not meant for player rebinding;
 	     mp_dice_mark/cast/bank/yield/cancel remain the console fallback.
 	     map="interaction" observed active whether standing or seated.
+
+	     WO-33: kcd2mp_dice_cast (F9) / kcd2mp_dice_bank (F11) /
+	     kcd2mp_dice_yield (F12) are ALSO the real invite/accept/decline binds
+	     outside an active match; no new keys added, since kdcmp.lua's
+	     handleAction only routes these three to the dice-board meaning while
+	     KCD2MP.dice.open is true, and to invite/accept/decline otherwise.
+	     Reusing them cost no new live key-testing: all three were already
+	     confirmed safe and unclaimed elsewhere when first wired up above.
+	     mp_invite dice / mp_accept / mp_decline remain the console fallback.
 	     See kdcmp.lua handleAction. -->
 	<superaction name="kcd2mp_dice_mark_1" ui_group="" keyboard="hidden">
 		<action name="kcd2mp_dice_mark_1" map="interaction" />

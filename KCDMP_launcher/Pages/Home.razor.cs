@@ -489,7 +489,7 @@ namespace KCDMP_launcher.Pages
                 {
                     FileName = settings.GamePath,
                     UseShellExecute = false,
-                    WorkingDirectory = Path.GetDirectoryName(settings.GamePath)
+                    WorkingDirectory = GameRootOf(settings.GamePath)
                 };
 
                 var gameProcess = Process.Start(gameStartInfo);
@@ -915,6 +915,42 @@ namespace KCDMP_launcher.Pages
 
             return File.Exists(Path.Combine(dir, "Framework.dll"))
                 && File.Exists(Path.Combine(dir, "CrySystem.dll"));
+        }
+
+        /// <summary>
+        /// The install root, two levels above KingdomCome.exe
+        /// (&lt;root&gt;\Bin\&lt;config&gt;\KingdomCome.exe) -- where Warhorse ships
+        /// steam_appid.txt for the Modding Tools build, not beside the exe.
+        ///
+        /// This matters because we start the game with Process.Start rather
+        /// than through Steam itself, so there is no Steam-injected app-id
+        /// context for the process -- SteamAPI_Init() falls back to reading
+        /// steam_appid.txt from the process's *working directory*. Launching
+        /// with WorkingDirectory set to the exe's own folder (the previous
+        /// behavior) means that file is never found, which is consistent with
+        /// what WO-31 observed: the game runs, but any save referencing DLC
+        /// content is greyed out in the load list, matching a process that
+        /// never established which App ID it should check DLC ownership
+        /// against. See docs/WO-31-findings.md.
+        ///
+        /// Falls back to the exe's own directory -- the old behavior -- if
+        /// steam_appid.txt cannot be found within a few levels, so an
+        /// unexpected install layout degrades to what shipped before rather
+        /// than breaking outright.
+        /// </summary>
+        public static string GameRootOf(string gamePath)
+        {
+            string dir = Path.GetDirectoryName(gamePath) ?? "";
+            string fallback = dir;
+
+            for (int i = 0; i < 4 && dir.Length > 0; i++)
+            {
+                if (File.Exists(Path.Combine(dir, "steam_appid.txt")))
+                    return dir;
+                dir = Path.GetDirectoryName(dir) ?? "";
+            }
+
+            return fallback;
         }
 
         /// <summary>

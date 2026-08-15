@@ -115,13 +115,15 @@ function Check([string] $What, [bool] $Ok, [string] $Detail = '') {
     else     { $script:fail++; Write-Host ("  FAIL  " + $What + $(if ($Detail) { " -- $Detail" })) -ForegroundColor Red }
 }
 
-# Dice config on Invite: [targetScore:2 LE][debugSeedOverride:4 LE]. Debug relay builds only.
-function Invite-Dice($from, [int] $targetId, [int] $targetScore, [int] $seed) {
-    $cfg = New-Object byte[] 6
+# Dice config on Invite: [targetScore:2 LE][debugSeedOverride:4 LE][wagerAmount:4 LE, WO-33].
+# debugSeedOverride is debug-relay-only; wagerAmount always applies.
+function Invite-Dice($from, [int] $targetId, [int] $targetScore, [int] $seed, [int] $wager = 0) {
+    $cfg = New-Object byte[] 10
     $cfg[0] = $targetScore -band 0xFF
     $cfg[1] = ($targetScore -shr 8) -band 0xFF
     $seedBytes = [BitConverter]::GetBytes([int] $seed)
     [Array]::Copy($seedBytes, 0, $cfg, 2, 4)
+    [Array]::Copy([BitConverter]::GetBytes([int] $wager), 0, $cfg, 6, 4)
 
     $payload = New-Object byte[] (3 + $cfg.Length)
     $payload[0] = [byte] $targetId
@@ -129,6 +131,15 @@ function Invite-Dice($from, [int] $targetId, [int] $targetScore, [int] $seed) {
     $payload[2] = [byte] $cfg.Length
     [Array]::Copy($cfg, 0, $payload, 3, $cfg.Length)
     Send-Packet $from.Stream $P.Invite $payload
+}
+
+# WO-33: decode the wager riding on an InviteReceived's forwarded config, so
+# the invitee can be tested seeing stakes before it answers. 0 if absent/short.
+function Parse-InviteReceivedWager($payload) {
+    if ($payload.Length -lt 5) { return 0 }
+    $configLen = $payload[4]
+    if ($configLen -lt 10 -or $payload.Length -lt 5 + $configLen) { return 0 }
+    return [BitConverter]::ToInt32([byte[]] $payload[11..14], 0)
 }
 
 function Respond($who, [int] $sid, [bool] $accept) {
@@ -170,6 +181,8 @@ function Parse-DiceEnd($payload) {
         Outcome        = [int] $payload[2]
         ScoreInitiator = [BitConverter]::ToInt32([byte[]] $payload[3..6], 0)
         ScoreAcceptor  = [BitConverter]::ToInt32([byte[]] $payload[7..10], 0)
+        # WO-33: optional trailing field, absent (0) on a pre-WO-33 relay.
+        WagerAmount    = if ($payload.Length -ge 15) { [BitConverter]::ToInt32([byte[]] $payload[11..14], 0) } else { 0 }
     }
 }
 
@@ -308,6 +321,41 @@ $end = Read-Relevant $h.Stream
 Check "Hank told PeerDisconnected" ($end -and $end.Type -eq $P.SessionEnd -and $end.Payload[2] -eq 3) "reason=$($REASON[[int]$end.Payload[2]])"
 
 $h.Tcp.Close()
+
+# --- 6. WO-33: wager rides InviteReceived and is echoed correctly on DiceEnd -
+Write-Host "`n6. wager: visible before accept, applied correctly to each side on a clean win"
+$i = Connect-Client 'Ivan'; $j = Connect-Client 'Jana'
+Invite-Dice $i $j.Id 500 424242 250   # same seed as test 1 -> known outcome: Initiator wins, 1200/300
+$invJ = Read-Relevant $j.Stream
+$sidW = SessionId $invJ.Payload
+Check "acceptor sees the wager before answering" ((Parse-InviteReceivedWager $invJ.Payload) -eq 250) `
+    "got $(Parse-InviteReceivedWager $invJ.Payload)"
+
+Respond $j $sidW $true
+$null = Read-Relevant $i.Stream   # SessionStart
+$null = Read-Relevant $j.Stream   # SessionStart
+$endI = Invoke-DiceMatch $i $j $sidW
+Check "winner's DiceEnd carries the agreed wager" ($endI.WagerAmount -eq 250) "got $($endI.WagerAmount)"
+Check "Ivan (initiator) won, as the seed predicts" ($endI.Outcome -eq 0) "outcome=$($endI.Outcome)"
+
+$i.Tcp.Close(); $j.Tcp.Close()
+
+# --- 7. WO-33: a wager configured but never reached -> no DiceEnd at all -----
+Write-Host "`n7. wager: mid-match disconnect never produces a DiceEnd (nothing to apply, on either side)"
+$k = Connect-Client 'Karel'; $l = Connect-Client 'Lada'
+Invite-Dice $k $l.Id 4000 5 999   # a large wager, deliberately, to make a wrongly-applied debit obvious if this regresses
+$invL = Read-Relevant $l.Stream
+$sidW2 = SessionId $invL.Payload
+Respond $l $sidW2 $true
+$null = Read-Relevant $k.Stream; $null = Read-Relevant $l.Stream   # SessionStart x2
+$null = Read-Relevant $k.Stream   # initial DiceState
+
+$l.Tcp.Close()   # Lada vanishes mid-match, wager still nominally "at stake"
+$end2 = Read-Relevant $k.Stream
+Check "Karel gets SessionEnd, not a DiceEnd, for a disconnected wager match" `
+    ($end2 -and $end2.Type -eq $P.SessionEnd -and $end2.Payload[2] -eq 3) "got type 0x$($end2.Type.ToString('X2'))"
+
+$k.Tcp.Close()
 
 Write-Host ""
 Write-Host ("=== {0} passed, {1} failed ===" -f $script:pass, $script:fail) -ForegroundColor $(if ($script:fail) { 'Red' } else { 'Green' })

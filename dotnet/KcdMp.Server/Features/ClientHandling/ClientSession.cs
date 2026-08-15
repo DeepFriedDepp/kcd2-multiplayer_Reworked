@@ -426,14 +426,15 @@ public class ClientSession
         EnqueueRaw(BuildPacket(Protocol.DiceError, payload));
     }
 
-    /// <summary>Thread-safe: enqueue a DiceEnd (0x19).</summary>
-    public void EnqueueDiceEnd(ushort sessionId, DiceOutcome outcome, int scoreInitiator, int scoreAcceptor)
+    /// <summary>Thread-safe: enqueue a DiceEnd (0x19). wagerAmount is echoed from the session's agreed stake (WO-33), 0 for none.</summary>
+    public void EnqueueDiceEnd(ushort sessionId, DiceOutcome outcome, int scoreInitiator, int scoreAcceptor, int wagerAmount = 0)
     {
-        var payload = new byte[11];
+        var payload = new byte[15];
         BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
         payload[2] = (byte)outcome;
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(3), scoreInitiator);
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(7), scoreAcceptor);
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(11), wagerAmount);
         EnqueueRaw(BuildPacket(Protocol.DiceEnd, payload));
     }
 
@@ -479,13 +480,21 @@ public class ClientSession
         }
     }
 
-    /// <summary>Thread-safe: enqueue an InviteReceived (0x0B).</summary>
-    public void EnqueueInviteReceived(ushort sessionId, byte fromGhostId, InteractionKind kind)
+    /// <summary>
+    /// Thread-safe: enqueue an InviteReceived (0x0B). config is the same
+    /// opaque bytes the inviter sent on Invite (WO-33) -- forwarded so the
+    /// invitee can see kind-specific open-time settings (e.g. dice's wager)
+    /// before answering, not just after accepting.
+    /// </summary>
+    public void EnqueueInviteReceived(ushort sessionId, byte fromGhostId, InteractionKind kind, byte[]? config = null)
     {
-        var payload = new byte[4];
+        config ??= [];
+        var payload = new byte[5 + config.Length];
         BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
         payload[2] = fromGhostId;
         payload[3] = (byte)kind;
+        payload[4] = (byte)config.Length;
+        config.CopyTo(payload, 5);
         EnqueueRaw(BuildPacket(Protocol.InviteReceived, payload));
     }
 

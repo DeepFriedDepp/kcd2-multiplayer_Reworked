@@ -41,6 +41,12 @@
     dotnet run --project dotnet\KcdMp.Server -- --port 7778      # separate window
     dotnet run --project dotnet\KcdMp.Client -- --host localhost --no-voice   # separate window, bridges the real game
     powershell -ExecutionPolicy Bypass -File tools\Bot-DiceOpponent.ps1       # this script, a third window
+
+.EXAMPLE
+    # WO-33: bot invites the human with a wager, so F9/F11/F12 (invite/accept/
+    # decline) and the wager money application can be tested without a real
+    # second player pressing anything to start it.
+    powershell -ExecutionPolicy Bypass -File tools\Bot-DiceOpponent.ps1 -AutoInviteWager 50
 #>
 [CmdletBinding()]
 param(
@@ -49,7 +55,14 @@ param(
     [string] $Name           = 'TestBot',
     [double] $OffsetX        = 2.0,
     [int]    $BankThreshold  = 300,
-    [int]    $MoveDelayMs    = 1200
+    [int]    $MoveDelayMs    = 1200,
+    # WO-33: if set, this bot INITIATES instead of only waiting to be invited
+    # -- sends an Invite to the first other ghost it sees announced (via a
+    # Name packet), with this many groschen staked, so the human's side of
+    # invite/accept/decline (F9/F11/F12) can be tested without a real second
+    # player having to press anything to start it. 0 = wait passively, the
+    # original behaviour.
+    [int]    $AutoInviteWager = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,7 +70,7 @@ $ErrorActionPreference = 'Stop'
 
 # Protocol constants, mirrored from Protocol.cs (same table as Test-Dice.ps1).
 $P = @{
-    Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09
+    Handshake = 0x00; Name = 0x03; Ack = 0xFF; VersionMismatch = 0x09
     Invite = 0x0A; InviteReceived = 0x0B; InviteResponse = 0x0C
     SessionStart = 0x0D; SessionEventUp = 0x0E; SessionEventDown = 0x0F
     SessionLeave = 0x10; SessionEnd = 0x11
@@ -128,6 +141,22 @@ function Respond($who, [int] $sid, [bool] $accept) {
     Send-Packet $who.Stream $P.InviteResponse ([byte[]]@([byte]($sid -band 0xFF), [byte](($sid -shr 8) -band 0xFF), [byte]$(if ($accept) { 1 } else { 0 })))
 }
 
+# WO-33: dice config is [targetScore:2 LE][debugSeedOverride:4 LE][wagerAmount:4 LE].
+# Fixed offsets, same as the real client -- see Protocol.cs.
+function Invite-DiceWithWager($from, [int] $targetGhostId, [int] $wager) {
+    $cfg = New-Object byte[] 10
+    $ts = [BitConverter]::GetBytes([uint16] 4000)   # Protocol.DefaultDiceTargetScore
+    [Array]::Copy($ts, 0, $cfg, 0, 2)
+    [Array]::Copy([BitConverter]::GetBytes([int] $wager), 0, $cfg, 6, 4)
+
+    $payload = New-Object byte[] (3 + $cfg.Length)
+    $payload[0] = [byte] $targetGhostId
+    $payload[1] = $KIND_DICE
+    $payload[2] = [byte] $cfg.Length
+    [Array]::Copy($cfg, 0, $payload, 3, $cfg.Length)
+    Send-Packet $from.Stream $P.Invite $payload
+}
+
 function Send-DiceIntent($stream, [int] $sid, [byte] $intentType, [byte[]] $data) {
     if ($null -eq $data) { $data = @() }
     $payload = New-Object byte[] (3 + $data.Length)
@@ -148,11 +177,20 @@ function Send-Position($stream, [double]$x, [double]$y, [double]$z, [double]$rot
     Send-Packet $stream 0x01 $payload   # Protocol.Position
 }
 
+# Bounds-checked, matching Test-Dice.ps1/DiceClient.cs -- the original version
+# here had none at all and crashed (ArgumentOutOfRangeException in ToInt32)
+# the first time this script ever ran a long real match against a real human,
+# something none of its earlier short bot-vs-bot runs had exercised. Returns
+# $null on anything malformed/short rather than throwing, so one bad packet
+# does not kill an otherwise-fine long-running session.
 function Parse-DiceState($payload) {
+    if ($payload.Length -lt 21) { return $null }
     $freeCount = $payload[20]
+    if ($payload.Length -lt 21 + $freeCount + 1) { return $null }
     $freeFaces = @(); for ($i = 0; $i -lt $freeCount; $i++) { $freeFaces += [int]$payload[21 + $i] }
     $o = 21 + $freeCount
     $keptCount = $payload[$o]
+    if ($payload.Length -lt $o + 1 + $keptCount) { return $null }
     $keptFaces = @(); for ($i = 0; $i -lt $keptCount; $i++) { $keptFaces += [int]$payload[$o + 1 + $i] }
     [pscustomobject]@{
         SessionId      = SessionId $payload
@@ -173,6 +211,8 @@ function Parse-DiceEnd($payload) {
         Outcome        = [int] $payload[2]
         ScoreInitiator = [BitConverter]::ToInt32([byte[]] $payload[3..6], 0)
         ScoreAcceptor  = [BitConverter]::ToInt32([byte[]] $payload[7..10], 0)
+        # WO-33: optional trailing field -- absent on a pre-WO-33 relay.
+        WagerAmount    = if ($payload.Length -ge 15) { [BitConverter]::ToInt32([byte[]] $payload[11..14], 0) } else { 0 }
     }
 }
 
@@ -225,16 +265,35 @@ Write-Host "Connected. Assigned ghost id = $($bot.Id)"
 
 Send-Position $bot.Stream $botX $botY $botZ 0.0 $false
 Write-Host ("Ghost sent at {0:F1},{1:F1},{2:F1}." -f $botX, $botY, $botZ)
-Write-Host "In game: run 'mp_dice' (or 'mp_invite dice') to challenge this bot."
-Write-Host "Then play YOUR turns with the real keybinds: R cast, 1-6 mark, hold F bank, hold X yield."
+if ($AutoInviteWager -gt 0) {
+    Write-Host "AutoInviteWager=${AutoInviteWager}: this bot will invite the first other ghost it sees, staking $AutoInviteWager groschen."
+    Write-Host "In game: watch for the prompt, then press F11 to accept or F12 to decline."
+} else {
+    Write-Host "In game: run 'mp_dice' (or press F9 near a table, or 'mp_invite dice') to challenge this bot."
+}
+Write-Host "Then play YOUR turns with the real keybinds: F2/F4-F9 mark/cast, hold F11 bank, hold F12 yield."
 Write-Host "Ctrl+C to stop.`n"
 
 $currentSid = $null
+$myRole = 1        # default: acceptor, the original behaviour. Corrected at SessionStart.
+$invited = $false  # AutoInviteWager: has this bot already sent its one invite?
 while ($true) {
     $pkt = Read-Packet $bot.Stream
     if ($null -eq $pkt) {
         if (-not $bot.Tcp.Connected) { Write-Host "Disconnected from relay." -ForegroundColor Red; break }
         continue   # just a read timeout while nothing happened -- keep waiting
+    }
+
+    # WO-33: fire the one auto-invite as soon as some other ghost announces a
+    # name -- Name (0x03) is broadcast for every connected client, including
+    # ones already present before this bot joined.
+    if ($AutoInviteWager -gt 0 -and -not $invited -and $pkt.Type -eq $P.Name -and $pkt.Payload.Length -ge 1) {
+        $targetId = $pkt.Payload[0]
+        if ($targetId -ne $bot.Id) {
+            Write-Host "Inviting ghost $targetId to dice, wager=$AutoInviteWager..." -ForegroundColor Cyan
+            Invite-DiceWithWager $bot $targetId $AutoInviteWager
+            $invited = $true
+        }
     }
 
     switch ($pkt.Type) {
@@ -253,15 +312,20 @@ while ($true) {
             $currentSid = $sid
         }
         $P.SessionStart {
-            Write-Host "Session started." -ForegroundColor Green
+            # payload: [sessionId:2][peerGhostId:1][kind:1][role:1] -- role is
+            # OUR role (0 Initiator, 1 Acceptor), which flips when this bot is
+            # the one that sent the invite (AutoInviteWager).
+            $myRole = [int] $pkt.Payload[4]
+            Write-Host ("Session started. This bot is {0}." -f $(if ($myRole -eq 0) { "Initiator" } else { "Acceptor" })) -ForegroundColor Green
         }
         $P.DiceState {
             $st = Parse-DiceState $pkt.Payload
-            $whoTurn = if ($st.CurrentRole -eq 0) { "YOU" } else { "bot" }
+            if ($null -eq $st) { Write-Host "  (dropped malformed DiceState)" -ForegroundColor Yellow; continue }
+            $whoTurn = if ($st.CurrentRole -eq $myRole) { "bot" } else { "YOU" }
             Write-Host ("  state: init={0} acc={1} turn={2} phase={3} free=[{4}] kept=[{5}]  -- {6}'s turn" -f `
                 $st.ScoreInitiator, $st.ScoreAcceptor, $st.TurnTotal, $st.Phase, ($st.FreeFaces -join ','), ($st.KeptFaces -join ','), $whoTurn)
 
-            if ($st.CurrentRole -eq 1) {
+            if ($st.CurrentRole -eq $myRole) {
                 Start-Sleep -Milliseconds $MoveDelayMs
                 if ($st.Phase -eq 1) {
                     $mask = Get-GreedyKeepMask $st.FreeFaces
@@ -282,8 +346,13 @@ while ($true) {
         }
         $P.DiceEnd {
             $end = Parse-DiceEnd $pkt.Payload
-            $outcome = if ($end.Outcome -eq 0) { "YOU (initiator) won" } else { "bot (acceptor) won" }
-            Write-Host ("=== Match ended: {0}  (scores {1}/{2}) ===" -f $outcome, $end.ScoreInitiator, $end.ScoreAcceptor) -ForegroundColor Magenta
+            $initiatorIsBot = ($myRole -eq 0)
+            $outcome = if ($end.Outcome -eq 0) {
+                if ($initiatorIsBot) { "bot (initiator) won" } else { "YOU (initiator) won" }
+            } else {
+                if ($initiatorIsBot) { "YOU (acceptor) won" } else { "bot (acceptor) won" }
+            }
+            Write-Host ("=== Match ended: {0}  (scores {1}/{2}, wager {3}) ===" -f $outcome, $end.ScoreInitiator, $end.ScoreAcceptor, $end.WagerAmount) -ForegroundColor Magenta
             $currentSid = $null
             Write-Host "`nWaiting for the next invite...`n"
         }

@@ -14,8 +14,12 @@ public sealed record DiceSnapshot(
 /// <summary>An intent this agent sent was rejected. The game state did not change.</summary>
 public sealed record DiceRejection(ushort SessionId, DiceRejectReason Reason);
 
-/// <summary>The match reached a conclusion.</summary>
-public sealed record DiceResult(ushort SessionId, DiceOutcome Outcome, int ScoreInitiator, int ScoreAcceptor);
+/// <summary>
+/// The match reached a conclusion. WagerAmount (WO-33) is the agreed stake in
+/// whole groschen, echoed back by the relay so the receiver need not have
+/// remembered it from the original invite; 0 for no stake.
+/// </summary>
+public sealed record DiceResult(ushort SessionId, DiceOutcome Outcome, int ScoreInitiator, int ScoreAcceptor, int WagerAmount = 0);
 
 /// <summary>
 /// Agent-side half of the dice wire protocol (WO-5).
@@ -140,7 +144,15 @@ public sealed class DiceClient(Func<byte, byte[], CancellationToken, Task> sendP
             var outcome = (DiceOutcome)payload[2];
             int scoreInitiator = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(3));
             int scoreAcceptor  = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(7));
-            MatchEnded?.Invoke(new DiceResult(sessionId, outcome, scoreInitiator, scoreAcceptor));
+
+            // wagerAmount appended WO-33, optional trailing field like
+            // DiceState's bustedFaces above -- a pre-WO-33 relay's 11-byte
+            // payload still parses fine, just with no wager.
+            int wagerAmount = payload.Length >= 15
+                ? BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(11))
+                : 0;
+
+            MatchEnded?.Invoke(new DiceResult(sessionId, outcome, scoreInitiator, scoreAcceptor, wagerAmount));
             return true;
         }
 

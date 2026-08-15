@@ -1596,8 +1596,11 @@ public partial class GameBridge(ClientConfig config)
 
             case "invite_send":
             {
-                // "<ghostId> <kind>" — Lua picks the target because it has the
-                // ghost positions; we only know relay ids.
+                // "<ghostId> <kind> [wagerAmount]" — Lua picks the target
+                // because it has the ghost positions; we only know relay ids.
+                // wagerAmount (WO-33) is dice-only and optional, groschen, from
+                // KCD2MP.dice.wagerAmount; Lua already checked its own balance
+                // before emitting this, so no re-check happens here.
                 var parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 1 || !byte.TryParse(parts[0], out byte targetId))
                 {
@@ -1607,8 +1610,19 @@ public partial class GameBridge(ClientConfig config)
                 var kind = parts.Length > 1 && parts[1].Equals("duel", StringComparison.OrdinalIgnoreCase)
                     ? InteractionKind.Duel
                     : InteractionKind.Dice;
-                Console.WriteLine($"[interaction] inviting ghost {targetId} to {kind}");
-                _ = interactions.InviteAsync(targetId, kind);
+
+                byte[]? config = null;
+                if (kind == InteractionKind.Dice)
+                {
+                    int wager = parts.Length > 2 && int.TryParse(parts[2], out int w) ? w : 0;
+                    config = new byte[10];
+                    BinaryPrimitives.WriteUInt16LittleEndian(config, (ushort)Protocol.DefaultDiceTargetScore);
+                    BinaryPrimitives.WriteInt32LittleEndian(config.AsSpan(6), wager);
+                }
+
+                Console.WriteLine($"[interaction] inviting ghost {targetId} to {kind}"
+                    + (config is not null ? $" (wager {BinaryPrimitives.ReadInt32LittleEndian(config.AsSpan(6))})" : ""));
+                _ = interactions.InviteAsync(targetId, kind, config);
                 break;
             }
 
@@ -1761,7 +1775,11 @@ public partial class GameBridge(ClientConfig config)
             // because its UI lived in the launcher window; that window is
             // retired (WO-6), so there is no longer anywhere else for a dice
             // invite to appear.
-            _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\") end");
+            //
+            // invite.WagerAmount (WO-33) rides along so the prompt can show
+            // the stake before the player decides -- KCD2MP_AcceptInvite
+            // checks it against Inventory.GetMoney() before responding.
+            _ = ExecLuaAsync($"if KCD2MP_ShowInvite then KCD2MP_ShowInvite({invite.SessionId},\"{Escape(who)}\",\"{invite.Kind}\",{invite.WagerAmount}) end");
         };
 
         interactions.SessionStarted += session =>
@@ -1846,9 +1864,16 @@ public partial class GameBridge(ClientConfig config)
                 && ((session.Role == SessionRole.Initiator && result.Outcome == DiceOutcome.InitiatorWon)
                  || (session.Role == SessionRole.Acceptor  && result.Outcome == DiceOutcome.AcceptorWon));
 
+            // result.WagerAmount (WO-33) is echoed by the relay on the DiceEnd
+            // packet itself -- see Protocol.cs's note on why that, not a
+            // remembered value, is what a client applies. KCD2MP_DiceEnd is
+            // reached only for a match that ran to a clean conclusion: a
+            // mid-match disconnect fires SessionEnded instead (below), which
+            // never calls this, so a dropped connection can never debit or
+            // credit either side.
             _ = ExecLuaAsync(
                 $"if KCD2MP_DiceEnd then KCD2MP_DiceEnd(\"{(won ? "win" : "lose")}\"," +
-                $"{result.ScoreInitiator},{result.ScoreAcceptor}) end");
+                $"{result.ScoreInitiator},{result.ScoreAcceptor},{result.WagerAmount}) end");
         };
     }
 
