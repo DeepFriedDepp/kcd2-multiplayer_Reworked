@@ -584,10 +584,11 @@ begin
       Break;
     end;
 
+    { No hard line breaks inside sentences: MsgBox uses a proportional font
+      and wraps on its own; manual mid-sentence breaks made the real dialog
+      ragged (seen on screen). Breaks only between paragraphs. }
     if MsgBox(Blocker + ' is still running.' + #13#10#13#10 +
-              'Installing over running programs is how an update half-applies: some files' + #13#10 +
-              'update, the ones in use silently do not, and the result looks installed but' + #13#10 +
-              'is a mix of two versions.' + #13#10#13#10 +
+              'Installing over running programs is how an update half-applies: some files update, the ones in use silently do not, and the result looks installed but is a mix of two versions.' + #13#10#13#10 +
               'Close it (launcher, agent, relay, and the game), then click Retry.',
               mbConfirmation, MB_RETRYCANCEL) <> IDRETRY then
     begin

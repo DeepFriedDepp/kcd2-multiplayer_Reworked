@@ -319,11 +319,17 @@ Three defence layers were then built so testers can never hit this silently:
 
 Verified: installer lifecycle suite 41/41 (including the manifest
 verification running on its real silent install), detection suite 21/21,
-Farkle 59/59. Honest limits: the gate's silent kill-ours and abort-on-game
-paths and the interactive Retry/Cancel dialog are code-reviewed but not
-exercised (consistent with the wizard itself being listed unverified in
-README); the launcher banner's mismatch path has not been triggered against a
-deliberately mixed install.
+Farkle 59/59. **Human-verified live, both directions:** the user ran the
+hardened Setup with everything closed (installed cleanly; verdict file reads
+`PASS  all files match the install manifest`), then ran it again with the
+launcher open and the gate fired the Retry/Cancel dialog exactly as designed
+(screenshot evidence in the session). That first live showing also exposed
+ragged mid-sentence line wrapping in the dialog — hard breaks fighting the
+proportional font — fixed by breaking only between paragraphs and letting
+MsgBox wrap; the fix is text-only, so the suites were not re-run for it.
+Honest limits: the gate's silent kill-ours and abort-on-game paths are
+code-reviewed but not exercised, and the launcher banner's mismatch path has
+not been triggered against a deliberately mixed install.
 
 Two side-findings from the same work:
 
