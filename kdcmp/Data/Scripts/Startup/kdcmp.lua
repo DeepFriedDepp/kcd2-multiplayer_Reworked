@@ -55,7 +55,8 @@ KCD2MP._weaponPollAt = 0        -- last IsWeaponDrawn poll (throttled to 5 Hz)
 KCD2MP._weaponEmitAt = 0        -- last "combat draw" emission (30s heartbeat while drawn)
 KCD2MP._weaponReadOk = nil      -- nil=not probed, false=IsWeaponDrawn unavailable, true=working
 KCD2MP.ghostWeaponDrawn = {}    -- id → true while that peer reports weapon drawn
-KCD2MP._lastSwingEmit = 0       -- rate limit for swing/block event emission
+KCD2MP._lastSwingEmit = 0       -- rate limit for swing event emission
+KCD2MP._blockHeld = false       -- edge detector: 'block' only ever fires hold/release
 
 -- WO-17: opt-in, off by default, decided locally per player -- see
 -- KCD2MP_EnableAggro. Persists for the session (a plain Lua global survives
@@ -3227,32 +3228,41 @@ end
 
 -- ===== Combat visibility, inbound half (WO-39 Phase 1) =====
 --
--- Swing/block one-shot candidates. Same probe-on-first-use pattern as the
--- jump/death lists: findAnim keeps the first name the entity actually has,
--- an unverified candidate can never play, and none-found means the ghost
--- simply keeps its locomotion animation (weapon still visibly drawn via
--- DrawWeapon, which IS confirmed on this build) -- still strictly better
--- than the reported arms-down statue. NONE of these names is confirmed
--- until the mp_combat_probe live pass; the lists follow the naming
--- conventions of the anims that ARE confirmed (relaxed_idle_both,
--- 3d_relaxed_run_turn_strafe).
+-- Swing/block one-shot candidates, LIVE-TUNED 2026-08-18 against the real
+-- Mannequin databases (kcd_male_combat_database.adb + _generated.adb,
+-- extracted from Animations.pak) and eyeball-verified on a live ghost.
+-- What that session established, so nobody re-walks it:
+--   - REAL full swings are 1d- blendspaces (parametric by attack angle).
+--     StartAnimation "starts" them (returns true) but they never render,
+--     and the plain "natk_slash_*_upper" clips are upper-guard partials
+--     that read as blocking. Swings are Mannequin-locked on this build.
+--   - Human.PlayAnim(fragment, tags) executes fault-free and renders
+--     NOTHING for FreeAttack/CombatAttack/CombatHit/FreeBlock on a ghost.
+--   - What DOES render correctly via StartAnimation: guard idles, the
+--     dz "blk" block reactions, hit "flinch" reactions, and guard
+--     TRANSITIONS. Naming decode: lg/rg = left/right guard (rg raises the
+--     sword arm and reads correctly; lg raises the EMPTY left arm and
+--     reads like phantom-shield blocking), sz = distance zone, az/dz =
+--     attack/defense zone.
+-- The swing cue therefore is a fast right-to-left guard transition -- a
+-- big lateral sword move, human-confirmed "usable" as an attack read at a
+-- few metres -- played at SWING_ANIM_SPEED. Not a true swing; the honest
+-- reachable ceiling this build gives us.
 local COMBAT_SWING_ANIMS = {
-    "attack", "attack_both", "combat_attack", "melee_attack",
-    "3d_combat_attack", "3d_attack", "sword_attack", "attack_slash",
-    "combat_swing", "swing", "mm_attack", "act_attack",
+    "combat_rg_sz1_idle_to_lg_sz0_idle_lngsw",   -- CONFIRMED live 2026-08-18
+    "combat_rg_sz1_idle_to_rg_sz5_idle_lngsw",   -- confirmed exists; second choice
 }
+local SWING_ANIM_SPEED = 1.6   -- the transition reads as a strike at this rate
 local COMBAT_BLOCK_ANIMS = {
-    "block", "block_both", "combat_block", "guard",
-    "3d_combat_block", "3d_block", "sword_block", "parry",
-    "combat_guard", "mm_block", "act_block",
+    "combat_rg_sz1_dz0_blk_slash_lngsw",         -- CONFIRMED live 2026-08-18
+    "combat_free_blk_lngsw_player_over",         -- exists; long hold, worse read
 }
 -- Weapon-ready idle for a ghost whose owner has their weapon drawn, so the
--- drawn state reads at a glance even between swings. Falls back to the
--- ordinary relaxed idle when none probes out.
+-- drawn state reads at a glance even between swings. Right guard: the
+-- sword arm is the raised one.
 local COMBAT_IDLE_ANIMS = {
-    "combat_idle_both", "combat_idle", "3d_combat_idle",
-    "battle_idle", "fight_idle", "guard_idle_both", "guard_idle",
-    "combat_ready_idle", "sword_idle", "3d_combat_idle_both",
+    "combat_rg_sz1_idle_lngsw_player",           -- CONFIRMED live 2026-08-18
+    "combat_lg_sz0_idle_lngsw_player",           -- exists; reads shield-y (left guard)
 }
 KCD2MP._swingAnim = nil        -- nil=not probed, false=none found, string=found
 KCD2MP._blockAnim = nil
@@ -3323,15 +3333,21 @@ function KCD2MP_GhostCombat(id, evt)
         end
         if not anim then return end
 
+        -- Swings play fast (the guard transition reads as a strike at 1.6x,
+        -- confirmed live); blocks at natural speed. The one-shot window is
+        -- the played duration, so the speed divides the length.
+        local speed = (evt == 2) and SWING_ANIM_SPEED or 1.0
         local len = 0
         pcall(function() len = ghost.entity:GetAnimationLength(0, anim) or 0 end)
-        pcall(function() ghost.entity:StartAnimation(0, anim, 0, 0.1, 1.0, false) end)
+        pcall(function() ghost.entity:StartAnimation(0, anim, 0, 0.08, speed, false) end)
         -- Hold the one-shot: KCD2MP_UpdateAnimation restarts locomotion every
-        -- tick and would stomp this on the very next one. Capped so a bad
-        -- length can never freeze the ghost for long. istate always exists on
-        -- a spawned ghost; a half-spawned one has no animation loop to fight.
+        -- tick and would stomp this on the very next one (confirmed live:
+        -- one-shots were invisible until the loop was suppressed). Capped so
+        -- a bad length can never freeze the ghost for long. istate always
+        -- exists on a spawned ghost; a half-spawned one has no loop to fight.
         if ghost.istate then
-            ghost.istate.oneShotUntil = os.clock() + math.min(len > 0 and len or 0.8, 1.5)
+            local dur = (len > 0 and len or 0.8) / speed
+            ghost.istate.oneShotUntil = os.clock() + math.min(dur, 1.5)
         end
     end
 end
@@ -5633,20 +5649,22 @@ local AXIS_ACTIONS = {
 
 -- Combat visibility (WO-39 Phase 1): the local player's own attack/block
 -- inputs, mirrored to peers as cosmetic one-shots on this player's ghost.
--- UNVERIFIED GUESSES until the mp_log_actions live pass confirms what this
--- build's melee inputs are actually named (the same discipline as the
--- dialog_answerN guesses above: a name that never fires costs nothing, but
--- unlike those, a FALSE POSITIVE here makes the ghost swing spuriously -- so
--- only unambiguously attack/block-shaped names are listed, never generic
--- ones like "use").
+-- CONFIRMED by the mp_log_actions live pass 2026-08-18: real melee swings
+-- fire 'attack_primary_mouse' press/release, one pair per swing; blocking
+-- fires 'block' with activation 'hold' (spammed per frame while held) and
+-- 'release' -- NEVER 'press', which is why the handler below edge-detects
+-- the first hold. 'attack_abort' also fires on releases; deliberately not
+-- listed (it is the abort, not the swing). The unconfirmed non-mouse
+-- variants stay for gamepad input, same harmless-if-never-fires idiom as
+-- the dialog_answerN guesses above.
 local COMBAT_SWING_ACTIONS = {
-    attack=true, attack1=true, attack2=true, attack_primary=true,
-    melee_attack=true, combat_attack=true, wh_attack=true,
-    combat_swing=true, swing=true, attack_zone=true,
+    attack_primary_mouse=true,                        -- CONFIRMED live
+    attack_secondary_mouse=true,                      -- same family (stab)
+    attack_primary=true, attack_secondary=true,       -- gamepad guesses
 }
 local COMBAT_BLOCK_ACTIONS = {
-    block=true, combat_block=true, wh_block=true, parry=true,
-    combat_guard=true, perfect_block=true, gblock=true,
+    block=true,                                       -- CONFIRMED live (hold/release)
+    combat_block=true, wh_block=true,                 -- gamepad guesses
 }
 
 -- Accept/decline keybinds (WO-2, real binds added WO-33).
@@ -5803,17 +5821,29 @@ local function handleAction(action, activation, value)
         return
     end
 
-    -- Combat visibility (WO-39): mirror attack/block presses to peers.
+    -- Combat visibility (WO-39): mirror attack/block inputs to peers.
     -- Deliberately NO return -- this hook must never consume combat input;
     -- the game's own handler already ran (we are chained after it), and a
     -- swing that also triggered something else must keep doing so.
-    if activation == "press" or activation == 1 then
-        if COMBAT_SWING_ACTIONS[action] or COMBAT_BLOCK_ACTIONS[action] then
+    if COMBAT_SWING_ACTIONS[action] then
+        if activation == "press" or activation == 1 then
             local now = os.clock()
             if now - (KCD2MP._lastSwingEmit or 0) >= 0.15 then
                 KCD2MP._lastSwingEmit = now
-                KCD2MP_EmitEvent("combat", COMBAT_SWING_ACTIONS[action] and "swing" or "block")
+                KCD2MP_EmitEvent("combat", "swing")
             end
+        end
+    elseif COMBAT_BLOCK_ACTIONS[action] then
+        -- 'block' never fires 'press' on this build -- only a per-frame
+        -- 'hold' stream and a 'release' (confirmed live). Edge-detect the
+        -- first hold so one raise of the guard is one event, not sixty.
+        local held = (activation == "press" or activation == "hold"
+                      or activation == 1 or activation == 2)
+        if held and not KCD2MP._blockHeld then
+            KCD2MP._blockHeld = true
+            KCD2MP_EmitEvent("combat", "block")
+        elseif activation == "release" then
+            KCD2MP._blockHeld = false
         end
     end
 
