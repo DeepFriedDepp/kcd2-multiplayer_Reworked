@@ -307,6 +307,8 @@ namespace KcdMp.Wire;
 ///
 /// C→S  0x26  NpcStateUp:   [nameLen:1][name:UTF-8][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
 /// S→C  0x27  NpcStateDown: [sourceGhostId:1] + the upstream body verbatim
+///                            flags bit 0: dead in the authority's world
+///                                 bit 1: knocked out in the authority's world (WO-38 Phase 6)
 ///
 /// One hand-placed NPC's position/state, streamed by the world authority so
 /// every peer's local copy of that NPC mirrors the authority's copy instead of
@@ -611,6 +613,15 @@ public static class Protocol
 
     /// <summary>NpcState flag: the NPC is dead in the authority's world.</summary>
     public const byte NpcStateFlagDead = 0x01;
+
+    /// <summary>
+    /// NpcState flag: the NPC is knocked out (unconscious, not dead) in the
+    /// authority's world (WO-38 Phase 6). Receivers freeze their copy exactly
+    /// as for dead -- KCD2's unconsciousness is a real state distinct from
+    /// death, and a knocked-out body being walked by a position stream was
+    /// the WO-38 Section G report.
+    /// </summary>
+    public const byte NpcStateFlagUnconscious = 0x02;
 
     /// <summary>PlayerState flag: the player is knocked out but not dead.</summary>
     public const byte PlayerStateFlagUnconscious = 0x01;

@@ -1735,10 +1735,14 @@ function KCD2MP_NpcSyncTick()
             local p = e:GetWorldPos()
             local rot = 0
             pcall(function() rot = e:GetWorldAngles().z or 0 end)
-            local hp, dead = -1, false
+            local hp, dead, ko = -1, false, false
             if e.actor then
                 pcall(function() hp = e.actor:GetHealth() or -1 end)
                 pcall(function() dead = e.actor:IsDead() == true end)
+                -- WO-38 Phase 6: knockout is a real state distinct from death
+                -- and travels as its own flag bit, so a receiver can freeze
+                -- its copy of a knocked-out NPC instead of walking it.
+                pcall(function() ko = e.actor:IsUnconscious() == true end)
             end
 
             local moved = not t.lastX
@@ -1748,12 +1752,13 @@ function KCD2MP_NpcSyncTick()
             local hpChanged = t.lastHp and hp >= 0 and math.abs(hp - t.lastHp) > 0.5
             local heartbeat = not t.lastSentAt or (now - t.lastSentAt) >= KCD2MP.npcSync.heartbeatS
 
-            if moved or hpChanged or heartbeat or (dead and not t.sentDead) then
-                local flags = dead and 1 or 0
+            local koChanged = (ko ~= (t.sentKo or false))
+            if moved or hpChanged or heartbeat or koChanged or (dead and not t.sentDead) then
+                local flags = (dead and 1 or 0) + (ko and 2 or 0)
                 KCD2MP_EmitEvent("npc_state", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
                     name, p.x, p.y, p.z, rot, hp, flags))
                 t.lastX, t.lastY, t.lastZ, t.lastRot = p.x, p.y, p.z, rot
-                t.lastHp, t.lastSentAt, t.sentDead = hp, now, dead
+                t.lastHp, t.lastSentAt, t.sentDead, t.sentKo = hp, now, dead, ko
             end
         end)
     end
@@ -1789,7 +1794,9 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     end
     p.tx, p.ty, p.tz, p.tr = x, y, z, rot
     p.hp = hp
-    p.dead = (tonumber(flags) or 0) >= 1
+    local f = tonumber(flags) or 0
+    p.dead = (math.floor(f) % 2) == 1          -- bit 0
+    p.ko   = (math.floor(f / 2) % 2) == 1      -- bit 1 (WO-38 Phase 6: knocked out in the authority's world)
     p.lastPacketAt = os.clock()
     KCD2MP_StartNpcPuppet()
 end
@@ -1817,10 +1824,33 @@ function KCD2MP_NpcPuppetTick()
 
             -- WO-34's corpse lesson, applied on both death sources: if the
             -- authority says dead, or this world's copy died locally, stop
-            -- driving -- a corpse must not be dragged around.
-            local locallyDead = false
-            if e.actor then pcall(function() locallyDead = e.actor:IsDead() == true end) end
-            if p.dead or locallyDead then return end
+            -- driving -- a corpse must not be dragged around. WO-38 Phase 6
+            -- extends the same rule to unconsciousness on both sources: a
+            -- knocked-out NPC kept walking under the stream (Section G).
+            local locallyDead, locallyKo = false, false
+            if e.actor then
+                pcall(function() locallyDead = e.actor:IsDead() == true end)
+                pcall(function() locallyKo = e.actor:IsUnconscious() == true end)
+            end
+            if p.dead or p.ko or locallyDead or locallyKo then
+                -- WO-38 Phase 6, the drag gap: on THIS channel the stream is
+                -- the body's actual location in the authority's world (unlike
+                -- the ghost stream, which is a live player's position -- that
+                -- one must stay frozen, WO-34). So a body is allowed to
+                -- FOLLOW a meaningful stream move -- the authority dragging a
+                -- corpse -- as a one-shot placement, no animation, no per-tick
+                -- lerp fighting the local ragdoll. Small jitter stays frozen.
+                local bx = p.dragX or p.cx
+                local by = p.dragY or p.cy
+                local ddx = (p.tx or bx) - bx
+                local ddy = (p.ty or by) - by
+                if (ddx*ddx + ddy*ddy) > 0.25 then
+                    p.dragX, p.dragY = p.tx, p.ty
+                    pcall(function() e:SetWorldPos({x = p.tx, y = p.ty, z = p.tz or p.cz}) end)
+                    mp_log(string.format("NPC-SYNC body follow %s -> %.1f,%.1f", name, p.tx, p.ty))
+                end
+                return
+            end
 
             -- Same teleport-vs-lerp shape as the ghost interp: snap on a big
             -- gap, smooth otherwise.
@@ -2754,10 +2784,26 @@ end
 -- reconcile cycle.
 function mp_ghost_is_corpse(id, ghost)
     if KCD2MP.ghostDead[id] then return true end
+    -- WO-38 Phase 6: the owner reporting themselves unconscious (0x1F/0x20
+    -- flags bit 0) is also a body -- they are lying in their own world, so a
+    -- position stream that keeps arriving is stale-by-definition and driving
+    -- walk animation onto their slumped stand-in is the same walking-corpse
+    -- shape WO-34 fixed for death.
+    local gh = KCD2MP.ghostHealth[id]
+    if gh and gh.flags and (math.floor(gh.flags) % 2) == 1 then return true end
     if not (ghost and ghost.entity and ghost.entity.actor) then return false end
     local dead = false
     pcall(function() dead = ghost.entity.actor:IsDead() and true or false end)
-    return dead
+    if dead then return true end
+    -- WO-38 Phase 6: an NPC knocked this ghost out in THIS world. KCD2's
+    -- unconsciousness is a real state distinct from death (the original A1
+    -- lesson), and an unconscious body must freeze for exactly the same
+    -- reason a dead one does. Same read WO-28's self-vitals already proved
+    -- (actor:IsUnconscious), same pcall discipline: on failure assume
+    -- conscious, because wrongly freezing a live player is the worse error.
+    local ko = false
+    pcall(function() ko = ghost.entity.actor:IsUnconscious() and true or false end)
+    return ko
 end
 
 -- Smallest health drop worth reporting as a hit. Below this it is sampling
