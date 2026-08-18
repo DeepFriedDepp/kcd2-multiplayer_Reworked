@@ -81,6 +81,115 @@ public class ClientHandler
 	public bool IsDamageAuthority(ClientSession client) =>
 		ReferenceEquals(DamageAuthority, client);
 
+	// ---- Time-skip sync (WO-38 Phase 1) ----
+	//
+	// The session's one active skip: whichever client's TimeSkipUp(start)
+	// arrived first owns it; everyone who starts a skip while it is active is
+	// recorded as joined instead of getting a competing claim. Deterministic
+	// by arrival order at this relay -- never by comparing finished results.
+	// Deliberately NOT tied to Rule 2's damage authority: any player's sleep
+	// counts (WO-38 spec), so this layer has its own first-come arbitration.
+
+	private byte? _skipOwnerId;
+	private DateTime _skipStartedUtc;
+	private readonly HashSet<byte> _skipJoined = [];
+
+	// Grace record of the most recently cleared skip, so a joined client
+	// whose own vanilla skip resolves shortly *after* the owner's still gets
+	// its result forwarded quietly rather than announced as a second skip.
+	private HashSet<byte>? _lastSkipJoined;
+	private DateTime _lastSkipClearedUtc;
+
+	/// <summary>What the relay should do with an inbound TimeSkipUp.</summary>
+	public enum TimeSkipRouting
+	{
+		/// <summary>Drop it (a duplicate start, or a joined player's start).</summary>
+		None,
+		/// <summary>Broadcast it as phase=start.</summary>
+		BroadcastStart,
+		/// <summary>Broadcast it as phase=done (announced).</summary>
+		BroadcastDone,
+		/// <summary>Broadcast it as phase=done-quiet (applied, not announced).</summary>
+		BroadcastDoneQuiet,
+	}
+
+	/// <summary>
+	/// A client reported a skip starting. First claim wins and is broadcast;
+	/// anyone else is joined to the active skip and their start is dropped.
+	/// </summary>
+	public TimeSkipRouting BeginTimeSkip(ClientSession client)
+	{
+		lock (_lock)
+		{
+			ExpireTimeSkipLocked();
+			if (_skipOwnerId is null)
+			{
+				_skipOwnerId = client.Id;
+				_skipStartedUtc = DateTime.UtcNow;
+				_skipJoined.Clear();
+				return TimeSkipRouting.BroadcastStart;
+			}
+			if (_skipOwnerId == client.Id)
+				return TimeSkipRouting.None;   // duplicate start marker for the same skip
+			_skipJoined.Add(client.Id);
+			return TimeSkipRouting.None;       // joined -- absorbed into the active skip
+		}
+	}
+
+	/// <summary>
+	/// A client reported a skip finishing (or a detected clock jump, which
+	/// arrives as a bare done). See <see cref="Protocol"/>'s 0x28 notes for the
+	/// three outcomes.
+	/// </summary>
+	public TimeSkipRouting CompleteTimeSkip(ClientSession client)
+	{
+		lock (_lock)
+		{
+			ExpireTimeSkipLocked();
+			if (_skipOwnerId is not null)
+			{
+				if (_skipOwnerId == client.Id)
+				{
+					ClearTimeSkipToGraceLocked();
+					return TimeSkipRouting.BroadcastDone;
+				}
+				// A joined player's own skip resolved before the owner's.
+				// Forward quietly: convergence without a second notification.
+				return TimeSkipRouting.BroadcastDoneQuiet;
+			}
+			if (_lastSkipJoined is not null
+			    && (DateTime.UtcNow - _lastSkipClearedUtc).TotalSeconds <= Protocol.TimeSkipJoinGraceSeconds
+			    && _lastSkipJoined.Contains(client.Id))
+				return TimeSkipRouting.BroadcastDoneQuiet;
+			// No active skip, not a late joiner: an instant skip (the
+			// fast-travel clock-jump shape). Announce it.
+			return TimeSkipRouting.BroadcastDone;
+		}
+	}
+
+	/// <summary>Clears the active skip if <paramref name="client"/> owned it -- called on disconnect.</summary>
+	public void ClearTimeSkipFor(ClientSession client)
+	{
+		lock (_lock)
+			if (_skipOwnerId == client.Id)
+				ClearTimeSkipToGraceLocked();
+	}
+
+	private void ExpireTimeSkipLocked()
+	{
+		if (_skipOwnerId is not null
+		    && (DateTime.UtcNow - _skipStartedUtc).TotalSeconds > Protocol.TimeSkipTimeoutSeconds)
+			ClearTimeSkipToGraceLocked();
+	}
+
+	private void ClearTimeSkipToGraceLocked()
+	{
+		_lastSkipJoined = [.. _skipJoined];
+		_lastSkipClearedUtc = DateTime.UtcNow;
+		_skipOwnerId = null;
+		_skipJoined.Clear();
+	}
+
 	/// <summary>
 	/// Returns the current player count.
 	/// </summary>

@@ -77,6 +77,10 @@ public class TcpSocketService : BackgroundService
 
 					_clientHandler.RemoveClient(client);
 
+					// WO-38: a sleeper who disconnects mid-skip must not leave the
+					// session's one active-skip slot claimed until the timeout.
+					_clientHandler.ClearTimeSkipFor(client);
+
 					// Before announcing the disconnect: a peer still in a session
 					// with this client needs telling, or it waits forever.
 					_sessions.HandleDisconnect(client);

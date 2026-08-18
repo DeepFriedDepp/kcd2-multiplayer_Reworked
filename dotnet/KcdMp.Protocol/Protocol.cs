@@ -338,7 +338,71 @@ namespace KcdMp.Wire;
 /// drive and nothing to create. This layer moves EXISTING NPCs; it never
 /// spawns one.
 ///
-/// Free type bytes for new features: 0x28 and up.
+/// ---- Time-skip sync layer (WO-38 Phase 1) ----
+///
+/// C→S  0x28  TimeSkipUp:   [phase:1][kind:1][worldTime:4 LE uint32]                  (6)
+/// S→C  0x29  TimeSkipDown: [sourceGhostId:1][phase:1][kind:1][worldTime:4 LE uint32] (7)
+///
+/// Synchronises the day/night clock across players -- the WO-38 report's
+/// Section F: a player who sleeps to midnight leaves every peer still in
+/// daytime, and the diverged clocks put each world's NPCs on different
+/// schedules (a major driver of the Section C/G phasing).
+///
+/// worldTime is Calendar.GetWorldTime()'s value: whole seconds from start of
+/// level, authored world data, byte-identical semantics on every install --
+/// the same reasoning that makes soul GUIDs and entity names valid
+/// cross-client keys. It is meaningful only on a done phase; senders put 0 on
+/// a start.
+///
+/// phase: 0 = start (a skip began; carries no time yet -- the target of a
+///            vanilla sleep/wait is not knowable from outside until it
+///            resolves), 1 = done (the skip resolved; worldTime is the
+///            resulting clock), 2 = done-quiet (S→C only: apply the time but
+///            do not announce it -- see the join rule below).
+/// kind:  0 = bed sleep, 1 = wait/pass-time, 2 = fast travel, 255 = unknown.
+///        Wording only ("slept till" vs "passed time to"); receivers treat
+///        every non-zero kind the same mechanically.
+///
+/// **One active skip per session** (the WO-38 design rule): the relay tracks
+/// which client's start arrived first and that skip becomes the session's one
+/// active skip. A start from anyone else while one is active is dropped --
+/// that player is *joined* to the active skip instead, recorded in a joined
+/// set. Deterministic by relay arrival order of the start packets, never by
+/// comparing two finished results after the fact.
+///
+/// Done routing:
+///  - done from the active skip's owner: broadcast as phase=done (announce --
+///    receivers show "&lt;name&gt; slept till 8:00 AM"), active skip cleared
+///    into a short grace record.
+///  - done from a joined client (while active, or within the grace window
+///    after the owner finished): broadcast as phase=done-quiet. Their own
+///    vanilla skip cannot be retargeted or rewound from outside
+///    (Calendar.SetWorldTime is documented "Must not be set backwards"), so
+///    if they overshot the owner's target the session converges *up* to
+///    their result -- silently, because the spec's join rule is that being
+///    absorbed into an active skip must not produce a second notification.
+///  - done from a client with no active skip and no grace membership: an
+///    instant skip (start+done in one) -- this is what a fast-travel time
+///    jump looks like, detected agent-side by a clock-jump watcher rather
+///    than a log marker. Broadcast as phase=done (announced).
+///
+/// Receivers apply with Calendar.SetWorldTime(target) **forward only** (the
+/// engine's own documented constraint); a receiver already past the target
+/// keeps its own clock, so the residual divergence after any exchange is
+/// bounded by overshoot, never by hours. A receiver whose own skip is still
+/// resolving queues the target and applies it when its own skip ends.
+///
+/// Deliberately NOT gated on Rule 2's authority: any player's sleep counts
+/// (the WO-38 spec: "when any player sleeps/waits/fast-travels"), so this
+/// layer has its own first-come arbitration instead of the damage
+/// authority's.
+///
+/// The relay's active-skip record expires after
+/// <see cref="TimeSkipTimeoutSeconds"/> (a vanilla skip resolves in well
+/// under a minute of real time) and is cleared into grace when its owner
+/// disconnects, so a crashed sleeper cannot wedge the session.
+///
+/// Free type bytes for new features: 0x2A and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -385,6 +449,7 @@ public static class Protocol
     public const byte PlayerHitUp    = 0x21;
     public const byte PlayerDeathUp  = 0x23;
     public const byte NpcStateUp     = 0x26;
+    public const byte TimeSkipUp     = 0x28;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -410,6 +475,7 @@ public static class Protocol
     public const byte PlayerDeathDown  = 0x24;
     public const byte CombatRole       = 0x25;
     public const byte NpcStateDown     = 0x27;
+    public const byte TimeSkipDown     = 0x29;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -551,6 +617,50 @@ public static class Protocol
     /// "that player is exhausted", and never renders a fake zero.
     /// </summary>
     public const float UnknownStat = -1f;
+
+    // ---- Time-skip sync layer (WO-38 Phase 1) ----
+
+    /// <summary>Exact TimeSkipUp (0x28) payload length.</summary>
+    public const int TimeSkipUpPayloadLen = 1 + 1 + 4;
+
+    /// <summary>Exact TimeSkipDown (0x29) payload length.</summary>
+    public const int TimeSkipDownPayloadLen = 1 + TimeSkipUpPayloadLen;
+
+    /// <summary>TimeSkip phase: a skip began (no time yet -- worldTime is 0).</summary>
+    public const byte TimeSkipPhaseStart = 0;
+
+    /// <summary>TimeSkip phase: a skip resolved; worldTime is the resulting clock. Announced by receivers.</summary>
+    public const byte TimeSkipPhaseDone = 1;
+
+    /// <summary>TimeSkip phase (S→C only): apply the time but do not announce it -- a joined player's own skip resolving.</summary>
+    public const byte TimeSkipPhaseDoneQuiet = 2;
+
+    /// <summary>TimeSkip kind: bed sleep ("slept till ...").</summary>
+    public const byte TimeSkipKindSleep = 0;
+
+    /// <summary>TimeSkip kind: the stand-in-place wait function ("passed time to ...").</summary>
+    public const byte TimeSkipKindWait = 1;
+
+    /// <summary>TimeSkip kind: fast travel's accelerated clock ("passed time to ...").</summary>
+    public const byte TimeSkipKindFastTravel = 2;
+
+    /// <summary>TimeSkip kind: the trigger action could not be identified ("passed time to ...").</summary>
+    public const byte TimeSkipKindUnknown = 255;
+
+    /// <summary>
+    /// How long the relay keeps an active-skip claim alive without its done
+    /// arriving. A vanilla sleep/wait resolves in well under a minute of real
+    /// time, so an expiry on this scale can only ever reap a skip whose owner
+    /// hung or quit mid-skip.
+    /// </summary>
+    public const int TimeSkipTimeoutSeconds = 180;
+
+    /// <summary>
+    /// How long after an active skip clears the relay still recognises done
+    /// packets from clients it recorded as joined to that skip, forwarding
+    /// them as done-quiet instead of announcing a phantom second skip.
+    /// </summary>
+    public const int TimeSkipJoinGraceSeconds = 120;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

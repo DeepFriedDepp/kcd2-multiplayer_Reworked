@@ -210,6 +210,31 @@ public sealed class LogTailGameTransport : IGameTransport
     /// </summary>
     public event Action<bool>? PauseStateChanged;
 
+    /// <summary>
+    /// Raised on the skip-time marker edges specifically (WO-38 Phase 1):
+    /// true when the AfterSkipTime readiness observer starts waiting, false
+    /// when it reports ready. The aggregate <see cref="PauseStateChanged"/>
+    /// keeps firing exactly as before -- this is an additional, narrower
+    /// signal for the time-skip sync layer, which needs the skip itself and
+    /// not "any pausing UI state". Raised on the tail loop's thread;
+    /// subscribers must not block.
+    /// </summary>
+    public event Action<bool>? SkipTimeStateChanged;
+
+    /// <summary>
+    /// Which trigger action the current/most recent skip came from
+    /// (Protocol.TimeSkipKind*). WO-11's live kcd.log diff bracketed bed
+    /// sleep, wait and fast travel with the same AfterSkipTime observer and
+    /// never isolated a marker that distinguishes them, so until a live
+    /// marker diff fills this in, every skip reports
+    /// <see cref="Protocol.TimeSkipKindUnknown"/> and receivers use the
+    /// generic "passed time to" wording. The extension point is
+    /// <see cref="ProcessPauseMarkers"/>: latch a kind from a
+    /// bed/fast-travel-specific line seen shortly before the skip start
+    /// marker, exactly as the three existing marker pairs were found.
+    /// </summary>
+    public byte LastSkipKind { get; private set; } = Protocol.TimeSkipKindUnknown;
+
     // Independent because they were confirmed as genuinely distinct engine
     // signals (docs/WO-11-findings.md addendum, isolated live tests): the
     // ESC pause menu's RTPC tag does not fire for inventory, and neither
@@ -250,10 +275,21 @@ public sealed class LogTailGameTransport : IGameTransport
 
         // Skip-time (sleep/wait/bed): brackets the entire skip, start to
         // finish, via CryEngine's own readiness-observer logging.
+        //
+        // WO-38: no marker distinguishing bed sleep from wait from fast
+        // travel has been confirmed live yet -- when one is, latch it into
+        // LastSkipKind here, *before* the start edge fires, so the kind
+        // rides the very first packet of the skip.
         if (line.IndexOf("Readiness observer 'AfterSkipTime'") >= 0)
         {
+            bool skipBefore = _skipTimeActive;
             if (line.IndexOf("started async waiting") >= 0) _skipTimeActive = true;
             else if (line.IndexOf("is ready") >= 0) _skipTimeActive = false;
+            if (_skipTimeActive != skipBefore)
+            {
+                try { SkipTimeStateChanged?.Invoke(_skipTimeActive); }
+                catch (Exception ex) { Console.WriteLine($"[timeskip] handler threw: {ex.Message}"); }
+            }
         }
 
         bool after = AggregatePaused;

@@ -133,6 +133,20 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a TimeSkipUp (0x28) from <paramref name="source"/> to all other
+    /// ready clients as a TimeSkipDown (0x29) (WO-38 Phase 1). The caller has
+    /// already applied the one-active-skip routing rules -- by the time a
+    /// packet reaches here it is meant for everyone else, and the initiator
+    /// deliberately never hears their own skip back (their own game already
+    /// showed them the sleep/wait UI).
+    /// </summary>
+    public void BroadcastTimeSkip(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueTimeSkip(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

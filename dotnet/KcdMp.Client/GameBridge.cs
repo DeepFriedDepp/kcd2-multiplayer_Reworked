@@ -144,6 +144,51 @@ public partial class GameBridge(ClientConfig config)
     private CancellationTokenSource? _interpPumpCts;
     private readonly object _interpPumpLock = new();
 
+    // ---- Time-skip sync (WO-38 Phase 1) ----
+
+    // Local skip state, driven by the tail transport's SkipTimeStateChanged
+    // (the AfterSkipTime marker edges). Log-tail only, like pause detection:
+    // under HttpGameTransport the event never fires and only the clock-jump
+    // watcher below still contributes.
+    private bool _localSkipActive;
+
+    // Set when our own skip's end marker fires: the next time_now event from
+    // the mod carries the resulting clock and becomes our TimeSkipUp(done).
+    private bool _awaitSkipDoneTime;
+    private byte _localSkipKind = Protocol.TimeSkipKindUnknown;
+
+    // A peer's skip that resolved while our own was still resolving. Applied
+    // once our own skip ends (SetWorldTime mid-skip is untested); only the
+    // highest target is kept -- applying is forward-only anyway.
+    private (byte SourceId, byte Kind, uint WorldTime, bool Quiet)? _pendingTimeSkip;
+    private readonly object _timeSkipLock = new();
+
+    // Clock-jump watcher: the fallback detector for time advances that emit
+    // no AfterSkipTime marker (fast travel's sped-up clock was never
+    // confirmed to). The mod reports Calendar.GetWorldTime() on a slow
+    // cadence; a jump far beyond what the elapsed real time can explain is a
+    // skip in effect. A jump is only reported once its rate settles back to
+    // normal, so one fast travel is one packet, not one per poll.
+    private uint? _lastPolledWorldTime;
+    private DateTime _lastPollUtc;
+    private bool _fastAdvanceActive;
+    private uint _fastAdvanceStartTime;
+    private DateTime _suppressJumpUntilUtc = DateTime.MinValue;
+
+    /// <summary>How often the mod is asked for the world clock (position-loop ticks; TickMs each).</summary>
+    private const int TimePollEveryTicks = 1000;   // ~10 s
+
+    /// <summary>
+    /// How many game-seconds beyond the plausible natural advance between two
+    /// polls counts as a jump. KCD2's default world-time ratio is ~15 (one
+    /// real second is ~15 game seconds), so ~10 s of real time advances the
+    /// clock ~150 s naturally; the allowance below is several times that.
+    /// </summary>
+    private const uint TimeJumpThresholdSeconds = 900;
+
+    // Reassigned per connection, same idiom as _sendPauseIfChanged.
+    private Func<byte, byte, uint, Task>? _sendTimeSkip;
+
     // ---- Shared player combat (WO-28) ----
 
     // Flow A outbound: the last health/stamina actually put on the wire, plus
@@ -535,8 +580,29 @@ public partial class GameBridge(ClientConfig config)
             // WO-13: the local tick is frozen for as long as this is true.
             if (paused) StartInterpPump(); else StopInterpPump();
         }
+        // Time-skip sync (WO-38 Phase 1): log-tail only, like pause detection.
+        _sendTimeSkip = (phase, kind, worldTime) => SendTimeSkipAsync(stream, phase, kind, worldTime, cts.Token);
+        void OnLocalSkipTime(bool active)
+        {
+            _localSkipActive = active;
+            if (active)
+            {
+                _localSkipKind = (_transport as LogTailGameTransport)?.LastSkipKind ?? Protocol.TimeSkipKindUnknown;
+                _ = _sendTimeSkip?.Invoke(Protocol.TimeSkipPhaseStart, _localSkipKind, 0);
+            }
+            else
+            {
+                // The resulting clock is read from the mod; the reply arrives
+                // as a time_now game event and becomes our TimeSkipUp(done).
+                _awaitSkipDoneTime = true;
+                _ = ExecLuaAsync("if KCD2MP_ReportWorldTime then KCD2MP_ReportWorldTime() end");
+            }
+        }
         if (_transport is LogTailGameTransport tailForPause)
+        {
             tailForPause.PauseStateChanged += OnLocalPauseDetected;
+            tailForPause.SkipTimeStateChanged += OnLocalSkipTime;
+        }
 
         var receiveTask     = ReceiveLoopAsync(stream, cts.Token);
         var pingTask        = PingLoopAsync(stream, cts.Token);
@@ -612,6 +678,18 @@ public partial class GameBridge(ClientConfig config)
                 if (tickCount % 100 == 0)
                     _ = SweepAggroCooldownsAsync(cts.Token);
 
+                // WO-38 Phase 1: poll the world clock on a slow cadence. Feeds
+                // the clock-jump watcher (fast travel emits no confirmed skip
+                // marker) -- the reading itself arrives as a time_now game
+                // event, handled in OnGameEvent. One batched Lua call per
+                // ~10 s; suppressed while our own marker-skip is resolving,
+                // since the skip-end path requests the same reading itself.
+                if (tickCount % TimePollEveryTicks == 0 && !_localSkipActive && !_awaitSkipDoneTime)
+                {
+                    try { await ExecLuaAsync("if KCD2MP_ReportWorldTime then KCD2MP_ReportWorldTime() end"); }
+                    catch { }
+                }
+
                 if (state.HasValue)
                 {
                     var st = state.Value;
@@ -666,10 +744,19 @@ public partial class GameBridge(ClientConfig config)
             _voice = null;
 
             if (_transport is LogTailGameTransport tailForPause2)
+            {
                 tailForPause2.PauseStateChanged -= OnLocalPauseDetected;
+                tailForPause2.SkipTimeStateChanged -= OnLocalSkipTime;
+            }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
             _sendNpcState = null;
+            _sendTimeSkip = null;
+            lock (_timeSkipLock) { _pendingTimeSkip = null; }
+            _localSkipActive = false;
+            _awaitSkipDoneTime = false;
+            _lastPolledWorldTime = null;
+            _fastAdvanceActive = false;
 
             // Stop pumping the interp tick. Nothing else would: the pump is
             // driven off the local menu signal, and a menu that is still open
@@ -962,6 +1049,145 @@ public partial class GameBridge(ClientConfig config)
         }
         catch (Exception ex) { Console.WriteLine($"[pause] send failed: {ex.Message}"); }
         finally { _pauseSendLock.Release(); }
+    }
+
+    // -------------------------------------------------------------------------
+    // Time-skip sync (WO-38 Phase 1)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Puts one TimeSkipUp (0x28) on the wire.</summary>
+    private async Task SendTimeSkipAsync(NetworkStream stream, byte phase, byte kind, uint worldTime, CancellationToken ct)
+    {
+        try
+        {
+            var packet = new byte[3 + Protocol.TimeSkipUpPayloadLen];
+            packet[0] = Protocol.TimeSkipUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.TimeSkipUpPayloadLen);
+            packet[3] = phase;
+            packet[4] = kind;
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), worldTime);
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine($"[timeskip] sent {(phase == Protocol.TimeSkipPhaseStart ? "start" : "done")} kind={kind} t={worldTime}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[timeskip] send failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Consumes one time_now reading from the mod (Calendar.GetWorldTime()).
+    /// Two consumers share the one reading: a just-finished local skip turns it
+    /// into our TimeSkipUp(done), and otherwise it feeds the clock-jump
+    /// watcher that catches marker-less advances (fast travel).
+    /// </summary>
+    private void OnWorldTimeReading(uint worldTime)
+    {
+        var now = DateTime.UtcNow;
+
+        if (_awaitSkipDoneTime)
+        {
+            _awaitSkipDoneTime = false;
+            _ = _sendTimeSkip?.Invoke(Protocol.TimeSkipPhaseDone, _localSkipKind, worldTime);
+            _localSkipKind = Protocol.TimeSkipKindUnknown;
+            // Our own skip may have raced a peer's: apply the queued target
+            // now that our skip is over. Forward-only, so a stale one is a no-op.
+            ApplyPendingTimeSkipIfAny();
+            // The jump watcher must not re-report the advance the skip caused.
+            _lastPolledWorldTime = Math.Max(worldTime, _lastPolledWorldTime ?? 0);
+            _lastPollUtc = now;
+            _fastAdvanceActive = false;
+            return;
+        }
+
+        if (_lastPolledWorldTime is uint last)
+        {
+            double elapsedReal = (now - _lastPollUtc).TotalSeconds;
+            // Allowance: the largest natural advance the elapsed real time
+            // can explain (ratio ~15, doubled for headroom) plus the flat
+            // jump threshold.
+            uint allowance = TimeJumpThresholdSeconds + (uint)Math.Max(0, elapsedReal * 30);
+            bool suppressed = now < _suppressJumpUntilUtc || _localSkipActive;
+
+            if (!suppressed && worldTime > last && worldTime - last > allowance)
+            {
+                if (!_fastAdvanceActive)
+                {
+                    _fastAdvanceActive = true;
+                    _fastAdvanceStartTime = last;
+                    Console.WriteLine($"[timeskip] clock jumping ({last} -> {worldTime}); waiting for it to settle");
+                }
+            }
+            else if (_fastAdvanceActive)
+            {
+                // The advance settled: report the whole jump as one skip.
+                _fastAdvanceActive = false;
+                Console.WriteLine($"[timeskip] clock jump settled ({_fastAdvanceStartTime} -> {worldTime}); reporting");
+                _ = ReportClockJumpAsync(worldTime);
+            }
+        }
+
+        _lastPolledWorldTime = worldTime;
+        _lastPollUtc = now;
+    }
+
+    /// <summary>
+    /// Reports a settled marker-less clock jump as a start+done pair. The
+    /// relay treats a bare done with no active skip as an instant skip; the
+    /// start is sent anyway so that a concurrent sleeper still wins the
+    /// active-skip claim deterministically by arrival order.
+    /// </summary>
+    private async Task ReportClockJumpAsync(uint worldTime)
+    {
+        var send = _sendTimeSkip;
+        if (send is null) return;
+        await send(Protocol.TimeSkipPhaseStart, Protocol.TimeSkipKindFastTravel, 0);
+        await send(Protocol.TimeSkipPhaseDone, Protocol.TimeSkipKindFastTravel, worldTime);
+    }
+
+    /// <summary>
+    /// Applies a peer's resolved skip to this world: forward-only
+    /// Calendar.SetWorldTime plus the toast, both in the mod. Queued instead
+    /// when our own skip is still resolving -- SetWorldTime mid-skip is
+    /// untested, and our own skip's result may supersede it anyway.
+    /// </summary>
+    private async Task ApplyTimeSkipAsync(byte sourceId, byte kind, uint worldTime, bool quiet, CancellationToken ct)
+    {
+        if (_localSkipActive || _awaitSkipDoneTime)
+        {
+            lock (_timeSkipLock)
+            {
+                if (_pendingTimeSkip is null || worldTime > _pendingTimeSkip.Value.WorldTime)
+                    _pendingTimeSkip = (sourceId, kind, worldTime, quiet);
+            }
+            return;
+        }
+
+        string who = _ghostNames.TryGetValue(sourceId, out var dn) ? dn : $"player {sourceId}";
+        Console.WriteLine($"[timeskip] {who} -> worldTime={worldTime} kind={kind}{(quiet ? " (quiet)" : "")}");
+        try
+        {
+            await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
+                "if KCD2MP_ApplyTimeSkip then KCD2MP_ApplyTimeSkip(\"{0}\",{1},{2},{3}) end",
+                EscapeLua(who), kind, worldTime, quiet ? "true" : "false"));
+        }
+        catch { /* game might have unloaded */ }
+
+        // The applied advance must not read as a fresh local jump on the next
+        // poll, or two clients would bounce the same skip back and forth.
+        _suppressJumpUntilUtc = DateTime.UtcNow.AddSeconds(30);
+        _lastPolledWorldTime = Math.Max(worldTime, _lastPolledWorldTime ?? 0);
+        _lastPollUtc = DateTime.UtcNow;
+    }
+
+    private void ApplyPendingTimeSkipIfAny()
+    {
+        (byte SourceId, byte Kind, uint WorldTime, bool Quiet)? pending;
+        lock (_timeSkipLock)
+        {
+            pending = _pendingTimeSkip;
+            _pendingTimeSkip = null;
+        }
+        if (pending is not null)
+            _ = ApplyTimeSkipAsync(pending.Value.SourceId, pending.Value.Kind,
+                pending.Value.WorldTime, pending.Value.Quiet, CancellationToken.None);
     }
 
     /// <summary>
@@ -1477,6 +1703,27 @@ public partial class GameBridge(ClientConfig config)
                 {
                     await ApplyCombatRoleAsync(payload[0] != 0, ct);
                 }
+                else if (type == Protocol.TimeSkipDown && payloadLen == Protocol.TimeSkipDownPayloadLen)
+                {
+                    // Time-skip sync (WO-38): [sourceGhostId:1][phase:1][kind:1][worldTime:4].
+                    // A start carries no time and needs nothing done here --
+                    // the join rule is enforced relay-side. Both done phases
+                    // apply the clock; only the announced one shows a toast.
+                    byte  tsSource = payload[0];
+                    byte  tsPhase  = payload[1];
+                    byte  tsKind   = payload[2];
+                    uint  tsTime   = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(3));
+                    if (tsPhase == Protocol.TimeSkipPhaseStart)
+                    {
+                        string tsWho = _ghostNames.TryGetValue(tsSource, out var tsName) ? tsName : $"player {tsSource}";
+                        Console.WriteLine($"[timeskip] {tsWho} began a skip (kind={tsKind})");
+                    }
+                    else if (tsPhase is Protocol.TimeSkipPhaseDone or Protocol.TimeSkipPhaseDoneQuiet)
+                    {
+                        await ApplyTimeSkipAsync(tsSource, tsKind, tsTime,
+                            quiet: tsPhase == Protocol.TimeSkipPhaseDoneQuiet, ct);
+                    }
+                }
                 else if (type == Protocol.NpcStateDown
                          && payloadLen >= 1 + 1 + 1 + Protocol.NpcStateFixedTail
                          && payloadLen <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
@@ -1596,6 +1843,18 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private void OnGameEvent(string name, string arg)
     {
+        // WO-38: the world-clock reading is consumed regardless of the
+        // interaction layer's state -- it feeds the time-skip sync, which has
+        // no dependency on sessions being up.
+        if (name == "time_now")
+        {
+            if (uint.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint worldTime))
+                OnWorldTimeReading(worldTime);
+            else
+                Console.WriteLine($"[timeskip] malformed time_now '{arg}'");
+            return;
+        }
+
         var interactions = Interactions;
         if (interactions is null) return;
 

@@ -410,6 +410,69 @@ function KCD2MP_SlowTime()
     mp_log("Requested manual slow-time toggle")
 end
 
+-- ===== Time-skip sync (WO-38 Phase 1) =====
+-- Day/night synchronisation. Calendar.SetWorldTime is the one Lua world
+-- mutation ever verified working in this project (ARCHITECTURE-shared-world.md:
+-- +3600 moved the clock exactly one hour, live), and its own scriptbind doc
+-- says "Must not be set backwards" -- so every apply here is forward-only.
+-- Detection of the local player's own skips lives agent-side (the kcd.log
+-- AfterSkipTime markers, WO-11); Lua only answers "what time is it" and
+-- applies/announces a peer's resolved skip.
+
+-- A world day is 86,400 world-seconds. Consistent with the live WO-era
+-- observation: worldTime 388805 % 86400 = 43205 s = 12.0014 h, matching the
+-- hour 12.0015 read in the same probe.
+local WORLD_DAY_SECONDS = 86400
+
+-- Called by the agent (skip end, plus a ~10 s poll for the clock-jump
+-- watcher). Rides the ordinary event channel.
+function KCD2MP_ReportWorldTime()
+    local ok, t = pcall(function() return Calendar.GetWorldTime() end)
+    if ok and t then
+        KCD2MP_EmitEvent("time_now", tostring(math.floor(t)))
+    else
+        mp_log("ReportWorldTime: Calendar.GetWorldTime unavailable")
+    end
+end
+
+-- "8:00 AM" from a worldTime in seconds-from-level-start.
+function KCD2MP_FormatWorldTime(t)
+    local secOfDay = t % WORLD_DAY_SECONDS
+    local h = math.floor(secOfDay / 3600)
+    local m = math.floor((secOfDay % 3600) / 60)
+    local ampm = (h >= 12) and "PM" or "AM"
+    local h12 = h % 12
+    if h12 == 0 then h12 = 12 end
+    return string.format("%d:%02d %s", h12, m, ampm)
+end
+
+-- Called by the agent when a peer's skip resolves. who = their display name,
+-- kind = Protocol.TimeSkipKind* (0 = bed sleep), target = their resulting
+-- worldTime, quiet = apply without announcing (a joined skip's own result).
+function KCD2MP_ApplyTimeSkip(who, kind, target, quiet)
+    target = tonumber(target)
+    if not target then return end
+    local ok, cur = pcall(function() return Calendar.GetWorldTime() end)
+    if not ok or not cur then
+        mp_log("ApplyTimeSkip: Calendar.GetWorldTime unavailable")
+        return
+    end
+    if target > cur then
+        local ok2, err = pcall(function() Calendar.SetWorldTime(target) end)
+        mp_log(string.format("ApplyTimeSkip: %d -> %d (%s)", cur, target,
+            ok2 and "written" or ("FAILED " .. tostring(err))))
+    else
+        -- Forward-only: already at or past the target (e.g. our own skip
+        -- overshot a peer's). Keep our clock; divergence is bounded by the
+        -- overshoot, never by hours.
+        mp_log(string.format("ApplyTimeSkip: already at %d >= %d, keeping our clock", cur, target))
+    end
+    if not quiet then
+        local verb = (tonumber(kind) == 0) and " slept till " or " passed time to "
+        KCD2MP_ShowInteractionMsg(tostring(who) .. verb .. KCD2MP_FormatWorldTime(target))
+    end
+end
+
 -- Superseded by the WO-6 dice overlay below, which draws the whole match. Kept
 -- as a one-liner so an older agent build talking to a newer pak still puts
 -- something on screen instead of erroring.

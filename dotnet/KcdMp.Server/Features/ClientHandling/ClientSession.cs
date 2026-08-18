@@ -257,6 +257,46 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Time-skip sync layer (WO-38 Phase 1) ---
+                // [phase:1][kind:1][worldTime:4 LE uint32]. Deliberately not
+                // gated on damage authority: any player's sleep counts. The
+                // handler decides first-come ownership; see Protocol's 0x28
+                // notes for the routing rules.
+                if (type == Protocol.TimeSkipUp && payloadLen == Protocol.TimeSkipUpPayloadLen)
+                {
+                    var body = new byte[Protocol.TimeSkipUpPayloadLen];
+                    await ReadExactAsync(body);
+                    byte phase = body[0];
+                    var routing = phase switch
+                    {
+                        Protocol.TimeSkipPhaseStart => _clientHandler.BeginTimeSkip(this),
+                        Protocol.TimeSkipPhaseDone  => _clientHandler.CompleteTimeSkip(this),
+                        _ => ClientHandler.TimeSkipRouting.None,   // done-quiet is S→C only; a client sending it is malformed
+                    };
+                    switch (routing)
+                    {
+                        case ClientHandler.TimeSkipRouting.BroadcastStart:
+                            _logger.Information("[timeskip] '{Name}' (id={Id}) began the session's active skip (kind={Kind}).", Name, Id, body[1]);
+                            _broadcastService.BroadcastTimeSkip(this, body);
+                            break;
+                        case ClientHandler.TimeSkipRouting.BroadcastDone:
+                            _logger.Information("[timeskip] '{Name}' (id={Id}) skip done -> worldTime={Time} (announced).",
+                                Name, Id, BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(2)));
+                            _broadcastService.BroadcastTimeSkip(this, body);
+                            break;
+                        case ClientHandler.TimeSkipRouting.BroadcastDoneQuiet:
+                            _logger.Information("[timeskip] '{Name}' (id={Id}) joined-skip done -> worldTime={Time} (quiet).",
+                                Name, Id, BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(2)));
+                            body[0] = Protocol.TimeSkipPhaseDoneQuiet;
+                            _broadcastService.BroadcastTimeSkip(this, body);
+                            break;
+                        default:
+                            _logger.Information("[timeskip] '{Name}' (id={Id}) phase={Phase} absorbed (joined/duplicate).", Name, Id, phase);
+                            break;
+                    }
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -386,6 +426,19 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.PlayerStateDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a TimeSkipDown (0x29, WO-38). The body is the
+    /// upstream payload (with the phase byte possibly rewritten to done-quiet
+    /// by the routing rules), prefixed with who sent it.
+    /// </summary>
+    public void EnqueueTimeSkip(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.TimeSkipDown, payload));
     }
 
     /// <summary>
