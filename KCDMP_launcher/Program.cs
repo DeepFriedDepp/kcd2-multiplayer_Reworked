@@ -16,6 +16,11 @@ class Program
     {
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
+            // WO-39 (item J): Blazor's per-component render/init Debug lines
+            // were ~80% of both real testers' log files -- every state change
+            // logs a full render pass over the modal tree. The launcher's own
+            // Debug logging stays; the framework's render narration goes.
+            .MinimumLevel.Override("Microsoft.AspNetCore.Components", Serilog.Events.LogEventLevel.Information)
             .WriteTo.File(Path.Combine(Globals.AppFolder, "app.log"),
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 10)
@@ -64,6 +69,15 @@ class Program
             };
 
             app.Run();
+
+            // WO-39 (item I): the launcher never logged anything on a normal
+            // exit, so WO-38's "two silent sub-second crashes" (33 boot
+            // lines, then nothing) were indistinguishable from a tester
+            // simply closing the window fast -- which the timeline suggests
+            // (four boots in 42 s while fighting the dead master server).
+            // With this marker, a future boot that ends without it IS crash
+            // evidence, not a guess.
+            Log.Information("=== Launcher exiting (clean) ===");
         }
         catch (Exception ex)
         {

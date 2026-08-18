@@ -116,6 +116,8 @@
                 OnClose="@(() => showAddServer = false)" />
 
 <ReportBugModal IsVisible="@showReportBug"
+                GameRoot="@LogBundleGameRoot"
+                AgentDirectory="@LogBundleAgentDirectory"
                 OnClose="@(() => showReportBug = false)" />
 
 <VersionMismatchModal   IsVisible="@showVersionMismatch"

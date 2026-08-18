@@ -1135,6 +1135,18 @@ namespace KCDMP_launcher.Pages
         }
 
         /// <summary>
+        /// WO-39, item K: where the log bundle should look for kcd.log --
+        /// derived from the configured game path; empty when unconfigured
+        /// (LogBundle skips what it cannot find).
+        /// </summary>
+        private string LogBundleGameRoot =>
+            string.IsNullOrWhiteSpace(settings.GamePath) ? "" : GameRootOf(settings.GamePath);
+
+        /// <summary>WO-39, item K: where the agent writes agent.log.</summary>
+        private string LogBundleAgentDirectory =>
+            Path.GetDirectoryName(ResolveAgainstLauncher(settings.AgentPath)) ?? "";
+
+        /// <summary>
         /// A relative path in settings means "next to the launcher", which is
         /// where a packaged build puts the DLL, the injector and the agent.
         /// </summary>

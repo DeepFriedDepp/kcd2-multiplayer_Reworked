@@ -15,11 +15,21 @@
                     Found something broken? Tell us on GitHub, or drop a message
                     in Discord -- whichever you'd rather use.
                 </p>
+                <p>
+                    Please attach the log bundle: COLLECT LOGS puts a zip on
+                    your Desktop with everything we need (game log, agent log,
+                    launcher log).
+                </p>
 
                 <div class="modal-actions">
                     <button class="kcd-btn primary" @onclick="OpenGitHubIssues">GITHUB ISSUES</button>
                     <button class="kcd-btn primary" @onclick="OpenDiscord">DISCORD</button>
+                    <button class="kcd-btn primary" @onclick="CollectLogs">COLLECT LOGS</button>
                 </div>
+                @if (!string.IsNullOrEmpty(collectResult))
+                {
+                    <p style="margin-top: 10px;">@collectResult</p>
+                }
                 <div class="modal-actions" style="margin-top: 10px;">
                     <button class="kcd-btn" @onclick="CloseModalAsync">CLOSE</button>
                 </div>
@@ -38,6 +48,26 @@
     private const string GitHubIssuesUrl = "https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/issues";
     private const string DiscordInviteUrl = "https://discord.gg/m4U95xUZ5";
 
+    // WO-39, item K: supplied by Home, which owns the settings these paths
+    // come from. Empty is fine -- LogBundle skips what it cannot find.
+    [Parameter] public string GameRoot { get; set; } = "";
+    [Parameter] public string AgentDirectory { get; set; } = "";
+
+    private string collectResult = "";
+
     private void OpenGitHubIssues() => UrlLauncher.Open(GitHubIssuesUrl);
     private void OpenDiscord() => UrlLauncher.Open(DiscordInviteUrl);
+
+    private void CollectLogs()
+    {
+        try
+        {
+            string zip = LogBundle.Collect(GameRoot, AgentDirectory);
+            collectResult = $"Saved to your Desktop: {System.IO.Path.GetFileName(zip)}";
+        }
+        catch (Exception ex)
+        {
+            collectResult = $"Could not collect logs: {ex.Message}";
+        }
+    }
 }

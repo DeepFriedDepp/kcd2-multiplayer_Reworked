@@ -9,6 +9,28 @@ using System.Text.RegularExpressions;
 var config = ClientConfig.Load();
 config.ApplyCommandLine(args);
 
+// WO-39 (item K): tee everything the agent prints into agent.log next to the
+// executable. WO-38's real testers sent logs containing ZERO game telemetry
+// because the agent's console -- where every [combat]/[npcsync]/[timeskip]/
+// [playerhit] line goes -- was never captured anywhere. The console keeps
+// working exactly as before; the launcher's "collect logs" bundle picks the
+// file up. Failure to open the file must never stop the agent: worst case we
+// are back to today's console-only behaviour.
+try
+{
+    string agentLogPath = Path.Combine(AppContext.BaseDirectory, "agent.log");
+    // One log per run, capped history: rotate the previous run's log aside.
+    if (File.Exists(agentLogPath))
+        File.Copy(agentLogPath, Path.ChangeExtension(agentLogPath, ".prev.log"), overwrite: true);
+    var teeStream = new StreamWriter(agentLogPath, append: false) { AutoFlush = true };
+    Console.SetOut(new TeeTextWriter(Console.Out, teeStream));
+    Console.WriteLine($"[log] agent output tee -> {agentLogPath}");
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[log] file logging unavailable: {ex.Message}");
+}
+
 // --benchmark measures the game channel and exits; it never touches the relay,
 // so it needs no name resolution and no server.
 if (args.Contains("--benchmark"))
