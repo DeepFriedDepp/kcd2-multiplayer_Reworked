@@ -2225,6 +2225,12 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         spawnName = name,
     }
 
+    -- WO-38 Phase 7: if the stimulus-deafness A/B toggle is on, new spawns
+    -- get it too, or a reconnect would silently undo the experiment mid-test.
+    if KCD2MP.ghostsIgnorant then
+        pcall(function() AI.SetIgnorant(entity.id, 1) end)
+    end
+
     -- Schedule name apply after entity fully inits (soul may not be ready at spawn time).
     -- Uses Steam nick if already received via 0x03, else fallback "Player<id>".
     local captId = id
@@ -2712,6 +2718,21 @@ end
 -- (and, before WO-27's dedupe fix, was exactly how duplicates appeared). The
 -- nameplate says what happened instead, and the ordinary position stream moves
 -- the ghost to wherever their save point put them once their game is back.
+-- Death-pose candidates (WO-38 Phase 4). The WO-28 design leaves a dead
+-- player's ghost standing (cheap recovery for a player back in seconds), and
+-- the real two-player test read that as a bug: "his body stands there as if
+-- alive... no animation of the body falling". The [dead - reloading] tag
+-- rides the nameplate, which is distance-scaled -- a body-level cue is
+-- needed too. Same probe-on-first-use pattern as the jump list: none of
+-- these names is confirmed on this build; a wrong candidate can never play,
+-- and none-found keeps today's standing body.
+local DEATH_ANIMS = {
+    "relaxed_death", "death", "3d_death", "dead_pose",
+    "relaxed_lie_pose", "lie_pose", "lying_idle", "3d_lying_idle",
+    "relaxed_knockdown", "knockdown", "ko_pose", "unconscious_pose",
+}
+KCD2MP._deathAnim = nil   -- nil=not probed, false=none found, string=found
+
 function KCD2MP_SetGhostDead(id, dead)
     id = tostring(id)
     local was = KCD2MP.ghostDead[id] and true or false
@@ -2719,6 +2740,28 @@ function KCD2MP_SetGhostDead(id, dead)
     KCD2MP.ghostDead[id] = now or nil
     if was ~= now then
         mp_log("GHOST_DEATH id=" .. id .. " dead=" .. tostring(now))
+        -- WO-38 Phase 4: on the owner dying, put the standing body into a
+        -- fall/lie pose once. mp_ghost_is_corpse freezes all locomotion
+        -- driving while dead, so a one-shot here is not overwritten; on the
+        -- owner coming back the ordinary animation path resumes by itself.
+        if now then
+            local ghost = KCD2MP.ghosts[id]
+            if ghost and ghost.entity then
+                if KCD2MP._deathAnim == nil then
+                    local found = nil
+                    for _, nm in ipairs(DEATH_ANIMS) do
+                        local len = 0
+                        pcall(function() len = ghost.entity:GetAnimationLength(0, nm) or 0 end)
+                        if len > 0 then found = nm; break end
+                    end
+                    KCD2MP._deathAnim = found or false
+                    mp_log("DeathAnim: " .. tostring(KCD2MP._deathAnim))
+                end
+                if KCD2MP._deathAnim then
+                    pcall(function() ghost.entity:StartAnimation(0, KCD2MP._deathAnim, 0, 0.2, 1.0, false) end)
+                end
+            end
+        end
     end
 end
 
@@ -4954,6 +4997,83 @@ function KCD2MP_GhostState()
     end)())
 end
 
+-- ===== WO-38 Phase 7: ghost stimulus-deafness probe =====
+-- Section B.1: a ghost's soul-assigned voice set fires real combat-distress
+-- barks ("HELP! GET ME OUT OF HERE") that never stop -- plausibly because the
+-- distress behaviour wants the body to flee and the interp tick pins it in
+-- place, so the state never resolves. AI.SetIgnorant(entityId, 0|1) is
+-- REGISTERED on this build (WO-32 s1f: "ignore system signals, visual and
+-- sound stimuli") and is the obvious lever -- but it might also stop the
+-- ghost being a valid combat TARGET, which would silently regress the
+-- always-on reactive combat WO-26/27 shipped. So it ships as a toggle for a
+-- live A/B, not as a default: turn it on, start a fight near a ghost, and
+-- check (a) the barks stop and (b) NPCs still attack the ghost.
+-- Usage: mp_ghost_ignorant on|off
+function KCD2MP_SetGhostsIgnorant(arg)
+    local s = tostring(arg or ""):lower()
+    local on
+    if s:find("on") then on = 1
+    elseif s:find("off") then on = 0
+    else
+        System.LogAlways("[KCD2-MP] mp_ghost_ignorant: expected on|off")
+        return
+    end
+    KCD2MP.ghostsIgnorant = (on == 1)
+    local n = 0
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        if ghost.entity then
+            local ok, err = pcall(function() AI.SetIgnorant(ghost.entity.id, on) end)
+            System.LogAlways(string.format("[KCD2-MP] SetIgnorant(%s, %d) ok=%s err=%s",
+                tostring(id), on, tostring(ok), tostring(err)))
+            n = n + 1
+        end
+    end
+    System.LogAlways("[KCD2-MP] mp_ghost_ignorant " .. s .. " applied to " .. n .. " ghost(s)"
+        .. " -- new spawns " .. (KCD2MP.ghostsIgnorant and "WILL" or "will NOT") .. " get it")
+end
+
+-- ===== WO-38 Phase 8: map marker probe =====
+-- The shipped scriptbind docs document GameRules.AddMinimapEntity(entityId,
+-- type, lifetime) / RemoveMinimapEntity(entityId) -- exactly the shape a
+-- "show connected players on the map" feature needs, because each ghost is
+-- already a real local entity whose position the mod keeps synced; marking
+-- the ENTITY means the map marker moves for free. But this is a Crysis-era
+-- GameRules bind against KCD2's custom Warhorse map UI, and this project has
+-- already met documented-but-unregistered binds (Actor.SetAIBrainId, WO-32)
+-- and registered-but-inert ones (most AI writes). So the feature ships as a
+-- PROBE first: run `mp_map_marker <type>` live with a ghost present, open
+-- the map, and see. If a type value renders, wiring it into SpawnGhost is a
+-- three-line follow-up.
+-- Usage: mp_map_marker <typeInt>   (tries that icon type on every ghost)
+--        mp_map_marker sweep       (tries types 0..15, one per ghost re-add)
+function KCD2MP_ProbeMapMarker(arg)
+    local hasBind = (GameRules ~= nil) and (type(GameRules.AddMinimapEntity) == "function")
+    System.LogAlways("[KCD2-MP] MapMarker probe: GameRules.AddMinimapEntity registered=" .. tostring(hasBind))
+    if not hasBind then return end
+
+    local types = {}
+    if tostring(arg or ""):lower() == "sweep" then
+        for t = 0, 15 do types[#types+1] = t end
+    else
+        types[1] = tonumber(arg) or 1
+    end
+
+    local n = 0
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        if ghost.entity then
+            for _, t in ipairs(types) do
+                local ok, err = pcall(function()
+                    GameRules.AddMinimapEntity(ghost.entity.id, t, 0)
+                end)
+                System.LogAlways(string.format("[KCD2-MP] MapMarker ghost=%s type=%d ok=%s err=%s",
+                    tostring(id), t, tostring(ok), tostring(err)))
+            end
+            n = n + 1
+        end
+    end
+    if n == 0 then System.LogAlways("[KCD2-MP] MapMarker probe: no ghosts to mark -- connect a peer first") end
+end
+
 -- Test spawning entities via XGenAIModule with various class names.
 -- Safe: each class wrapped in pcall, entity removed after 10s.
 -- Usage: mp_test_xgen <ClassName>  (default: NullAI)
@@ -5017,6 +5137,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_remove_all",  "KCD2MP_RemoveAllGhosts()","Remove all ghosts")
     System.AddCCommand("mp_inspect",     "KCD2MP_InspectGhost()",   "Inspect ghost interp state")
     System.AddCCommand("mp_find_npcs",   "KCD2MP_FindNPCs()",       "Find nearby human NPCs")
+    System.AddCCommand("mp_map_marker",  'KCD2MP_ProbeMapMarker("%LINE")', "WO-38: probe GameRules.AddMinimapEntity on ghosts (arg: type int, or 'sweep')")
+    System.AddCCommand("mp_ghost_ignorant", 'KCD2MP_SetGhostsIgnorant("%LINE")', "WO-38: A/B probe -- AI.SetIgnorant on all ghosts (stuck distress barks): on|off")
     System.AddCCommand("mp_probe_anims",   "KCD2MP_ProbeAnims()",    "Probe anim names on ghost (GetAnimationLength)")
     System.AddCCommand("mp_copy_npc",     "KCD2MP_CopyNPCModel()",  "Find human NPC, copy CDF to ghost, probe anims")
     System.AddCCommand("mp_scan_anims",   "KCD2MP_ScanAnims()",     "Scan animation directories")
