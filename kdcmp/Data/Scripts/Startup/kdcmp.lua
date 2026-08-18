@@ -32,7 +32,11 @@ KCD2MP.ghostHpSkip = {}
 KCD2MP.hitSensorOn = false
 KCD2MP.labelCache = {}          -- id → {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
-KCD2MP.horseGhosts = {}         -- id → {entity, entityId} horse ghost per player
+KCD2MP.horseGhosts = {}         -- id → {entity, entityId, isWorldHorse, worldName} horse per player
+KCD2MP.ghostHorseName = {}      -- id → authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
+KCD2MP._mountedHorseName = nil  -- authored name of the horse the LOCAL player is on (riding check, Method 0)
+KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
+KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
 KCD2MP.playerSneaking = false   -- set by OnAction hook when sneak key pressed
 KCD2MP.isRiding = false         -- updated each interp tick (player on horse detection)
@@ -1666,7 +1670,17 @@ local function mp_npc_rescan()
     local ents = System.GetEntitiesInSphere(pp, KCD2MP.npcSync.radius) or {}
     for _, e in ipairs(ents) do
         local cls = e.class
-        if (cls == "NPC" or cls == "NPC_Female") and not mp_is_mod_entity(e)
+        -- WO-38 Phase 5: Horse-class entities travel on the same channel --
+        -- an idle horse both worlds have (authored name) converges exactly
+        -- like a wandering NPC, which is what makes a peer's unmounted horse
+        -- visible in the right place BEFORE anyone mounts it. The horse the
+        -- local player is riding is excluded: its position is already implied
+        -- by our own position stream, and receivers drive their copy through
+        -- the ghost-mount path -- streaming it here too would double-drive.
+        local isHorse = (cls == "Horse")
+        local isHuman = (cls == "NPC" or cls == "NPC_Female")
+        if (isHuman or isHorse) and not mp_is_mod_entity(e)
+           and not (isHorse and KCD2MP._mountedHorseName and e:GetName() == KCD2MP._mountedHorseName)
            and not KCD2MP.npcPuppets[e:GetName() or ""] then
             local name = e:GetName()
             -- Only plain authored names travel: they are the cross-client
@@ -1759,6 +1773,13 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     local e = System.GetEntityByName(name)
     if not e then return end
 
+    -- WO-38 Phase 5: a horse currently adopted as some ghost's mount is owned
+    -- by the ghost-mount driver -- a puppet stream for the same entity would
+    -- be a second writer fighting it every tick.
+    for _, hd in pairs(KCD2MP.horseGhosts or {}) do
+        if hd.isWorldHorse and hd.worldName == name then return end
+    end
+
     local p = KCD2MP.npcPuppets[name]
     if not p then
         local cur = e:GetWorldPos()
@@ -1819,12 +1840,23 @@ function KCD2MP_NpcPuppetTick()
             -- Animation from rendered speed, exactly the ghost thresholds.
             -- Without this the NPC slides in its current activity pose
             -- (observed live: a seated NPC slid sitting).
+            --
+            -- WO-38 Phase 5: a Horse-class puppet gets horse gaits, not
+            -- humanoid locomotion. These three names were confirmed present
+            -- on real KCD2 horse entities by the mp_scan_horse probes (see
+            -- the HORSE_ENTITY_* candidate lists' comments).
             local spd = math.sqrt(dx*dx + dy*dy) * 0.5 / 0.050
             local tag, anim
-            if     spd >= 5.5 then tag, anim = "sprint", "3d_relaxed_sprint_turn_strafe"
-            elseif spd >= 3.0 then tag, anim = "run",    "3d_relaxed_run_turn_strafe"
-            elseif spd >= 0.3 then tag, anim = "walk",   "3d_relaxed_walk_turn_strafe"
-            else                    tag, anim = "idle",   "relaxed_idle_both" end
+            if tostring(e.class or "") == "Horse" then
+                if     spd >= 4.0 then tag, anim = "gallop", "relaxed_gallop"
+                elseif spd >= 0.3 then tag, anim = "walk",   "relaxed_walk"
+                else                    tag, anim = "idle",   "relaxed_idle" end
+            else
+                if     spd >= 5.5 then tag, anim = "sprint", "3d_relaxed_sprint_turn_strafe"
+                elseif spd >= 3.0 then tag, anim = "run",    "3d_relaxed_run_turn_strafe"
+                elseif spd >= 0.3 then tag, anim = "walk",   "3d_relaxed_walk_turn_strafe"
+                else                    tag, anim = "idle",   "relaxed_idle_both" end
+            end
             pcall(function() e:StartAnimation(0, anim, 0, 0.15, 1.0, true) end)
             if p.animTag ~= tag then
                 p.animTag = tag
@@ -2242,9 +2274,70 @@ end
 
 -- ===== Horse Ghost Spawn / Remove =====
 
+-- WO-38 Phase 5. Called by the agent from a HorseInfoDown (0x2B): the
+-- authored name of the horse that player is riding, "" for dismounted or
+-- unknown. Stored for the next mount; if that ghost is ALREADY riding a
+-- spawned proxy and the named world horse exists here, the proxy is swapped
+-- out for the real horse -- the identity packet and the riding flag race on
+-- two different channels, so late arrival is the normal case, not an error.
+function KCD2MP_SetGhostHorse(id, name)
+    id = tostring(id)
+    name = tostring(name or "")
+    KCD2MP.ghostHorseName[id] = name
+    mp_log("GHOST_HORSE id=" .. id .. " name='" .. name .. "'")
+
+    local hd = KCD2MP.horseGhosts[id]
+    local ghost = KCD2MP.ghosts[id]
+    if name ~= "" and hd and not hd.isWorldHorse and ghost and ghost.istate
+       and ghost.istate.isRiding then
+        local world = nil
+        pcall(function() world = System.GetEntityByName(name) end)
+        if world and tostring(world.class or "") == "Horse" then
+            mp_log("GHOST_HORSE swapping proxy for world horse '" .. name .. "' id=" .. id)
+            if ghost.istate.nativeMounted then
+                pcall(function() ghost.entity.human:ForceDismount() end)
+                ghost.istate.nativeMounted = false
+            end
+            KCD2MP_RemoveHorse(id)
+            local wp = nil
+            pcall(function() wp = ghost.entity:GetWorldPos() end)
+            KCD2MP_SpawnHorse(id, wp and wp.x or 0, wp and wp.y or 0, wp and wp.z or 0,
+                ghost.istate.tr or 0)
+        end
+    end
+end
+
 function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     if KCD2MP.horseGhosts[id] then
         KCD2MP_RemoveHorse(id)
+    end
+
+    -- WO-38 Phase 5: if we know WHICH horse that player mounted and this
+    -- world has the same-named entity, adopt it instead of spawning the
+    -- generic proxy. Right look (Section D's grey-horse report was the
+    -- proxy's default appearance), and a real horse the local player can
+    -- still interact with. Position is driven exactly like a proxy while
+    -- ridden; on dismount the entry is dropped and the engine takes the
+    -- horse back (the WO-32 release principle -- verified on human NPCs,
+    -- horse behaviour is live-gated).
+    local wantName = KCD2MP.ghostHorseName[id]
+    if wantName and wantName ~= "" then
+        local world = nil
+        pcall(function() world = System.GetEntityByName(wantName) end)
+        if world and tostring(world.class or "") == "Horse" then
+            KCD2MP.horseGhosts[id] = {
+                entity = world,
+                entityId = world.id,
+                isWorldHorse = true,
+                worldName = wantName,
+            }
+            mp_log("HorseAdopt OK id=" .. id .. " world horse '" .. wantName .. "'")
+            Script.SetTimer(400, function()
+                KCD2MP_MountNPCOnHorse(id)
+            end)
+            return world
+        end
+        mp_log("HorseAdopt: '" .. tostring(wantName) .. "' not loaded here; falling back to proxy id=" .. id)
     end
 
     local pos = {x=x, y=y, z=z}
@@ -2335,6 +2428,14 @@ end
 function KCD2MP_RemoveHorse(id)
     local horseData = KCD2MP.horseGhosts[id]
     if not horseData then return end
+    if horseData.isWorldHorse then
+        -- WO-38 Phase 5: an adopted world horse is REAL local content --
+        -- never removed, just released. The engine restores its own
+        -- behaviour once position writes stop (WO-32's release principle).
+        KCD2MP.horseGhosts[id] = nil
+        mp_log("ReleaseWorldHorse id=" .. id .. " '" .. tostring(horseData.worldName) .. "'")
+        return
+    end
     if horseData.entityId then
         pcall(function() System.RemoveEntity(horseData.entityId) end)
     end
@@ -3366,6 +3467,7 @@ function KCD2MP_InterpTick(arg)
         KCD2MP._ridingCheckTick = 0
         if player then
             local riding = false
+            local mountName = nil
             -- Method 0: Find "Horse" class entity within 2.5m of player.
             -- When riding, horse origin is ~1.5m below saddle (player pos).
             -- Exclude our own ghost horses (kcd2mp_horse_*) to avoid false positives.
@@ -3388,6 +3490,14 @@ function KCD2MP_InterpTick(arg)
                                 pcall(function() horsePos = e:GetWorldPos() end)
                                 if horsePos and (pos.z - horsePos.z) > 1.0 then
                                     riding = true
+                                    -- WO-38 Phase 5: this IS the mounted horse.
+                                    -- Only a plain authored name travels -- it is
+                                    -- the cross-client key (same rule as NPC sync);
+                                    -- a generated per-save name stays local and the
+                                    -- receiver keeps its proxy fallback.
+                                    if en ~= "" and string.find(en, "^[%w_]+$") then
+                                        mountName = en
+                                    end
                                 end
                             end
                         end
@@ -3411,6 +3521,22 @@ function KCD2MP_InterpTick(arg)
                 end)
             end
             KCD2MP.isRiding = riding
+
+            -- WO-38 Phase 5: broadcast which horse we are on, by authored
+            -- name, on change plus a slow re-emit while mounted (late
+            -- joiners; the relay replays nothing). "-" = dismounted or a
+            -- mount whose identity could not be read (methods 1/2 detect
+            -- riding without identifying the horse).
+            if not riding then mountName = nil end
+            KCD2MP._mountedHorseName = mountName
+            local wire = mountName or "-"
+            local nowC = os.clock()
+            if wire ~= KCD2MP._horseInfoSentName
+               or (mountName and (nowC - (KCD2MP._horseInfoSentAt or 0)) > 30) then
+                KCD2MP._horseInfoSentName = wire
+                KCD2MP._horseInfoSentAt = nowC
+                KCD2MP_EmitEvent("horse_info", wire)
+            end
         end
     end
 

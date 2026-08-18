@@ -402,7 +402,34 @@ namespace KcdMp.Wire;
 /// under a minute of real time) and is cleared into grace when its owner
 /// disconnects, so a crashed sleeper cannot wedge the session.
 ///
-/// Free type bytes for new features: 0x2A and up.
+/// ---- Horse identity layer (WO-38 Phase 5) ----
+///
+/// C→S  0x2A  HorseInfoUp:   [nameLen:1][name:UTF-8]                  (1 + nameLen)
+/// S→C  0x2B  HorseInfoDown: [sourceGhostId:1][nameLen:1][name:UTF-8] (2 + nameLen)
+///
+/// Which world horse the sending player is currently riding, by entity name
+/// -- the same cross-client key as the NPC sync layer, valid for the same
+/// reason (authored entity names are byte-identical per install). nameLen 0
+/// means dismounted, or mounted on a horse whose identity could not be read
+/// (runtime-spawned horses have per-save generated names that do NOT travel).
+///
+/// The WO-38 report's Section D is the entire motivation: mounting used to
+/// exist only as a boolean on the position stream, so the receiver spawned a
+/// generic Horse-class proxy -- always the default (grey) look, phantom
+/// (nothing but the mod knows it exists, so it cannot be mounted or hit),
+/// and despawned on dismount. With the name on the wire, a receiver whose
+/// world has the same-named horse adopts THAT entity as the ghost's mount:
+/// right look, and a real, interactive horse that stays in the world after
+/// the dismount. The proxy remains the fallback when the name is unknown or
+/// not loaded here.
+///
+/// Sent on mount/dismount transitions plus a slow re-emit while mounted so a
+/// late joiner converges -- the relay is stateless and replays nothing, the
+/// same reasoning as Appearance. Broadcast to everyone; no authority gate
+/// (like the pause layer, it is a fact about the sender, not about the
+/// shared world).
+///
+/// Free type bytes for new features: 0x2C and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -450,6 +477,7 @@ public static class Protocol
     public const byte PlayerDeathUp  = 0x23;
     public const byte NpcStateUp     = 0x26;
     public const byte TimeSkipUp     = 0x28;
+    public const byte HorseInfoUp    = 0x2A;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -476,6 +504,7 @@ public static class Protocol
     public const byte CombatRole       = 0x25;
     public const byte NpcStateDown     = 0x27;
     public const byte TimeSkipDown     = 0x29;
+    public const byte HorseInfoDown    = 0x2B;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -661,6 +690,22 @@ public static class Protocol
     /// them as done-quiet instead of announcing a phantom second skip.
     /// </summary>
     public const int TimeSkipJoinGraceSeconds = 120;
+
+    // ---- Horse identity layer (WO-38 Phase 5) ----
+
+    /// <summary>
+    /// Upper bound on a horse entity name in a HorseInfo packet. Same cap and
+    /// same reasoning as <see cref="MaxNpcNameLen"/> -- it is the same kind of
+    /// authored entity name.
+    /// </summary>
+    public const int MaxHorseNameLen = MaxNpcNameLen;
+
+    /// <summary>
+    /// How often the mod re-emits the mounted-horse identity while mounted,
+    /// so a peer who joined after the mount still converges. Relay replays
+    /// nothing, exactly as for Appearance.
+    /// </summary>
+    public const int HorseInfoHeartbeatSeconds = 30;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

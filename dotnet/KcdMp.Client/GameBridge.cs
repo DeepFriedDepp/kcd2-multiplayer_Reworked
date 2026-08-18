@@ -189,6 +189,11 @@ public partial class GameBridge(ClientConfig config)
     // Reassigned per connection, same idiom as _sendPauseIfChanged.
     private Func<byte, byte, uint, Task>? _sendTimeSkip;
 
+    // ---- Horse identity (WO-38 Phase 5) ----
+    // Carries one horse_info event line from the mod onto the wire as a
+    // HorseInfoUp (0x2A). Reassigned per connection like _sendNpcState.
+    private Func<string, Task>? _sendHorseInfo;
+
     // ---- Shared player combat (WO-28) ----
 
     // Flow A outbound: the last health/stamina actually put on the wire, plus
@@ -573,6 +578,7 @@ public partial class GameBridge(ClientConfig config)
         _sendPauseIfChanged = () => SendPauseIfChangedAsync(stream, cts.Token);
         _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
         _sendNpcState = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token);
+        _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
         void OnLocalPauseDetected(bool paused)
         {
             _localAutoPaused = paused;
@@ -752,6 +758,7 @@ public partial class GameBridge(ClientConfig config)
             _sendPlayerHit = null;
             _sendNpcState = null;
             _sendTimeSkip = null;
+            _sendHorseInfo = null;
             lock (_timeSkipLock) { _pendingTimeSkip = null; }
             _localSkipActive = false;
             _awaitSkipDoneTime = false;
@@ -1140,6 +1147,30 @@ public partial class GameBridge(ClientConfig config)
         if (send is null) return;
         await send(Protocol.TimeSkipPhaseStart, Protocol.TimeSkipKindFastTravel, 0);
         await send(Protocol.TimeSkipPhaseDone, Protocol.TimeSkipKindFastTravel, worldTime);
+    }
+
+    // -------------------------------------------------------------------------
+    // Horse identity (WO-38 Phase 5)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Puts one HorseInfoUp (0x2A) on the wire. An empty name means
+    /// dismounted, or a mount whose identity the mod could not read.
+    /// </summary>
+    private async Task SendHorseInfoAsync(NetworkStream stream, string horseName, CancellationToken ct)
+    {
+        try
+        {
+            var nameBytes = Encoding.UTF8.GetBytes(horseName);
+            var packet = new byte[3 + 1 + nameBytes.Length];
+            packet[0] = Protocol.HorseInfoUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)(1 + nameBytes.Length));
+            packet[3] = (byte)nameBytes.Length;
+            nameBytes.CopyTo(packet, 4);
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine($"[horse] sent mount identity '{(horseName.Length == 0 ? "(none)" : horseName)}'");
+        }
+        catch (Exception ex) { Console.WriteLine($"[horse] send failed: {ex.Message}"); }
     }
 
     /// <summary>
@@ -1752,6 +1783,21 @@ public partial class GameBridge(ClientConfig config)
                         }
                     }
                 }
+                else if (type == Protocol.HorseInfoDown
+                         && payloadLen >= 2
+                         && payloadLen <= 2 + Protocol.MaxHorseNameLen)
+                {
+                    // Horse identity (WO-38 Phase 5): [sourceGhostId:1][nameLen:1][name].
+                    // Same validate-before-Lua-interpolation discipline as NpcStateDown.
+                    byte hiSource = payload[0];
+                    int hiNameLen = payload[1];
+                    if (payloadLen == 2 + hiNameLen)
+                    {
+                        string horseName = hiNameLen == 0 ? "" : Encoding.UTF8.GetString(payload, 2, hiNameLen);
+                        if (hiNameLen == 0 || NpcNamePattern.IsMatch(horseName))
+                            await ExecLuaAsync($"if KCD2MP_SetGhostHorse then KCD2MP_SetGhostHorse(\"{hiSource}\",\"{horseName}\") end");
+                    }
+                }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
                     // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
@@ -1934,6 +1980,25 @@ public partial class GameBridge(ClientConfig config)
                 var sendNpc = _sendNpcState;
                 if (sendNpc is null) break;
                 _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
+                break;
+            }
+
+            case "horse_info":
+            {
+                // Horse identity (WO-38 Phase 5): "<entityName>" from the
+                // riding check, "-" for dismounted or an unreadable mount.
+                // Validated exactly like NPC names -- it is the same kind of
+                // authored entity name and crosses the same trust boundary.
+                string horseName = arg.Trim();
+                if (horseName == "-") horseName = "";
+                if (horseName.Length > 0 && (!NpcNamePattern.IsMatch(horseName) || horseName.Length > Protocol.MaxHorseNameLen))
+                {
+                    Console.WriteLine($"[horse] rejected mount name '{arg}' (not an authored entity name)");
+                    break;
+                }
+                var sendHorse = _sendHorseInfo;
+                if (sendHorse is null) break;
+                _ = sendHorse(horseName);
                 break;
             }
 

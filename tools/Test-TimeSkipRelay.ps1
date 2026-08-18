@@ -44,6 +44,8 @@ $HANDSHAKE     = 0x00
 $ACK_TYPE      = 0xFF   # NOT named $ACK: a local $ack would shadow it (PS vars are case-insensitive)
 $TIMESKIP_UP   = 0x28
 $TIMESKIP_DOWN = 0x29
+$HORSE_UP      = 0x2A
+$HORSE_DOWN    = 0x2B
 $PHASE_START = 0; $PHASE_DONE = 1; $PHASE_QUIET = 2
 $KIND_SLEEP  = 0; $KIND_WAIT  = 1
 
@@ -90,6 +92,33 @@ function Drain-TimeSkips($stream, [int] $quietMs = 1200) {
         }
     }
     ,$found
+}
+
+# Same drain, for HorseInfoDown (0x2B): [sourceGhostId:1][nameLen:1][name].
+function Drain-HorseInfos($stream, [int] $quietMs = 1200) {
+    $stream.ReadTimeout = $quietMs
+    $found = @()
+    while ($true) {
+        $p = Read-Packet $stream
+        if ($null -eq $p) { break }
+        if ($p.Type -eq $HORSE_DOWN -and $p.Payload.Length -ge 2) {
+            $nameLen = [int]$p.Payload[1]
+            $horseName = if ($nameLen -gt 0) { [System.Text.Encoding]::UTF8.GetString($p.Payload, 2, $nameLen) } else { '' }
+            $found += New-Object psobject -Property @{
+                Source = [int]$p.Payload[0]
+                Name   = $horseName
+            }
+        }
+    }
+    ,$found
+}
+
+function Send-HorseInfo($stream, [string]$horseName) {
+    $nb = [System.Text.Encoding]::UTF8.GetBytes($horseName)
+    $payload = New-Object byte[] (1 + $nb.Length)
+    $payload[0] = [byte]$nb.Length
+    if ($nb.Length) { [Array]::Copy($nb, 0, $payload, 1, $nb.Length) }
+    Send-Packet $stream $HORSE_UP $payload
 }
 
 function Send-TimeSkip($stream, [int]$phase, [int]$kind, [uint32]$worldTime) {
@@ -186,6 +215,14 @@ try {
     Send-TimeSkip $peerB.Stream $PHASE_DONE $KIND_SLEEP 300000
     $gotC = Drain-TimeSkips $peerC.Stream
     Check "C received done-QUIET t=300000 (grace survives owner disconnect)" ($gotC.Count -eq 1 -and $gotC[0].Phase -eq $PHASE_QUIET -and $gotC[0].WorldTime -eq 300000 -and $gotC[0].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T8: horse identity broadcast (WO-38 Phase 5, 0x2A/0x2B) ---"
+    Send-HorseInfo $peerB.Stream 'Pebbles_horse_01'
+    $gotC = Drain-HorseInfos $peerC.Stream
+    Check "C received B's mount 'Pebbles_horse_01'" ($gotC.Count -eq 1 -and $gotC[0].Name -eq 'Pebbles_horse_01' -and $gotC[0].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
+    Send-HorseInfo $peerB.Stream ''
+    $gotC = Drain-HorseInfos $peerC.Stream
+    Check "C received B's dismount (empty name)" ($gotC.Count -eq 1 -and $gotC[0].Name -eq '' -and $gotC[0].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
 
     $peerB.Tcp.Close(); $peerC.Tcp.Close()
 }

@@ -147,6 +147,17 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a HorseInfoUp (0x2A) from <paramref name="source"/> to all other
+    /// ready clients as a HorseInfoDown (0x2B) (WO-38 Phase 5). Idempotent at
+    /// the receiver like Appearance: it is current state, not an event.
+    /// </summary>
+    public void BroadcastHorseInfo(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueHorseInfo(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

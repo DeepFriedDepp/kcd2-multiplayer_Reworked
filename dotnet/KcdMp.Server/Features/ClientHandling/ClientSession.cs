@@ -297,6 +297,21 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Horse identity layer (WO-38 Phase 5) ---
+                // [nameLen:1][name]. nameLen 0 = dismounted/unknown. Validated
+                // against the declared nameLen like Appearance's itemCount; no
+                // authority gate -- it is a fact about the sender's own mount.
+                if (type == Protocol.HorseInfoUp
+                    && payloadLen >= 1
+                    && payloadLen <= 1 + Protocol.MaxHorseNameLen)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (body[0] == payloadLen - 1)
+                        _broadcastService.BroadcastHorseInfo(this, body);
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -439,6 +454,18 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.TimeSkipDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a HorseInfoDown (0x2B, WO-38 Phase 5). The body is
+    /// the upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueHorseInfo(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.HorseInfoDown, payload));
     }
 
     /// <summary>
