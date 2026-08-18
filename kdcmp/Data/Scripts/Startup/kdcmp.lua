@@ -2364,22 +2364,32 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     -- (echo mode sends every ~10ms, not 50ms, so fixed interval gave 5x underestimate).
     local ddx = x - (istate.lastPacketX or x)
     local ddy = y - (istate.lastPacketY or y)
+    local ddz = z - (istate.lastPacketZ or z)
     local now = os.clock()
     local dt = now - (istate.lastPacketTime or now)
     istate.lastPacketTime = now
-    local raw_vx, raw_vy
-    if dt > 0.005 and dt < 1.0 then
-        raw_vx = ddx / dt
-        raw_vy = ddy / dt
-    else
-        raw_vx = 0
-        raw_vy = 0
-    end
     istate.lastPacketDt = dt
-    istate.vx = lerpVal(istate.vx or 0, raw_vx, 0.5)
-    istate.vy = lerpVal(istate.vy or 0, raw_vy, 0.5)
+    -- WO-38 Phase 3: packets arrive in BURSTS, not on a clean cadence -- the
+    -- agent batches ExecuteString and flushes per tick (WO-30 measured that
+    -- channel at 60-130 ms warm), so several UpdateGhost calls often land
+    -- microseconds apart. The old code set raw velocity to 0 for every
+    -- burst packet (dt < 5 ms), halving the smoothed velocity each time and
+    -- making the dead-reckoning estimate oscillate between 0 and real --
+    -- one direct cause of the reported rubber-banding. A burst packet now
+    -- leaves the velocity estimate alone instead of dragging it to zero.
+    if dt > 0.005 and dt < 1.0 then
+        istate.vx = lerpVal(istate.vx or 0, ddx / dt, 0.5)
+        istate.vy = lerpVal(istate.vy or 0, ddy / dt, 0.5)
+        -- Vertical rate, for jump detection (WO-38 Section A: a jumping
+        -- player read as a stationary vertical teleport because animation
+        -- selection only ever saw horizontal speed).
+        istate.vz = lerpVal(istate.vz or 0, ddz / dt, 0.5)
+    elseif dt >= 1.0 then
+        istate.vx, istate.vy, istate.vz = 0, 0, 0
+    end
     istate.lastPacketX = x
     istate.lastPacketY = y
+    istate.lastPacketZ = z
 
     -- Log large target jumps; reset velocity on teleport/fast-travel
     -- Jump detection: XY only — Z changes from terrain must NOT reset velocity
@@ -2740,6 +2750,20 @@ local SNEAK_IDLE_ANIMS = {
 KCD2MP._sneakWalkAnim = nil
 KCD2MP._sneakIdleAnim = nil
 
+-- Jump animation candidates (WO-38 Phase 3, Section A). Same probe-on-first-
+-- use pattern as every other list here: findAnim keeps the first name the
+-- entity actually has (GetAnimationLength > 0), so unverified candidates
+-- cost one probe each, once, and a wrong guess can never play. NONE of these
+-- names is confirmed on this build yet -- if none probe out, the ghost keeps
+-- its locomotion animation while airborne (legs keep moving), which is still
+-- strictly better than the reported stiff vertical teleport.
+local JUMP_ANIMS = {
+    "3d_relaxed_jump", "3d_jump", "relaxed_jump", "jump",
+    "3d_relaxed_jump_turn_strafe", "jump_both", "relaxed_jump_both",
+    "3d_relaxed_run_jump", "run_jump", "walk_jump",
+}
+KCD2MP._jumpAnim = nil   -- nil=not probed yet, false=probed and none found, string=found
+
 -- Riding animation candidates (probed on first use, result cached).
 -- false = probed but none found (avoid re-probing every tick).
 local RIDING_IDLE_ANIMS = {
@@ -2863,6 +2887,26 @@ function KCD2MP_UpdateAnimation(id, ghost)
     -- Sanity: can't be sneaking at running speeds (auto-clears bad toggle state)
     if stance == "c" and speed > 4.0 then stance = "s" end
     local wantTag = calcAnimTag(speed, istate.animTag, stance)
+
+    -- WO-38 Phase 3 (Section A): a jump used to render as a stationary
+    -- vertical teleport, because this function only ever saw horizontal
+    -- speed. While the interp tick reports the ghost airborne, play a jump
+    -- animation if this build has one; if the probe finds none, fall through
+    -- to the ordinary locomotion tag rather than freezing.
+    if istate.isAirborne and stance ~= "c" then
+        if KCD2MP._jumpAnim == nil then
+            KCD2MP._jumpAnim = findAnim(ghost.entity, JUMP_ANIMS) or false
+            mp_log("JumpAnim: " .. tostring(KCD2MP._jumpAnim))
+        end
+        if KCD2MP._jumpAnim then
+            pcall(function() ghost.entity:StartAnimation(0, KCD2MP._jumpAnim, 0, 0.1, 1.0, false) end)
+            if istate.animTag ~= "jump" then
+                mp_log(string.format("Anim: %s %s->jump vz-driven", id, istate.animTag or "?"))
+                istate.animTag = "jump"
+            end
+            return
+        end
+    end
 
     local animName
     if wantTag == "sneak_walk" then
@@ -3014,21 +3058,47 @@ function KCD2MP_InterpTick(arg)
             -- simply overwritten - no snap-back rubber-band.
             -- DR just makes the ghost look ahead of the last-known position while waiting
             -- for the next packet, keeping movement smooth at sprint speeds.
+            --
+            -- WO-38 Phase 3 (Section A, the "two steps forward, one step
+            -- back"): the old projection reverted to the bare last-packet
+            -- position the moment the gap exceeded DR_MAX ticks -- and gaps
+            -- exceed it constantly, because delivery is bursty (the
+            -- ExecuteString channel runs 60-130 ms warm, WO-30). Every such
+            -- revert moved the render target BACKWARD by the projected
+            -- amount, which the 0.5 lerp then faithfully rendered as a
+            -- visible step back. The projection now HOLDS at the DR_MAX
+            -- point instead of reverting; the next real packet simply
+            -- overwrites it.
             local renderX = istate.tx or istate.cx
             local renderY = istate.ty or istate.cy
             local DR_MAX = 3  -- 3 * 20ms = 60ms lookahead (covers 50ms packet gap)
             local ticks = istate.ticksSincePacket or 0
-            if ticks >= 1 and ticks <= DR_MAX then
+            if ticks >= 1 then
                 local vx = istate.vx or 0
                 local vy = istate.vy or 0
                 if math.sqrt(vx*vx + vy*vy) > 0.5 then
-                    renderX = renderX + vx * (ticks * 0.020)
-                    renderY = renderY + vy * (ticks * 0.020)
+                    local proj = math.min(ticks, DR_MAX)
+                    renderX = renderX + vx * (proj * 0.020)
+                    renderY = renderY + vy * (proj * 0.020)
                 end
             end
 
-            -- Smooth ghost toward render target (DR-extended, never snaps back)
+            -- Smooth ghost toward render target (DR-extended, never snaps back).
+            --
+            -- WO-38 Phase 3: corrections AGAINST the direction of travel are
+            -- damped harder than corrections along it. A backward correction
+            -- is almost always a stale/regressed target (burst jitter, DR
+            -- overshoot), not the player actually moonwalking -- rendering it
+            -- at full strength is the visible rubber-band. Forward and
+            -- sideways corrections keep the responsive factor.
             local factor = 0.5
+            local dxT = renderX - istate.cx
+            local dyT = renderY - istate.cy
+            local vxS = istate.vx or 0
+            local vyS = istate.vy or 0
+            if (vxS*vxS + vyS*vyS) > 0.25 and (dxT*vxS + dyT*vyS) < 0 then
+                factor = 0.15
+            end
             local prevCx = istate.cx
             local prevCy = istate.cy
             local nx = lerpVal(istate.cx, renderX, factor)
@@ -3045,6 +3115,18 @@ function KCD2MP_InterpTick(arg)
             local z = istate.cz
             local r = istate.cr
 
+            -- WO-38 Phase 3 (Section A jump): airborne detection from the
+            -- packet stream's vertical rate. While airborne, the snap-DOWN
+            -- below must not fire -- a jump arc peaks well under its 2 m
+            -- window, so the snap was flattening the whole arc back onto the
+            -- floor. Held briefly past the last upward motion so the falling
+            -- half of the arc isn't snapped either.
+            local nowClock = os.clock()
+            if (istate.vz or 0) > 1.2 and not istate.isRiding then
+                istate.airborneUntil = nowClock + 0.6
+            end
+            local airborne = (istate.airborneUntil or 0) > nowClock
+
             -- Floor snap: correct ghost Z against raycast floor.
             -- Snap-UP: underground up to 10m (handles slopes, slight embedding).
             -- Snap-DOWN: hovering up to 2m (hover fix; >2m cap prevents snapping off bridges).
@@ -3058,12 +3140,13 @@ function KCD2MP_InterpTick(arg)
                         -- Underground up to 10m: snap up to floor
                         sz = floorZ
                         istate.cz = floorZ
-                    elseif diff > 0.05 and diff < 2.0 then
+                    elseif diff > 0.05 and diff < 2.0 and not airborne then
                         -- Hovering up to 2m above floor: snap down
                         sz = floorZ
                     end
                 end
             end
+            istate.isAirborne = airborne
 
             -- When nativeMounted, the engine links NPC to horse - skip manual NPC SetWorldPos.
             -- We only update horse position; rider follows automatically.
