@@ -268,8 +268,11 @@ tick, emits `bed_near` transitions; the agent holds the latest value and
 picks the kind at skip start — **at a bed = sleep ("slept till"), marker
 skip elsewhere = wait ("passed time to"), clock-jump = fast travel**
 (unchanged). All three kinds now resolve; kind=unknown retires from normal
-operation. Wire verification of sleep/wait kinds rides the final install
-round (the kind picker lives agent-side and needs the new agent running).
+operation. **Wire-verified in the final install round** (real player,
+synthetic listener, final 0.13.6 stack): a real bed sleep arrived as
+`kind=sleep` (announced, worldTime=606240) and a real wait away from the bed
+as `kind=wait` (announced, worldTime=635371) — together with Phase 9.1's
+`kind=fast-travel`, all three kinds are live-confirmed.
 
 ---
 

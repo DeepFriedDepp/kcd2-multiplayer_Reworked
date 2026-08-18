@@ -13,7 +13,7 @@ real 0.13.6 stack with the human at the machine. Full detail per phase in
 | 5 | Forge bug (item D) | **Deferred at the human's direction.** Test mounted live but observation aborted; hypothesis unconfirmed, no fix shipped, explicitly not fully explored beyond WO-38. |
 | 6 | Stuck barks A/B (item E) | **Bug does not reproduce on 0.13.6** (barks resolve). SetIgnorant confirmed targeting-safe; stays a manual toggle, not defaulted. |
 | 7 | Shirt/pants source (item G) | **Closed.** Both class ids appear in EquippedArmorsByClassId and render on player and ghost. No third map exists. |
-| 8 | Skip-kind detection (item H) | **Shipped.** BedTrigger proximity at skip start: sleep vs wait vs fast-travel all resolve. Wire kinds verified in the final install round. |
+| 8 | Skip-kind detection (item H) | **Shipped + wire-verified** on the final 0.13.6 stack: real bed sleep → kind=sleep, real wait → kind=wait, real fast travel → kind=fast-travel. BedTrigger proximity at skip start is the discriminator. |
 | 9 | WO-38 leftovers | **All three addressed.** Long fast travel → exactly one announced skip (live); quest timer not exercisable (no timed quest on save); phasing tug-of-war did not reproduce under a driven NPC (pinned steady, no vibration). |
 | 10 | Diagnostics bundle (item K) | **Shipped.** Agent tees to agent.log; launcher COLLECT LOGS zips kcd.log + agent logs + app logs + config to the Desktop. |
 | 11 | Launcher crashes + noise (items I/J) | **Resolved/mitigated.** "Silent crashes" are unproven (no clean-exit marker existed — one now does); Blazor render Debug chatter filtered (~80% of log volume). Triple-render itself deliberately not chased. |
