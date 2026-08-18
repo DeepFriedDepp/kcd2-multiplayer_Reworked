@@ -3749,10 +3749,21 @@ function KCD2MP_InterpTick(arg)
             -- is recycled it starts from the current stream position.
             local ok = true
             local frozen = mp_ghost_is_corpse(id, ghost)
+            -- WO-39: a one-shot combat animation (swing/block) pins the ghost
+            -- for its duration (<= 1.5 s). Confirmed live: the per-tick
+            -- SetWorldPos writes interrupt a one-shot before a single frame
+            -- of it renders -- swings played to a stationary unstreamed ghost
+            -- and never to a streamed one -- and the z floor-snap fighting
+            -- the clip's root motion was the reported up/down phasing during
+            -- blocks. istate keeps integrating underneath, exactly like the
+            -- frozen case, so the ghost catches up the moment the window ends.
+            local oneShot = istate.oneShotUntil and os.clock() < istate.oneShotUntil
             if frozen then
                 local wp = nil
                 pcall(function() wp = ghost.entity:GetWorldPos() end)
                 if wp then x, y, sz = wp.x, wp.y, wp.z end
+            elseif oneShot then
+                -- no position/angle writes; the one-shot owns the body
             elseif not istate.nativeMounted then
                 local _, err = pcall(function()
                     ghost.entity:SetWorldPos({x=x, y=y, z=sz})
