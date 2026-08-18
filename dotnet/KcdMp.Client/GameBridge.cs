@@ -194,6 +194,11 @@ public partial class GameBridge(ClientConfig config)
     // HorseInfoUp (0x2A). Reassigned per connection like _sendNpcState.
     private Func<string, Task>? _sendHorseInfo;
 
+    // ---- Combat visibility (WO-39 Phase 1) ----
+    // Carries one combat event line from the mod onto the wire as a
+    // CombatEventUp (0x2C). Reassigned per connection like _sendHorseInfo.
+    private Func<byte, Task>? _sendCombatEvent;
+
     // ---- Shared player combat (WO-28) ----
 
     // Flow A outbound: the last health/stamina actually put on the wire, plus
@@ -579,6 +584,7 @@ public partial class GameBridge(ClientConfig config)
         _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
         _sendNpcState = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token);
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
+        _sendCombatEvent = evt => SendCombatEventAsync(stream, evt, cts.Token);
         void OnLocalPauseDetected(bool paused)
         {
             _localAutoPaused = paused;
@@ -759,6 +765,7 @@ public partial class GameBridge(ClientConfig config)
             _sendNpcState = null;
             _sendTimeSkip = null;
             _sendHorseInfo = null;
+            _sendCombatEvent = null;
             lock (_timeSkipLock) { _pendingTimeSkip = null; }
             _localSkipActive = false;
             _awaitSkipDoneTime = false;
@@ -1171,6 +1178,24 @@ public partial class GameBridge(ClientConfig config)
             Console.WriteLine($"[horse] sent mount identity '{(horseName.Length == 0 ? "(none)" : horseName)}'");
         }
         catch (Exception ex) { Console.WriteLine($"[horse] send failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Sends one CombatEventUp (0x2C, WO-39 Phase 1): a discrete combat visual
+    /// (draw/sheathe/swing/block) from the mod's combat event line. The mod
+    /// already rate-limits swings; this just puts the byte on the wire.
+    /// </summary>
+    private async Task SendCombatEventAsync(NetworkStream stream, byte evt, CancellationToken ct)
+    {
+        try
+        {
+            var packet = new byte[3 + Protocol.CombatEventUpPayloadLen];
+            packet[0] = Protocol.CombatEventUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.CombatEventUpPayloadLen);
+            packet[3] = evt;
+            await stream.WriteAsync(packet, ct);
+        }
+        catch (Exception ex) { Console.WriteLine($"[combatviz] send failed: {ex.Message}"); }
     }
 
     /// <summary>
@@ -1798,6 +1823,18 @@ public partial class GameBridge(ClientConfig config)
                             await ExecLuaAsync($"if KCD2MP_SetGhostHorse then KCD2MP_SetGhostHorse(\"{hiSource}\",\"{horseName}\") end");
                     }
                 }
+                else if (type == Protocol.CombatEventDown && payloadLen == Protocol.CombatEventDownPayloadLen)
+                {
+                    // Combat visibility (WO-39 Phase 1): [sourceGhostId:1][event:1].
+                    // Purely cosmetic on this side -- the Lua applies a
+                    // draw/holster call or a one-shot animation to the ghost.
+                    // An event byte this build does not know is passed through
+                    // anyway; the Lua ignores unknown values, so a newer peer
+                    // can emit new events without breaking us.
+                    byte ceSource = payload[0];
+                    byte ceEvent  = payload[1];
+                    await ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
+                }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
                     // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
@@ -1999,6 +2036,31 @@ public partial class GameBridge(ClientConfig config)
                 var sendHorse = _sendHorseInfo;
                 if (sendHorse is null) break;
                 _ = sendHorse(horseName);
+                break;
+            }
+
+            case "combat":
+            {
+                // Combat visibility (WO-39 Phase 1): "draw", "sheathe",
+                // "swing", "block" from the mod's drawn-state poll and
+                // OnAction hook. Unknown words are dropped here so a future
+                // pak can emit new ones without crashing an old agent.
+                byte? evt = arg.Trim() switch
+                {
+                    "draw"    => Protocol.CombatEventWeaponDrawn,
+                    "sheathe" => Protocol.CombatEventWeaponSheathed,
+                    "swing"   => Protocol.CombatEventSwing,
+                    "block"   => Protocol.CombatEventBlock,
+                    _         => null,
+                };
+                if (evt is null)
+                {
+                    Console.WriteLine($"[combatviz] unknown combat event '{arg}' ignored");
+                    break;
+                }
+                var sendCombat = _sendCombatEvent;
+                if (sendCombat is null) break;
+                _ = sendCombat(evt.Value);
                 break;
             }
 

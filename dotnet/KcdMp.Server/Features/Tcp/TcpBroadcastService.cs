@@ -158,6 +158,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a CombatEventUp (0x2C) from <paramref name="source"/> to all
+    /// other ready clients as a CombatEventDown (0x2D) (WO-39 Phase 1).
+    /// Cosmetic on every receiver, so no authority gate -- same reasoning as
+    /// HorseInfo: a fact about the sender, not about the shared world.
+    /// </summary>
+    public void BroadcastCombatEvent(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueCombatEvent(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

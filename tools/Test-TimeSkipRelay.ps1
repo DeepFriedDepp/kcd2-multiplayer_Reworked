@@ -46,6 +46,8 @@ $TIMESKIP_UP   = 0x28
 $TIMESKIP_DOWN = 0x29
 $HORSE_UP      = 0x2A
 $HORSE_DOWN    = 0x2B
+$COMBAT_UP     = 0x2C
+$COMBAT_DOWN   = 0x2D
 $PHASE_START = 0; $PHASE_DONE = 1; $PHASE_QUIET = 2
 $KIND_SLEEP  = 0; $KIND_WAIT  = 1
 
@@ -119,6 +121,27 @@ function Send-HorseInfo($stream, [string]$horseName) {
     $payload[0] = [byte]$nb.Length
     if ($nb.Length) { [Array]::Copy($nb, 0, $payload, 1, $nb.Length) }
     Send-Packet $stream $HORSE_UP $payload
+}
+
+# Drain for CombatEventDown (0x2D, WO-39 Phase 1): [sourceGhostId:1][event:1].
+function Drain-CombatEvents($stream, [int] $quietMs = 1200) {
+    $stream.ReadTimeout = $quietMs
+    $found = @()
+    while ($true) {
+        $p = Read-Packet $stream
+        if ($null -eq $p) { break }
+        if ($p.Type -eq $COMBAT_DOWN -and $p.Payload.Length -eq 2) {
+            $found += New-Object psobject -Property @{
+                Source = [int]$p.Payload[0]
+                Event  = [int]$p.Payload[1]
+            }
+        }
+    }
+    ,$found
+}
+
+function Send-CombatEvent($stream, [int]$evt) {
+    Send-Packet $stream $COMBAT_UP ([byte[]]@([byte]$evt))
 }
 
 function Send-TimeSkip($stream, [int]$phase, [int]$kind, [uint32]$worldTime) {
@@ -223,6 +246,14 @@ try {
     Send-HorseInfo $peerB.Stream ''
     $gotC = Drain-HorseInfos $peerC.Stream
     Check "C received B's dismount (empty name)" ($gotC.Count -eq 1 -and $gotC[0].Name -eq '' -and $gotC[0].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T9: combat event broadcast (WO-39 Phase 1, 0x2C/0x2D) ---"
+    Send-CombatEvent $peerB.Stream 0                             # weapon drawn
+    Send-CombatEvent $peerB.Stream 2                             # swing
+    $gotC = Drain-CombatEvents $peerC.Stream
+    Check "C received B's draw then swing, in order" ($gotC.Count -eq 2 -and $gotC[0].Event -eq 0 -and $gotC[1].Event -eq 2 -and $gotC[0].Source -eq $peerB.Id -and $gotC[1].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
+    $gotB = Drain-CombatEvents $peerB.Stream
+    Check "B heard nothing back about its own combat events" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
 
     $peerB.Tcp.Close(); $peerC.Tcp.Close()
 }

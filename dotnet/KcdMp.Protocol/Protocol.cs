@@ -431,7 +431,39 @@ namespace KcdMp.Wire;
 /// (like the pause layer, it is a fact about the sender, not about the
 /// shared world).
 ///
-/// Free type bytes for new features: 0x2C and up.
+/// ---- Combat visibility layer (WO-39 Phase 1) ----
+///
+/// C→S  0x2C  CombatEventUp:   [event:1]                    (1)
+/// S→C  0x2D  CombatEventDown: [sourceGhostId:1][event:1]   (2)
+///
+/// The WO-38 report's Phase 4 gap: the emit line carries position, rotation,
+/// riding/sneaking flags, health, stamina, dead, unconscious -- and NOTHING
+/// combat-shaped, so an observing player watched a friend stand motionless
+/// with arms down through a whole real fight. This layer carries the visual
+/// facts of the sender's combat state so their ghost can act them out.
+///
+/// event: 0 = weapon drawn, 1 = weapon sheathed, 2 = swing, 3 = block.
+///
+/// These are discrete transitions/events, not continuous state, which is why
+/// this is its own low-rate packet pair (the PlayerHit shape) rather than a
+/// widened Position/Ghost -- those are the hottest packets in the protocol
+/// and a swing happens at most a couple of times per second. The mod
+/// rate-limits swing/block emission and re-emits the drawn state on a slow
+/// heartbeat while it holds (<see cref="CombatDrawnHeartbeatSeconds"/>), so a
+/// late joiner converges -- the relay is stateless and replays nothing,
+/// exactly as for Appearance and HorseInfo.
+///
+/// Everything here is COSMETIC on the receiving side: draw/sheathe call the
+/// ghost's own Human scriptbinds (DrawWeapon/HolsterWeapon), swing/block play
+/// one-shot animations. No damage flows through this layer -- real damage
+/// keeps its existing authoritative paths (0x12 for NPCs, 0x21 for players),
+/// so a spoofed or duplicated combat event can make a ghost wave a sword,
+/// never hurt anyone. Broadcast to everyone; no authority gate (like the
+/// pause and horse layers, it is a fact about the sender, not about the
+/// shared world). Unknown event bytes are ignored by receivers, so this
+/// enum can grow (stagger, hit-reaction) without a protocol bump.
+///
+/// Free type bytes for new features: 0x2E and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -480,6 +512,7 @@ public static class Protocol
     public const byte NpcStateUp     = 0x26;
     public const byte TimeSkipUp     = 0x28;
     public const byte HorseInfoUp    = 0x2A;
+    public const byte CombatEventUp  = 0x2C;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -507,6 +540,7 @@ public static class Protocol
     public const byte NpcStateDown     = 0x27;
     public const byte TimeSkipDown     = 0x29;
     public const byte HorseInfoDown    = 0x2B;
+    public const byte CombatEventDown  = 0x2D;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -717,6 +751,33 @@ public static class Protocol
     /// nothing, exactly as for Appearance.
     /// </summary>
     public const int HorseInfoHeartbeatSeconds = 30;
+
+    // ---- Combat visibility layer (WO-39 Phase 1) ----
+
+    /// <summary>Exact CombatEventUp (0x2C) payload length.</summary>
+    public const int CombatEventUpPayloadLen = 1;
+
+    /// <summary>Exact CombatEventDown (0x2D) payload length.</summary>
+    public const int CombatEventDownPayloadLen = 2;
+
+    /// <summary>Combat event: the sender drew their weapon. Receivers call the ghost's DrawWeapon.</summary>
+    public const byte CombatEventWeaponDrawn = 0;
+
+    /// <summary>Combat event: the sender sheathed their weapon. Receivers call the ghost's HolsterWeapon.</summary>
+    public const byte CombatEventWeaponSheathed = 1;
+
+    /// <summary>Combat event: the sender swung their weapon. Receivers play a one-shot attack animation.</summary>
+    public const byte CombatEventSwing = 2;
+
+    /// <summary>Combat event: the sender raised a block. Receivers play a one-shot block animation.</summary>
+    public const byte CombatEventBlock = 3;
+
+    /// <summary>
+    /// How often the mod re-emits "weapon drawn" while it holds, so a peer who
+    /// joined after the draw still converges. Sheathed is the default state and
+    /// is not heartbeated -- a late joiner's ghost starts sheathed anyway.
+    /// </summary>
+    public const int CombatDrawnHeartbeatSeconds = 30;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

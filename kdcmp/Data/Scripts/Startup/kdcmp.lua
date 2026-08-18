@@ -42,6 +42,21 @@ KCD2MP.playerSneaking = false   -- set by OnAction hook when sneak key pressed
 KCD2MP.isRiding = false         -- updated each interp tick (player on horse detection)
 KCD2MP.logActions = false       -- set true only to discover action names (floods log)
 
+-- ===== Combat visibility (WO-39 Phase 1) =====
+-- The WO-38 Phase 4 gap: nothing combat-shaped was ever shared, so a fighting
+-- player's ghost stood motionless with arms down. Outbound: the local weapon
+-- drawn/sheathed state (polled from Human.IsWeaponDrawn) and swing/block
+-- inputs (OnAction hook) ride the event line as "combat <word>"; the agent
+-- puts them on the wire as CombatEventUp (0x2C). Inbound: KCD2MP_GhostCombat
+-- applies them to the ghost -- DrawWeapon/HolsterWeapon plus one-shot
+-- animations. Cosmetic only: no damage flows through this path.
+KCD2MP.weaponDrawn = false      -- local player's last polled drawn state
+KCD2MP._weaponPollAt = 0        -- last IsWeaponDrawn poll (throttled to 5 Hz)
+KCD2MP._weaponEmitAt = 0        -- last "combat draw" emission (30s heartbeat while drawn)
+KCD2MP._weaponReadOk = nil      -- nil=not probed, false=IsWeaponDrawn unavailable, true=working
+KCD2MP.ghostWeaponDrawn = {}    -- id → true while that peer reports weapon drawn
+KCD2MP._lastSwingEmit = 0       -- rate limit for swing/block event emission
+
 -- WO-17: opt-in, off by default, decided locally per player -- see
 -- KCD2MP_EnableAggro. Persists for the session (a plain Lua global survives
 -- until the mod restarts); never auto-enabled, never negotiated with a peer.
@@ -268,6 +283,57 @@ local function tickAlive(flag, stamp)
     return flag and stamp and (os.clock() - stamp) < TICK_ALIVE_WINDOW
 end
 
+-- WO-39 Phase 1, outbound drawn-state half. Rides the emit tick but is
+-- throttled to 5 Hz -- a draw/sheathe is a once-in-a-while transition, not a
+-- position stream. Human.IsWeaponDrawn() is documented ("return true if human
+-- have any weapon set active"); if this build does not actually register it,
+-- the read degrades to "drawn-state sync disabled", logged once, and nothing
+-- else in the emitter is touched -- the same per-field degradation discipline
+-- as KCD2MP_ReadSelfVitals.
+function KCD2MP_PollWeaponDrawn()
+    if not (player and player.human) then return end
+    if KCD2MP._weaponReadOk == false then return end
+    local now = os.clock()
+    if now - (KCD2MP._weaponPollAt or 0) < 0.2 then return end
+    KCD2MP._weaponPollAt = now
+
+    local drawn = nil
+    pcall(function()
+        if player.human.IsWeaponDrawn then
+            drawn = player.human:IsWeaponDrawn() and true or false
+        end
+    end)
+    if drawn == nil then
+        KCD2MP._weaponReadOk = false
+        mp_log("CombatViz: Human.IsWeaponDrawn unavailable -- drawn-state sync disabled")
+        return
+    end
+    if KCD2MP._weaponReadOk == nil then
+        KCD2MP._weaponReadOk = true
+        mp_log("CombatViz: IsWeaponDrawn readable, initial=" .. tostring(drawn))
+        -- Prime without emitting: a peer's ghost starts sheathed, so only a
+        -- drawn initial state is worth announcing.
+        KCD2MP.weaponDrawn = drawn
+        if drawn then
+            KCD2MP._weaponEmitAt = now
+            KCD2MP_EmitEvent("combat", "draw")
+        end
+        return
+    end
+
+    if drawn ~= KCD2MP.weaponDrawn then
+        KCD2MP.weaponDrawn = drawn
+        KCD2MP._weaponEmitAt = now
+        KCD2MP_EmitEvent("combat", drawn and "draw" or "sheathe")
+    elseif drawn and now - (KCD2MP._weaponEmitAt or 0) >= 30 then
+        -- Heartbeat while drawn, so a late joiner converges (the relay is
+        -- stateless and replays nothing). Sheathed is the default state and
+        -- needs no heartbeat.
+        KCD2MP._weaponEmitAt = now
+        KCD2MP_EmitEvent("combat", "draw")
+    end
+end
+
 function KCD2MP_EmitTick()
     if not KCD2MP.emitRunning then return end
     Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)  -- reschedule FIRST: a Lua error must not kill the stream
@@ -281,6 +347,7 @@ function KCD2MP_EmitTick()
             System.LogAlways("[KCD2-MP] EmitTick error: " .. tostring(err))
         end
     end
+    pcall(KCD2MP_PollWeaponDrawn)   -- WO-39: throttled internally to 5 Hz
 end
 
 -- intervalMs is optional; the agent passes its configured rate.
@@ -3052,6 +3119,172 @@ local function findAnim(entity, candidates)
     return nil
 end
 
+-- ===== Combat visibility, inbound half (WO-39 Phase 1) =====
+--
+-- Swing/block one-shot candidates. Same probe-on-first-use pattern as the
+-- jump/death lists: findAnim keeps the first name the entity actually has,
+-- an unverified candidate can never play, and none-found means the ghost
+-- simply keeps its locomotion animation (weapon still visibly drawn via
+-- DrawWeapon, which IS confirmed on this build) -- still strictly better
+-- than the reported arms-down statue. NONE of these names is confirmed
+-- until the mp_combat_probe live pass; the lists follow the naming
+-- conventions of the anims that ARE confirmed (relaxed_idle_both,
+-- 3d_relaxed_run_turn_strafe).
+local COMBAT_SWING_ANIMS = {
+    "attack", "attack_both", "combat_attack", "melee_attack",
+    "3d_combat_attack", "3d_attack", "sword_attack", "attack_slash",
+    "combat_swing", "swing", "mm_attack", "act_attack",
+}
+local COMBAT_BLOCK_ANIMS = {
+    "block", "block_both", "combat_block", "guard",
+    "3d_combat_block", "3d_block", "sword_block", "parry",
+    "combat_guard", "mm_block", "act_block",
+}
+-- Weapon-ready idle for a ghost whose owner has their weapon drawn, so the
+-- drawn state reads at a glance even between swings. Falls back to the
+-- ordinary relaxed idle when none probes out.
+local COMBAT_IDLE_ANIMS = {
+    "combat_idle_both", "combat_idle", "3d_combat_idle",
+    "battle_idle", "fight_idle", "guard_idle_both", "guard_idle",
+    "combat_ready_idle", "sword_idle", "3d_combat_idle_both",
+}
+KCD2MP._swingAnim = nil        -- nil=not probed, false=none found, string=found
+KCD2MP._blockAnim = nil
+KCD2MP._combatIdleAnim = nil
+
+-- Mannequin escape hatch: Human.PlayAnim(fragmentName, tags) is documented
+-- and may reach the real combat fragments that raw StartAnimation cannot.
+-- Fragment names cannot be probed by GetAnimationLength, so this route stays
+-- OFF until a live session finds a working name and sets it here (or via
+-- mp_combat_frag). When set, it is tried before the CAF one-shot.
+KCD2MP.combatSwingFragment = nil   -- e.g. "MeleeAttack"
+KCD2MP.combatSwingFragTags = ""
+
+-- Applies one peer combat event to that peer's ghost. evt matches Protocol's
+-- combat event bytes: 0=drawn, 1=sheathed, 2=swing, 3=block. Unknown values
+-- are ignored, so a newer peer can emit events this build has no name for.
+-- Everything here is cosmetic; no health is touched on any path.
+function KCD2MP_GhostCombat(id, evt)
+    id = tostring(id)
+    evt = tonumber(evt)
+    if evt == nil then return end
+    local ghost = KCD2MP.ghosts[id]
+    if not (ghost and ghost.entity) then return end
+
+    if evt == 0 or evt == 1 then
+        local wantDrawn = (evt == 0)
+        local isDrawn = KCD2MP.ghostWeaponDrawn[id] and true or false
+        if isDrawn == wantDrawn then return end   -- heartbeat re-emits land here
+        KCD2MP.ghostWeaponDrawn[id] = wantDrawn or nil
+        if ghost.entity.human then
+            if wantDrawn then
+                -- Confirmed live (WO-16/17): draws the ghost's real equipped
+                -- weapon item, when the appearance layer has given it one.
+                pcall(function() ghost.entity.human:DrawWeapon() end)
+            else
+                pcall(function() ghost.entity.human:HolsterWeapon() end)
+            end
+        end
+        mp_log("CombatViz: ghost " .. id .. (wantDrawn and " drew weapon" or " sheathed weapon"))
+        return
+    end
+
+    if evt == 2 or evt == 3 then
+        -- Mannequin route first, when a live session has configured it.
+        if evt == 2 and KCD2MP.combatSwingFragment and ghost.entity.human then
+            local ok = pcall(function()
+                ghost.entity.human:PlayAnim(KCD2MP.combatSwingFragment, KCD2MP.combatSwingFragTags or "")
+            end)
+            if ok then
+                if ghost.istate then ghost.istate.oneShotUntil = os.clock() + 1.0 end
+                return
+            end
+        end
+
+        local anim
+        if evt == 2 then
+            if KCD2MP._swingAnim == nil then
+                KCD2MP._swingAnim = findAnim(ghost.entity, COMBAT_SWING_ANIMS) or false
+                mp_log("SwingAnim: " .. tostring(KCD2MP._swingAnim))
+            end
+            anim = KCD2MP._swingAnim
+        else
+            if KCD2MP._blockAnim == nil then
+                KCD2MP._blockAnim = findAnim(ghost.entity, COMBAT_BLOCK_ANIMS) or false
+                mp_log("BlockAnim: " .. tostring(KCD2MP._blockAnim))
+            end
+            anim = KCD2MP._blockAnim
+        end
+        if not anim then return end
+
+        local len = 0
+        pcall(function() len = ghost.entity:GetAnimationLength(0, anim) or 0 end)
+        pcall(function() ghost.entity:StartAnimation(0, anim, 0, 0.1, 1.0, false) end)
+        -- Hold the one-shot: KCD2MP_UpdateAnimation restarts locomotion every
+        -- tick and would stomp this on the very next one. Capped so a bad
+        -- length can never freeze the ghost for long. istate always exists on
+        -- a spawned ghost; a half-spawned one has no animation loop to fight.
+        if ghost.istate then
+            ghost.istate.oneShotUntil = os.clock() + math.min(len > 0 and len or 0.8, 1.5)
+        end
+    end
+end
+
+-- Local eyeball test: play a combat event on every ghost in this world with
+-- no wire involved (mp_ghost_combat <0|1|2|3>). The apply path is identical
+-- to a real inbound packet.
+function KCD2MP_GhostCombatAll(arg)
+    local evt = tonumber(arg)
+    if evt == nil then
+        System.LogAlways("[KCD2-MP] usage: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
+        return
+    end
+    local n = 0
+    for id in pairs(KCD2MP.ghosts) do
+        KCD2MP_GhostCombat(id, evt)
+        n = n + 1
+    end
+    System.LogAlways("[KCD2-MP] GhostCombatAll evt=" .. evt .. " applied to " .. n .. " ghost(s)")
+end
+
+-- One-command probe for the live session: registration checks on the Human
+-- binds this layer calls, plus every combat anim candidate that exists on a
+-- ghost (all hits, not just the first -- the lists get tuned from this).
+function KCD2MP_CombatProbe()
+    System.LogAlways("[KCD2-MP] === COMBAT VIZ PROBE ===")
+    if player and player.human then
+        System.LogAlways("[KCD2-MP] player.human.IsWeaponDrawn=" .. tostring(type(player.human.IsWeaponDrawn)))
+        System.LogAlways("[KCD2-MP] player.human.DrawWeapon="    .. tostring(type(player.human.DrawWeapon)))
+        System.LogAlways("[KCD2-MP] player.human.HolsterWeapon=" .. tostring(type(player.human.HolsterWeapon)))
+        System.LogAlways("[KCD2-MP] player.human.PlayAnim="      .. tostring(type(player.human.PlayAnim)))
+        local d = "?"
+        pcall(function() d = tostring(player.human:IsWeaponDrawn()) end)
+        System.LogAlways("[KCD2-MP] IsWeaponDrawn() now=" .. d)
+    else
+        System.LogAlways("[KCD2-MP] player.human is nil")
+    end
+    local ghost = nil
+    for _, g in pairs(KCD2MP.ghosts) do if g.entity then ghost = g; break end end
+    if not ghost then
+        System.LogAlways("[KCD2-MP] no ghost to probe anims on (spawn one first)")
+        return
+    end
+    local lists = { SWING = COMBAT_SWING_ANIMS, BLOCK = COMBAT_BLOCK_ANIMS, CIDLE = COMBAT_IDLE_ANIMS }
+    for label, list in pairs(lists) do
+        local hits = {}
+        for _, nm in ipairs(list) do
+            local len = 0
+            pcall(function() len = ghost.entity:GetAnimationLength(0, nm) or 0 end)
+            if len > 0 then hits[#hits + 1] = string.format("%s=%.2f", nm, len) end
+        end
+        System.LogAlways("[KCD2-MP] " .. label .. ": " .. (#hits > 0 and table.concat(hits, ", ") or "none"))
+    end
+    System.LogAlways("[KCD2-MP] ghost.human=" .. tostring(ghost.entity.human ~= nil)
+        .. " HolsterWeapon=" .. tostring(ghost.entity.human and type(ghost.entity.human.HolsterWeapon) or "n/a")
+        .. " PlayAnim=" .. tostring(ghost.entity.human and type(ghost.entity.human.PlayAnim) or "n/a"))
+    System.LogAlways("[KCD2-MP] === END ===")
+end
+
 -- Hysteresis thresholds (m/s).
 -- Different enter/exit speeds prevent oscillation when speed hovers at a boundary.
 -- Enter: must EXCEED this speed to switch INTO this state.
@@ -3086,6 +3319,16 @@ end
 
 function KCD2MP_UpdateAnimation(id, ghost)
     local istate = ghost.istate
+
+    -- WO-39: a one-shot combat animation (swing/block) is mid-play. This
+    -- function restarts locomotion every tick, which would stomp it on the
+    -- next tick -- so hold off until the one-shot's window expires. Checked
+    -- before everything else, jump included: a swing beats an air-frame.
+    if istate.oneShotUntil then
+        if os.clock() < istate.oneShotUntil then return end
+        istate.oneShotUntil = nil
+    end
+
     local speed = istate.smoothedSpeed or 0
     local stance = istate.stance or "s"
 
@@ -3136,6 +3379,17 @@ function KCD2MP_UpdateAnimation(id, ghost)
             idle   = "relaxed_idle_both",
         }
         animName = anims[wantTag]
+        -- WO-39: a ghost whose owner has their weapon drawn idles in a
+        -- weapon-ready stance when this build has one, so the drawn state
+        -- reads at a glance between swings. Probe-on-first-use like every
+        -- other list; none-found keeps the relaxed idle.
+        if wantTag == "idle" and KCD2MP.ghostWeaponDrawn[id] then
+            if KCD2MP._combatIdleAnim == nil then
+                KCD2MP._combatIdleAnim = findAnim(ghost.entity, COMBAT_IDLE_ANIMS) or false
+                mp_log("CombatIdleAnim: " .. tostring(KCD2MP._combatIdleAnim))
+            end
+            if KCD2MP._combatIdleAnim then animName = KCD2MP._combatIdleAnim end
+        end
     end
 
     -- Call StartAnimation every tick to override Mannequin's idle.
@@ -3783,6 +4037,9 @@ function KCD2MP_RemoveGhost(id)
     KCD2MP.ghostDead[id] = nil
     KCD2MP.ghostHpSeen[id] = nil
     KCD2MP.ghostHpSkip[id] = nil
+    -- WO-39: same id-reuse reasoning -- a stale drawn flag would make whoever
+    -- next gets this id spawn weapon-ready for no reason.
+    KCD2MP.ghostWeaponDrawn[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
     -- wrong (false). Re-probe on next riding ghost (free NPC → correct results).
@@ -5210,6 +5467,10 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice_seat",   "KCD2MP_ReportSeat()",        "Report the seat under you: distance, table id, teleport anchor")
     System.AddCCommand("mp_dice_gate",   'KCD2MP_DiceGate("%LINE")',   "Require a real table for mp_dice: mp_dice_gate on|off (default off for testing)")
     System.AddCCommand("mp_dice_demo",   "KCD2MP_DiceDemo()",          "Open the board with fake state, to review the visuals without a second player")
+    System.AddCCommand("mp_combat_probe", "KCD2MP_CombatProbe()", "WO-39: registration + anim-candidate probe for combat visibility (needs a ghost for the anim half)")
+    System.AddCCommand("mp_ghost_combat", 'KCD2MP_GhostCombatAll("%LINE")', "WO-39: play a combat event on every local ghost, no wire: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
+    System.AddCCommand("mp_log_actions", 'KCD2MP_LogActions("%LINE")', "Log every OnAction name (floods log -- for discovering action names): mp_log_actions on|off")
+    System.AddCCommand("mp_combat_frag", 'KCD2MP_SetCombatFragment("%LINE")', "WO-39: set the Mannequin fragment tried for swings (empty to clear): mp_combat_frag <name> [tags]")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
     System.AddCCommand("mp_test_xgen_horse",  'KCD2MP_TestXGenSpawn("Horse")',  "Test XGenAIModule.SpawnEntity ClassName=Horse")
@@ -5217,6 +5478,28 @@ local ok, err = pcall(function()
 end)
 if not ok then
     System.LogAlways("[KCD2-MP] Command error: " .. tostring(err))
+end
+
+-- mp_log_actions on|off (WO-39). The KCD2MP.logActions global existed since
+-- WO-6 but had no console command -- discovering action names needed a
+-- hand-typed Lua chunk. The live combat-input probe made it a first-class
+-- command.
+function KCD2MP_LogActions(arg)
+    local on = tostring(arg or ""):lower()
+    KCD2MP.logActions = (on == "on" or on == "true" or on == "1")
+    System.LogAlways("[KCD2-MP] logActions=" .. tostring(KCD2MP.logActions))
+end
+
+-- mp_combat_frag <name> [tags] (WO-39): configure the Mannequin fragment the
+-- swing apply path tries before the CAF one-shot. Live-tuning tool -- once a
+-- session finds a working fragment, it gets hardcoded as the default.
+function KCD2MP_SetCombatFragment(line)
+    line = tostring(line or "")
+    local name, tags = line:match("^(%S+)%s*(.*)$")
+    KCD2MP.combatSwingFragment = (name ~= "" and name) or nil
+    KCD2MP.combatSwingFragTags = tags or ""
+    System.LogAlways("[KCD2-MP] combatSwingFragment=" .. tostring(KCD2MP.combatSwingFragment)
+        .. " tags='" .. tostring(KCD2MP.combatSwingFragTags) .. "'")
 end
 
 -- ===== Sneak action handler (shared, installed by both hook paths) =====
@@ -5240,6 +5523,24 @@ local AXIS_ACTIONS = {
     combat_zone_mouse_x=true, combat_zone_mouse_y=true,
     mouse_x=true, mouse_y=true, look_lx=true, look_ly=true,
     move_lx=true, move_ly=true,
+}
+
+-- Combat visibility (WO-39 Phase 1): the local player's own attack/block
+-- inputs, mirrored to peers as cosmetic one-shots on this player's ghost.
+-- UNVERIFIED GUESSES until the mp_log_actions live pass confirms what this
+-- build's melee inputs are actually named (the same discipline as the
+-- dialog_answerN guesses above: a name that never fires costs nothing, but
+-- unlike those, a FALSE POSITIVE here makes the ghost swing spuriously -- so
+-- only unambiguously attack/block-shaped names are listed, never generic
+-- ones like "use").
+local COMBAT_SWING_ACTIONS = {
+    attack=true, attack1=true, attack2=true, attack_primary=true,
+    melee_attack=true, combat_attack=true, wh_attack=true,
+    combat_swing=true, swing=true, attack_zone=true,
+}
+local COMBAT_BLOCK_ACTIONS = {
+    block=true, combat_block=true, wh_block=true, parry=true,
+    combat_guard=true, perfect_block=true, gblock=true,
 }
 
 -- Accept/decline keybinds (WO-2, real binds added WO-33).
@@ -5394,6 +5695,20 @@ local function handleAction(action, activation, value)
     if DICE_INVITE_ACTIONS[action] and activation == "press" then
         pcall(KCD2MP_InviteDiceAtTable)
         return
+    end
+
+    -- Combat visibility (WO-39): mirror attack/block presses to peers.
+    -- Deliberately NO return -- this hook must never consume combat input;
+    -- the game's own handler already ran (we are chained after it), and a
+    -- swing that also triggered something else must keep doing so.
+    if activation == "press" or activation == 1 then
+        if COMBAT_SWING_ACTIONS[action] or COMBAT_BLOCK_ACTIONS[action] then
+            local now = os.clock()
+            if now - (KCD2MP._lastSwingEmit or 0) >= 0.15 then
+                KCD2MP._lastSwingEmit = now
+                KCD2MP_EmitEvent("combat", COMBAT_SWING_ACTIONS[action] and "swing" or "block")
+            end
+        end
     end
 
     -- Toggle-style: each press of C flips sneak on/off

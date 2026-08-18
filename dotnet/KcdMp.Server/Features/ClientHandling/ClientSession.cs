@@ -312,6 +312,19 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Combat visibility layer (WO-39 Phase 1) ---
+                // [event:1]. Cosmetic on every receiver (draw/sheathe/swing/
+                // block visuals only -- damage keeps its own authoritative
+                // paths), so like HorseInfo there is no authority gate: it is
+                // a fact about the sender, not about the shared world.
+                if (type == Protocol.CombatEventUp && payloadLen == Protocol.CombatEventUpPayloadLen)
+                {
+                    var body = new byte[Protocol.CombatEventUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.BroadcastCombatEvent(this, body);
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -454,6 +467,18 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.TimeSkipDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a CombatEventDown (0x2D, WO-39 Phase 1). The body
+    /// is the upstream [event:1] payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueCombatEvent(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.CombatEventDown, payload));
     }
 
     /// <summary>
