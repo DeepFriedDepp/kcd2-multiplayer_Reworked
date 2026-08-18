@@ -335,6 +335,36 @@ function KCD2MP_PollWeaponDrawn()
     end
 end
 
+-- WO-39 Phase 8: skip-kind detection, second route. kcd.log was a confirmed
+-- dead end (WO-38 diffed a real bed sleep against a real wait at verbosity 4
+-- -- nothing distinguishes them). The bed interaction itself is detectable
+-- instead: a usable bed presents a BedTrigger-class entity (observed live,
+-- 1.1 m from a player standing at a tavern bed), so "was the player at a bed
+-- when the skip started" answers sleep-vs-wait. Polled at 1 Hz on the emit
+-- tick; transitions ride the event line so the agent always holds the latest
+-- value before any skip marker can arrive.
+KCD2MP.bedNear = false
+KCD2MP._bedPollAt = 0
+
+function KCD2MP_PollBedNear()
+    local now = os.clock()
+    if now - (KCD2MP._bedPollAt or 0) < 1.0 then return end
+    KCD2MP._bedPollAt = now
+    if not player then return end
+    local near = false
+    pcall(function()
+        local pp = player:GetWorldPos()
+        local ents = System.GetEntitiesInSphere(pp, 3) or {}
+        for _, e in ipairs(ents) do
+            if tostring(e.class or "") == "BedTrigger" then near = true; break end
+        end
+    end)
+    if near ~= KCD2MP.bedNear then
+        KCD2MP.bedNear = near
+        KCD2MP_EmitEvent("bed_near", near and "1" or "0")
+    end
+end
+
 function KCD2MP_EmitTick()
     if not KCD2MP.emitRunning then return end
     Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)  -- reschedule FIRST: a Lua error must not kill the stream
@@ -349,6 +379,7 @@ function KCD2MP_EmitTick()
         end
     end
     pcall(KCD2MP_PollWeaponDrawn)   -- WO-39: throttled internally to 5 Hz
+    pcall(KCD2MP_PollBedNear)       -- WO-39 Phase 8: throttled internally to 1 Hz
 end
 
 -- intervalMs is optional; the agent passes its configured rate.

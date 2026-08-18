@@ -152,6 +152,10 @@ public partial class GameBridge(ClientConfig config)
     // watcher below still contributes.
     private bool _localSkipActive;
 
+    // WO-39 Phase 8: latest BedTrigger-proximity report from the mod's 1 Hz
+    // poll ("bed_near" event line). Read at skip start to pick sleep vs wait.
+    private volatile bool _nearBed;
+
     // Set when our own skip's end marker fires: the next time_now event from
     // the mod carries the resulting clock and becomes our TimeSkipUp(done).
     private bool _awaitSkipDoneTime;
@@ -606,7 +610,17 @@ public partial class GameBridge(ClientConfig config)
             _localSkipActive = active;
             if (active)
             {
-                _localSkipKind = (_transport as LogTailGameTransport)?.LastSkipKind ?? Protocol.TimeSkipKindUnknown;
+                // WO-39 Phase 8: the bed interaction itself is the sleep-vs-
+                // wait discriminator (kcd.log was a confirmed dead end). The
+                // mod polls BedTrigger proximity at 1 Hz and this flag holds
+                // the latest value, so by the time a skip marker arrives we
+                // already know whether the player was standing at a bed.
+                // A marker-based skip away from any bed is the wait function;
+                // fast travel never emits these markers at all (it arrives
+                // via the clock-jump watcher as an instant skip).
+                // (This event only ever fires on the log-tail transport, so
+                // there is no third case to consider here.)
+                _localSkipKind = _nearBed ? Protocol.TimeSkipKindSleep : Protocol.TimeSkipKindWait;
                 _ = _sendTimeSkip?.Invoke(Protocol.TimeSkipPhaseStart, _localSkipKind, 0);
             }
             else
@@ -2056,6 +2070,14 @@ public partial class GameBridge(ClientConfig config)
                 _ = sendHorse(horseName);
                 break;
             }
+
+            case "bed_near":
+                // WO-39 Phase 8: BedTrigger proximity transitions from the
+                // mod's 1 Hz poll. Held, not acted on -- OnLocalSkipTime reads
+                // it when a skip marker arrives.
+                _nearBed = arg.Trim() == "1";
+                Console.WriteLine($"[timeskip] player is {(_nearBed ? "at a bed" : "away from beds")}");
+                break;
 
             case "combat":
             {
