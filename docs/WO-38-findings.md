@@ -475,6 +475,68 @@ and was not touched.
   asserts on specific human NPCs and is expected to still pass; stated as
   expectation, not result).
 
+## Addendum — the live battery, run same-day on the real 0.12.6 stack
+
+The human installed 0.12.6 (Verify-Install PASS), launched through the
+launcher, and sat at the machine. Results, all **observed live**:
+
+**Phase 1 — VERIFIED END TO END.**
+- `Calendar.GetWorldTime` is the real day/night clock (86,400 s/day confirmed
+  exactly: 569978 % 86400 = 51578 s = 14.327 h against GetWorldHourOfDay =
+  14.3273; ratio 15). **The REST-reflected `Calendar` attributes are NOT the
+  world clock** — GameplayTime/GameTime reflect session play time in ms.
+  WO-25's Calendar lead was real but named the wrong values; the Lua bind is
+  the only correct surface.
+- +1 h and +10 h forward writes landed exactly (574284 → 610284, hour 15.5 →
+  1.52 AM). **A backward write is silently ignored by the engine** (call
+  succeeds, clock unchanged) — the forward-only design is engine-enforced.
+- **Side effects: none found on needs.** hunger 82.1255 / exhaust 70.658
+  byte-identical across the +10 h jump; hp/stamina unchanged. A forced clock
+  write does NOT apply the need-drain a vanilla sleep does — the receiving
+  player pays nothing for someone else's sleep. Quest-timer interaction not
+  specifically exercised.
+- **Outbound skips, human-performed:** a real bed sleep and a real wait both
+  produced start+done pairs on the wire, captured by a synthetic listener
+  peer (sleep resolved to 7:53 AM, wait to 10:59 AM). Real agent, real relay,
+  real markers.
+- **Inbound applies:** three synthetic-peer skips applied to the human's
+  running game (`ApplyTimeSkip: ... (written)` each time, clock read-back on
+  target), toast seen by the human.
+- **Clock-jump watcher:** a real short fast travel advanced the clock ~40
+  in-game minutes and was **correctly ignored** (below threshold). An
+  emulated fast-travel advance (+300 s every 2 s for 30 s) was reported as
+  exactly ONE settled instant skip, kind=fast-travel, once no inbound-apply
+  suppression overlapped it — and an earlier run during the suppression
+  window was correctly swallowed, which live-verifies the echo guard too.
+- **Bed-vs-wait kind marker: a real negative.** kcd.log at verbosity 4 was
+  diffed around a real bed sleep vs a real wait (±80 to ±350 lines, keyword,
+  set-difference and audio-RTPC passes): no discriminating line exists. A
+  new `sqc_ptag_skiptime` RTPC bracket was found (both kinds). Kind stays
+  unknown → generic "passed time to" wording, permanently unless a different
+  detection route is found.
+- **Toast restyled at the human's direction** ("middle of the screen using
+  the standard KCD2 font... top left is not immersive"): now
+  `UIAction.CallFunction("hud", -1, "ShowInfoText", ...)` — the dice
+  overlay's own native surface — with DrawText as fallback. Human-confirmed
+  live in the centered native style. (Also learned: a hot-patched function
+  cannot call the pak's `local mp_log` — the first patch crashed silently
+  after the clock write; errors inside the agent's batched ExecuteString
+  chunks vanish without a kcd.log line.)
+
+**Phase 8 — CLOSED as not achievable on the documented surfaces.**
+`GameRules.AddMinimapEntity` is **not registered** on this build
+(`GameRules` itself is nil, `Map` is nil — probed live with a ghost present).
+`UIAction` is registered, so a map-panel route may exist, but that is its own
+research WO. The mp_map_marker probe stays in the pak for future builds.
+
+**Also verified incidentally:** synthetic peer → real relay → real agent →
+ghost spawned as a real soul (`kcd2mp_2` etc.) next to the human's player —
+the full presence path on 0.12.6.
+
+Still genuinely two-human-gated: everything in the tester checklist (the
+phasing re-test, horse adoption on two real installs, the forge observation,
+the mp_ghost_ignorant A/B under real combat, shirt/pants classes).
+
 ## What is left for a follow-up session (in order)
 
 1. The Phase 1 live battery: Calendar round-trip + 10 h jump + side effects;

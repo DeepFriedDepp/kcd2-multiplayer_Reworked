@@ -473,7 +473,22 @@ function KCD2MP_ApplyTimeSkip(who, kind, target, quiet)
     end
     if not quiet then
         local verb = (tonumber(kind) == 0) and " slept till " or " passed time to "
-        KCD2MP_ShowInteractionMsg(tostring(who) .. verb .. KCD2MP_FormatWorldTime(target))
+        KCD2MP_ShowNativeToast(tostring(who) .. verb .. KCD2MP_FormatWorldTime(target))
+    end
+end
+
+-- The game's own HUD info text -- native KCD2 font, centered, the same
+-- surface the dice overlay's say() uses (live-verified there). The user's
+-- explicit direction on seeing the DrawText toast live: "I want it in the
+-- middle of the screen using the standard KCD2 font... it looks janky being
+-- in the top left and is not immersive." DrawText remains the fallback if
+-- the UIAction path ever fails.
+function KCD2MP_ShowNativeToast(text)
+    local ok = pcall(function()
+        UIAction.CallFunction("hud", -1, "ShowInfoText", tostring(text), 10, 5000, true)
+    end)
+    if not ok then
+        KCD2MP_ShowInteractionMsg(text)
     end
 end
 
