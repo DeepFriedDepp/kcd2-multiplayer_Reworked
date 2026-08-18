@@ -48,6 +48,8 @@ $HORSE_UP      = 0x2A
 $HORSE_DOWN    = 0x2B
 $COMBAT_UP     = 0x2C
 $COMBAT_DOWN   = 0x2D
+$NPCSTATE_UP   = 0x26
+$NPCSTATE_DOWN = 0x27
 $PHASE_START = 0; $PHASE_DONE = 1; $PHASE_QUIET = 2
 $KIND_SLEEP  = 0; $KIND_WAIT  = 1
 
@@ -142,6 +144,41 @@ function Drain-CombatEvents($stream, [int] $quietMs = 1200) {
 
 function Send-CombatEvent($stream, [int]$evt) {
     Send-Packet $stream $COMBAT_UP ([byte[]]@([byte]$evt))
+}
+
+# NpcStateUp (0x26): [nameLen:1][name][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
+function Send-NpcState($stream, [string]$npcName, [float]$x = 100, [float]$y = 200, [float]$z = 10) {
+    $nb = [System.Text.Encoding]::UTF8.GetBytes($npcName)
+    $payload = New-Object byte[] (1 + $nb.Length + 21)
+    $payload[0] = [byte]$nb.Length
+    [Array]::Copy($nb, 0, $payload, 1, $nb.Length)
+    $o = 1 + $nb.Length
+    [Array]::Copy([BitConverter]::GetBytes($x), 0, $payload, $o, 4)
+    [Array]::Copy([BitConverter]::GetBytes($y), 0, $payload, $o + 4, 4)
+    [Array]::Copy([BitConverter]::GetBytes($z), 0, $payload, $o + 8, 4)
+    [Array]::Copy([BitConverter]::GetBytes([float]0), 0, $payload, $o + 12, 4)
+    [Array]::Copy([BitConverter]::GetBytes([float]100), 0, $payload, $o + 16, 4)
+    $payload[$o + 20] = 1   # flags: dead (a drag target is a downed body)
+    Send-Packet $stream $NPCSTATE_UP $payload
+}
+
+# Drain for NpcStateDown (0x27): [sourceGhostId:1][nameLen:1][name][fixed tail 21]
+function Drain-NpcStates($stream, [int] $quietMs = 1200) {
+    $stream.ReadTimeout = $quietMs
+    $found = @()
+    while ($true) {
+        $p = Read-Packet $stream
+        if ($null -eq $p) { break }
+        if ($p.Type -eq $NPCSTATE_DOWN -and $p.Payload.Length -ge 2) {
+            $nameLen = [int]$p.Payload[1]
+            $npcName = if ($nameLen -gt 0) { [System.Text.Encoding]::UTF8.GetString($p.Payload, 2, $nameLen) } else { '' }
+            $found += New-Object psobject -Property @{
+                Source = [int]$p.Payload[0]
+                Name   = $npcName
+            }
+        }
+    }
+    ,$found
 }
 
 function Send-TimeSkip($stream, [int]$phase, [int]$kind, [uint32]$worldTime) {
@@ -255,7 +292,44 @@ try {
     $gotB = Drain-CombatEvents $peerB.Stream
     Check "B heard nothing back about its own combat events" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
 
-    $peerB.Tcp.Close(); $peerC.Tcp.Close()
+    # After T7, A is disconnected, so B (lowest remaining id) is the world
+    # authority for everything below -- exactly the migration the per-entity
+    # claim rules must coexist with.
+    Write-Host "`n--- T10: per-entity claim -- non-authority C claims a body by sending state for it (WO-39 Phase 2) ---"
+    Send-NpcState $peerC.Stream 'wo39_body_1'
+    $gotB = Drain-NpcStates $peerB.Stream
+    Check "B (authority) received C's stream for wo39_body_1 (claim granted)" ($gotB.Count -eq 1 -and $gotB[0].Name -eq 'wo39_body_1' -and $gotB[0].Source -eq $peerC.Id) "got $($gotB | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T11: the authority's stream for a claimed body is muted ---"
+    Send-NpcState $peerB.Stream 'wo39_body_1'
+    $gotC = Drain-NpcStates $peerC.Stream
+    Check "C received nothing (B's re-sample of C's claimed body dropped)" ($gotC.Count -eq 0) "got $($gotC.Count) pkt(s)"
+
+    Write-Host "`n--- T12: the authority's stream for an UNclaimed entity still flows ---"
+    Send-NpcState $peerB.Stream 'wo39_body_2'
+    $gotC = Drain-NpcStates $peerC.Stream
+    Check "C received B's stream for wo39_body_2" ($gotC.Count -eq 1 -and $gotC[0].Name -eq 'wo39_body_2' -and $gotC[0].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T13: a claim expires on silence and the authority's stream resumes ---"
+    Write-Host "  (waiting out NpcClaimTimeoutSeconds = 5s...)"
+    Start-Sleep -Seconds 6
+    Send-NpcState $peerB.Stream 'wo39_body_1'
+    $gotC = Drain-NpcStates $peerC.Stream
+    Check "C received B's stream for wo39_body_1 after expiry" ($gotC.Count -eq 1 -and $gotC[0].Name -eq 'wo39_body_1' -and $gotC[0].Source -eq $peerB.Id) "got $($gotC | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T14: claimant disconnect releases its claims immediately ---"
+    Send-NpcState $peerC.Stream 'wo39_body_3'                    # C claims
+    $null = Drain-NpcStates $peerB.Stream 800                    # absorb
+    $peerC.Tcp.Close()                                           # claimant vanishes
+    Start-Sleep -Milliseconds 800
+    $peerD = Connect-Peer 'wo39-claim-D'                         # a fresh receiver
+    $null = Drain-NpcStates $peerD.Stream 800                    # absorb join chatter
+    $null = Drain-NpcStates $peerB.Stream 800
+    Send-NpcState $peerB.Stream 'wo39_body_3'                    # authority resumes at once
+    $gotD = Drain-NpcStates $peerD.Stream
+    Check "D received B's stream for wo39_body_3 right after C's disconnect (no timeout wait)" ($gotD.Count -eq 1 -and $gotD[0].Name -eq 'wo39_body_3' -and $gotD[0].Source -eq $peerB.Id) "got $($gotD | ConvertTo-Json -Compress)"
+
+    $peerB.Tcp.Close(); $peerD.Tcp.Close()
 }
 finally {
     if ($relay -and -not $relay.HasExited) { Stop-Process -Id $relay.Id -Force }

@@ -190,6 +190,84 @@ public class ClientHandler
 		_skipJoined.Clear();
 	}
 
+	// ---- Per-entity NPC authority (WO-39 Phase 2) ----
+	//
+	// The handoff item C of docs/WO-38-gaps-and-next-WOs.md asks for: "the
+	// player acting on a body owns that body's stream while acting on it."
+	// Same first-claim shape as the time-skip arbitration above, applied per
+	// entity name, and enforced HERE -- the relay is the single arbitration
+	// point, so two clients acting on the same body resolve deterministically
+	// by relay arrival order, never by comparing world states.
+	//
+	// There is deliberately NO claim packet. A non-authority client claims an
+	// entity simply by sending NpcStateUp for it (the mod only does that while
+	// its player is physically manipulating the body); the claim is refreshed
+	// by every packet and expires after NpcClaimTimeoutSeconds of silence, at
+	// which point the global authority's ordinary stream for that entity
+	// resumes flowing. The global authority's own packets never create claims
+	// -- its right to emit is the default, not a claim.
+	//
+	// This SUPERSEDES the WO-38 Phase 6 note that a non-authority's corpse
+	// drag crosses no machine. The receive side needs no change at all: the
+	// body-follow one-shot in KCD2MP_NpcPuppetTick applies whoever the sender
+	// is, and the echo loop is closed by this same gate (the authority's
+	// re-sample of a body someone else is driving is dropped here).
+
+	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc)> _npcClaims = [];
+
+	/// <summary>
+	/// Decides whether one NpcStateUp for <paramref name="npcName"/> from
+	/// <paramref name="sender"/> may be broadcast, updating the per-entity
+	/// claim table. See the field comment for the rules.
+	/// </summary>
+	public bool RouteNpcState(ClientSession sender, string npcName)
+	{
+		lock (_lock)
+		{
+			bool claimed = _npcClaims.TryGetValue(npcName, out var claim);
+			if (claimed && (DateTime.UtcNow - claim.LastUtc).TotalSeconds > Protocol.NpcClaimTimeoutSeconds)
+			{
+				_npcClaims.Remove(npcName);
+				claimed = false;
+			}
+
+			if (IsDamageAuthority(sender))
+			{
+				// The default stream. Yields only to someone else's fresh claim.
+				return !claimed || claim.OwnerId == sender.Id;
+			}
+
+			if (!claimed)
+			{
+				_npcClaims[npcName] = (sender.Id, DateTime.UtcNow);
+				return true;   // first claim wins, by relay arrival order
+			}
+			if (claim.OwnerId == sender.Id)
+			{
+				_npcClaims[npcName] = (sender.Id, DateTime.UtcNow);
+				return true;   // refresh
+			}
+			return false;      // someone else holds this body
+		}
+	}
+
+	/// <summary>
+	/// Drops every claim <paramref name="client"/> holds -- called on
+	/// disconnect, so a dragger who vanishes mid-drag releases their bodies
+	/// immediately instead of wedging them until the timeout.
+	/// </summary>
+	public void ClearNpcClaimsFor(ClientSession client)
+	{
+		lock (_lock)
+		{
+			var mine = new List<string>();
+			foreach (var kv in _npcClaims)
+				if (kv.Value.OwnerId == client.Id) mine.Add(kv.Key);
+			foreach (var name in mine)
+				_npcClaims.Remove(name);
+		}
+	}
+
 	/// <summary>
 	/// Returns the current player count.
 	/// </summary>

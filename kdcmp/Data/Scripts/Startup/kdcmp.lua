@@ -1708,6 +1708,15 @@ KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPa
 KCD2MP.npcPuppetRunning  = false
 KCD2MP._npcPuppetAliveAt = nil
 
+-- Per-entity authority migration (WO-39 Phase 2). A NON-authority player
+-- physically manipulating a downed body (dragging/carrying) claims that
+-- body's stream by emitting state for it -- the relay's per-entity table
+-- (first claim wins, TimeSkip shape) arbitrates and mutes the global
+-- authority's stream for that entity while the claim is fresh.
+KCD2MP.dragWatch = {}   -- name -> {x,y,z}   last sampled position of a nearby downed body
+KCD2MP.dragging  = {}   -- name -> os.clock() of the last observed local move (claim window)
+KCD2MP._dragScanAt = 0
+
 function KCD2MP_EnableNpcSync(arg)
     local s = tostring(arg or ""):lower()
     if s:find("on") then KCD2MP.npcSync.enabled = true
@@ -1794,6 +1803,98 @@ local function mp_npc_rescan()
     end
 end
 
+-- WO-39 Phase 2: the non-authority half of NPC sync. Watches downed
+-- hand-placed humans near the player; a downed body that MOVES while the
+-- player stands next to it is being manipulated locally (a dead body does
+-- not move by itself -- the only other mover is the inbound puppet stream,
+-- which is recognised and excluded below). While the manipulation is fresh,
+-- its state is emitted as npc_drag lines -- which is how the entity is
+-- claimed; the relay arbitrates first-come and mutes the authority's stream
+-- for it. Nothing is sent for bodies nobody is touching.
+local DRAG_RADIUS   = 6.0   -- metres: bodies this close to the player are watched
+local DRAG_MIN_MOVE = 0.3   -- metres between samples that count as manipulation
+local DRAG_TAIL_S   = 3.0   -- emit tail after the last observed move
+local DRAG_SCAN_MS  = 500   -- watch-scan cadence (emission runs every tick)
+
+local function mp_drag_sensor()
+    if not player then return end
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return end
+    local now = os.clock()
+
+    if (now - (KCD2MP._dragScanAt or 0)) * 1000 >= DRAG_SCAN_MS then
+        KCD2MP._dragScanAt = now
+        local ents = System.GetEntitiesInSphere(pp, DRAG_RADIUS) or {}
+        local seen = {}
+        for _, e in ipairs(ents) do
+            local cls = e.class
+            if (cls == "NPC" or cls == "NPC_Female") and not mp_is_mod_entity(e) then
+                local name = e:GetName()
+                if name and string.find(name, "^[%w_]+$") then
+                    local dead, ko = false, false
+                    if e.actor then
+                        pcall(function() dead = e.actor:IsDead() == true end)
+                        pcall(function() ko = e.actor:IsUnconscious() == true end)
+                    end
+                    if dead or ko then
+                        seen[name] = true
+                        local p = e:GetWorldPos()
+                        local w = KCD2MP.dragWatch[name]
+                        if w then
+                            local dx, dy, dz = p.x - w.x, p.y - w.y, p.z - w.z
+                            if (dx*dx + dy*dy + dz*dz) > DRAG_MIN_MOVE * DRAG_MIN_MOVE then
+                                -- A move that lands on the inbound stream's
+                                -- target was the puppet body-follow, not us.
+                                local pup = KCD2MP.npcPuppets[name]
+                                local streamMove = false
+                                if pup and pup.tx then
+                                    local sx, sy = p.x - pup.tx, p.y - pup.ty
+                                    streamMove = (sx*sx + sy*sy) < 0.25
+                                end
+                                if not streamMove then
+                                    if not KCD2MP.dragging[name] then
+                                        mp_log("NPC-DRAG claiming " .. name .. " (local manipulation)")
+                                    end
+                                    KCD2MP.dragging[name] = now
+                                end
+                            end
+                        end
+                        KCD2MP.dragWatch[name] = { x = p.x, y = p.y, z = p.z }
+                    end
+                end
+            end
+        end
+        for name in pairs(KCD2MP.dragWatch) do
+            if not seen[name] then KCD2MP.dragWatch[name] = nil end
+        end
+    end
+
+    for name, lastMove in pairs(KCD2MP.dragging) do
+        if now - lastMove > DRAG_TAIL_S then
+            KCD2MP.dragging[name] = nil
+            mp_log("NPC-DRAG released " .. name .. " (idle " .. DRAG_TAIL_S .. "s)")
+        else
+            pcall(function()
+                local e = System.GetEntityByName(name)
+                if not e then return end
+                local p = e:GetWorldPos()
+                local rot = 0
+                pcall(function() rot = e:GetWorldAngles().z or 0 end)
+                local hp, dead, ko = -1, false, false
+                if e.actor then
+                    pcall(function() hp = e.actor:GetHealth() or -1 end)
+                    pcall(function() dead = e.actor:IsDead() == true end)
+                    pcall(function() ko = e.actor:IsUnconscious() == true end)
+                end
+                local flags = (dead and 1 or 0) + (ko and 2 or 0)
+                KCD2MP_EmitEvent("npc_drag", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
+                    name, p.x, p.y, p.z, rot, hp, flags))
+            end)
+        end
+    end
+end
+
 function KCD2MP_NpcSyncTick()
     if not KCD2MP.npcSyncRunning then return end
     Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)  -- reschedule FIRST
@@ -1802,7 +1903,12 @@ function KCD2MP_NpcSyncTick()
     -- Gate at tick time, not start time: mp_npc_sync can flip and authority
     -- can migrate mid-session, and both must take effect without a restart.
     if not KCD2MP.npcSync.enabled then return end
-    if not KCD2MP.hitSensorOn then return end   -- only the Rule 2 authority emits
+    if not KCD2MP.hitSensorOn then
+        -- WO-39 Phase 2: a non-authority still watches for bodies its own
+        -- player is dragging -- that is the one NPC state it may emit.
+        pcall(mp_drag_sensor)
+        return
+    end
 
     local now = os.clock()
     if (now - (KCD2MP._npcScanAt or 0)) * 1000 >= KCD2MP.npcSync.scanMs then

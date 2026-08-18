@@ -233,27 +233,32 @@ public class ClientSession
                     continue;
                 }
 
-                // --- NPC sync layer (WO-32) ---
+                // --- NPC sync layer (WO-32; per-entity authority WO-39 Phase 2) ---
                 // [nameLen:1][name][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1].
                 // Validated against the declared nameLen like Appearance's
-                // itemCount, and dropped unless the sender holds Rule 2's
-                // authority -- one world dictates NPC state, same enforcement
-                // point as PlayerHitUp.
+                // itemCount. Routing is per entity now (ClientHandler.RouteNpcState):
+                // the global authority's stream is the default, but a
+                // non-authority sending state for an entity claims that entity
+                // -- first claim wins, refreshed per packet, expired on
+                // silence -- so a player dragging a body owns that body's
+                // stream while dragging it, and the authority's re-sample of
+                // the same body is dropped here (which is also what closes
+                // the echo loop).
                 if (type == Protocol.NpcStateUp
                     && payloadLen >= 1 + 1 + Protocol.NpcStateFixedTail
                     && payloadLen <= 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
                 {
                     var body = new byte[payloadLen];
                     await ReadExactAsync(body);
-                    if (body[0] != payloadLen - 1 - Protocol.NpcStateFixedTail)
+                    int npcNameLen = body[0];
+                    if (npcNameLen != payloadLen - 1 - Protocol.NpcStateFixedTail)
                         continue;   // nameLen disagrees with the framing: malformed, drop
-                    if (!_clientHandler.IsDamageAuthority(this))
-                    {
-                        _logger.Warning("[!] '{Name}' (id={Id}) sent NpcStateUp without holding world authority -- dropped.",
-                            Name, Id);
-                        continue;
-                    }
-                    _broadcastService.BroadcastNpcState(this, body);
+                    string npcName = System.Text.Encoding.UTF8.GetString(body, 1, npcNameLen);
+                    if (_clientHandler.RouteNpcState(this, npcName))
+                        _broadcastService.BroadcastNpcState(this, body);
+                    else if (!_clientHandler.IsDamageAuthority(this))
+                        _logger.Debug("[npcclaim] '{Name}' (id={Id}) state for '{Npc}' dropped (claimed by another client).",
+                            Name, Id, npcName);
                     continue;
                 }
 

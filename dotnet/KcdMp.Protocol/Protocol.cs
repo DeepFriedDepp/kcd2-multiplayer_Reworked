@@ -329,11 +329,26 @@ namespace KcdMp.Wire;
 /// (ghosts, kcd2mp_*) are excluded by the emitter; names are validated
 /// [A-Za-z0-9_]+ before being interpolated into Lua.
 ///
-/// Authority: reuses Rule 2's holder (0x25). The relay drops an NpcStateUp
-/// from any client that is not the current damage authority -- one world
-/// dictates NPC state, which is the same single-authority shape and the same
-/// enforcement point as PlayerHitUp. The emitting mod gates on the same flag
-/// (KCD2MP.hitSensorOn), so a non-authority never sends in the first place.
+/// Authority: reuses Rule 2's holder (0x25) as the DEFAULT stream -- one
+/// world dictates NPC state, same single-authority shape and enforcement
+/// point as PlayerHitUp. The emitting mod gates its ambient 30 m stream on
+/// the same flag (KCD2MP.hitSensorOn), so a non-authority never ambiently
+/// samples in the first place.
+///
+/// **Per-entity authority migration (WO-39 Phase 2):** a non-authority
+/// client MAY send NpcStateUp for an entity its player is physically
+/// manipulating (dragging/carrying a downed body -- the WO-38 report's
+/// corpse-drag gap). Sending state for an entity IS the claim: there is no
+/// claim packet. The relay's per-entity table (first claim wins, by relay
+/// arrival order -- the TimeSkip arbitration shape) then routes that
+/// entity's stream from the claimant and DROPS the global authority's
+/// packets for it, which is also what closes the echo loop (the authority
+/// re-sampling its own driven copy cannot re-broadcast it). The claim is
+/// refreshed by every packet and expires after
+/// <see cref="Protocol.NpcClaimTimeoutSeconds"/> of silence, or immediately
+/// on the claimant's disconnect; the authority's stream then resumes.
+/// Receivers need no notion of any of this -- they apply whatever
+/// NpcStateDown arrives, whoever sent it.
 ///
 /// A receiver that has no entity by that name loaded (different streaming
 /// state, different world area) ignores the packet -- there is nothing to
@@ -656,6 +671,15 @@ public static class Protocol
     /// the WO-38 Section G report.
     /// </summary>
     public const byte NpcStateFlagUnconscious = 0x02;
+
+    /// <summary>
+    /// Per-entity NPC authority (WO-39 Phase 2): how long a non-authority's
+    /// claim on one entity survives without a fresh NpcStateUp for it. The
+    /// dragger's emitter sends at the ordinary npc emit cadence (250 ms) with
+    /// a ~3 s tail after the last observed local movement, so expiry here can
+    /// only ever reap a claimant that stopped emitting or crashed.
+    /// </summary>
+    public const int NpcClaimTimeoutSeconds = 5;
 
     /// <summary>PlayerState flag: the player is knocked out but not dead.</summary>
     public const byte PlayerStateFlagUnconscious = 0x01;

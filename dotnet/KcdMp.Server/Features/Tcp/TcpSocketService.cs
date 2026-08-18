@@ -81,6 +81,10 @@ public class TcpSocketService : BackgroundService
 					// session's one active-skip slot claimed until the timeout.
 					_clientHandler.ClearTimeSkipFor(client);
 
+					// WO-39: a dragger who vanishes mid-drag releases their
+					// claimed bodies now, not at the claim timeout.
+					_clientHandler.ClearNpcClaimsFor(client);
+
 					// Before announcing the disconnect: a peer still in a session
 					// with this client needs telling, or it waits forever.
 					_sessions.HandleDisconnect(client);

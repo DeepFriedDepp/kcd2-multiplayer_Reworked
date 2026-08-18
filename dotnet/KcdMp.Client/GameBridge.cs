@@ -199,6 +199,12 @@ public partial class GameBridge(ClientConfig config)
     // CombatEventUp (0x2C). Reassigned per connection like _sendHorseInfo.
     private Func<byte, Task>? _sendCombatEvent;
 
+    // ---- Per-entity NPC authority (WO-39 Phase 2) ----
+    // Same wire packet as _sendNpcState but flagged as a claim emission, so
+    // the agent's authority gate is skipped (a non-authority claims a body
+    // by sending state for it; the relay arbitrates).
+    private Func<string, float, float, float, float, float, byte, Task>? _sendNpcDrag;
+
     // ---- Shared player combat (WO-28) ----
 
     // Flow A outbound: the last health/stamina actually put on the wire, plus
@@ -583,6 +589,7 @@ public partial class GameBridge(ClientConfig config)
         _sendPauseIfChanged = () => SendPauseIfChangedAsync(stream, cts.Token);
         _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
         _sendNpcState = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token);
+        _sendNpcDrag = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token, asClaim: true);
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
         _sendCombatEvent = evt => SendCombatEventAsync(stream, evt, cts.Token);
         void OnLocalPauseDetected(bool paused)
@@ -763,6 +770,7 @@ public partial class GameBridge(ClientConfig config)
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
             _sendNpcState = null;
+            _sendNpcDrag = null;
             _sendTimeSkip = null;
             _sendHorseInfo = null;
             _sendCombatEvent = null;
@@ -1458,15 +1466,22 @@ public partial class GameBridge(ClientConfig config)
     /// NPC sync (WO-32): puts one tracked NPC's state on the wire (0x26).
     /// Rate limiting and change detection live in the mod's emitter, not here
     /// -- by the time an npc_state event reaches this method it is already
-    /// worth sending. The mod also gates emission on KCD2MP.hitSensorOn (only
-    /// the Rule 2 authority samples at all) and the relay drops an NpcStateUp
-    /// from a non-authority anyway, the same two-layer defence PlayerHitUp has.
+    /// worth sending. The mod also gates ambient emission on
+    /// KCD2MP.hitSensorOn (only the Rule 2 authority samples the 30 m set)
+    /// and the relay routes per entity anyway, the same two-layer defence
+    /// PlayerHitUp has.
+    ///
+    /// <paramref name="asClaim"/> (WO-39 Phase 2) marks a manipulated-body
+    /// emission from the mod's drag sensor: a non-authority IS allowed to
+    /// send those -- sending is how an entity is claimed -- so the authority
+    /// gate is skipped and the relay's per-entity table arbitrates.
     /// </summary>
     private async Task SendNpcStateAsync(NetworkStream stream, string npcName,
                                          float x, float y, float z, float rotZ,
-                                         float health, byte flags, CancellationToken ct)
+                                         float health, byte flags, CancellationToken ct,
+                                         bool asClaim = false)
     {
-        if (!_isDamageAuthority)
+        if (!asClaim && !_isDamageAuthority)
         {
             Console.WriteLine($"[npcsync] not the world authority -- discarding state for '{npcName}'");
             return;
@@ -1998,10 +2013,13 @@ public partial class GameBridge(ClientConfig config)
             }
 
             case "npc_state":
+            case "npc_drag":
             {
                 // NPC sync (WO-32): "<name> <x> <y> <z> <rotZ> <health> [flags]"
-                // from KCD2MP_NpcSyncTick. The mod only emits while it is the
-                // world authority (KCD2MP.hitSensorOn) and mp_npc_sync is on.
+                // from KCD2MP_NpcSyncTick. npc_state is the world authority's
+                // ambient 30 m stream; npc_drag (WO-39 Phase 2) is the drag
+                // sensor's manipulated-body stream, allowed from ANY client --
+                // sending it is how a body is claimed; the relay arbitrates.
                 var f = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (f.Length < 6
                     || !float.TryParse(f[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsx)
@@ -2010,11 +2028,11 @@ public partial class GameBridge(ClientConfig config)
                     || !float.TryParse(f[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsrot)
                     || !float.TryParse(f[5], NumberStyles.Float, CultureInfo.InvariantCulture, out float nshp))
                 {
-                    Console.WriteLine($"[npcsync] malformed npc_state '{arg}'");
+                    Console.WriteLine($"[npcsync] malformed {name} '{arg}'");
                     break;
                 }
                 byte nsflags = f.Length > 6 && byte.TryParse(f[6], out byte nf) ? nf : (byte)0;
-                var sendNpc = _sendNpcState;
+                var sendNpc = name == "npc_drag" ? _sendNpcDrag : _sendNpcState;
                 if (sendNpc is null) break;
                 _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
                 break;
