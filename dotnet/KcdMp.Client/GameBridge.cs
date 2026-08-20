@@ -1037,6 +1037,61 @@ public partial class GameBridge(ClientConfig config)
     ];
 
     /// <summary>
+    /// WO-40 Phase 10: quest-item ALIAS classes -> their real source item.
+    /// The 2026-08-18 session's clothing failures were item-specific, not
+    /// directional-by-architecture: PB's outfit contained several
+    /// alias_prepadeni_* rows (ItemAlias entries, some IsQuestItem="true"),
+    /// and an alias class can fail to create/equip/render on a ghost soul
+    /// (observed: alias_prepadeni_collarChain never equipped through four
+    /// full 10 s retry cycles). An alias looks identical to its source item,
+    /// so receivers substitute the source class before equipping. All 40
+    /// ItemAlias rows from the shipped item.xml (this game version).
+    /// </summary>
+    private static readonly Dictionary<Guid, Guid> ItemAliasToSource = new()
+    {
+        [Guid.Parse("08c35fd2-9f7d-427e-bbfa-007d51773940")] = Guid.Parse("dea2883f-6bd9-4f6e-bae8-80322d428652"),
+        [Guid.Parse("127b31c2-a47a-45d7-927b-94eadd40a61c")] = Guid.Parse("505b8feb-9447-462f-ab3d-68557f89d9f3"),
+        [Guid.Parse("205aec51-1cde-4618-95c2-84c4ba8ab83d")] = Guid.Parse("6dc80a04-dad0-4259-a854-e085caa74cc1"),
+        [Guid.Parse("25893637-c2a6-45c1-8de3-0371dd49f7bb")] = Guid.Parse("07016792-531f-4ef2-8c3c-ea7566326c04"),
+        [Guid.Parse("292a24a8-556e-43ff-ac73-ddef833399fb")] = Guid.Parse("3b97b6ed-09dd-428c-ad6b-b0888ac0ec1b"),
+        [Guid.Parse("2ebd6f82-4495-47df-8079-d79ee1470cd2")] = Guid.Parse("0b4e244a-e3de-4502-afd0-fb7fe309629a"),
+        [Guid.Parse("2f13a4b9-22c1-40b3-95df-a1436eb07577")] = Guid.Parse("036661e4-4556-4295-82f3-264e48cb2d49"),
+        [Guid.Parse("3269615a-4b22-4f39-8f1f-e33bb44ea1a7")] = Guid.Parse("f879ac63-2ce2-4114-83a2-89643c1ed102"),
+        [Guid.Parse("33d169b5-b511-4149-ae1b-96d964ddd15a")] = Guid.Parse("ec7148ad-7998-455d-ade8-7bddf358d515"),
+        [Guid.Parse("391b0fdc-b7a2-443a-9dc6-3c51cd11e3f1")] = Guid.Parse("81e27f41-709f-47c8-96b3-8f8c9619d2fa"),
+        [Guid.Parse("3fc9d5f4-1e24-4d52-b4ea-64d79565d973")] = Guid.Parse("ab25a50a-7836-47a9-acb2-5fd93684b8c5"),
+        [Guid.Parse("45a8290d-4491-43bc-8d2e-c5962b94ed50")] = Guid.Parse("6f6bc011-d298-4f69-8877-71f94abe6d9e"),
+        [Guid.Parse("469fdbf9-4e6a-4ab6-b52b-b7ffb4241aa8")] = Guid.Parse("40411559-a4bc-44e7-8f2e-8d4d510426e5"),
+        [Guid.Parse("4ee86b89-aa4e-49b5-99a6-60617996ac19")] = Guid.Parse("942a42a0-5c46-4c46-983a-71d86adb43c4"),
+        [Guid.Parse("556de5e7-350a-4b85-963d-6d6753f0ced9")] = Guid.Parse("272357ec-8722-4b1d-9ee7-03f29ab465ef"),
+        [Guid.Parse("5bf2deb5-22b7-4d21-9f37-7892205fd204")] = Guid.Parse("18f3756f-9d76-48a4-afa5-72f4ccc0e16b"),
+        [Guid.Parse("5e90d505-f647-4fbb-9a82-a9bfa1633e19")] = Guid.Parse("56271b31-57c1-443a-8d97-9524ee2a8240"),
+        [Guid.Parse("6a5aba05-bbb5-45f6-83a8-c45128c586c5")] = Guid.Parse("2529e246-6f1b-4529-8d6b-64245207bae8"),
+        [Guid.Parse("73b693a0-8dda-456e-8590-a2f291a1bccc")] = Guid.Parse("29a4f58e-6e00-4f9c-9273-1a76e0eccff0"),
+        [Guid.Parse("7857db34-2407-4585-a4a7-d7546be3cf81")] = Guid.Parse("4ea3ec22-970d-4ac7-b802-e801e0340253"),
+        [Guid.Parse("7b31ad0f-1443-4421-a43f-f380dde5bdf0")] = Guid.Parse("3a640e5d-d8bd-4e8b-b61d-8cd5180e79e7"),
+        [Guid.Parse("7d45902e-57ea-43e7-96bc-71dc79caedae")] = Guid.Parse("942a42a0-5c46-4c46-983a-71d86adb43c4"),
+        [Guid.Parse("a4d57e1d-217a-4f02-84a2-4052b4cf150a")] = Guid.Parse("a8723887-ac6e-45a0-a6a4-0cf905716b6d"),
+        [Guid.Parse("a8d552a9-3f9b-4e4e-b032-7328bdac5d96")] = Guid.Parse("8662ab7a-6af0-468a-8bce-a1a8768c24b7"),
+        [Guid.Parse("ab5b3ad5-5bb5-4fe9-a5bb-8ee1c4f713b5")] = Guid.Parse("0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4"),
+        [Guid.Parse("ac508737-02c0-4780-a226-32975ed1b2f4")] = Guid.Parse("f2e16499-8a27-4acc-a4af-f29e00300507"),
+        [Guid.Parse("b24cef83-a8d7-4d2a-9ae0-079beccfa9df")] = Guid.Parse("3a640e5d-d8bd-4e8b-b61d-8cd5180e79e7"),
+        [Guid.Parse("b5704a7a-2cd7-41c0-9705-4df6ca723d21")] = Guid.Parse("0cb47176-06c5-42a9-8d70-969e917eb999"),
+        [Guid.Parse("b7ff26f3-24a4-46c2-97b8-655da1827190")] = Guid.Parse("42e54d97-6e63-4e50-a09d-325ef4dd2286"),
+        [Guid.Parse("b862b26e-0ec4-4932-89ca-e99c05c970e1")] = Guid.Parse("a363573e-57dd-4eda-9b44-d9d9ddf47a5d"),
+        [Guid.Parse("b867dd0e-1bfe-40e9-b114-4b126a3ff1b0")] = Guid.Parse("c164f346-0463-4116-b790-094b11274e5e"),
+        [Guid.Parse("c1dd4160-f2bd-4451-87c0-05ccdcf1be0f")] = Guid.Parse("3c056762-3e14-471a-8f0e-8d57919fb9c4"),
+        [Guid.Parse("c86aa334-66e2-43f4-8fbf-1f65bdc09dbe")] = Guid.Parse("059893ea-3aef-48b3-b1ce-7eb3391fa028"),
+        [Guid.Parse("cb8ab8cb-949a-4e9f-910a-0a7dfd5b9cac")] = Guid.Parse("4835b390-05a4-42d8-a77d-d4fb30ea03d9"),
+        [Guid.Parse("cbac5af5-ce2a-43fc-acf9-e979fda27915")] = Guid.Parse("272357ec-8722-4b1d-9ee7-03f29ab465ef"),
+        [Guid.Parse("cd7ac55b-4bda-43d6-a58d-331a30733eda")] = Guid.Parse("1113ab25-a055-478e-b0c9-42b5d0cb2c6d"),
+        [Guid.Parse("d192726b-1170-47fb-aa1a-300b9aad7d4a")] = Guid.Parse("ea84be32-b3fc-4dfa-8dab-7169bd9e441d"),
+        [Guid.Parse("d6ead753-0660-491a-b093-8654290841cd")] = Guid.Parse("5dd0afa5-3c76-475c-9775-6ed5c69132fd"),
+        [Guid.Parse("e485dff2-7673-4b2b-9f5e-770b5bbcd800")] = Guid.Parse("d7b58b33-f452-4408-ba18-e8618eb3f1dd"),
+        [Guid.Parse("ef6eb320-91c3-4f8e-a5c5-3640fe19a0da")] = Guid.Parse("4ea3ec22-970d-4ac7-b802-e801e0340253"),
+    };
+
+    /// <summary>
     /// Applies a received Appearance packet to the ghost identified by
     /// <paramref name="ghostId"/>: diffs the target set against what was last
     /// applied to that ghost -- seeded with <see cref="GhostSpawnPresetItems"/>
@@ -1046,6 +1101,18 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private async Task ApplyAppearanceAsync(byte ghostId, Guid[] target, CancellationToken ct)
     {
+        // WO-40 Phase 10: substitute quest-item aliases with their real
+        // source items before any diffing -- the alias class is what fails.
+        for (int i = 0; i < target.Length; i++)
+        {
+            if (ItemAliasToSource.TryGetValue(target[i], out var src))
+            {
+                Console.WriteLine($"[appearance] ghost {ghostId}: alias {target[i]} -> source {src}");
+                target[i] = src;
+            }
+        }
+        target = target.Distinct().ToArray();
+
         string soulName = $"kcd2mp_{ghostId}";
         var applied = _ghostAppearance.GetOrAdd(ghostId, static _ => [.. GhostSpawnPresetItems]);
         // The preset's items are already sitting in the ghost's inventory from

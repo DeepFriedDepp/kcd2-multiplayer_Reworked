@@ -36,6 +36,16 @@ KCD2MP.horseGhosts = {}         -- id → {entity, entityId, isWorldHorse, world
 KCD2MP.ghostHorseName = {}      -- id → authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
 KCD2MP._mountedHorseName = nil  -- authored name of the horse the LOCAL player is on (riding check, Method 0)
 KCD2MP.horseAdoptEnabled = true -- WO-40 Phase 0: mp_horse_adopt on|off -- field escape hatch for the mount-crash suspect (off = proxy horses only)
+-- WO-40 Phase 9: ghosts are stimulus-deaf BY DEFAULT now. The chain that
+-- earned this: WO-38 recommended it (a ghost has no player behind its
+-- reactions; every stimulus response is noise), WO-39 live-verified
+-- AI.SetIgnorant is targeting-safe (an ignorant ghost stays hittable and
+-- still fights back when attacked -- damage response is not a stimulus), and
+-- the 2026-08-18 footage showed the cost of leaving it off: a pickpocketed
+-- ghost's brain drew a sword and stayed PERSISTENTLY hostile to the other
+-- player while its owner sat in a menu. mp_ghost_ignorant off restores the
+-- old behaviour.
+KCD2MP.ghostsIgnorant = true
 KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
 KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
@@ -5864,6 +5874,43 @@ function KCD2MP_SetGhostsIgnorant(arg)
         .. " -- new spawns " .. (KCD2MP.ghostsIgnorant and "WILL" or "will NOT") .. " get it")
 end
 
+-- ===== WO-40 Phase 9: hostility remediation + faction-bind probe =====
+-- The footage's pickpocket incident left PB's ghost persistently hostile to
+-- PA (aggro indicator + forced combat stance long after). Ignorant-by-default
+-- prevents NEW incidents; this clears an already-aggroed ghost, and reports
+-- the registration state of the per-pair hostility binds the retail-1.5 dump
+-- says exist (AI.GetFactionOf was previously dismissed on a guessed
+-- signature -- project memory corrected this WO).
+function KCD2MP_GhostCalm()
+    System.LogAlways("[KCD2-MP] AI.GetFactionOf="            .. tostring(AI and type(AI.GetFactionOf)))
+    System.LogAlways("[KCD2-MP] AI.SetFactionOf="            .. tostring(AI and type(AI.SetFactionOf)))
+    System.LogAlways("[KCD2-MP] AI.AddPersonallyHostile="    .. tostring(AI and type(AI.AddPersonallyHostile)))
+    System.LogAlways("[KCD2-MP] AI.RemovePersonallyHostile=" .. tostring(AI and type(AI.RemovePersonallyHostile)))
+    System.LogAlways("[KCD2-MP] AI.IsPersonallyHostile="     .. tostring(AI and type(AI.IsPersonallyHostile)))
+    System.LogAlways("[KCD2-MP] AI.ResetPersonallyHostiles=" .. tostring(AI and type(AI.ResetPersonallyHostiles)))
+    local n = 0
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        if ghost.entity then
+            n = n + 1
+            if AI and type(AI.IsPersonallyHostile) == "function" and player then
+                local ok, hostile = pcall(function() return AI.IsPersonallyHostile(ghost.entity.id, player.id) end)
+                System.LogAlways(string.format("[KCD2-MP] ghost %s IsPersonallyHostile(player) ok=%s -> %s",
+                    tostring(id), tostring(ok), tostring(hostile)))
+            end
+            if AI and type(AI.ResetPersonallyHostiles) == "function" then
+                local ok, err = pcall(function() return AI.ResetPersonallyHostiles(ghost.entity.id) end)
+                System.LogAlways(string.format("[KCD2-MP] ghost %s ResetPersonallyHostiles ok=%s err=%s",
+                    tostring(id), tostring(ok), tostring(err)))
+            elseif AI and type(AI.RemovePersonallyHostile) == "function" and player then
+                local ok, err = pcall(function() return AI.RemovePersonallyHostile(ghost.entity.id, player.id) end)
+                System.LogAlways(string.format("[KCD2-MP] ghost %s RemovePersonallyHostile(player) ok=%s err=%s",
+                    tostring(id), tostring(ok), tostring(err)))
+            end
+        end
+    end
+    if n == 0 then System.LogAlways("[KCD2-MP] no ghosts to calm") end
+end
+
 -- ===== WO-38 Phase 8: map marker probe =====
 -- The shipped scriptbind docs document GameRules.AddMinimapEntity(entityId,
 -- type, lifetime) / RemoveMinimapEntity(entityId) -- exactly the shape a
@@ -5970,7 +6017,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_inspect",     "KCD2MP_InspectGhost()",   "Inspect ghost interp state")
     System.AddCCommand("mp_find_npcs",   "KCD2MP_FindNPCs()",       "Find nearby human NPCs")
     System.AddCCommand("mp_map_marker",  'KCD2MP_ProbeMapMarker("%LINE")', "WO-38: probe GameRules.AddMinimapEntity on ghosts (arg: type int, or 'sweep')")
-    System.AddCCommand("mp_ghost_ignorant", 'KCD2MP_SetGhostsIgnorant("%LINE")', "WO-38: A/B probe -- AI.SetIgnorant on all ghosts (stuck distress barks): on|off")
+    System.AddCCommand("mp_ghost_ignorant", 'KCD2MP_SetGhostsIgnorant("%LINE")', "WO-38/40: AI.SetIgnorant on all ghosts -- DEFAULT ON since WO-40 (pickpocket aggro): on|off")
+    System.AddCCommand("mp_ghost_calm",  "KCD2MP_GhostCalm()", "WO-40: probe faction/hostility binds and clear per-pair hostility on every ghost")
     System.AddCCommand("mp_probe_anims",   "KCD2MP_ProbeAnims()",    "Probe anim names on ghost (GetAnimationLength)")
     System.AddCCommand("mp_copy_npc",     "KCD2MP_CopyNPCModel()",  "Find human NPC, copy CDF to ghost, probe anims")
     System.AddCCommand("mp_scan_anims",   "KCD2MP_ScanAnims()",     "Scan animation directories")
