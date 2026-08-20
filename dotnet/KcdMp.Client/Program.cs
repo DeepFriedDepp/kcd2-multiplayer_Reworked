@@ -19,9 +19,15 @@ config.ApplyCommandLine(args);
 try
 {
     string agentLogPath = Path.Combine(AppContext.BaseDirectory, "agent.log");
-    // One log per run, capped history: rotate the previous run's log aside.
+    // One log per run, capped history: rotate the previous runs' logs aside.
+    // WO-40: two-deep, not one -- the 2026-08-18 host bundle lost the first
+    // ~28 minutes of a real crash session because a single .prev slot was
+    // overwritten by the two post-crash restarts.
+    string prevLogPath = Path.ChangeExtension(agentLogPath, ".prev.log");
+    if (File.Exists(prevLogPath))
+        File.Copy(prevLogPath, Path.ChangeExtension(agentLogPath, ".prev2.log"), overwrite: true);
     if (File.Exists(agentLogPath))
-        File.Copy(agentLogPath, Path.ChangeExtension(agentLogPath, ".prev.log"), overwrite: true);
+        File.Copy(agentLogPath, prevLogPath, overwrite: true);
     var teeStream = new StreamWriter(agentLogPath, append: false) { AutoFlush = true };
     Console.SetOut(new TeeTextWriter(Console.Out, teeStream));
     Console.WriteLine($"[log] agent output tee -> {agentLogPath}");

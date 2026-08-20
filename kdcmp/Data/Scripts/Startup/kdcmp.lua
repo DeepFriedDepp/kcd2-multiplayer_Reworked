@@ -35,6 +35,7 @@ KCD2MP.labelRunning = false
 KCD2MP.horseGhosts = {}         -- id → {entity, entityId, isWorldHorse, worldName} horse per player
 KCD2MP.ghostHorseName = {}      -- id → authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
 KCD2MP._mountedHorseName = nil  -- authored name of the horse the LOCAL player is on (riding check, Method 0)
+KCD2MP.horseAdoptEnabled = true -- WO-40 Phase 0: mp_horse_adopt on|off -- field escape hatch for the mount-crash suspect (off = proxy horses only)
 KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
 KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
@@ -1749,6 +1750,21 @@ KCD2MP.dragWatch = {}   -- name -> {x,y,z}   last sampled position of a nearby d
 KCD2MP.dragging  = {}   -- name -> os.clock() of the last observed local move (claim window)
 KCD2MP._dragScanAt = 0
 
+-- WO-40 Phase 0: field escape hatch for the ghost-mount crash suspect. Off
+-- means every ghost mount uses the spawned proxy horse, never a real one.
+function KCD2MP_SetHorseAdopt(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.horseAdoptEnabled = true
+    elseif s:find("off") then KCD2MP.horseAdoptEnabled = false
+    else
+        mp_log("mp_horse_adopt: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    mp_log("HorseAdopt " .. (KCD2MP.horseAdoptEnabled and "ENABLED" or "disabled -- proxy horses only"))
+    KCD2MP_ShowInteractionMsg("Horse adoption: " .. (KCD2MP.horseAdoptEnabled and "ON" or "OFF"))
+    return true
+end
+
 function KCD2MP_EnableNpcSync(arg)
     local s = tostring(arg or ""):lower()
     if s:find("on") then KCD2MP.npcSync.enabled = true
@@ -2430,6 +2446,10 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         smoothedSpeed = 0,
         prevCx = x, prevCy = y,
         speedDropTicks = 0,   -- consecutive ticks with low speed after high speed
+        -- WO-40 Phase 0: crash guard -- ForceMount must never race a fresh
+        -- spawn's soul/equip initialization (host crash #2 died exactly at
+        -- spawn+400ms mount). Mount waits until the ghost is >=3 s old.
+        spawnedAtClock = os.clock(),
     }
 
     KCD2MP.ghosts[id] = {
@@ -2577,6 +2597,23 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     -- horse back (the WO-32 release principle -- verified on human NPCs,
     -- horse behaviour is live-gated).
     local wantName = KCD2MP.ghostHorseName[id]
+    -- WO-40 Phase 0: both real host crashes (19:25:05 / 20:23:54 in the
+    -- 2026-08-18 bundles) landed within ~1.5 s of an inbound ghost mount.
+    -- Two guards, both cheap:
+    --   1. never adopt the horse the LOCAL player is riding -- ForceMounting
+    --      a second rider onto an occupied horse was never tested and is the
+    --      strongest suspect for crash #1 (PA was galloping when PB's mount
+    --      flip arrived);
+    --   2. adoption can be turned off entirely (mp_horse_adopt off) so field
+    --      testers can separate "adoption crashes" from everything else.
+    if wantName and wantName ~= "" and KCD2MP.horseAdoptEnabled == false then
+        mp_log("HorseAdopt: disabled (mp_horse_adopt off); proxy for id=" .. id)
+        wantName = nil
+    end
+    if wantName and wantName ~= "" and KCD2MP._mountedHorseName == wantName then
+        mp_log("HorseAdopt: '" .. wantName .. "' is the LOCAL player's own mount -- proxy instead (crash guard) id=" .. id)
+        wantName = nil
+    end
     if wantName and wantName ~= "" then
         local world = nil
         pcall(function() world = System.GetEntityByName(wantName) end)
@@ -2647,6 +2684,28 @@ function KCD2MP_MountNPCOnHorse(id)
     if not human then
         local captId = id
         Script.SetTimer(1000, function() KCD2MP_MountNPCOnHorse(captId) end)
+        return
+    end
+
+    -- WO-40 Phase 0 crash guard: a ghost younger than 3 s is still settling
+    -- (soul attach, inbound appearance equips). Host crash #2 (2026-08-18
+    -- 20:23:54) died exactly at fresh-spawn + 400 ms ForceMount. Defer.
+    local age = os.clock() - (ghost.istate and ghost.istate.spawnedAtClock or 0)
+    if ghost.istate and ghost.istate.spawnedAtClock and age < 3.0 then
+        local captId = id
+        mp_log(string.format("MountNPCOnHorse: ghost %s is %.1fs old -- deferring mount (crash guard)", id, age))
+        Script.SetTimer(1500, function() KCD2MP_MountNPCOnHorse(captId) end)
+        return
+    end
+
+    -- WO-40 Phase 0 crash guard: re-check occupancy at mount time too -- the
+    -- local player may have mounted this horse during the timer delay.
+    if horseData.isWorldHorse and horseData.worldName
+       and KCD2MP._mountedHorseName == horseData.worldName then
+        mp_log("MountNPCOnHorse: '" .. horseData.worldName .. "' now occupied by the LOCAL player -- swapping to proxy id=" .. id)
+        KCD2MP.horseGhosts[id] = nil
+        local wp = ghost.istate
+        KCD2MP_SpawnHorse(id, wp and wp.tx or 0, wp and wp.ty or 0, wp and wp.tz or 0, wp and wp.tr or 0)
         return
     end
 
@@ -5603,6 +5662,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_slow_time",       "KCD2MP_SlowTime()",       "Toggle manually broadcasting a paused/unavailable state to peers (WO-11 fallback)")
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
+    System.AddCCommand("mp_horse_adopt",     'KCD2MP_SetHorseAdopt("%LINE")', "WO-40: adopt real world horses for ghosts (default on). off = proxy horses only -- use if the game crashes when a peer mounts")
     System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
 
     -- NPC sync (WO-32)

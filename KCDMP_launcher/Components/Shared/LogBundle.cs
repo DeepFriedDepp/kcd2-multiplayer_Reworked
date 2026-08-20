@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using Microsoft.Win32;
+using System.Text.RegularExpressions;
 
 namespace KCDMP_launcher.Components.Shared
 {
@@ -12,6 +15,17 @@ namespace KCDMP_launcher.Components.Shared
     /// while everything that mattered (kcd.log, the agent console) was never
     /// collected. This gathers every diagnostic surface into one zip a tester
     /// can just hand over.
+    ///
+    /// WO-40: the first real bundles (2026-08-18) proved two collection bugs.
+    /// kcd.log was missing from BOTH players' zips -- the steam_appid.txt
+    /// walk-up in GameRootOf silently falls back to the exe's own directory,
+    /// where kcd.log is not -- so the bundle now hunts for kcd.log itself
+    /// (walk up from the game root, then scan every Steam library the way the
+    /// agent's KcdLogLocator does). And "config.json" was collected from
+    /// %AppData%\KCDMP_Launcher where the launcher never writes anything; the
+    /// real settings live in settings.json in the launcher's working
+    /// directory. Both are collected now (settings.json as the real one,
+    /// config.json kept in case an old install has it).
     /// </summary>
     public static class LogBundle
     {
@@ -50,13 +64,13 @@ namespace KCDMP_launcher.Components.Shared
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(gameRoot))
-                AddIfPresent(Path.Combine(gameRoot, "kcd.log"), "kcd.log");
+            AddIfPresent(FindKcdLog(gameRoot), "kcd.log");
 
             if (!string.IsNullOrWhiteSpace(agentDirectory))
             {
                 AddIfPresent(Path.Combine(agentDirectory, "agent.log"), "agent.log");
                 AddIfPresent(Path.Combine(agentDirectory, "agent.prev.log"), "agent.prev.log");
+                AddIfPresent(Path.Combine(agentDirectory, "agent.prev2.log"), "agent.prev2.log");
             }
 
             // Serilog's rolling file names are app<yyyyMMdd>.log; take the two
@@ -71,9 +85,93 @@ namespace KCDMP_launcher.Components.Shared
             }
             catch { }
 
+            // The launcher's real settings file (written by Home.SaveSettings
+            // as a working-directory-relative "settings.json").
+            AddIfPresent(Path.GetFullPath("settings.json"), "settings.json");
+            AddIfPresent(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"),
+                "settings.launcher-dir.json");
             AddIfPresent(Globals.ConfigFilePath, "config.json");
 
             return zipPath;
+        }
+
+        /// <summary>
+        /// Finds the game's kcd.log the way the agent does, rather than
+        /// trusting one derived directory: try the supplied game root, walk
+        /// up from it a few levels, then scan every KCD-ish folder in every
+        /// Steam library and take the most recently written match.
+        /// </summary>
+        private static string? FindKcdLog(string gameRoot)
+        {
+            try
+            {
+                // 1. The supplied root and its parents.
+                string dir = gameRoot ?? "";
+                for (int i = 0; i < 4 && !string.IsNullOrWhiteSpace(dir); i++)
+                {
+                    string candidate = Path.Combine(dir, "kcd.log");
+                    if (File.Exists(candidate)) return candidate;
+                    dir = Path.GetDirectoryName(dir) ?? "";
+                }
+
+                // 2. Steam library scan (the agent's KcdLogLocator logic).
+                var logs = new List<FileInfo>();
+                foreach (var root in SteamLibraryRoots())
+                {
+                    string common = Path.Combine(root, "steamapps", "common");
+                    if (!Directory.Exists(common)) continue;
+
+                    IEnumerable<string> subdirs;
+                    try { subdirs = Directory.EnumerateDirectories(common); }
+                    catch { continue; }
+
+                    foreach (var d in subdirs)
+                    {
+                        string name = Path.GetFileName(d);
+                        if (!name.Contains("Kingdom", StringComparison.OrdinalIgnoreCase) &&
+                            !name.Contains("KCD", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        try
+                        {
+                            logs.AddRange(new DirectoryInfo(d)
+                                .EnumerateFiles("kcd.log", SearchOption.TopDirectoryOnly));
+                        }
+                        catch { }
+                    }
+                }
+
+                return logs.Count == 0
+                    ? null
+                    : logs.OrderByDescending(f => f.LastWriteTimeUtc).First().FullName;
+            }
+            catch { return null; }
+        }
+
+        private static IEnumerable<string> SteamLibraryRoots()
+        {
+            string? steam =
+                Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null) as string
+                ?? Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null) as string
+                ?? Registry.GetValue(@"HKEY_CURRENT_USER\SOFTWARE\Valve\Steam", "SteamPath", null) as string;
+
+            if (steam is null) yield break;
+            yield return steam;
+
+            string vdf = Path.Combine(steam, "config", "libraryfolders.vdf");
+            if (!File.Exists(vdf)) yield break;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { steam };
+            IEnumerable<string> lines;
+            try { lines = File.ReadLines(vdf); }
+            catch { yield break; }
+
+            foreach (var line in lines)
+            {
+                var m = Regex.Match(line.Trim(), @"""path""\s+""([^""]+)""", RegexOptions.IgnoreCase);
+                if (!m.Success) continue;
+                string p = m.Groups[1].Value.Replace(@"\\", @"\");
+                if (seen.Add(p)) yield return p;
+            }
         }
     }
 }
