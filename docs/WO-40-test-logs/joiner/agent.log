@@ -1,0 +1,192 @@
+20:23:42.468 [log] agent output tee -> C:\Users\emman\AppData\Local\KCDMP\agent.log
+20:23:42.485 [KcdLog] kcd.log = C:\Program Files (x86)\Steam\steamapps\common\KCD2Mod\kcd.log
+20:23:42.531 [KcdLog] Found Steam name: emmanuelcool
+20:23:42.531 === KCD2 Multiplayer Client Agent ===
+20:23:42.532 Server   : 10.0.0.35:7778
+20:23:42.532 Name     : emmanuelcool
+20:23:42.532 Game     : http://localhost:1403
+20:23:42.532 Voice    : on
+20:23:42.532 Protocol : v6
+
+20:23:42.542 Waiting for game to load a save...
+20:23:46.376 Game ready!
+20:23:46.390 [transport] waiting for the mod's state emitter (kcd.log)...
+20:23:46.500 [transport] kcd-log-tail — 0 round trips per state read
+20:23:46.504 Connecting to relay server 10.0.0.35:7778...
+20:23:46.511 Connected! Assigned id=7 (protocol v6)
+
+20:23:46.527 [dice-ipc] Listening on http://localhost:5901/ for the launcher.
+20:23:46.530 [version-ipc] Listening on http://localhost:5902/ for the launcher.
+20:23:46.676 [voice] Started  16kHz mono PCM  frame=640B  range=20m
+20:23:46.688 [name] ghost 5 = josesitoo
+20:23:46.688 [version] ghost 5 is on release 0.13.6
+20:23:46.688 [combat] connected to KCDMP.dll
+20:23:46.704 [ghost 5] 1120.19 1937.70 23.57 riding=False
+20:23:46.705 [vitals] sent health=100.0 stamina=130.0 flags=0
+20:23:46.710 [pos] 2331.2 1870.7 92.0  rot=2.09  riding=False  read=0ms
+20:23:46.748 [pos] 2330.8 1870.5 92.0  rot=2.09  riding=False  read=0ms
+20:23:46.750 [appearance] sent 10 item class(es)
+20:23:46.758 [ghost 5] 1120.26 1937.80 23.58 riding=False
+20:23:46.794 [pos] 2330.5 1870.3 92.1  rot=2.09  riding=False  read=0ms
+20:23:46.841 [ghost 5] 1120.31 1937.87 23.58 riding=False
+20:23:46.847 [pos] 2330.0 1870.0 92.2  rot=2.08  riding=False  read=0ms
+20:23:46.848 [ghost 5] 1120.44 1938.06 23.58 riding=False
+20:23:46.888 [horse] sent mount identity 'ttkc_horse_1'
+20:23:46.916 [pos] 2329.7 1869.8 92.2  rot=2.08  riding=False  read=0ms
+20:23:46.941 [ghost 5] 1120.49 1938.13 23.58 riding=False
+20:23:46.962 [pos] 2329.3 1869.6 92.2  rot=2.08  riding=True  read=0ms
+20:23:46.985 [ghost 5] 1120.53 1938.19 23.58 riding=False
+20:23:47.025 [pos] 2329.0 1869.4 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.070 [pos] 2328.7 1869.2 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.091 [ghost 5] 1120.57 1938.29 23.59 riding=False
+20:23:47.139 [ghost 5] 1120.57 1938.36 23.59 riding=False
+20:23:47.146 [pos] 2328.3 1869.0 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.197 [ghost 5] 1120.55 1938.56 23.60 riding=False
+20:23:47.207 [pos] 2328.0 1868.9 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.238 [pos] 2327.5 1868.6 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.260 [ghost 5] 1120.54 1938.66 23.61 riding=False
+20:23:47.300 [pos] 2327.4 1868.5 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.306 [ghost 5] 1120.52 1938.88 23.62 riding=False
+20:23:47.330 [pos] 2327.1 1868.3 92.2  rot=2.08  riding=True  read=0ms
+20:23:47.382 [ghost 5] 1120.52 1938.96 23.62 riding=False
+20:23:47.422 [pos] 2326.8 1868.1 92.2  rot=2.08  riding=True  read=0ms
+20:23:47.428 [ghost 5] 1120.52 1939.04 23.62 riding=False
+20:23:47.468 [pos] 2326.5 1868.0 92.2  rot=2.08  riding=True  read=0ms
+20:23:47.513 [pos] 2326.2 1867.8 92.2  rot=2.08  riding=True  read=0ms
+20:23:47.514 [appearance] ghost 5: +5 -10
+20:23:47.577 [pos] 2325.9 1867.6 92.2  rot=2.08  riding=True  read=0ms
+20:23:47.623 [pos] 2325.5 1867.5 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.687 [pos] 2325.2 1867.3 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.731 [pos] 2324.9 1867.1 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.792 [pos] 2324.4 1866.8 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.855 [pos] 2324.0 1866.6 92.1  rot=2.08  riding=True  read=0ms
+20:23:47.916 [pos] 2323.9 1866.5 92.2  rot=2.07  riding=True  read=0ms
+20:23:47.978 [pos] 2323.4 1866.2 92.2  rot=2.06  riding=True  read=0ms
+20:23:48.042 [pos] 2323.0 1866.1 92.2  rot=2.03  riding=True  read=0ms
+20:23:48.101 [pos] 2322.7 1865.9 92.1  rot=2.00  riding=True  read=0ms
+20:23:48.146 [pos] 2322.5 1865.8 92.1  rot=1.98  riding=True  read=0ms
+20:23:48.207 [pos] 2321.9 1865.6 92.0  rot=1.96  riding=True  read=0ms
+20:23:48.268 [pos] 2321.5 1865.4 92.0  rot=1.96  riding=True  read=0ms
+20:23:48.314 [pos] 2321.1 1865.2 92.0  rot=1.96  riding=True  read=0ms
+20:23:48.375 [pos] 2320.8 1865.1 92.1  rot=1.96  riding=True  read=0ms
+20:23:48.438 [pos] 2320.6 1865.0 92.1  rot=1.95  riding=True  read=0ms
+20:23:48.452 [stat] avg read=0ms over 100 ticks
+20:23:48.497 [pos] 2320.2 1864.9 92.2  rot=1.95  riding=True  read=0ms
+20:23:48.559 [pos] 2319.7 1864.8 92.1  rot=1.94  riding=True  read=0ms
+20:23:48.604 [pos] 2319.5 1864.7 92.1  rot=1.94  riding=True  read=0ms
+20:23:48.666 [pos] 2318.9 1864.5 92.1  rot=1.93  riding=True  read=0ms
+20:23:48.717 [pos] 2318.5 1864.4 92.0  rot=1.92  riding=True  read=0ms
+20:23:48.775 [ping] 61 ms
+20:23:48.808 [pos] 2318.3 1864.3 92.0  rot=1.92  riding=True  read=0ms
+20:23:48.837 [pos] 2317.7 1864.1 92.0  rot=1.91  riding=True  read=0ms
+20:23:48.900 [pos] 2317.3 1863.9 92.0  rot=1.91  riding=True  read=0ms
+20:23:48.946 [pos] 2317.0 1863.8 92.1  rot=1.91  riding=True  read=0ms
+20:23:49.006 [pos] 2316.6 1863.7 92.1  rot=1.91  riding=True  read=0ms
+20:23:49.069 [pos] 2316.3 1863.6 92.0  rot=1.91  riding=True  read=0ms
+20:23:49.130 [pos] 2315.9 1863.5 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.178 [pos] 2315.6 1863.3 91.9  rot=1.90  riding=True  read=0ms
+20:23:49.222 [pos] 2315.2 1863.2 91.9  rot=1.90  riding=True  read=0ms
+20:23:49.300 [pos] 2314.8 1863.1 91.9  rot=1.90  riding=True  read=0ms
+20:23:49.359 [pos] 2314.4 1862.9 91.9  rot=1.90  riding=True  read=0ms
+20:23:49.404 [pos] 2314.0 1862.8 91.9  rot=1.90  riding=True  read=0ms
+20:23:49.482 [pos] 2313.8 1862.7 91.9  rot=1.90  riding=True  read=0ms
+20:23:49.528 [pos] 2313.5 1862.6 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.591 [pos] 2313.1 1862.5 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.652 [pos] 2312.8 1862.4 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.699 [pos] 2312.5 1862.2 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.745 [pos] 2312.1 1862.1 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.807 [pos] 2311.7 1862.0 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.866 [pos] 2311.2 1861.8 92.0  rot=1.90  riding=True  read=0ms
+20:23:49.928 [pos] 2310.8 1861.6 92.1  rot=1.90  riding=True  read=0ms
+20:23:49.989 [pos] 2310.7 1861.6 92.1  rot=1.90  riding=True  read=0ms
+20:23:50.004 [stat] avg read=0ms over 200 ticks
+20:23:50.050 [pos] 2310.3 1861.4 92.2  rot=1.90  riding=True  read=0ms
+20:23:50.111 [pos] 2309.7 1861.2 92.2  rot=1.90  riding=True  read=0ms
+20:23:50.160 [pos] 2309.5 1861.2 92.2  rot=1.90  riding=True  read=0ms
+20:23:50.218 [pos] 2308.8 1861.0 92.1  rot=1.90  riding=True  read=0ms
+20:23:50.280 [pos] 2308.6 1860.9 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.343 [pos] 2308.0 1860.7 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.386 [pos] 2307.6 1860.5 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.447 [pos] 2307.2 1860.4 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.493 [pos] 2306.9 1860.3 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.542 [pos] 2306.3 1860.1 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.601 [pos] 2306.2 1860.1 92.0  rot=1.90  riding=True  read=0ms
+20:23:50.648 [pos] 2305.8 1860.0 91.9  rot=1.90  riding=True  read=0ms
+20:23:50.709 [pos] 2305.3 1859.8 91.9  rot=1.90  riding=True  read=0ms
+20:23:50.762 [ping] 45 ms
+20:23:50.769 [pos] 2305.2 1859.8 91.8  rot=1.90  riding=True  read=0ms
+20:23:50.818 [pos] 2304.6 1859.6 91.7  rot=1.90  riding=True  read=2ms
+20:23:50.878 [pos] 2304.4 1859.5 91.7  rot=1.90  riding=True  read=0ms
+20:23:50.933 [pos] 2304.0 1859.4 91.7  rot=1.90  riding=True  read=0ms
+20:23:50.984 [pos] 2303.5 1859.1 91.7  rot=1.90  riding=True  read=0ms
+20:23:51.046 [pos] 2303.3 1859.1 91.7  rot=1.90  riding=True  read=0ms
+20:23:51.108 [pos] 2303.0 1859.0 91.7  rot=1.90  riding=True  read=0ms
+20:23:51.154 [pos] 2302.6 1858.9 91.7  rot=1.90  riding=True  read=0ms
+20:23:51.218 [pos] 2302.3 1858.8 91.6  rot=1.90  riding=True  read=0ms
+20:23:51.275 [pos] 2302.0 1858.7 91.5  rot=1.90  riding=True  read=0ms
+20:23:51.321 [pos] 2301.6 1858.5 91.5  rot=1.90  riding=True  read=0ms
+20:23:51.367 [pos] 2301.0 1858.3 91.4  rot=1.90  riding=True  read=0ms
+20:23:51.430 [pos] 2300.7 1858.2 91.4  rot=1.90  riding=True  read=0ms
+20:23:51.477 [pos] 2300.5 1858.1 91.4  rot=1.90  riding=True  read=0ms
+20:23:51.536 [pos] 2300.1 1858.0 91.3  rot=1.90  riding=True  read=0ms
+20:23:51.551 [stat] avg read=0ms over 300 ticks
+20:23:51.595 [pos] 2299.8 1857.9 91.3  rot=1.90  riding=True  read=0ms
+20:23:51.658 [pos] 2299.4 1857.8 91.2  rot=1.90  riding=True  read=0ms
+20:23:51.690 [pos] 2299.1 1857.7 91.2  rot=1.90  riding=True  read=0ms
+20:23:51.752 [pos] 2298.8 1857.5 91.1  rot=1.90  riding=True  read=0ms
+20:23:51.832 [pos] 2298.4 1857.4 91.0  rot=1.90  riding=True  read=0ms
+20:23:51.879 [pos] 2298.0 1857.3 91.0  rot=1.90  riding=True  read=0ms
+20:23:51.935 [pos] 2297.7 1857.2 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.014 [pos] 2297.1 1856.9 91.0  rot=1.90  riding=True  read=0ms
+20:23:52.074 [pos] 2296.7 1856.8 91.0  rot=1.90  riding=True  read=0ms
+20:23:52.133 [pos] 2296.5 1856.7 91.0  rot=1.90  riding=True  read=0ms
+20:23:52.195 [pos] 2295.9 1856.6 91.0  rot=1.90  riding=True  read=0ms
+20:23:52.241 [pos] 2295.6 1856.4 91.0  rot=1.90  riding=True  read=0ms
+20:23:52.318 [pos] 2295.4 1856.4 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.363 [pos] 2294.8 1856.2 90.8  rot=1.90  riding=True  read=0ms
+20:23:52.428 [pos] 2294.5 1856.1 90.8  rot=1.90  riding=True  read=0ms
+20:23:52.486 [pos] 2294.1 1855.9 90.8  rot=1.90  riding=True  read=0ms
+20:23:52.547 [pos] 2293.7 1855.8 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.620 [pos] 2293.0 1855.6 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.669 [pos] 2292.8 1855.5 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.729 [pos] 2292.6 1855.5 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.734 [ping] 4 ms
+20:23:52.790 [pos] 2292.3 1855.3 90.9  rot=1.90  riding=True  read=0ms
+20:23:52.837 [pos] 2291.8 1855.2 90.8  rot=1.90  riding=True  read=0ms
+20:23:52.882 [pos] 2291.3 1855.1 90.7  rot=1.90  riding=True  read=0ms
+20:23:52.944 [pos] 2290.8 1854.9 90.7  rot=1.90  riding=True  read=0ms
+20:23:53.021 [pos] 2290.6 1854.8 90.7  rot=1.90  riding=True  read=0ms
+20:23:53.079 [pos] 2290.2 1854.6 90.8  rot=1.90  riding=True  read=0ms
+20:23:53.129 [stat] avg read=0ms over 400 ticks
+20:23:53.144 [pos] 2289.8 1854.5 90.8  rot=1.90  riding=True  read=0ms
+20:23:53.181 [pos] 2289.4 1854.4 90.8  rot=1.90  riding=True  read=0ms
+20:23:53.234 [pos] 2289.0 1854.3 90.8  rot=1.90  riding=True  read=0ms
+20:23:53.310 [pos] 2288.7 1854.1 90.7  rot=1.90  riding=True  read=0ms
+20:23:53.371 [pos] 2288.3 1854.0 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.418 [pos] 2287.8 1853.9 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.478 [pos] 2287.5 1853.7 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.523 [pos] 2287.1 1853.6 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.584 [pos] 2286.7 1853.4 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.644 [pos] 2286.2 1853.3 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.707 [pos] 2286.0 1853.2 90.6  rot=1.90  riding=True  read=0ms
+20:23:53.768 [pos] 2285.9 1853.2 90.6  rot=1.90  riding=True  read=0ms
+20:23:54.017 [pause] local state -> entered
+20:23:54.018 [menu] local menu open -- pumping interp tick
+20:23:54.673 [stat] avg read=0ms over 500 ticks
+20:23:54.734 [ping] 0 ms
+20:23:56.194 [stat] avg read=0ms over 600 ticks
+20:23:56.736 [ping] 0 ms
+20:23:57.715 [stat] avg read=0ms over 700 ticks
+20:23:58.742 [ping] 1 ms
+20:23:59.245 [stat] avg read=0ms over 800 ticks
+20:24:00.755 [ping] 1 ms
+20:24:00.887 [combat] pipe reader exited
+20:24:00.908 [stat] avg read=0ms over 900 ticks
+20:24:01.698 [menu] local menu closed -- pumped 551 frames in 7.7s (71.8 Hz)
+20:24:02.757 [ping] 0 ms
+20:24:03.261 [stat] avg read=0ms over 1000 ticks
+20:24:03.993 [disconnect] ghost 5 removed
+20:24:03.996 [menu] ghost 5 left a menu
+20:24:04.047 [role] this client now holds NPC->player damage authority
+20:24:04.771 [ping] 0 ms
+20:24:04.897 Removing all ghosts...

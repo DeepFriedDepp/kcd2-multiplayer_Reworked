@@ -1,0 +1,62 @@
+2026-08-18 18:32:02.730 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:32:03.617 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:32:03.661 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:32:04.717 -05:00 [INF] Starting local master server: C:\Users\emman\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 17728)
+2026-08-18 18:32:05.316 -05:00 [INF] Master server is up on port 5100.
+2026-08-18 18:32:05.355 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 18:32:17.967 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 18:32:54.208 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 18:32:55.594 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 18:32:56.096 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 18:32:56.327 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:03:47.958 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:03:53.607 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:04:05.323 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:04:06.028 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:04:06.044 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:04:06.093 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:04:12.939 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:04:16.871 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:04:17.485 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:04:17.513 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:04:17.557 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:04:17.577 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:04:29.732 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:04:36.098 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:04:36.714 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:04:36.727 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:04:36.773 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:06:34.920 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:07:35.135 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:07:35.596 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:07:35.786 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:07:35.999 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:08:06.364 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:08:17.682 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:25:23.080 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 19:25:39.088 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:25:46.826 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:25:47.519 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:25:47.535 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:25:47.584 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:27:39.706 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:18:19.001 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:18:19.155 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:09.512 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:10.121 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:10.381 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:10.575 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:10.767 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:10.977 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:11.147 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:12.874 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 20:19:23.780 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 20:19:24.483 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 20:19:24.501 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 20:19:24.564 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 20:19:53.618 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:19:53.836 -05:00 [INF] Performing ping async for IP: 10.0.0.35
+2026-08-18 20:30:21.117 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 20:30:21.742 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 20:30:21.755 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 20:30:21.811 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.

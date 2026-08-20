@@ -1,0 +1,65 @@
+2026-08-18 18:21:06.848 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:21:07.367 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:21:07.376 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:21:08.416 -05:00 [INF] Starting local master server: C:\Users\jzava\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 18648)
+2026-08-18 18:21:08.980 -05:00 [INF] Master server is up on port 5100.
+2026-08-18 18:21:10.459 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 18:21:13.364 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:21:13.753 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:21:13.770 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:21:13.803 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 18:21:20.860 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 18:21:24.059 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:21:24.451 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:21:24.470 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:21:24.501 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 18:21:31.313 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 18:21:35.530 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:21:35.917 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:21:35.925 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:21:35.958 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 18:35:08.984 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 18:35:11.600 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:35:12.071 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:35:12.080 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:35:12.117 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 18:35:18.387 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 18:35:20.436 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:35:20.893 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:35:20.911 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:35:20.944 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 18:35:25.795 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 18:35:28.516 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 18:35:28.924 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 18:35:28.933 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 18:35:28.965 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:03:56.414 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:04:02.734 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:04:03.149 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:04:03.158 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:04:03.195 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:04:08.709 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:04:10.883 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:04:11.295 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:04:11.313 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:04:11.347 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:04:18.061 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:04:21.747 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:04:22.151 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:04:22.159 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:04:22.193 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:06:34.257 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:06:37.471 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:06:37.869 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:06:37.878 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:06:37.911 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 19:25:19.733 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 19:25:31.763 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 19:25:32.312 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 19:25:32.321 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 19:25:32.354 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-18 20:24:08.553 -05:00 [INF] === Launcher exiting (clean) ===
+2026-08-18 20:28:52.337 -05:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-18 20:28:52.759 -05:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-18 20:28:52.769 -05:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-18 20:28:52.807 -05:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
