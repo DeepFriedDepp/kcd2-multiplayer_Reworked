@@ -329,6 +329,31 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         catch { return null; }
     }
 
+    /// <summary>
+    /// Reads the soul NAME for a per-save Soul.Guid (WO-40 Phase 5). The DLL
+    /// resolves damage targets through a SoulsByGuid lookup; the reflection
+    /// API exposes the same container. Two route spellings are tried since
+    /// only SoulsByName has ever been exercised from this side; a route that
+    /// 404s on this build degrades to null (sender falls back to 0x12).
+    /// </summary>
+    public async Task<string?> ReadSoulNameByGuidAsync(Guid soulGuid, CancellationToken ct = default)
+    {
+        foreach (var route in new[] { "SoulsByGuid", "SoulsById" })
+        {
+            try
+            {
+                var xml = await _http.GetStringAsync(
+                    $"{gameApiBase}/api/rpg/SoulList/{route}/{soulGuid}?depth=1&exclude=" +
+                    "DerivedStatsByName,Buffs,Roles,StaticData,PersistentData,Archetype,Inventory," +
+                    "CombatSoul,CompanionManager,EquipmentManager,FactionNode,SoulClass,SocialClass,StormDebug", ct);
+                var m = SoulNameRegex().Match(xml);
+                if (m.Success) return m.Groups[1].Value;
+            }
+            catch { /* try the next spelling */ }
+        }
+        return null;
+    }
+
     private static Guid[] ParseItemClasses(string xml)
     {
         var matches = ItemClassRegex().Matches(xml);
@@ -383,4 +408,10 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
     // "Guid=", only the latter is preceded by "Soul".
     [GeneratedRegex(@"(?<!Soul)Guid=""([0-9a-fA-F-]{36})""")]
     private static partial Regex SoulGuidRegex();
+
+    // The soul element's Name attribute -- restricted to the authored-name
+    // charset because the value crosses onto the wire and into Lua string
+    // literals downstream.
+    [GeneratedRegex(@"\bName=""([A-Za-z0-9_]+)""")]
+    private static partial Regex SoulNameRegex();
 }

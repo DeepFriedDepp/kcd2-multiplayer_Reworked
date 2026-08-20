@@ -182,6 +182,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays an NpcDamageUp (0x30) from <paramref name="source"/> to all
+    /// other ready clients as an NpcDamageDown (0x31) (WO-40 Phase 5).
+    /// Name-addressed damage -- same no-gate reasoning as 0x12: any client
+    /// reports damage it observed in its own world.
+    /// </summary>
+    public void BroadcastNpcDamage(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueNpcDamage(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

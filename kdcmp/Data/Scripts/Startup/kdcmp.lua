@@ -1785,6 +1785,23 @@ KCD2MP.dragWatch = {}   -- name -> {x,y,z}   last sampled position of a nearby d
 KCD2MP.dragging  = {}   -- name -> os.clock() of the last observed local move (claim window)
 KCD2MP._dragScanAt = 0
 
+-- WO-40 Phase 5: dump every puppet's tug-of-war evidence -- how often the
+-- entity was found away from where we wrote it, and the clustered positions
+-- it kept being found at. Distinct clusters = distinct competing writers.
+function KCD2MP_NpcFightReport()
+    local n = 0
+    for name, p in pairs(KCD2MP.npcPuppets or {}) do
+        n = n + 1
+        local attrs = ""
+        for i, a in ipairs(p.attr or {}) do
+            attrs = attrs .. string.format(" [%d] %.1f,%.1f n=%d", i, a.x, a.y, a.n)
+        end
+        mp_log(string.format("NPC-FIGHT %s fights=%d target=%.1f,%.1f attractors:%s",
+            name, p.fightN or 0, p.tx or 0, p.ty or 0, attrs == "" and " none" or attrs))
+    end
+    if n == 0 then mp_log("NPC-FIGHT no active puppets") end
+end
+
 -- WO-40 Phase 0: field escape hatch for the ghost-mount crash suspect. Off
 -- means every ghost mount uses the spawned proxy horse, never a real one.
 function KCD2MP_SetHorseAdopt(arg)
@@ -2130,6 +2147,32 @@ function KCD2MP_NpcPuppetTick(arg)
                 return
             end
 
+            -- WO-40 Phase 5 diagnostic: measure the tug-of-war instead of
+            -- guessing. If the entity is found away from where we last wrote
+            -- it, something else moved it -- count it, and cluster WHERE it
+            -- was found so a live session can answer "how many competing
+            -- attractors does this NPC have" (the footage's wagon worker
+            -- phased between THREE points, not the documented two).
+            if p.lastWroteX then
+                local ap = nil
+                pcall(function() ap = e:GetWorldPos() end)
+                if ap then
+                    local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
+                    if (fx*fx + fy*fy) > 0.5625 then
+                        p.fightN = (p.fightN or 0) + 1
+                        p.attr = p.attr or {}
+                        local matched = false
+                        for _, a in ipairs(p.attr) do
+                            local ax, ay = ap.x - a.x, ap.y - a.y
+                            if (ax*ax + ay*ay) < 1.0 then a.n = a.n + 1; matched = true; break end
+                        end
+                        if not matched and #p.attr < 6 then
+                            p.attr[#p.attr + 1] = { x = ap.x, y = ap.y, n = 1 }
+                        end
+                    end
+                end
+            end
+
             -- Same teleport-vs-lerp shape as the ghost interp: snap on a big
             -- gap, smooth otherwise.
             local dx, dy = (p.tx or p.cx) - p.cx, (p.ty or p.cy) - p.cy
@@ -2143,6 +2186,7 @@ function KCD2MP_NpcPuppetTick(arg)
             end
 
             e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
+            p.lastWroteX, p.lastWroteY = p.cx, p.cy
             pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
 
             -- Animation from rendered speed, exactly the ghost thresholds.
@@ -2165,10 +2209,19 @@ function KCD2MP_NpcPuppetTick(arg)
                 elseif spd >= 0.3 then tag, anim = "walk",   "3d_relaxed_walk_turn_strafe"
                 else                    tag, anim = "idle",   "relaxed_idle_both" end
             end
-            pcall(function() e:StartAnimation(0, anim, 0, 0.15, 1.0, true) end)
-            if p.animTag ~= tag then
-                p.animTag = tag
-                mp_log(string.format("NPC-SYNC anim %s -> %s spd=%.2f", name, tag, spd))
+            -- WO-40 Phase 5: restart the looped locomotion only on a tag
+            -- change, with a 1 s keep-alive refresh -- not every 50 ms tick.
+            -- Restarting a loop 20x/sec is pure animation-system churn (the
+            -- WO-39 stomping mechanism, applied to a second code path), and
+            -- the joiner's global animation collapse followed the session's
+            -- heaviest per-frame load. External stops recover within 1 s.
+            if p.animTag ~= tag or (now - (p.animRefreshAt or 0)) > 1.0 then
+                p.animRefreshAt = now
+                pcall(function() e:StartAnimation(0, anim, 0, 0.15, 1.0, true) end)
+                if p.animTag ~= tag then
+                    p.animTag = tag
+                    mp_log(string.format("NPC-SYNC anim %s -> %s spd=%.2f", name, tag, spd))
+                end
             end
         end)
     end
@@ -5719,6 +5772,7 @@ local ok, err = pcall(function()
 
     -- NPC sync (WO-32)
     System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%LINE")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")
+    System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
 
     -- Shared player combat (WO-28)
     System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")

@@ -130,6 +130,14 @@ public interface IGameTransport : IAsyncDisposable
     Task<Guid?> ReadGhostSoulGuidAsync(string ghostSoulName, CancellationToken ct = default);
 
     /// <summary>
+    /// Reads the soul NAME for a per-save Soul.Guid (WO-40 Phase 5) -- the
+    /// stable cross-client key for name-addressed damage (0x30). Null when
+    /// no loaded soul answers for that guid, or the API route is absent on
+    /// this build.
+    /// </summary>
+    Task<string?> ReadSoulNameByGuidAsync(Guid soulGuid, CancellationToken ct = default);
+
+    /// <summary>
     /// Runs a Lua statement immediately, bypassing the batch buffer that
     /// <see cref="ExecuteAsync"/> writes into.
     ///

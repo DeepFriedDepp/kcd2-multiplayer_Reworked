@@ -282,6 +282,19 @@ public partial class GameBridge(ClientConfig config)
     // not be able to inject Lua.
     private static readonly Regex NpcNamePattern = new("^[A-Za-z0-9_]+$", RegexOptions.Compiled);
 
+    // ---- Name-addressed NPC damage (WO-40 Phase 5) ----
+    // Per-save Soul.Guids are NOT stable across installs (2026-08-18 bundles:
+    // 571/571 guard hits unresolvable on the peer, 176/176 choke hits fine),
+    // so outbound hits translate guid -> soul name once (reflection REST,
+    // cached) and travel as 0x30; receivers translate name -> THEIR local
+    // guid once and apply through the existing pipe. Positive entries are
+    // TTL'd (a save reload re-rolls per-save guids) and negatives briefly
+    // (so a failing lookup is not hammered per hit).
+    private readonly ConcurrentDictionary<Guid, (string? Name, DateTime At)> _soulNameByGuid = new();
+    private readonly ConcurrentDictionary<string, (Guid? Guid, DateTime At)> _soulGuidByName = new();
+    private static readonly TimeSpan SoulLookupPositiveTtl = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan SoulLookupNegativeTtl = TimeSpan.FromMinutes(1);
+
     // ---- Weather sync (WO-40 Phase 3) ----
     // The engine has a write (EnvironmentModule.BlendTimeOfDay) but no
     // current-profile read, so session weather is mod-arbitrated: the
@@ -600,10 +613,36 @@ public partial class GameBridge(ClientConfig config)
         // the DLL credits those out — or two clients would echo a hit forever.
         _combat.OnLocalHit = async (soul, stamina, health) =>
         {
+            // WO-40 Phase 5: the DLL's hit hook fires per contact frame, and
+            // the 2026-08-18 bundles show what that costs -- 1,025 of PB's
+            // 1,058 hit events carried 0.0 damage (bursts of ~26/s across 3
+            // souls), and the one applied flood (176 events/18 s during the
+            // 20:14 choke) coincided with PB's worst engine stall of the
+            // session, right before the global animation collapse. A hit that
+            // moved no health and no stamina carries no information: drop it
+            // here, before the wire.
+            if (health <= 0f && stamina <= 0f) return;
             try
             {
-                await SendLocalHitAsync(stream, soul, stamina, health, suppressHitReaction: true);
-                Console.WriteLine($"[combat] sent hit {health:F1} on {soul}");
+                // WO-40 Phase 5: per-save guids are unreliable across
+                // installs; send name-addressed (0x30) when the name
+                // resolves, guid-addressed (0x12) as the fallback -- one or
+                // the other, never both (both resolving would double-apply).
+                // Ghost souls (kcd2mp_*) stay on the guid path: their damage
+                // has its own authoritative flow (0x21) and a name like
+                // "kcd2mp_6" means a different entity on every machine.
+                string? npcName = await ResolveSoulNameAsync(soul, cts.Token);
+                if (npcName is not null && !npcName.StartsWith("kcd2mp_", StringComparison.Ordinal))
+                {
+                    await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true);
+                    Console.WriteLine($"[combat] sent hit {health:F1} on '{npcName}' ({soul})");
+                }
+                else
+                {
+                    await SendLocalHitAsync(stream, soul, stamina, health, suppressHitReaction: true);
+                    Console.WriteLine($"[combat] sent hit {health:F1} on {soul}"
+                        + (npcName is null ? " (name lookup failed -- guid-addressed)" : ""));
+                }
             }
             catch (Exception ex) { Console.WriteLine($"[combat] hit not sent: {ex.Message}"); }
 
@@ -841,6 +880,8 @@ public partial class GameBridge(ClientConfig config)
             _lastAppliedWeatherProfile = null;
             _weatherNextRepickUtc = DateTime.MinValue;
             _weatherNextHeartbeatUtc = DateTime.MinValue;
+            _soulNameByGuid.Clear();
+            _soulGuidByName.Clear();
             lock (_timeSkipLock) { _pendingTimeSkip = null; }
             _localSkipActive = false;
             _awaitSkipDoneTime = false;
@@ -1264,6 +1305,11 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private async Task OnReloadDetectedAsync(uint preReloadTime, uint currentTime)
     {
+        // A different save means different per-save Soul.Guids -- both
+        // damage-translation caches are stale the moment a reload happens.
+        _soulNameByGuid.Clear();
+        _soulGuidByName.Clear();
+
         var now = DateTime.UtcNow;
         bool hasLivePeers = _peerLastSeenUtc.Any(kv => (now - kv.Value) < TimeSpan.FromMinutes(2));
         if (!hasLivePeers)
@@ -1345,6 +1391,39 @@ public partial class GameBridge(ClientConfig config)
             await stream.WriteAsync(packet, ct);
         }
         catch (Exception ex) { Console.WriteLine($"[combatviz] send failed: {ex.Message}"); }
+    }
+
+    // -------------------------------------------------------------------------
+    // Name-addressed NPC damage (WO-40 Phase 5)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Guid → soul name, cached (sender side of 0x30).</summary>
+    private async Task<string?> ResolveSoulNameAsync(Guid soul, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (_soulNameByGuid.TryGetValue(soul, out var hit)
+            && now - hit.At < (hit.Name is null ? SoulLookupNegativeTtl : SoulLookupPositiveTtl))
+            return hit.Name;
+
+        string? name = null;
+        try { name = await _transport.ReadSoulNameByGuidAsync(soul, ct); } catch { }
+        if (name is not null && !NpcNamePattern.IsMatch(name)) name = null;
+        _soulNameByGuid[soul] = (name, now);
+        return name;
+    }
+
+    /// <summary>Soul name → this install's per-save guid, cached (receiver side of 0x31).</summary>
+    private async Task<Guid?> ResolveLocalSoulGuidAsync(string npcName, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (_soulGuidByName.TryGetValue(npcName, out var hit)
+            && now - hit.At < (hit.Guid is null ? SoulLookupNegativeTtl : SoulLookupPositiveTtl))
+            return hit.Guid;
+
+        Guid? guid = null;
+        try { guid = await _transport.ReadGhostSoulGuidAsync(npcName, ct); } catch { }
+        _soulGuidByName[npcName] = (guid, now);
+        return guid;
     }
 
     // -------------------------------------------------------------------------
@@ -1936,6 +2015,38 @@ public partial class GameBridge(ClientConfig config)
                         // real hit in this world -- the "Henry is attacking an
                         // innocent NPC" moment. No-op when aggro is disabled.
                         _ = TriggerReactiveAggroAsync(sourceId, ct);
+                }
+                else if (type == Protocol.NpcDamageDown
+                         && payloadLen >= 1 + 1 + 1 + Protocol.NpcDamageFixedTail
+                         && payloadLen <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcDamageFixedTail)
+                {
+                    // Name-addressed NPC damage (WO-40 Phase 5):
+                    // [sourceGhostId:1][nameLen:1][name][stamina:4f][health:4f][flags:1].
+                    // The name resolves to THIS install's per-save guid via the
+                    // reflection REST (cached), then applies through the same
+                    // DLL pipe as 0x22 -- so the DLL's credit-out still stops
+                    // echoes.
+                    byte ndSource = payload[0];
+                    int ndNameLen = payload[1];
+                    if (payloadLen == 2 + ndNameLen + Protocol.NpcDamageFixedTail)
+                    {
+                        string ndName = Encoding.UTF8.GetString(payload, 2, ndNameLen);
+                        if (NpcNamePattern.IsMatch(ndName))
+                        {
+                            int no = 2 + ndNameLen;
+                            float ndStamina = ReadFloat(payload, no);
+                            float ndHealth  = ReadFloat(payload, no + 4);
+                            bool  ndSupp    = (payload[no + 8] & Protocol.DamageFlagSuppressHitReaction) != 0;
+                            Guid? localGuid = await ResolveLocalSoulGuidAsync(ndName, ct);
+                            bool ndApplied = localGuid is Guid lg
+                                && await _combat.ApplyDamageAsync(lg, ndStamina, ndHealth, ndSupp, ct);
+                            if (!ndApplied)
+                                Console.WriteLine($"[combat] damage from ghost {ndSource} on '{ndName}' not applied "
+                                                + (localGuid is null ? "(no local soul answers to that name)" : "(pipe apply failed)"));
+                            else
+                                _ = TriggerReactiveAggroAsync(ndSource, ct);
+                        }
+                    }
                 }
                 else if (type == Protocol.DeathDown && payloadLen == Protocol.DeathDownPayloadLen)
                 {
@@ -2696,6 +2807,28 @@ public partial class GameBridge(ClientConfig config)
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(19), stamina);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(23), health);
         packet[27] = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
+        await stream.WriteAsync(packet);
+    }
+
+    /// <summary>
+    /// Sends one name-addressed NPC damage event (0x30, WO-40 Phase 5) -- the
+    /// cross-install-reliable alternative to guid-addressed 0x12. The caller
+    /// has already translated the local per-save guid to the soul's name.
+    /// </summary>
+    public static async Task SendNpcDamageAsync(NetworkStream stream, string npcName,
+                                                float stamina, float health,
+                                                bool suppressHitReaction)
+    {
+        var nb = Encoding.UTF8.GetBytes(npcName);
+        var packet = new byte[3 + 1 + nb.Length + Protocol.NpcDamageFixedTail];
+        packet[0] = Protocol.NpcDamageUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)(1 + nb.Length + Protocol.NpcDamageFixedTail));
+        packet[3] = (byte)nb.Length;
+        nb.CopyTo(packet, 4);
+        int o = 4 + nb.Length;
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o), stamina);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 4), health);
+        packet[o + 8] = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
         await stream.WriteAsync(packet);
     }
 

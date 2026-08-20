@@ -502,7 +502,27 @@ namespace KcdMp.Wire;
 /// ever name a real table row (receivers validate charset; the engine
 /// ignores unknown profiles).
 ///
-/// Free type bytes for new features: 0x30 and up.
+/// ---- Name-addressed NPC damage layer (WO-40 Phase 5) ----
+///
+/// C→S  0x30  NpcDamageUp:   [nameLen:1][name][stamina:4f][health:4f][flags:1]                  (var)
+/// S→C  0x31  NpcDamageDown: [sourceGhostId:1][nameLen:1][name][stamina:4f][health:4f][flags:1] (var)
+///
+/// WO-39 Phase 3 proved the 0x12 wire guid is the per-save Soul Guid, not
+/// SharedSoulGuid, and flagged cross-install stability as the open premise.
+/// The 2026-08-18 bundles settled it: PA's guard-fight damage failed to
+/// resolve on PB 571/571 times ("soul not loaded here") while the choke
+/// victim applied 176/176 -- per-save Guids match for some NPCs and not
+/// others, so guid-addressed damage is unreliable across installs. Entity
+/// NAME is the proven stable cross-client key (NPC sync has used it since
+/// WO-32). This layer sends damage by name: the sender translates its
+/// per-save guid to the soul's name once (reflection REST, cached); the
+/// receiver translates the name to ITS OWN per-save guid once (same REST,
+/// cached) and applies through the existing DLL pipe. 0x12 remains the
+/// fallback when the sender's name lookup fails, and still works whenever
+/// the guids happen to match. A sender uses 0x30 OR 0x12 for one hit, never
+/// both -- both resolving on the receiver would double-apply.
+///
+/// Free type bytes for new features: 0x32 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -553,6 +573,7 @@ public static class Protocol
     public const byte HorseInfoUp    = 0x2A;
     public const byte CombatEventUp  = 0x2C;
     public const byte WeatherUp      = 0x2E;
+    public const byte NpcDamageUp    = 0x30;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -582,6 +603,7 @@ public static class Protocol
     public const byte HorseInfoDown    = 0x2B;
     public const byte CombatEventDown  = 0x2D;
     public const byte WeatherDown      = 0x2F;
+    public const byte NpcDamageDown    = 0x31;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -851,6 +873,11 @@ public static class Protocol
     /// profile, so weather feels persistent rather than strobing.
     /// </summary>
     public const int WeatherRepickSeconds = 1200;
+
+    // ---- Name-addressed NPC damage layer (WO-40 Phase 5) ----
+
+    /// <summary>Fixed tail after the name in an NpcDamage packet: stamina + health + flags.</summary>
+    public const int NpcDamageFixedTail = 4 + 4 + 1;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

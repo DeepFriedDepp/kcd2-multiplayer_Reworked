@@ -49,6 +49,8 @@ $HORSE_DOWN    = 0x2B
 $COMBAT_UP     = 0x2C
 $WEATHER_UP    = 0x2E
 $WEATHER_DOWN  = 0x2F
+$NPCDMG_UP     = 0x30
+$NPCDMG_DOWN   = 0x31
 $COMBAT_DOWN   = 0x2D
 $NPCSTATE_UP   = 0x26
 $NPCSTATE_DOWN = 0x27
@@ -171,6 +173,39 @@ function Drain-Weathers($stream, [int] $quietMs = 1200) {
                 Source = [int]$p.Payload[0]
                 Name   = [System.Text.Encoding]::UTF8.GetString($p.Payload, 2, $nameLen)
                 Blend  = [BitConverter]::ToUInt16($p.Payload, 2 + $nameLen)
+            }
+        }
+    }
+    ,$found
+}
+
+# NpcDamageUp (0x30, WO-40 Phase 5): [nameLen:1][name][stamina:4f][health:4f][flags:1]
+function Send-NpcDamage($stream, [string]$npcName, [float]$stamina, [float]$health) {
+    $nb = [System.Text.Encoding]::UTF8.GetBytes($npcName)
+    $payload = New-Object byte[] (1 + $nb.Length + 9)
+    $payload[0] = [byte]$nb.Length
+    [Array]::Copy($nb, 0, $payload, 1, $nb.Length)
+    $o = 1 + $nb.Length
+    [Array]::Copy([BitConverter]::GetBytes($stamina), 0, $payload, $o, 4)
+    [Array]::Copy([BitConverter]::GetBytes($health), 0, $payload, $o + 4, 4)
+    $payload[$o + 8] = 1
+    Send-Packet $stream $NPCDMG_UP $payload
+}
+
+# Drain for NpcDamageDown (0x31): [sourceGhostId:1][nameLen:1][name][stamina:4f][health:4f][flags:1]
+function Drain-NpcDamages($stream, [int] $quietMs = 1200) {
+    $stream.ReadTimeout = $quietMs
+    $found = @()
+    while ($true) {
+        $p = Read-Packet $stream
+        if ($null -eq $p) { break }
+        if ($p.Type -eq $NPCDMG_DOWN -and $p.Payload.Length -ge 11) {
+            $nameLen = [int]$p.Payload[1]
+            $o = 2 + $nameLen
+            $found += New-Object psobject -Property @{
+                Source  = [int]$p.Payload[0]
+                Name    = [System.Text.Encoding]::UTF8.GetString($p.Payload, 2, $nameLen)
+                Health  = [BitConverter]::ToSingle($p.Payload, $o + 4)
             }
         }
     }
@@ -366,6 +401,13 @@ try {
     Check "D received B's weather 'foggy_storm' blend=30" ($gotD.Count -eq 1 -and $gotD[0].Name -eq 'foggy_storm' -and $gotD[0].Blend -eq 30 -and $gotD[0].Source -eq $peerB.Id) "got $($gotD | ConvertTo-Json -Compress)"
     $gotB = Drain-Weathers $peerB.Stream
     Check "B heard nothing back about its own weather" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
+
+    Write-Host "`n--- T16: name-addressed NPC damage broadcast (WO-40 Phase 5, 0x30/0x31) ---"
+    Send-NpcDamage $peerB.Stream 'ttkc_jakes' 0.0 12.5
+    $gotD = Drain-NpcDamages $peerD.Stream
+    Check "D received B's 12.5 damage on 'ttkc_jakes'" ($gotD.Count -eq 1 -and $gotD[0].Name -eq 'ttkc_jakes' -and [Math]::Abs($gotD[0].Health - 12.5) -lt 0.01 -and $gotD[0].Source -eq $peerB.Id) "got $($gotD | ConvertTo-Json -Compress)"
+    $gotB = Drain-NpcDamages $peerB.Stream
+    Check "B heard nothing back about its own NPC damage" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
 
     $peerB.Tcp.Close(); $peerD.Tcp.Close()
 }

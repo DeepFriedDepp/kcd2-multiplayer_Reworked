@@ -330,6 +330,21 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Name-addressed NPC damage (WO-40 Phase 5) ---
+                // [nameLen:1][name][stamina:4f][health:4f][flags:1]. Same
+                // shape discipline as NpcStateUp; no authority gate -- like
+                // 0x12, any client reports damage it observed locally.
+                if (type == Protocol.NpcDamageUp
+                    && payloadLen >= 1 + 1 + Protocol.NpcDamageFixedTail
+                    && payloadLen <= 1 + Protocol.MaxNpcNameLen + Protocol.NpcDamageFixedTail)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (body[0] == payloadLen - 1 - Protocol.NpcDamageFixedTail)
+                        _broadcastService.BroadcastNpcDamage(this, body);
+                    continue;
+                }
+
                 // --- Weather sync layer (WO-40 Phase 3) ---
                 // [nameLen:1][profileName][blendSec:2]. Cosmetic; only the
                 // damage-authority agent sends by convention, and a spoofed
@@ -500,6 +515,18 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.CombatEventDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue an NpcDamageDown (0x31, WO-40 Phase 5). The body
+    /// is the upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueNpcDamage(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.NpcDamageDown, payload));
     }
 
     /// <summary>
