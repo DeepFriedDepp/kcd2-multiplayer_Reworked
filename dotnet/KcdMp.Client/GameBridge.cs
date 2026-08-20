@@ -179,6 +179,19 @@ public partial class GameBridge(ClientConfig config)
     private uint _fastAdvanceStartTime;
     private DateTime _suppressJumpUntilUtc = DateTime.MinValue;
 
+    // WO-40 Phase 4: reload detection. A save load is the fourth clock-change
+    // trigger, and the only backward one -- the 2026-08-18 session captured a
+    // reload leaving PA ~24.5 game-hours behind PB with nothing ever
+    // converging (backward writes are engine-ignored, so PB could never
+    // apply PA's post-reload broadcast). Convergence is therefore forward and
+    // ours: on a detected backward jump, this client fast-forwards ITSELF to
+    // the best-known session clock. Solo reloads are left alone.
+    private readonly ConcurrentDictionary<byte, DateTime> _peerLastSeenUtc = new();
+    private uint _peerWorldTime;               // last clock any peer reported (TimeSkipDown)
+    private DateTime _peerWorldTimeUtc = DateTime.MinValue;
+    /// <summary>Game-seconds per real second (WO-38 live: ratio 15, confirmed exactly).</summary>
+    private const double WorldTimeRatio = 15.0;
+
     /// <summary>How often the mod is asked for the world clock (position-loop ticks; TickMs each).</summary>
     private const int TimePollEveryTicks = 1000;   // ~10 s
 
@@ -1151,12 +1164,33 @@ public partial class GameBridge(ClientConfig config)
                     Console.WriteLine($"[timeskip] clock jumping ({last} -> {worldTime}); waiting for it to settle");
                 }
             }
+            else if (worldTime < last && last - worldTime > TimeJumpThresholdSeconds)
+            {
+                // WO-40 Phase 4: the clock went BACKWARD -- only a save load
+                // does that. Never broadcast it (receivers cannot go back);
+                // instead converge this client forward to the session clock.
+                _fastAdvanceActive = false;
+                Console.WriteLine($"[timeskip] clock went backward ({last} -> {worldTime}) -- save reload detected");
+                _ = OnReloadDetectedAsync(last, worldTime);
+            }
             else if (_fastAdvanceActive)
             {
-                // The advance settled: report the whole jump as one skip.
                 _fastAdvanceActive = false;
-                Console.WriteLine($"[timeskip] clock jump settled ({_fastAdvanceStartTime} -> {worldTime}); reporting");
-                _ = ReportClockJumpAsync(worldTime);
+                if (suppressed)
+                {
+                    // WO-40: a jump that settles inside a marker skip or an
+                    // inbound-apply window is that event's own advance, and
+                    // reporting it here double-reports one skip (observed
+                    // 2026-08-18 19:44:23: one bed sleep emitted both kind=2
+                    // and kind=0). Swallow it; the marker path reports it.
+                    Console.WriteLine($"[timeskip] clock jump settled ({_fastAdvanceStartTime} -> {worldTime}) inside a skip/apply window -- swallowed");
+                }
+                else
+                {
+                    // The advance settled: report the whole jump as one skip.
+                    Console.WriteLine($"[timeskip] clock jump settled ({_fastAdvanceStartTime} -> {worldTime}); reporting");
+                    _ = ReportClockJumpAsync(worldTime);
+                }
             }
         }
 
@@ -1176,6 +1210,59 @@ public partial class GameBridge(ClientConfig config)
         if (send is null) return;
         await send(Protocol.TimeSkipPhaseStart, Protocol.TimeSkipKindFastTravel, 0);
         await send(Protocol.TimeSkipPhaseDone, Protocol.TimeSkipKindFastTravel, worldTime);
+    }
+
+    /// <summary>
+    /// WO-40 Phase 4: a save load moved this client's clock backward. The
+    /// engine ignores backward writes on every receiver, so the only way the
+    /// session can converge is for the RELOADER to move forward again. The
+    /// best-known session clock is the max of (a) our own pre-reload clock
+    /// (seconds stale at most) and (b) the newest peer-reported skip time,
+    /// extrapolated by the world-time ratio for the real time since. With no
+    /// live peers the clock is left alone -- a solo reload means the player
+    /// wanted that earlier time.
+    /// </summary>
+    private async Task OnReloadDetectedAsync(uint preReloadTime, uint currentTime)
+    {
+        var now = DateTime.UtcNow;
+        bool hasLivePeers = _peerLastSeenUtc.Any(kv => (now - kv.Value) < TimeSpan.FromMinutes(2));
+        if (!hasLivePeers)
+        {
+            Console.WriteLine("[timeskip] reload: no live peers -- leaving the reloaded clock alone");
+            return;
+        }
+
+        uint candidate = preReloadTime;
+        if (_peerWorldTimeUtc != DateTime.MinValue)
+        {
+            double elapsed = (now - _peerWorldTimeUtc).TotalSeconds;
+            if (elapsed >= 0 && elapsed < 3600)
+            {
+                uint peerNow = _peerWorldTime + (uint)(elapsed * WorldTimeRatio);
+                if (peerNow > candidate) candidate = peerNow;
+            }
+        }
+
+        if (candidate <= currentTime + TimeJumpThresholdSeconds)
+        {
+            Console.WriteLine($"[timeskip] reload: session clock ({candidate}) is within threshold of the reloaded clock ({currentTime}) -- nothing to converge");
+            return;
+        }
+
+        Console.WriteLine($"[timeskip] reload: converging forward to session clock {candidate} (reloaded to {currentTime}, was {preReloadTime})");
+        try
+        {
+            await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
+                "if KCD2MP_ApplyTimeSkip then KCD2MP_ApplyTimeSkip(\"session\",{0},{1},true) end " +
+                "if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"Clock re-synced to the session's time\") end",
+                Protocol.TimeSkipKindUnknown, candidate));
+        }
+        catch { /* game might have unloaded */ }
+
+        // The convergence write must not read as a fresh local jump.
+        _suppressJumpUntilUtc = DateTime.UtcNow.AddSeconds(30);
+        _lastPolledWorldTime = Math.Max(candidate, currentTime);
+        _lastPollUtc = DateTime.UtcNow;
     }
 
     // -------------------------------------------------------------------------
@@ -1667,6 +1754,7 @@ public partial class GameBridge(ClientConfig config)
                     float z        = ReadFloat(payload, 9);
                     float rotZ     = ReadFloat(payload, 13);
                     bool  isRiding = (payload[17] & 0x01) != 0;
+                    _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
                     await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding);
                 }
@@ -1691,6 +1779,7 @@ public partial class GameBridge(ClientConfig config)
                     // Disconnect packet: [ghostId:1]
                     byte ghostId = payload[0];
                     Console.WriteLine($"[disconnect] ghost {ghostId} removed");
+                    _peerLastSeenUtc.TryRemove(ghostId, out _);
                     _voice?.RemovePlayer(ghostId);
                     _ghostAppearance.TryRemove(ghostId, out _);
                     _ghostKnownItemClasses.TryRemove(ghostId, out _);
@@ -1805,6 +1894,12 @@ public partial class GameBridge(ClientConfig config)
                     }
                     else if (tsPhase is Protocol.TimeSkipPhaseDone or Protocol.TimeSkipPhaseDoneQuiet)
                     {
+                        // WO-40 Phase 4: remember the newest peer-reported
+                        // clock (latest report wins, whatever its direction --
+                        // it is only consulted if WE reload) for reload
+                        // convergence.
+                        _peerWorldTime = tsTime;
+                        _peerWorldTimeUtc = DateTime.UtcNow;
                         await ApplyTimeSkipAsync(tsSource, tsKind, tsTime,
                             quiet: tsPhase == Protocol.TimeSkipPhaseDoneQuiet, ct);
                     }

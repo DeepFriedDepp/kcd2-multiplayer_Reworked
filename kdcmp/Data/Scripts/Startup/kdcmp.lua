@@ -2037,10 +2037,17 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     KCD2MP_StartNpcPuppet()
 end
 
-function KCD2MP_NpcPuppetTick()
+function KCD2MP_NpcPuppetTick(arg)
     if not KCD2MP.npcPuppetRunning then return end
-    Script.SetTimer(50, KCD2MP_NpcPuppetTick)  -- reschedule FIRST
-    KCD2MP._npcPuppetAliveAt = os.clock()
+    -- WO-40 Phase 2: same pump pattern as KCD2MP_InterpTick. A menu suspends
+    -- Script.SetTimer (WO-12/13), which froze every NPC puppet for the paused
+    -- player -- the WO-13 ghost fix was never applied to this second tick.
+    -- The agent's menu pump now calls this with arg="ext": no reschedule, no
+    -- alive-stamp (a pumped call must not make a dead chain look healthy).
+    if arg ~= "ext" then
+        Script.SetTimer(50, KCD2MP_NpcPuppetTick)  -- reschedule FIRST
+        KCD2MP._npcPuppetAliveAt = os.clock()
+    end
 
     local now = os.clock()
     local any = false
@@ -2946,6 +2953,15 @@ end
 function KCD2MP_InterpPump()
     KCD2MP_InterpTick("ext")
     KCD2MP_ApplyHorseTransforms()
+    -- WO-40 Phase 2: pump the NPC puppet tick too, at its own 50 ms cadence
+    -- (the pump loop runs at 40-70 Hz; the puppet tick's lerp/speed math
+    -- assumes 50 ms, and per-tick StartAnimation restarts get worse, not
+    -- better, when run faster -- WO-39's stomping lesson).
+    local nowP = os.clock()
+    if KCD2MP.npcPuppetRunning and (nowP - (KCD2MP._npcPuppetPumpAt or 0)) >= 0.045 then
+        KCD2MP._npcPuppetPumpAt = nowP
+        KCD2MP_NpcPuppetTick("ext")
+    end
 end
 
 -- WO-13 Phase 2. Called by the agent when a PauseDown (0x1D) says a peer
