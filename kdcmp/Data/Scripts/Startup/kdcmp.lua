@@ -577,6 +577,41 @@ function KCD2MP_ApplyTimeSkip(who, kind, target, quiet)
     end
 end
 
+-- ===== Weather sync (WO-40 Phase 3) =====
+-- EnvironmentModule.BlendTimeOfDay(profile, blendDuration, force) is the
+-- officially documented weather write (Warhorse's own perf scripts and the
+-- debug weather quest use it). There is NO current-profile read, so the
+-- session's weather is arbitrated agent-side (damage-authority holder picks
+-- and broadcasts); this is just the apply.
+function KCD2MP_ApplyWeather(profile, blend)
+    profile = tostring(profile or "")
+    if profile == "" then return end
+    local ok, err = false, nil
+    if EnvironmentModule and EnvironmentModule.BlendTimeOfDay then
+        ok, err = pcall(function()
+            EnvironmentModule.BlendTimeOfDay(profile, tonumber(blend) or 30, true)
+        end)
+    else
+        err = "EnvironmentModule.BlendTimeOfDay not registered"
+    end
+    mp_log("ApplyWeather '" .. profile .. "' blend=" .. tostring(blend)
+        .. (ok and " (blending)" or (" FAILED: " .. tostring(err))))
+end
+
+-- Probe/manual override: mp_weather <profile> sets a profile locally (not
+-- broadcast -- this is a probe, not a sync source); bare mp_weather reports
+-- the one readable weather value (rain intensity).
+function KCD2MP_WeatherCmd(arg)
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "" or s == "%LINE" then
+        local ok, rain = pcall(function() return EnvironmentModule.GetRainIntensity() end)
+        mp_log("Weather: GetRainIntensity=" .. (ok and tostring(rain) or "unavailable")
+            .. " (no current-profile read exists on this surface)")
+        return
+    end
+    KCD2MP_ApplyWeather(s, 5)
+end
+
 -- The game's own HUD info text -- native KCD2 font, centered, the same
 -- surface the dice overlay's say() uses (live-verified there). The user's
 -- explicit direction on seeing the DrawText toast live: "I want it in the
@@ -5679,6 +5714,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
     System.AddCCommand("mp_horse_adopt",     'KCD2MP_SetHorseAdopt("%LINE")', "WO-40: adopt real world horses for ghosts (default on). off = proxy horses only -- use if the game crashes when a peer mounts")
+    System.AddCCommand("mp_weather",         'KCD2MP_WeatherCmd("%LINE")', "WO-40: bare = report rain intensity; mp_weather <profile> = blend to a time_of_day profile locally (probe, not broadcast)")
     System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
 
     -- NPC sync (WO-32)

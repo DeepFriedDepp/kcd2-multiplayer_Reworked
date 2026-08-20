@@ -47,6 +47,8 @@ $TIMESKIP_DOWN = 0x29
 $HORSE_UP      = 0x2A
 $HORSE_DOWN    = 0x2B
 $COMBAT_UP     = 0x2C
+$WEATHER_UP    = 0x2E
+$WEATHER_DOWN  = 0x2F
 $COMBAT_DOWN   = 0x2D
 $NPCSTATE_UP   = 0x26
 $NPCSTATE_DOWN = 0x27
@@ -144,6 +146,35 @@ function Drain-CombatEvents($stream, [int] $quietMs = 1200) {
 
 function Send-CombatEvent($stream, [int]$evt) {
     Send-Packet $stream $COMBAT_UP ([byte[]]@([byte]$evt))
+}
+
+# WeatherUp (0x2E, WO-40 Phase 3): [nameLen:1][profileName][blendSec:2]
+function Send-Weather($stream, [string]$profile, [int]$blendSec) {
+    $nb = [System.Text.Encoding]::UTF8.GetBytes($profile)
+    $payload = New-Object byte[] (1 + $nb.Length + 2)
+    $payload[0] = [byte]$nb.Length
+    [Array]::Copy($nb, 0, $payload, 1, $nb.Length)
+    [Array]::Copy([BitConverter]::GetBytes([uint16]$blendSec), 0, $payload, 1 + $nb.Length, 2)
+    Send-Packet $stream $WEATHER_UP $payload
+}
+
+# Drain for WeatherDown (0x2F): [sourceGhostId:1][nameLen:1][profileName][blendSec:2]
+function Drain-Weathers($stream, [int] $quietMs = 1200) {
+    $stream.ReadTimeout = $quietMs
+    $found = @()
+    while ($true) {
+        $p = Read-Packet $stream
+        if ($null -eq $p) { break }
+        if ($p.Type -eq $WEATHER_DOWN -and $p.Payload.Length -ge 4) {
+            $nameLen = [int]$p.Payload[1]
+            $found += New-Object psobject -Property @{
+                Source = [int]$p.Payload[0]
+                Name   = [System.Text.Encoding]::UTF8.GetString($p.Payload, 2, $nameLen)
+                Blend  = [BitConverter]::ToUInt16($p.Payload, 2 + $nameLen)
+            }
+        }
+    }
+    ,$found
 }
 
 # NpcStateUp (0x26): [nameLen:1][name][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
@@ -328,6 +359,13 @@ try {
     Send-NpcState $peerB.Stream 'wo39_body_3'                    # authority resumes at once
     $gotD = Drain-NpcStates $peerD.Stream
     Check "D received B's stream for wo39_body_3 right after C's disconnect (no timeout wait)" ($gotD.Count -eq 1 -and $gotD[0].Name -eq 'wo39_body_3' -and $gotD[0].Source -eq $peerB.Id) "got $($gotD | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T15: weather broadcast (WO-40 Phase 3, 0x2E/0x2F) ---"
+    Send-Weather $peerB.Stream 'foggy_storm' 30
+    $gotD = Drain-Weathers $peerD.Stream
+    Check "D received B's weather 'foggy_storm' blend=30" ($gotD.Count -eq 1 -and $gotD[0].Name -eq 'foggy_storm' -and $gotD[0].Blend -eq 30 -and $gotD[0].Source -eq $peerB.Id) "got $($gotD | ConvertTo-Json -Compress)"
+    $gotB = Drain-Weathers $peerB.Stream
+    Check "B heard nothing back about its own weather" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
 
     $peerB.Tcp.Close(); $peerD.Tcp.Close()
 }

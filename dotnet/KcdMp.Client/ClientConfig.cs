@@ -43,6 +43,13 @@ public sealed class ClientConfig
     public bool VoiceChatEnabled { get; set; } = true;
 
     /// <summary>
+    /// WO-40 Phase 3: whether this agent participates in session weather
+    /// sync (arbitrating when it holds damage authority, applying inbound
+    /// profiles either way). Off means vanilla per-machine weather.
+    /// </summary>
+    public bool WeatherSyncEnabled { get; set; } = true;
+
+    /// <summary>
     /// How the agent reads player state from the game.
     ///
     ///   "logtail" — the mod pushes state into kcd.log and the agent tails it.
@@ -200,6 +207,12 @@ public sealed class ClientConfig
                         break;
                     case "--no-voice":
                         VoiceChatEnabled = false;
+                        break;
+                    case "--weather-sync":
+                        WeatherSyncEnabled = true;
+                        break;
+                    case "--no-weather-sync":
+                        WeatherSyncEnabled = false;
                         break;
                     case "--benchmark":
                         // Handled in Program before the agent starts; listed

@@ -478,7 +478,31 @@ namespace KcdMp.Wire;
 /// shared world). Unknown event bytes are ignored by receivers, so this
 /// enum can grow (stagger, hit-reaction) without a protocol bump.
 ///
-/// Free type bytes for new features: 0x2E and up.
+/// ---- Weather sync layer (WO-40 Phase 3) ----
+///
+/// C→S  0x2E  WeatherUp:   [nameLen:1][profileName utf8][blendSec:2]                  (var)
+/// S→C  0x2F  WeatherDown: [sourceGhostId:1][nameLen:1][profileName utf8][blendSec:2] (var)
+///
+/// The 2026-08-18 footage: "Weather is not synced at all... for PA it is
+/// sunny, for PB it is foggy." The engine exposes a write
+/// (EnvironmentModule.BlendTimeOfDay(profile, blend, force) -- officially
+/// documented, used by Warhorse's own scripts) but NO current-profile read
+/// (GetRainIntensity is the only readback), so the time-sync shape
+/// "detect a local change, broadcast it" cannot work here: nobody can detect
+/// vanilla weather changing. The session's weather is therefore
+/// MOD-ARBITRATED: the damage-authority holder (an existing single-role
+/// concept with relay-managed failover) picks a profile on a slow cadence,
+/// applies it locally and broadcasts it; receivers apply the same profile.
+/// Late joiners converge via the arbiter's heartbeat re-send (the relay is
+/// stateless and replays nothing, exactly as for Appearance/HorseInfo).
+///
+/// Cosmetic by construction: weather affects mood and NPC flavor behavior,
+/// no damage or authority flows through it. Broadcast, no relay gate -- only
+/// the authority sends by convention, and a spoofed profile name can only
+/// ever name a real table row (receivers validate charset; the engine
+/// ignores unknown profiles).
+///
+/// Free type bytes for new features: 0x30 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -528,6 +552,7 @@ public static class Protocol
     public const byte TimeSkipUp     = 0x28;
     public const byte HorseInfoUp    = 0x2A;
     public const byte CombatEventUp  = 0x2C;
+    public const byte WeatherUp      = 0x2E;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -556,6 +581,7 @@ public static class Protocol
     public const byte TimeSkipDown     = 0x29;
     public const byte HorseInfoDown    = 0x2B;
     public const byte CombatEventDown  = 0x2D;
+    public const byte WeatherDown      = 0x2F;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -802,6 +828,29 @@ public static class Protocol
     /// is not heartbeated -- a late joiner's ghost starts sheathed anyway.
     /// </summary>
     public const int CombatDrawnHeartbeatSeconds = 30;
+
+    // ---- Weather sync layer (WO-40 Phase 3) ----
+
+    /// <summary>
+    /// Upper bound on a weather profile name in a Weather packet. The longest
+    /// shipped row (time_of_day_profile.xml) is well under this.
+    /// </summary>
+    public const int MaxWeatherNameLen = 48;
+
+    /// <summary>
+    /// How often the weather arbiter re-sends the current profile, so a peer
+    /// who joined after the last change still converges. Receivers apply only
+    /// on profile change, so the heartbeat costs nothing visible.
+    /// </summary>
+    public const int WeatherHeartbeatSeconds = 120;
+
+    /// <summary>
+    /// How often the arbiter re-rolls the session's weather. KCD2's own
+    /// weather changes on the scale of in-game hours; at ratio 15 this is
+    /// ~5 game hours per roll, and half of all rolls keep the current
+    /// profile, so weather feels persistent rather than strobing.
+    /// </summary>
+    public const int WeatherRepickSeconds = 1200;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

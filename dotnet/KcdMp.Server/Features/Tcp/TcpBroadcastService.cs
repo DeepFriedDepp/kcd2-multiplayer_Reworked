@@ -170,6 +170,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a WeatherUp (0x2E) from <paramref name="source"/> to all other
+    /// ready clients as a WeatherDown (0x2F) (WO-40 Phase 3). Cosmetic and
+    /// idempotent at the receiver (applied only on profile change), so no
+    /// authority gate -- only the arbiter sends by convention.
+    /// </summary>
+    public void BroadcastWeather(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueWeather(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

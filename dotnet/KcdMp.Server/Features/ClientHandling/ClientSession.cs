@@ -330,6 +330,22 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Weather sync layer (WO-40 Phase 3) ---
+                // [nameLen:1][profileName][blendSec:2]. Cosmetic; only the
+                // damage-authority agent sends by convention, and a spoofed
+                // profile can only name a real table row on receivers -- so
+                // like HorseInfo there is no relay-side gate.
+                if (type == Protocol.WeatherUp
+                    && payloadLen >= 1 + 2
+                    && payloadLen <= 1 + Protocol.MaxWeatherNameLen + 2)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (body[0] == payloadLen - 3)
+                        _broadcastService.BroadcastWeather(this, body);
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -484,6 +500,18 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.CombatEventDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a WeatherDown (0x2F, WO-40 Phase 3). The body is
+    /// the upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueWeather(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.WeatherDown, payload));
     }
 
     /// <summary>

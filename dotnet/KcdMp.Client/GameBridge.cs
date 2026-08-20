@@ -282,6 +282,34 @@ public partial class GameBridge(ClientConfig config)
     // not be able to inject Lua.
     private static readonly Regex NpcNamePattern = new("^[A-Za-z0-9_]+$", RegexOptions.Compiled);
 
+    // ---- Weather sync (WO-40 Phase 3) ----
+    // The engine has a write (EnvironmentModule.BlendTimeOfDay) but no
+    // current-profile read, so session weather is mod-arbitrated: the
+    // damage-authority holder picks from this pool on a slow cadence,
+    // applies locally, broadcasts; receivers apply on change. With no live
+    // peers the arbiter stays silent and vanilla weather runs untouched.
+    private Func<string, ushort, Task>? _sendWeather;
+    private string? _sessionWeatherProfile;       // arbiter: current session pick
+    private string? _lastAppliedWeatherProfile;   // receiver: change gate
+    private DateTime _weatherNextRepickUtc = DateTime.MinValue;
+    private DateTime _weatherNextHeartbeatUtc = DateTime.MinValue;
+    private readonly Random _weatherRng = new();
+    /// <summary>BlendTimeOfDay's duration argument for synced changes. Units are undocumented; Warhorse's own scripts pass 0/1. Tuned live if needed.</summary>
+    private const ushort WeatherBlendSeconds = 30;
+    // Weighted by repetition: clear skies common, storms rare. Names from the
+    // shipped time_of_day_profile.xml; quest-specific rows deliberately absent.
+    private static readonly string[] WeatherProfilePool =
+    {
+        "cloudless_sunny", "cloudless_sunny", "cloudless_sunny_B",
+        "semicloudy_clear", "semicloudy_clear", "semicloudy_clear_B",
+        "cloudy_no_rain", "cloudy_no_rain_B", "cloudy_no_rain_C",
+        "summer_overcast", "summer_overcast_B",
+        "cloudy_frequent_showers", "cloudy_frequent_showers_B",
+        "foggy_drizzly_light", "foggy_drizzly",
+        "foggy_storm",
+    };
+    private static readonly Regex WeatherNamePattern = new("^[A-Za-z0-9_]{1,48}$", RegexOptions.Compiled);
+
     public async Task RunAsync(CancellationToken ct = default)
     {
         var http = new HttpGameTransport(config.GameApiBase);
@@ -609,6 +637,7 @@ public partial class GameBridge(ClientConfig config)
         _sendNpcDrag = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token, asClaim: true);
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
         _sendCombatEvent = evt => SendCombatEventAsync(stream, evt, cts.Token);
+        _sendWeather = (profile, blend) => SendWeatherAsync(stream, profile, blend, cts.Token);
         void OnLocalPauseDetected(bool paused)
         {
             _localAutoPaused = paused;
@@ -736,6 +765,12 @@ public partial class GameBridge(ClientConfig config)
                     catch { }
                 }
 
+                // WO-40 Phase 3: weather arbitration, checked every ~5 s.
+                // All the real gates (authority, live peers, cadences) live
+                // inside the tick.
+                if (tickCount % 500 == 0)
+                    WeatherArbiterTick();
+
                 if (state.HasValue)
                 {
                     var st = state.Value;
@@ -801,6 +836,11 @@ public partial class GameBridge(ClientConfig config)
             _sendTimeSkip = null;
             _sendHorseInfo = null;
             _sendCombatEvent = null;
+            _sendWeather = null;
+            _sessionWeatherProfile = null;
+            _lastAppliedWeatherProfile = null;
+            _weatherNextRepickUtc = DateTime.MinValue;
+            _weatherNextHeartbeatUtc = DateTime.MinValue;
             lock (_timeSkipLock) { _pendingTimeSkip = null; }
             _localSkipActive = false;
             _awaitSkipDoneTime = false;
@@ -1305,6 +1345,83 @@ public partial class GameBridge(ClientConfig config)
             await stream.WriteAsync(packet, ct);
         }
         catch (Exception ex) { Console.WriteLine($"[combatviz] send failed: {ex.Message}"); }
+    }
+
+    // -------------------------------------------------------------------------
+    // Weather sync (WO-40 Phase 3)
+    // -------------------------------------------------------------------------
+
+    /// <summary>Puts one WeatherUp (0x2E) on the wire.</summary>
+    private async Task SendWeatherAsync(NetworkStream stream, string profile, ushort blendSec, CancellationToken ct)
+    {
+        try
+        {
+            var nameBytes = Encoding.UTF8.GetBytes(profile);
+            var packet = new byte[3 + 1 + nameBytes.Length + 2];
+            packet[0] = Protocol.WeatherUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)(1 + nameBytes.Length + 2));
+            packet[3] = (byte)nameBytes.Length;
+            nameBytes.CopyTo(packet, 4);
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(4 + nameBytes.Length), blendSec);
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine($"[weather] sent profile '{profile}' blend={blendSec}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[weather] send failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// The weather arbiter, run from the position loop on a slow check
+    /// cadence. Only acts when this client holds damage authority AND at
+    /// least one peer is live -- solo, vanilla weather stays untouched.
+    /// Re-rolls every <see cref="Protocol.WeatherRepickSeconds"/> (half the
+    /// rolls keep the current profile), re-sends every
+    /// <see cref="Protocol.WeatherHeartbeatSeconds"/> for late joiners.
+    /// </summary>
+    private void WeatherArbiterTick()
+    {
+        if (!config.WeatherSyncEnabled || !_isDamageAuthority) return;
+        var now = DateTime.UtcNow;
+        if (!_peerLastSeenUtc.Any(kv => (now - kv.Value) < TimeSpan.FromMinutes(2))) return;
+
+        if (now >= _weatherNextRepickUtc)
+        {
+            _weatherNextRepickUtc = now.AddSeconds(Protocol.WeatherRepickSeconds);
+            bool keep = _sessionWeatherProfile is not null && _weatherRng.Next(2) == 0;
+            if (!keep)
+            {
+                string pick = WeatherProfilePool[_weatherRng.Next(WeatherProfilePool.Length)];
+                if (pick != _sessionWeatherProfile)
+                {
+                    _sessionWeatherProfile = pick;
+                    Console.WriteLine($"[weather] arbiter picked '{pick}'");
+                    _weatherNextHeartbeatUtc = DateTime.MinValue; // send now
+                }
+            }
+        }
+
+        if (_sessionWeatherProfile is string profile && now >= _weatherNextHeartbeatUtc)
+        {
+            _weatherNextHeartbeatUtc = now.AddSeconds(Protocol.WeatherHeartbeatSeconds);
+            _ = _sendWeather?.Invoke(profile, WeatherBlendSeconds);
+            _ = ApplyWeatherAsync(profile, WeatherBlendSeconds);
+        }
+    }
+
+    /// <summary>
+    /// Applies a weather profile in the mod (idempotent: change-gated here so
+    /// arbiter heartbeats do not restart the blend every two minutes).
+    /// </summary>
+    private async Task ApplyWeatherAsync(string profile, ushort blendSec)
+    {
+        if (profile == _lastAppliedWeatherProfile) return;
+        _lastAppliedWeatherProfile = profile;
+        Console.WriteLine($"[weather] applying profile '{profile}' blend={blendSec}");
+        try
+        {
+            await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
+                "if KCD2MP_ApplyWeather then KCD2MP_ApplyWeather(\"{0}\",{1}) end", profile, blendSec));
+        }
+        catch { /* game might have unloaded */ }
     }
 
     /// <summary>
@@ -1945,6 +2062,23 @@ public partial class GameBridge(ClientConfig config)
                         string horseName = hiNameLen == 0 ? "" : Encoding.UTF8.GetString(payload, 2, hiNameLen);
                         if (hiNameLen == 0 || NpcNamePattern.IsMatch(horseName))
                             await ExecLuaAsync($"if KCD2MP_SetGhostHorse then KCD2MP_SetGhostHorse(\"{hiSource}\",\"{horseName}\") end");
+                    }
+                }
+                else if (type == Protocol.WeatherDown
+                         && payloadLen >= 1 + 1 + 2
+                         && payloadLen <= 1 + 1 + Protocol.MaxWeatherNameLen + 2)
+                {
+                    // Weather sync (WO-40 Phase 3):
+                    // [sourceGhostId:1][nameLen:1][profileName][blendSec:2].
+                    // Same validate-before-Lua-interpolation discipline as
+                    // NpcStateDown; the apply is change-gated.
+                    int wNameLen = payload[1];
+                    if (config.WeatherSyncEnabled && payloadLen == 2 + wNameLen + 2)
+                    {
+                        string wProfile = Encoding.UTF8.GetString(payload, 2, wNameLen);
+                        ushort wBlend = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(2 + wNameLen));
+                        if (WeatherNamePattern.IsMatch(wProfile))
+                            await ApplyWeatherAsync(wProfile, wBlend);
                     }
                 }
                 else if (type == Protocol.CombatEventDown && payloadLen == Protocol.CombatEventDownPayloadLen)
