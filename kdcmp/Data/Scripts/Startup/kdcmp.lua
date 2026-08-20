@@ -596,15 +596,25 @@ end
 function KCD2MP_ApplyWeather(profile, blend)
     profile = tostring(profile or "")
     if profile == "" then return end
+    local b = tonumber(blend) or 30
     local ok, err = false, nil
     if EnvironmentModule and EnvironmentModule.BlendTimeOfDay then
         ok, err = pcall(function()
-            EnvironmentModule.BlendTimeOfDay(profile, tonumber(blend) or 30, true)
+            EnvironmentModule.BlendTimeOfDay(profile, b, true)
         end)
+        -- WO-40 live battery: a blend<=1 is a SNAP request (late-join
+        -- convergence); ForceImmediateWeatherUpdate is what actually applies
+        -- it at once (rain 0 -> 0.82 within seconds, live-verified), while
+        -- longer blends complete on their own (rain decayed to ~0 over ~60 s
+        -- under blend=30, also live-verified).
+        if ok and b <= 1 then
+            pcall(function() EnvironmentModule.ForceImmediateWeatherUpdate() end)
+            pcall(function() EnvironmentModule.RebuildClouds() end)
+        end
     else
         err = "EnvironmentModule.BlendTimeOfDay not registered"
     end
-    mp_log("ApplyWeather '" .. profile .. "' blend=" .. tostring(blend)
+    mp_log("ApplyWeather '" .. profile .. "' blend=" .. tostring(b)
         .. (ok and " (blending)" or (" FAILED: " .. tostring(err))))
 end
 
@@ -3901,6 +3911,24 @@ function KCD2MP_UpdateAnimation(id, ghost)
     -- animation if this build has one; if the probe finds none, fall through
     -- to the ordinary locomotion tag rather than freezing.
     if istate.isAirborne and stance ~= "c" then
+        -- WO-40 live battery: the MotionJump Mannequin fragment RENDERS via
+        -- Human.PlayAnim on a ghost (eyeball-confirmed 2026-08-20 -- the
+        -- first fragment ever seen rendering; combat fragments stay locked).
+        -- It is the game's own jump, with proc layers a raw clip lacks, so
+        -- it goes first: once per airborne episode, not per tick.
+        if not istate.jumpFragPlayed and ghost.entity.human then
+            istate.jumpFragPlayed = true
+            local okJ = pcall(function() ghost.entity.human:PlayAnim("MotionJump", "") end)
+            if okJ then
+                istate.oneShotUntil = os.clock() + 0.9
+                if istate.animTag ~= "jump" then
+                    mp_log(string.format("Anim: %s %s->jump (MotionJump fragment)", id, istate.animTag or "?"))
+                    istate.animTag = "jump"
+                end
+                return
+            end
+        end
+        if istate.animTag == "jump" then return end  -- fragment already playing
         if KCD2MP._jumpAnim == nil then
             KCD2MP._jumpAnim = findAnim(ghost.entity, JUMP_ANIMS) or false
             mp_log("JumpAnim: " .. tostring(KCD2MP._jumpAnim))
@@ -3913,6 +3941,8 @@ function KCD2MP_UpdateAnimation(id, ghost)
             end
             return
         end
+    elseif istate.jumpFragPlayed then
+        istate.jumpFragPlayed = nil   -- re-arm for the next airborne episode
     end
 
     local animName
@@ -5897,11 +5927,16 @@ function KCD2MP_GhostCalm()
                 System.LogAlways(string.format("[KCD2-MP] ghost %s IsPersonallyHostile(player) ok=%s -> %s",
                     tostring(id), tostring(ok), tostring(hostile)))
             end
-            if AI and type(AI.ResetPersonallyHostiles) == "function" then
-                local ok, err = pcall(function() return AI.ResetPersonallyHostiles(ghost.entity.id) end)
-                System.LogAlways(string.format("[KCD2-MP] ghost %s ResetPersonallyHostiles ok=%s err=%s",
+            -- Live-verified 2026-08-20: the engine's own parameter-check
+            -- error revealed the real signature -- ResetPersonallyHostiles
+            -- (entityID, hostileID), two args like Remove. Both called
+            -- pairwise against the local player.
+            if AI and type(AI.ResetPersonallyHostiles) == "function" and player then
+                local ok, err = pcall(function() return AI.ResetPersonallyHostiles(ghost.entity.id, player.id) end)
+                System.LogAlways(string.format("[KCD2-MP] ghost %s ResetPersonallyHostiles(player) ok=%s err=%s",
                     tostring(id), tostring(ok), tostring(err)))
-            elseif AI and type(AI.RemovePersonallyHostile) == "function" and player then
+            end
+            if AI and type(AI.RemovePersonallyHostile) == "function" and player then
                 local ok, err = pcall(function() return AI.RemovePersonallyHostile(ghost.entity.id, player.id) end)
                 System.LogAlways(string.format("[KCD2-MP] ghost %s RemovePersonallyHostile(player) ok=%s err=%s",
                     tostring(id), tostring(ok), tostring(err)))

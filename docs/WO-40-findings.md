@@ -505,3 +505,88 @@ or just patch symptoms? **Both, and here is the split:**
 - Solution builds clean (agent, relay, launcher; pre-existing warnings
   only). Pak rebuilt and installed locally.
 - Live battery: pending (game confirmed available, save disposable).
+
+---
+
+## Addendum — the live battery, run same-day on the real stack (human at the machine)
+
+Stack: installed 0.13.6 launcher/agent/relay + the game with THIS SESSION'S
+rebuilt pak (verified loaded: all WO-40 globals present, ignorant default
+true). The running agent predates today's agent-side changes, so
+agent-dependent features (weather arbiter, reload convergence, 0x30 E2E)
+remain wire-verified only; everything mod-side and REST-side below is live.
+
+**Phase 3 (weather) — VERIFIED END TO END, eyeball + engine readback.**
+- `EnvironmentModule` registered; `BlendTimeOfDay('foggy_storm',0,true)` +
+  `ForceImmediateWeatherUpdate()` took rain intensity **0 → 0.334** (later
+  run 0 → 0.82, and 0 → 0.99 at full ramp); a duration-30 blend back to
+  `cloudless_sunny` decayed rain **0.334 → 0.0005 over ~60 s**. The human
+  saw both directions ("Yes, both ways"). Both modes the design needs —
+  snap for late joiners, slow blend for scheduled changes — work. The
+  shipped `KCD2MP_ApplyWeather` was exercised directly (rain 0 → 0.82) and
+  now snaps via ForceImmediateWeatherUpdate when blend ≤ 1.
+
+**Phase 5 (0x30 premise) — the REST routes answer.**
+- `SoulsByName/ttkc_man_5` → per-save Guid; **`SoulsByGuid/<guid>` exists**
+  and returns the Soul element with `Name="ttkc_man_5"` (SoulsById does
+  not exist — the agent's two-spelling fallback keeps the right one). Both
+  translation directions of the 0x30 layer are live-confirmed as surfaces.
+
+**Phases 6/8 (animation renders) — eyeball-verified on a calm test ghost:**
+- **All five probe clips RENDER on a calm ghost**: `relaxed_jump_start`,
+  both vault clips (`relaxed_jump_over_obstacle_idle_low/high`), and BOTH
+  takedown halves (`combat_takedown_back_nw_nw_m/s`) — human verdict:
+  "they actually moved, hands/arms out, hands forward for takedown...
+  certainly better than statically moves vertically", quality re-check
+  deferred to the tester round.
+- **The combat confound, isolated deliberately**: the same five clips
+  rendered NOTHING on a ghost whose brain was actively fighting the human.
+  A brain-in-combat Mannequin eats StartAnimation one-shots — recorded as
+  a real limit on cue visibility during a ghost's own fights (WO-39's
+  loop-vs-brain observation, seen from the other side).
+- **`MotionJump` RENDERS via `Human.PlayAnim`** — the first Mannequin
+  fragment ever seen rendering on a ghost. Shipped: the airborne branch now
+  plays MotionJump first (once per airborne episode), clip fallback.
+  JumpOver / LedgeGrab+`floor+vault+over` executed fault-free but showed no
+  motion (plausibly need a real obstacle/align target).
+- **Combat fragments stay locked even with tags**: CombatAttack+`lngsw`,
+  FreeAttack+`lngsw`, CombatAttack+`lngsw+rg`, MeleeAttack — all fault-free,
+  ghost "stood completely still" (re-run to be sure). **This is the third
+  cited failed attempt on the combat-swing route** (WO-39 blendspaces,
+  WO-39 empty-tag fragments, WO-40 tagged fragments) — by this WO's own
+  standard, the native escalation for combat-swing fidelity is now EARNED:
+  the design is libKCD2's documented `I_AnimationController::QueueAction`
+  route, deliberately not built tonight because (a) it is its own WO-sized
+  native work item and (b) the GPL-3.0 posture (re-derive vs adopt) is the
+  human's decision. Everything needed to start is in Phase 1's findings.
+
+**Phase 9 (hostility binds) — registration settled live:**
+- `AI.GetFactionOf/SetFactionOf/AddPersonallyHostile/RemovePersonallyHostile/
+  IsPersonallyHostile/ResetPersonallyHostiles` are ALL registered functions
+  on this build. The engine's own parameter-check error revealed the real
+  signature: `ResetPersonallyHostiles(entityID, hostileID)` — two args.
+  `IsPersonallyHostile(ghost, player)` returned false on the calm ghost
+  (correct); pairwise Reset/Remove ran clean. mp_ghost_calm updated to the
+  real signature. Caveat kept: `GetFactionOf` is callable but returned nil
+  for both ghost and player — the READ half is registered-but-thin.
+
+**Phase 10 (clothing) — root cause reproduced and the fix validated live:**
+- The quest-alias class `a8d552a9` (alias_prepadeni_collarChain):
+  CreateItems + EquipItem both return success, **and the class never
+  appears in `EquippedArmorsByClassId`** — exactly the field failure's
+  eternal-retry mechanism, reproduced on demand.
+- Its source item `8662ab7a`: equips and reads back present — the shipped
+  alias→source substitution is validated at the equip layer.
+- `GambesonShort02_m03_E1` (`73b9efe7`): equips and reads back FINE here —
+  its field failure did not reproduce; left recorded as unexplained-that-day
+  (transient/ordering), no further fix.
+
+**Cleanup**: test ghost removed (ghosts=0), weather restored to
+cloudless_sunny (rain 0). Save was declared disposable; no real NPC was
+harmed this session.
+
+**Still gated on the next install round** (the running agent predates
+today's changes): weather arbiter E2E, reload convergence E2E, 0x30 damage
+E2E, mount-guard field exercise, carried-body smooth-follow, NPC drawn/
+swing cues, takedown-on-KO in context — all one install away, and the
+tester checklist material is in the progress doc.

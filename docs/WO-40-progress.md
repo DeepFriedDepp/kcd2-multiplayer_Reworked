@@ -31,3 +31,5 @@ half), anim probes (`mp_combat_probe`, `mp_anim_tag`, tagged
 registration, reload convergence E2E, alias-item equip. If a fresh session
 picks this up: read WO-40-findings.md end to end; every live item above is
 one console command or one synthetic-peer script away.
+
+**Live battery addendum (same day):** weather verified end to end (eyeball + rain readback, both snap and slow blend); SoulsByGuid route confirmed (0x30 premise); all five jump/vault/takedown clips RENDER on a calm ghost (brain-in-combat eats one-shots -- isolated deliberately); MotionJump is the first fragment ever seen rendering (shipped as the jump branch first choice); combat fragments stay locked even with tags -- the native escalation is now formally EARNED and documented, deferred as its own WO + license decision; all six hostility binds registered, ResetPersonallyHostiles real signature recovered from the engine error; the quest-alias clothing failure reproduced on demand and the alias-to-source fix validated at the equip layer. Repo pak rebuilt with the three live-tuning fixes; install pending game close.
