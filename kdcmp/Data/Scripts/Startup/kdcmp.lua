@@ -1987,7 +1987,21 @@ local function mp_drag_sensor()
                     pcall(function() dead = e.actor:IsDead() == true end)
                     pcall(function() ko = e.actor:IsUnconscious() == true end)
                 end
-                local flags = (dead and 1 or 0) + (ko and 2 or 0)
+                -- WO-40 Phase 7: a downed body moving while glued to the
+                -- player (<1.5 m) is being CARRIED, not dragged along the
+                -- ground -- a third state (footage: "phases upward onto
+                -- shoulders"). Bit 4 tells receivers to follow smoothly
+                -- instead of teleport-stepping per half metre.
+                local carried = false
+                if player then
+                    local pp2 = nil
+                    pcall(function() pp2 = player:GetWorldPos() end)
+                    if pp2 then
+                        local cdx, cdy = p.x - pp2.x, p.y - pp2.y
+                        carried = (cdx * cdx + cdy * cdy) < 2.25
+                    end
+                end
+                local flags = (dead and 1 or 0) + (ko and 2 or 0) + (carried and 16 or 0)
                 KCD2MP_EmitEvent("npc_drag", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
                     name, p.x, p.y, p.z, rot, hp, flags))
             end)
@@ -2016,6 +2030,25 @@ function KCD2MP_NpcSyncTick()
         pcall(mp_npc_rescan)
     end
 
+    -- WO-40 Phase 6: an NPC's real swings are invisible to Lua, but the one
+    -- moment that matters most -- the NPC landing a hit on THIS player -- is
+    -- visible as our own health dropping. That edge, attributed to a nearby
+    -- weapon-drawn tracked NPC, becomes a swing cue on the observers' side.
+    local playerHit, ppos = false, nil
+    if player then
+        pcall(function() ppos = player:GetWorldPos() end)
+        if player.actor then
+            local ph = nil
+            pcall(function() ph = player.actor:GetHealth() end)
+            if ph then
+                if KCD2MP._npcSyncPrevPlayerHp and ph < KCD2MP._npcSyncPrevPlayerHp - 0.5 then
+                    playerHit = true
+                end
+                KCD2MP._npcSyncPrevPlayerHp = ph
+            end
+        end
+    end
+
     for name, t in pairs(KCD2MP.npcTracked) do
         pcall(function()
             local e = System.GetEntityByName(name)
@@ -2033,6 +2066,17 @@ function KCD2MP_NpcSyncTick()
                 pcall(function() ko = e.actor:IsUnconscious() == true end)
             end
 
+            -- WO-40 Phase 6: the NPC's weapon state travels as flag bit 2 so
+            -- an observer's copy fights in a guard stance instead of standing
+            -- with arms down (the footage's "the NPC itself does nothing").
+            local drawn = false
+            pcall(function() drawn = e.human and e.human:IsWeaponDrawn() == true end)
+            local swingCue = false
+            if playerHit and drawn and ppos then
+                local sx, sy = p.x - ppos.x, p.y - ppos.y
+                if sx * sx + sy * sy <= 16.0 then swingCue = true end
+            end
+
             local moved = not t.lastX
                 or math.abs(p.x - t.lastX) > KCD2MP.npcSync.moveEps
                 or math.abs(p.y - t.lastY) > KCD2MP.npcSync.moveEps
@@ -2041,12 +2085,16 @@ function KCD2MP_NpcSyncTick()
             local heartbeat = not t.lastSentAt or (now - t.lastSentAt) >= KCD2MP.npcSync.heartbeatS
 
             local koChanged = (ko ~= (t.sentKo or false))
-            if moved or hpChanged or heartbeat or koChanged or (dead and not t.sentDead) then
+            local drawnChanged = (drawn ~= (t.sentDrawn or false))
+            if moved or hpChanged or heartbeat or koChanged or drawnChanged or swingCue
+               or (dead and not t.sentDead) then
                 local flags = (dead and 1 or 0) + (ko and 2 or 0)
+                    + (drawn and 4 or 0) + (swingCue and 8 or 0)
                 KCD2MP_EmitEvent("npc_state", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
                     name, p.x, p.y, p.z, rot, hp, flags))
                 t.lastX, t.lastY, t.lastZ, t.lastRot = p.x, p.y, p.z, rot
                 t.lastHp, t.lastSentAt, t.sentDead, t.sentKo = hp, now, dead, ko
+                t.sentDrawn = drawn
             end
         end)
     end
@@ -2083,9 +2131,27 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     p.tx, p.ty, p.tz, p.tr = x, y, z, rot
     p.hp = hp
     local f = tonumber(flags) or 0
-    p.dead = (math.floor(f) % 2) == 1          -- bit 0
-    p.ko   = (math.floor(f / 2) % 2) == 1      -- bit 1 (WO-38 Phase 6: knocked out in the authority's world)
+    local wasKo = p.ko
+    p.dead  = (math.floor(f) % 2) == 1          -- bit 0
+    p.ko    = (math.floor(f / 2) % 2) == 1      -- bit 1 (WO-38 Phase 6: knocked out in the authority's world)
+    p.drawn = (math.floor(f / 4) % 2) == 1      -- bit 2 (WO-40 Phase 6: weapon out in the authority's world)
+    local swingCue = (math.floor(f / 8) % 2) == 1  -- bit 3 (WO-40 Phase 6: it just landed a hit there)
+    p.carried = (math.floor(f / 16) % 2) == 1   -- bit 4 (WO-40 Phase 7: a player is carrying this body)
     p.lastPacketAt = os.clock()
+    if swingCue and not p.dead and not p.ko then
+        p.swingCuePending = true
+    end
+    -- WO-40 Phase 6: a knockout happening next to a player's ghost is almost
+    -- always that player's takedown (the footage's choke rendered as a brief
+    -- shield-block on the observer's screen). Play the paired master/victim
+    -- takedown clips: victim on the NPC, master on the closest ghost within
+    -- arm's reach. Names are probed (findAnim); none-found degrades to the
+    -- existing freeze behaviour. Only a WITNESSED transition cues -- a body
+    -- that is already KO on its first packet (late join) just freezes.
+    if p.ko and wasKo == false and p.everPacket then
+        pcall(function() KCD2MP_NpcTakedownCue(name, e, x, y, z) end)
+    end
+    p.everPacket = true
     KCD2MP_StartNpcPuppet()
 end
 
@@ -2127,6 +2193,18 @@ function KCD2MP_NpcPuppetTick(arg)
                 pcall(function() locallyDead = e.actor:IsDead() == true end)
                 pcall(function() locallyKo = e.actor:IsUnconscious() == true end)
             end
+            -- WO-40 Phase 6: the authority's weapon state, applied on the
+            -- transition (the same DrawWeapon/HolsterWeapon calls the ghost
+            -- path live-verified in WO-39).
+            if (p.drawn or false) ~= (p.appliedDrawn or false) then
+                p.appliedDrawn = p.drawn or false
+                if e.human then
+                    if p.drawn then pcall(function() e.human:DrawWeapon() end)
+                    else pcall(function() e.human:HolsterWeapon() end) end
+                end
+                mp_log("NPC-SYNC " .. name .. (p.drawn and " drew weapon" or " sheathed weapon"))
+            end
+
             if p.dead or p.ko or locallyDead or locallyKo then
                 -- WO-38 Phase 6, the drag gap: on THIS channel the stream is
                 -- the body's actual location in the authority's world (unlike
@@ -2135,6 +2213,29 @@ function KCD2MP_NpcPuppetTick(arg)
                 -- FOLLOW a meaningful stream move -- the authority dragging a
                 -- corpse -- as a one-shot placement, no animation, no per-tick
                 -- lerp fighting the local ragdoll. Small jitter stays frozen.
+                -- WO-40 Phase 7: a CARRIED body follows the stream smoothly
+                -- every tick (a body on someone's shoulders moves like they
+                -- do), instead of the half-metre teleport steps that read as
+                -- "phases upward onto shoulders" in the footage. Dragged/
+                -- static bodies keep the one-shot placement -- a per-tick
+                -- lerp would fight the local ragdoll for no reason.
+                if p.carried then
+                    local cdx2 = (p.tx or p.cx) - p.cx
+                    local cdy2 = (p.ty or p.cy) - p.cy
+                    if cdx2 * cdx2 + cdy2 * cdy2 > 25.0 then
+                        p.cx, p.cy, p.cz = p.tx, p.ty, p.tz
+                    else
+                        p.cx = p.cx + cdx2 * 0.5
+                        p.cy = p.cy + cdy2 * 0.5
+                        p.cz = p.tz or p.cz
+                    end
+                    pcall(function() e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz}) end)
+                    if p.animTag ~= "carried" then
+                        p.animTag = "carried"
+                        mp_log("NPC-SYNC body carried-follow " .. name)
+                    end
+                    return
+                end
                 local bx = p.dragX or p.cx
                 local by = p.dragY or p.cy
                 local ddx = (p.tx or bx) - bx
@@ -2146,6 +2247,16 @@ function KCD2MP_NpcPuppetTick(arg)
                 end
                 return
             end
+
+            -- WO-40 Phase 6: swing cue, and the one-shot pin. Per-tick
+            -- SetWorldPos + anim restarts stomp one-shots before a frame
+            -- renders (WO-39's ghost lesson) -- while a cue plays, this
+            -- puppet gets no writes at all; the lerp catches up after.
+            if p.swingCuePending then
+                p.swingCuePending = nil
+                pcall(function() KCD2MP_PuppetSwingCue(name, p, e) end)
+            end
+            if (p.oneShotUntil or 0) > now then return end
 
             -- WO-40 Phase 5 diagnostic: measure the tug-of-war instead of
             -- guessing. If the entity is found away from where we last wrote
@@ -2208,6 +2319,14 @@ function KCD2MP_NpcPuppetTick(arg)
                 elseif spd >= 3.0 then tag, anim = "run",    "3d_relaxed_run_turn_strafe"
                 elseif spd >= 0.3 then tag, anim = "walk",   "3d_relaxed_walk_turn_strafe"
                 else                    tag, anim = "idle",   "relaxed_idle_both" end
+                -- WO-40 Phase 6: a weapon-out NPC idles in the combat guard
+                -- (human-confirmed correct read on ghosts, WO-39), so a
+                -- fighting NPC reads as fighting instead of standing.
+                if tag == "idle" and p.drawn then
+                    local cIdle = nil
+                    pcall(function() cIdle = KCD2MP_CombatIdleFor(e) end)
+                    if cIdle then tag, anim = "combatidle", cIdle end
+                end
             end
             -- WO-40 Phase 5: restart the looped locomotion only on a tag
             -- change, with a 1 s keep-alive refresh -- not every 50 ms tick.
@@ -3326,16 +3445,39 @@ KCD2MP._sneakIdleAnim = nil
 -- Jump animation candidates (WO-38 Phase 3, Section A). Same probe-on-first-
 -- use pattern as every other list here: findAnim keeps the first name the
 -- entity actually has (GetAnimationLength > 0), so unverified candidates
--- cost one probe each, once, and a wrong guess can never play. NONE of these
--- names is confirmed on this build yet -- if none probe out, the ghost keeps
--- its locomotion animation while airborne (legs keep moving), which is still
--- strictly better than the reported stiff vertical teleport.
+-- cost one probe each, once, and a wrong guess can never play. If none probe
+-- out, the ghost keeps its locomotion animation while airborne (legs keep
+-- moving), which is still strictly better than the reported stiff teleport.
+--
+-- WO-40 Phase 8: the list is now led by REAL clip names read from
+-- Animations.pak's male.animevents this session (plain one-shot .caf files,
+-- the class that renders via StartAnimation -- not the 1d_jump_* blendspaces,
+-- which never render). The old WO-38 guesses stay as a tail.
 local JUMP_ANIMS = {
+    "relaxed_jump_idle",                 -- full in-place jump (Animations.pak, WO-40)
+    "relaxed_run_jump_rleg_start",       -- moving jump, start half
+    "relaxed_jump_start",                -- start half (pairs with land)
+    "relaxed_walk_jump_lleg_start",
     "3d_relaxed_jump", "3d_jump", "relaxed_jump", "jump",
     "3d_relaxed_jump_turn_strafe", "jump_both", "relaxed_jump_both",
     "3d_relaxed_run_jump", "run_jump", "walk_jump",
 }
 KCD2MP._jumpAnim = nil   -- nil=not probed yet, false=probed and none found, string=found
+
+-- WO-40 Phase 8: fence-vault candidates -- the same real-clip sweep. The
+-- game's own JumpOver Mannequin fragment plays exactly
+-- relaxed_jump_over_obstacle_idle_high (read from kcd_male_database.adb).
+-- Same probe pattern; used by the airborne branch when the arc looks like a
+-- vault (low vertical speed but a z step up), live-tuning deferred -- for
+-- now the list rides behind mp_combat_frag-style manual probing and the
+-- jump branch's fallback ordering.
+local VAULT_ANIMS = {
+    "relaxed_jump_over_obstacle_idle_low",
+    "relaxed_jump_over_obstacle_idle_high",
+    "relaxed_jump_over_obstacle_lleg_walk_low",
+    "relaxed_jump_over_obstacle_lleg_run_low",
+}
+KCD2MP._vaultAnim = nil
 
 -- Riding animation candidates (probed on first use, result cached).
 -- false = probed but none found (avoid re-probing every tick).
@@ -3470,6 +3612,95 @@ KCD2MP._combatIdleAnim = nil
 KCD2MP.combatSwingFragment = nil   -- e.g. "MeleeAttack"
 KCD2MP.combatSwingFragTags = ""
 
+-- WO-40 Phase 6: paired takedown cue on a puppet KO transition. Called from
+-- KCD2MP_ApplyNpcState (defined earlier; Lua resolves this global at call
+-- time, after the whole file has loaded). Clip names come from the
+-- Animations.pak sweep (plain .caf clips, the class that renders via
+-- StartAnimation) -- probed with findAnim, none-found degrades to the
+-- existing KO freeze.
+local TAKEDOWN_MASTER_ANIMS = {
+    "stealth_kill_hand_stand_success_start_m",   -- choke-out, perpetrator half
+    "combat_takedown_back_nw_nw_m",              -- unarmed takedown, perpetrator
+}
+local TAKEDOWN_VICTIM_ANIMS = {
+    "stealth_kill_hand_stand_success_start_s",   -- choke-out, victim half
+    "combat_takedown_back_nw_nw_s",              -- unarmed takedown, victim
+}
+KCD2MP._takedownMasterAnim = nil   -- nil=not probed, false=none, string=found
+KCD2MP._takedownVictimAnim = nil
+
+function KCD2MP_NpcTakedownCue(name, e, x, y, z)
+    local p = KCD2MP.npcPuppets[name]
+    -- Victim half on the NPC itself.
+    if KCD2MP._takedownVictimAnim == nil then
+        KCD2MP._takedownVictimAnim = findAnim(e, TAKEDOWN_VICTIM_ANIMS) or false
+        mp_log("TakedownVictimAnim: " .. tostring(KCD2MP._takedownVictimAnim))
+    end
+    if KCD2MP._takedownVictimAnim then
+        local len = 0
+        pcall(function() len = e:GetAnimationLength(0, KCD2MP._takedownVictimAnim) or 0 end)
+        pcall(function() e:StartAnimation(0, KCD2MP._takedownVictimAnim, 0, 0.1, 1.0, false) end)
+        if p then p.oneShotUntil = os.clock() + math.min(len > 0 and len or 1.2, 2.5) end
+    end
+    -- Master half on the nearest ghost within arm's reach.
+    local best, bestD2 = nil, 6.25
+    for _, g in pairs(KCD2MP.ghosts) do
+        if g.entity then
+            local gp = nil
+            pcall(function() gp = g.entity:GetWorldPos() end)
+            if gp then
+                local gdx, gdy = gp.x - x, gp.y - y
+                local d2 = gdx * gdx + gdy * gdy
+                if d2 < bestD2 then best, bestD2 = g, d2 end
+            end
+        end
+    end
+    if best then
+        if KCD2MP._takedownMasterAnim == nil then
+            KCD2MP._takedownMasterAnim = findAnim(best.entity, TAKEDOWN_MASTER_ANIMS) or false
+            mp_log("TakedownMasterAnim: " .. tostring(KCD2MP._takedownMasterAnim))
+        end
+        if KCD2MP._takedownMasterAnim then
+            local len = 0
+            pcall(function() len = best.entity:GetAnimationLength(0, KCD2MP._takedownMasterAnim) or 0 end)
+            pcall(function() best.entity:StartAnimation(0, KCD2MP._takedownMasterAnim, 0, 0.1, 1.0, false) end)
+            if best.istate then
+                best.istate.oneShotUntil = os.clock() + math.min(len > 0 and len or 1.2, 2.5)
+            end
+        end
+    end
+    mp_log(string.format("NPC-SYNC takedown cue %s (victim=%s master=%s ghost=%s)",
+        name, tostring(KCD2MP._takedownVictimAnim), tostring(KCD2MP._takedownMasterAnim),
+        best and "yes" or "none-near"))
+end
+
+-- WO-40 Phase 6: the puppet-side swing cue -- same clip, speed and one-shot
+-- window as the ghost swing cue, applied to an NPC puppet.
+function KCD2MP_PuppetSwingCue(name, p, e)
+    if KCD2MP._swingAnim == nil then
+        KCD2MP._swingAnim = findAnim(e, COMBAT_SWING_ANIMS) or false
+        mp_log("SwingAnim: " .. tostring(KCD2MP._swingAnim))
+    end
+    if not KCD2MP._swingAnim then return end
+    local len = 0
+    pcall(function() len = e:GetAnimationLength(0, KCD2MP._swingAnim) or 0 end)
+    pcall(function() e:StartAnimation(0, KCD2MP._swingAnim, 0, 0.08, SWING_ANIM_SPEED, false) end)
+    local dur = (len > 0 and len or 0.8) / SWING_ANIM_SPEED
+    p.oneShotUntil = os.clock() + math.min(dur, 1.5)
+    p.animTag = "swing"   -- locomotion re-asserts itself after the window
+    mp_log("NPC-SYNC swing cue " .. name)
+end
+
+-- WO-40 Phase 6: probe-once accessor for the weapon-ready guard idle, shared
+-- with the ghost path's cache.
+function KCD2MP_CombatIdleFor(e)
+    if KCD2MP._combatIdleAnim == nil then
+        KCD2MP._combatIdleAnim = findAnim(e, COMBAT_IDLE_ANIMS) or false
+        mp_log("CombatIdleAnim: " .. tostring(KCD2MP._combatIdleAnim))
+    end
+    return KCD2MP._combatIdleAnim or nil
+end
+
 -- Applies one peer combat event to that peer's ghost. evt matches Protocol's
 -- combat event bytes: 0=drawn, 1=sheathed, 2=swing, 3=block. Unknown values
 -- are ignored, so a newer peer can emit events this build has no name for.
@@ -3585,7 +3816,9 @@ function KCD2MP_CombatProbe()
         System.LogAlways("[KCD2-MP] no ghost to probe anims on (spawn one first)")
         return
     end
-    local lists = { SWING = COMBAT_SWING_ANIMS, BLOCK = COMBAT_BLOCK_ANIMS, CIDLE = COMBAT_IDLE_ANIMS }
+    local lists = { SWING = COMBAT_SWING_ANIMS, BLOCK = COMBAT_BLOCK_ANIMS, CIDLE = COMBAT_IDLE_ANIMS,
+                    JUMP = JUMP_ANIMS, VAULT = VAULT_ANIMS,
+                    TDWN_M = TAKEDOWN_MASTER_ANIMS, TDWN_S = TAKEDOWN_VICTIM_ANIMS }
     for label, list in pairs(lists) do
         local hits = {}
         for _, nm in ipairs(list) do
@@ -5801,6 +6034,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_ghost_combat", 'KCD2MP_GhostCombatAll("%LINE")', "WO-39: play a combat event on every local ghost, no wire: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
     System.AddCCommand("mp_log_actions", 'KCD2MP_LogActions("%LINE")', "Log every OnAction name (floods log -- for discovering action names): mp_log_actions on|off")
     System.AddCCommand("mp_combat_frag", 'KCD2MP_SetCombatFragment("%LINE")', "WO-39: set the Mannequin fragment tried for swings (empty to clear): mp_combat_frag <name> [tags]")
+    System.AddCCommand("mp_anim_tag",    'KCD2MP_AnimTagCmd("%LINE")', "WO-40: probe AI.Set/ClearAnimationTag on every ghost: mp_anim_tag set|clear <tag>")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
     System.AddCCommand("mp_test_xgen_horse",  'KCD2MP_TestXGenSpawn("Horse")',  "Test XGenAIModule.SpawnEntity ClassName=Horse")
@@ -5818,6 +6052,36 @@ function KCD2MP_LogActions(arg)
     local on = tostring(arg or ""):lower()
     KCD2MP.logActions = (on == "on" or on == "true" or on == "1")
     System.LogAlways("[KCD2-MP] logActions=" .. tostring(KCD2MP.logActions))
+end
+
+-- mp_anim_tag set|clear <tag> (WO-40 Phase 6): probe AI.SetAnimationTag /
+-- ClearAnimationTag (documented in the retail-1.5 dump, never tried here) on
+-- every ghost. Mannequin tags select fragment variants -- potentially the
+-- clean lever for stance/combat variants that raw StartAnimation cannot pick.
+function KCD2MP_AnimTagCmd(line)
+    line = tostring(line or "")
+    local op, tag = line:match("^(%S+)%s+(%S+)$")
+    if not op or not tag then
+        System.LogAlways("[KCD2-MP] usage: mp_anim_tag set|clear <tag>  (applies to every ghost)")
+        System.LogAlways("[KCD2-MP] AI.SetAnimationTag=" .. tostring(AI and type(AI.SetAnimationTag) or "no AI")
+            .. " AI.ClearAnimationTag=" .. tostring(AI and type(AI.ClearAnimationTag) or "no AI"))
+        return
+    end
+    local n = 0
+    for id, g in pairs(KCD2MP.ghosts) do
+        if g.entity then
+            n = n + 1
+            local ok, err
+            if op == "set" then
+                ok, err = pcall(function() return AI.SetAnimationTag(g.entity.id, tag) end)
+            else
+                ok, err = pcall(function() return AI.ClearAnimationTag(g.entity.id, tag) end)
+            end
+            System.LogAlways(string.format("[KCD2-MP] %s AnimationTag('%s') ghost %s ok=%s err=%s",
+                op, tag, tostring(id), tostring(ok), tostring(err)))
+        end
+    end
+    if n == 0 then System.LogAlways("[KCD2-MP] no ghosts to tag") end
 end
 
 -- mp_combat_frag <name> [tags] (WO-39): configure the Mannequin fragment the
@@ -6049,7 +6313,14 @@ local function handleAction(action, activation, value)
                       or activation == 1 or activation == 2)
         if held and not KCD2MP._blockHeld then
             KCD2MP._blockHeld = true
-            KCD2MP_EmitEvent("combat", "block")
+            -- WO-40 Phase 6 (the choke miscue): the 'block' action also fires
+            -- during weaponless grabs -- the footage's choke-out rendered as
+            -- a phantom shield-block on the observer's screen. A block cue
+            -- with no weapon out is never a real guard; drop it. Real
+            -- unarmed blocking is rare and reads fine as nothing.
+            if KCD2MP.weaponDrawn then
+                KCD2MP_EmitEvent("combat", "block")
+            end
         elseif activation == "release" then
             KCD2MP._blockHeld = false
         end
