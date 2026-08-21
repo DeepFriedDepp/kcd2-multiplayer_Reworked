@@ -54,3 +54,37 @@ layout (used in `native/KCDMP/rttr_abi.h`/`.cpp`,
 `probe_dice_class()`) and is the tool to reach for if a future session wants
 to decompile `C_UIDice::ShowDiceScore`'s caller — the next concrete lead
 recorded in the findings doc.
+
+---
+
+# WO-42 additions (2026-08-21)
+
+Five scripts added while reverse-engineering the native combat-animation route
+(`docs/WO-42-findings.md`). Ghidra **12.1.3** was used; the flags above are
+unchanged.
+
+The key discovery that shapes all of them: the Modding Tools build **retains
+`__FUNCTION__` strings, source paths and MSVC RTTI**. So identification is not
+pattern matching — a function containing the literal
+`"wh::animationmodule::C_AnimationController::QueueAction"` *is* that function.
+
+- **`DumpWo42Anchors.java <outDir> <needle>...`** — the workhorse. For every
+  defined string containing a needle, prints the string, every xref, and the
+  containing function; also matches symbol names (so RTTI vftable labels get
+  picked up with their referencing constructors/destructors); then decompiles
+  every function it landed on. This is what turned six class names into an
+  address map.
+- **`DumpWo42Fns.java <outFile> <depth> <addr>...`** — decompile addresses, plus
+  their callees to `<depth>` levels.
+- **`DumpWo42Asm.java <outFile> <addr>...`** — raw disassembly of the containing
+  function, with string/symbol comments resolved on each instruction.
+  **Use this, not the decompiler, for anything ABI-shaped.** The decompiler's
+  "unknown calling convention" guesses dropped three of `C_CombatAnimAction`'s
+  seven arguments and hid a `float` parameter riding in XMM2.
+- **`DumpWo42Callers.java <outFile> <addr>...`** — callers of an address. Finds
+  factories from constructors, and `sizeof` from the allocation immediately
+  before the constructor call.
+- **`DumpWo42Vtbl.java <outFile> <count> <addr>...`** — vtable slots with
+  resolved targets. Beware: `.pdata`/EH regions are packed 32-bit RVA triples
+  and will decode as nonsense here — if the "pointers" look like two small
+  values glued together, it is not a vtable.
