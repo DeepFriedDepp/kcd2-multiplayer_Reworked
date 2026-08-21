@@ -99,8 +99,11 @@ runtime.
 
 - No mod code (WO-43).
 - Game never launched; no live verification of anything.
-- `EntityModule.dll` not opened, so WO-41's `C_Actor + 0x278` /
-  `C_CombatActor + 0x3A8` claims remain unverified.
+- ~~`EntityModule.dll` not opened~~ — **superseded**: opened during the de-risk
+  pass below. `C_Actor + 0x278` is **disproved** (the field is `+0x300`);
+  `C_CombatActor + 0x3A8` (`m_pActionManager`) is still unverified, and is no
+  longer on the critical path since `I_CombatActor + 0x490` reaches the anim
+  action manager directly (§4.4).
 - `wh::tests::PlayAnim` not probed over the RTTR/REST surface — recorded as a
   lead with its evidence, explicitly not a claim.
 
