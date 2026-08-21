@@ -2,6 +2,7 @@
     dllmain.cpp
     rttr_probe.cpp
     rttr_abi.cpp
+    combat_playanim.cpp
     main_thread.cpp
     pipe_server.cpp
     dice_hook.cpp

@@ -20,6 +20,7 @@ void probe_attribution();
 void probe_faction();
 void probe_method_wrapper();
 void probe_dice_class();
+void probe_play_anim();
 }
 
 namespace {
@@ -106,6 +107,9 @@ DWORD WINAPI plugin_main(LPVOID) {
         // unless kcdmp-faction.txt exists beside the DLL -- opt-in, human
         // writes the ghost/donor GUIDs deliberately before injecting.
         kcdmp::rttr::probe_faction();
+        // WO-43 Phase 1: no-op unless kcdmp-playanim.txt exists beside the
+        // DLL -- opt-in, same convention as probe_faction above.
+        kcdmp::rttr::probe_play_anim();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");

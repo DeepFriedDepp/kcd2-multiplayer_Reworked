@@ -3632,6 +3632,16 @@ KCD2MP._combatIdleAnim = nil
 KCD2MP.combatSwingFragment = nil   -- e.g. "MeleeAttack"
 KCD2MP.combatSwingFragTags = ""
 
+-- WO-43: every prior live attempt on this route (WO-39 empty tags, WO-40
+-- generic tags like "lngsw") used GUESSED fragment/tag data, never a real
+-- shipped Mannequin row. docs/WO-42-findings.md §9.2 extracted real rows
+-- straight from Tables.pak; this is one, verbatim, for a human/human sync
+-- attack (not invented -- do not substitute a guessed tag string here):
+--   mp_combat_frag CombatAttackSyncGen l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale
+-- Untried before WO-43. If this still renders nothing on a real ghost in a
+-- real fight, that is evidence against "the tags were just wrong" and for
+-- the guard/gate explanation combat_playanim.cpp's native probe checks.
+
 -- WO-40 Phase 6: paired takedown cue on a puppet KO transition. Called from
 -- KCD2MP_ApplyNpcState (defined earlier; Lua resolves this global at call
 -- time, after the whole file has loaded). Clip names come from the
@@ -3852,6 +3862,29 @@ function KCD2MP_CombatProbe()
         .. " HolsterWeapon=" .. tostring(ghost.entity.human and type(ghost.entity.human.HolsterWeapon) or "n/a")
         .. " PlayAnim=" .. tostring(ghost.entity.human and type(ghost.entity.human.PlayAnim) or "n/a"))
     System.LogAlways("[KCD2-MP] === END ===")
+end
+
+-- mp_entity_id [name] (WO-43): print the raw CryEngine entity id for a named
+-- entity, or every current ghost's id if no name is given. This is the value
+-- kcdmp-playanim.txt's first line needs for the arbitrary-actor case of the
+-- native PlayAnim diagnostic in combat_playanim.cpp -- that file cannot look
+-- an entity up by name itself, only by this numeric id.
+function KCD2MP_ReportEntityId(name)
+    name = tostring(name or "")
+    if name ~= "" then
+        local e = System.GetEntityByName(name)
+        System.LogAlways("[KCD2-MP] " .. name .. " id=" .. tostring(e and e.id or "not found"))
+        return
+    end
+    local n = 0
+    for id, g in pairs(KCD2MP.ghosts) do
+        if g.entity then
+            System.LogAlways("[KCD2-MP] ghost " .. tostring(id) .. " (" ..
+                tostring(g.spawnName or ("kcd2mp_" .. tostring(id))) .. ") id=" .. tostring(g.entity.id))
+            n = n + 1
+        end
+    end
+    if n == 0 then System.LogAlways("[KCD2-MP] no spawned ghosts to report") end
 end
 
 -- Hysteresis thresholds (m/s).
@@ -6117,6 +6150,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_ghost_combat", 'KCD2MP_GhostCombatAll("%LINE")', "WO-39: play a combat event on every local ghost, no wire: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
     System.AddCCommand("mp_log_actions", 'KCD2MP_LogActions("%LINE")', "Log every OnAction name (floods log -- for discovering action names): mp_log_actions on|off")
     System.AddCCommand("mp_combat_frag", 'KCD2MP_SetCombatFragment("%LINE")', "WO-39: set the Mannequin fragment tried for swings (empty to clear): mp_combat_frag <name> [tags]")
+    System.AddCCommand("mp_entity_id", 'KCD2MP_ReportEntityId("%LINE")', "WO-43: print an entity's raw id by name, or every ghost's id with no argument")
     System.AddCCommand("mp_anim_tag",    'KCD2MP_AnimTagCmd("%LINE")', "WO-40: probe AI.Set/ClearAnimationTag on every ghost: mp_anim_tag set|clear <tag>")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
