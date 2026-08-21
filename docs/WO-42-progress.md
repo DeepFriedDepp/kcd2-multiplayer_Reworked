@@ -103,3 +103,39 @@ runtime.
   `C_CombatActor + 0x3A8` claims remain unverified.
 - `wh::tests::PlayAnim` not probed over the RTTR/REST surface — recorded as a
   lead with its evidence, explicitly not a claim.
+
+## De-risk assessment (run after the main deliverable, same session)
+
+Both checks completed. Written up as §9 of `docs/WO-42-findings.md`.
+
+- **Check 1 — the ADB metadata dependency: NOT a blocker.** It is
+  `Libs/Tables/combat/combat_fragment_meta.xml` in `Tables.pak` (176 KB, 766
+  entries), an ordinary Tables XML; the binary names the file in a developer
+  warning string. **All 470 distinct `mn_fragment_guid` values in
+  `combat_action_sync_attack.xml` are present in it, and all 470 carry a
+  `CombatHitInfo`.** Rung 3 is not data-gated for any shipped attack.
+- **Bigger payoff:** the attack/hit descriptors are themselves shipped, readable
+  XML (470 / 876 / 221 rows), and every row carries `mn_fragment_id` + `mn_tags`
+  — exactly the `'FragmentId, tag1+tag2'` format the engine's own parser accepts
+  — plus per-row timings (`attack_time_to_hit`, `animation_duration`). Human
+  actor class hash `1578932418`.
+- **Check 2 — the entity → `I_CombatActor*` path: CLOSED, and it corrects
+  WO-41.** `C_Actor::m_pCombatActor` is at **`+0x300`**, not the `+0x278` WO-41
+  carried over from libKCD2. Better: **`C_Actor::GetOrCreateCombatActor` at
+  EntityModule RVA `0x92260`** returns it and creates it if absent — no offset
+  needed, and it handles the case a puppeted ghost is most likely to be in. The
+  `I_CombatActor+0x2D8 ↔ C_Actor+0x300` round trip is confirmed from both
+  modules independently (both reach the name via vtable `+0x490`).
+- **Bonus:** `human:PlayAnim(fragment, tag)` was traced to its native floor —
+  `C_ScriptBindHuman` vtable slot `+0x110` (RVA `0xB3D5C0`), whose entire payload
+  is **one virtual call, `C_Actor` vtable `+0xE48`, taking two C strings**. With
+  the real fragment/tag values from the tables, that is a shorter rung-1 route
+  than replicating `C_PlayAnim::Execute`. Open: which concrete class's vtable
+  `+0xE48` resolves to, and what the `actor->[+0x28]->vtbl[0x80]()` guard gates
+  on.
+
+`EntityModule.dll` (20 MB) imported into a third Ghidra project; auto-analysis
+~9 minutes. PowerShell gotcha worth recording: a needle containing `-` plus `>`
+(e.g. `"actor->GetAnimationController"`) is parsed as a redirection and silently
+creates a file named after the fragment — quote differently or avoid `>` in
+script arguments.

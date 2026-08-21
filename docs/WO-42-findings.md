@@ -1122,7 +1122,7 @@ rows carry `AnimDatabaseId="20967892"`.
 `fragment_id` (114 rows, e.g. `0 → CombatHitMovement`, `3 → CombatAttack`), with a
 `sync_hit` boolean per row.
 
-### 9.3 Check 2 — the entity → `I_CombatActor*` path: partly answered, one hop still open
+### 9.3 Check 2, first pass — the exports (superseded by §9.5, which closes it)
 
 `EntityModule.dll` is far richer in exports than the animation and combat
 modules: **827 export lines**, including a usable entry chain (**observed**):
@@ -1171,4 +1171,150 @@ Two further leads found in `EntityModule.dll` while looking — both **observed*
 | 1 — build `C_CallbackAction`, queue it | low | **lower, and much more valuable** — §9.2 supplies the real combat fragment IDs and tag strings, so rung 1 can render actual swings rather than placeholders |
 | 2 — `C_CombatAnimAction` via the actor's manager | "needs a valid descriptor pointer" | descriptors are **shipped, enumerable XML** (§9.2); the remaining unknown is only the runtime pointer to a loaded row |
 | 3 — the paired sync route | thought to be data-gated | **not data-gated** for shipped attacks (§9.1); the real remaining gates are a live opponent, the victim's `C_ActionDirector`, and whether `SetAction` accepts a ghost/puppet actor |
-| all rungs | needed a verified entity→`I_CombatActor*` path | **one open hop** (`C_Actor` → combat actor), anchor located at EntityModule `0xD43A30` |
+| all rungs | needed a verified entity→`I_CombatActor*` path | **closed** in §9.5 — call `C_Actor::GetOrCreateCombatActor`, EntityModule RVA `0x92260`. WO-41's `+0x278` is wrong; the field is `+0x300`, and using the call makes the offset unnecessary |
+
+§9.5 and §9.6 (written after this table) close check 2 and add a shorter rung-1
+route than §6.1: a single virtual call, `C_Actor` vtable `+0xE48`, taking
+`(const char* fragment, const char* tags)`.
+
+### 9.5 Check 2, completed — the entity → `I_CombatActor*` path is **closed**, and WO-41's offset is wrong
+
+`EntityModule.dll` finished analysing (20 MB, ~9 min). Results, all **observed**.
+
+**The headline: `C_Actor::m_pCombatActor` is at `+0x300`, not `+0x278`.**
+WO-41's note (a libKCD2 structural claim) is **wrong for this build**, and using
+it would have dereferenced garbage.
+
+Two functions establish it, and one of them makes the offset unnecessary:
+
+**`C_Actor::GetOrCreateCombatActor` — EntityModule RVA `0x92260`.** This is the
+local equivalent of the retail `GetOrCreateCombatActor` that WO-41 said would
+have to be re-derived. Reconstructed, **observed**:
+
+```c
+I_CombatActor* C_Actor__GetOrCreateCombatActor(C_Actor* self)   // RCX
+{
+    if (!self->vtbl[0x988](self)) return nullptr;      // "can this actor have a combat actor"
+    if (self->[+0x300] == nullptr) {
+        void* cls = self->vtbl[0x498](self);           // GetActorClass()
+        if (cls->vtbl[0x28](cls)) {                    // the class says combat-capable
+            self->[+0x300] =
+                GetGameIface()->[0x100]                // the combat module interface
+                    ->vtbl[0x58](combatModule, self);  // CreateCombatActor(C_Actor&)
+            if (C_Actor__InitCombatActor(self)) {      // RVA 0x92310
+                FUN_1800923D0(self);
+                FUN_1800D3460((char*)self + 0xF0, self->[+0x300]);
+            }
+        }
+    }
+    return self->[+0x300];
+}
+```
+
+**`C_Actor::InitCombatActor` — EntityModule RVA `0x92310`** (anchored by its own
+`__FUNCTION__` string at RVA `0xD43A30`, source `…\entitymodule\Actor\Actor.cpp`
+line `0xC42`):
+
+```c
+bool C_Actor__InitCombatActor(C_Actor* self)          // RCX
+{
+    if (self->[+0x300]) {
+        if (!self->[+0x300]->vtbl[0x2E0]()) {         // the combat actor's own init/validate
+            trace::Write(1, 0x10, "…Actor.cpp", 0xC42,
+                         "wh::entitymodule::C_Actor::InitCombatActor",
+                         "Combat actor init failed for actor '%s'",
+                         self->vtbl[0x490](self));    // GetName()
+            GetGameIface()->[0x100]->vtbl[0x68](combatModule, &self->[+0x300]);  // destroy
+            self->[+0x300] = nullptr;
+        }
+    }
+    return self->[+0x300] != nullptr;
+}
+```
+
+Derived facts (**observed**):
+
+| thing | value |
+|---|---|
+| `C_Actor::m_pCombatActor` | **`+0x300`** (written, read and returned across the two functions above) |
+| `C_Actor` vtable `+0x490` | `GetName()` |
+| `C_Actor` vtable `+0x498` | `GetActorClass()` |
+| `C_Actor` vtable `+0x988` | a combat-capability predicate |
+| combat module interface | `GetGameIface() + 0x100` |
+| combat module vtable `+0x58` | `CreateCombatActor(C_Actor&)` → `I_CombatActor*` |
+| combat module vtable `+0x68` | destroy the combat actor (takes the slot address) |
+
+**The round trip closes.** §4.4 recorded that CombatModule reaches an actor's
+name as `(*(void***)(I_CombatActor + 0x2D8))->vtbl[0x490]()`. Here, from the
+other module and the other direction, `C_Actor::GetName` is `C_Actor` vtable
+`+0x490`. Same slot, same purpose, two binaries — so `I_CombatActor + 0x2D8`
+points back at the `C_Actor`, and `C_Actor + 0x300` points forward at the
+`I_CombatActor`. Neither offset was guessed.
+
+**Recommended for WO-43: do not use `+0x300` at all.** Call
+`C_Actor__GetOrCreateCombatActor` (RVA `0x92260`, `__fastcall`, `this` in RCX,
+returns the pointer in RAX). It handles the not-yet-created case, which a raw
+field read does not — and a puppeted ghost is exactly the case where the combat
+actor may not exist yet.
+
+**Getting the `C_Actor*` in the first place** — name-resolvable, no RVA guessing
+(from the 827-entry export table):
+
+```c
+// EntityModule.dll
+C_EntityModule*  m      = *(C_EntityModule**)(base + 0x12E5B10);  // ?m_Instance@... exported
+C_Actor*         player = m->GetPlayerActor();                    // ?GetPlayerActor@... RVA 0x71B330
+```
+
+For a non-player actor, `C_ScriptBindHuman`'s own resolver is
+**`FUN_180B3C2D0`** (RVA `0xB3C2D0`): `bind->[+0x70]->vtbl[0xC8]()` → an entity
+lookup object → `->vtbl[0x18](entityId)` → candidate → `->vtbl[0x2A8](cand, 1)`
+as a validity predicate. **Observed**, though the intermediate types were not
+named.
+
+### 9.6 Bonus from check 2 — `human:PlayAnim` bottoms out in **one virtual call**
+
+The Lua bind WO-40 already proved *renders* a Mannequin fragment on a ghost was
+traced to its native floor. Chain, all **observed**:
+
+1. `C_ScriptBindHuman`'s constructor (RVA `0xB3A7E0`) registers the Lua name
+   `"PlayAnim"` (string RVA `0xE9FB98`) with help text `"fragment, tag"` (string
+   RVA `0xE9FBC8`), a marshalling trampoline `FUN_180B53E30` (RVA `0xB53E30`),
+   and a pointer-to-member thunk at RVA `0xA3EFA8` whose bytes are
+   `48 8B 01 FF A0 10 01 00 00` = `mov rax,[rcx]; jmp qword ptr [rax+0x110]`.
+2. So the implementation is **`C_ScriptBindHuman` vtable slot `+0x110`** (table
+   at RVA `0xE9AB38`, slot [34]) = **`FUN_180B3D5C0`**, RVA `0xB3D5C0`.
+3. The trampoline pulls Lua arguments 1 and 2 as strings
+   (`FUN_180B4EE50(handler, index, &out)`) and tail-jumps to it.
+4. `FUN_180B3D5C0` is short and its whole payload is one call:
+
+```c
+void C_ScriptBindHuman__PlayAnim(void* self, IFunctionHandler* fh,
+                                 const char* fragment, const char* tags)
+{
+    uint32 entityId = fh->vtbl[0x10](fh);            // the calling entity
+    if (entityId) {
+        C_Actor* actor = FUN_180B3C2D0(self, entityId);
+        if (actor && actor->[+0x28]->vtbl[0x80]() != 0)   // a short, must be non-zero
+            actor->vtbl[0xE48](actor, fragment, tags);    // <-- the entire mechanism
+    }
+    fh->vtbl[0x58](fh);                              // return nil
+}
+```
+
+**`C_Actor` virtual slot `+0xE48` takes `(const char* fragmentName, const char* tags)`
+and plays the fragment.** That is a *single virtual call* on a pointer WO-43 can
+already obtain by name (§9.5) — no action object, no allocation, no `TagState`
+construction. Combined with the real `mn_fragment_id` + `mn_tags` values from
+§9.2, this is the shortest confirmed route to a real combat swing on a ghost, and
+it is strictly simpler than replicating `C_PlayAnim::Execute` (§6.1).
+
+**Boundary, stated precisely:** the *slot* (`+0xE48`) is confirmed from the call
+site. **Which concrete class's vtable it resolves to was not pinned down** — a
+probe of `C_NPCActor`'s primary table (RVA `0xE98340`, from its exported
+constructor at `0xACBEE0`) at `+0xE48` landed on an unrelated getter, so the
+receiver is not `C_NPCActor` at offset 0. That does not affect usability: WO-43
+calls it virtually on whatever `C_Actor*` it holds, exactly as the game does.
+Also **not** determined: what `actor->[+0x28]->vtbl[0x80]()` gates on — a
+non-zero `short` is required, and a puppeted ghost failing that check is a
+plausible failure mode worth logging on the first live attempt.
