@@ -1006,3 +1006,169 @@ opened, no mod code was changed, and the Mannequin database was not modified.
 Licensing posture is unchanged from WO-40 Phase 1 — the community reference was
 read as documentation, and every fact above was independently re-derived from
 binaries this machine already owns.
+
+---
+
+## 9. De-risk assessment (added same session, after §8)
+
+Two checks were run to size WO-43's risk before any code gets written. Both are
+static — the game is still never launched.
+
+### 9.1 Check 1 — the ADB metadata dependency: **not a blocker. It is shipped data, and it is complete.**
+
+§5.3 flagged that sync-hit info depends on metadata "baked into the Mannequin
+database". That framing was too pessimistic. The metadata is **not** opaque
+binary inside an `.adb` — it is an ordinary Warhorse Tables XML, and the binary
+names it outright. **Observed**, CombatModule string at RVA `0x5ACD00`:
+
+> `"Warning for ViktorB: Please fill animation hit RPG for animation: %s,%s,%d (guid: %s), hit index: %d. These data can be filled in table 'combat_fragment_meta.xml'. See KCD2-A-8244."`
+
+Backing code, all **observed**: `wh::combatmodule::C_CombatFragmentMetaDatabase`
+(source `…\combatmodule\DB\Static\CombatFragmentMetaDatabase.cpp`), element type
+`C_CombatFragmentMetaData` holding `std::vector<C_CombatHitInfo>`, persisted via
+`wh::databasemodule::C_ObjectTreeDatabase<C_CombatFragmentMetaData, std::vector>::LoadFromXML / SaveToXML`.
+The runtime table at `0x18080CC30` is populated by `FUN_1802B3720`; the lookup
+`FUN_18008C810(&table, guid16)` inside `FillSyncHitInfo` reads it.
+
+**The files, extracted and inspected from `Data\Tables.pak` (7.2 MB, 1738 entries):**
+
+| file | size | entries |
+|---|---|---|
+| `Libs/Tables/combat/combat_fragment_meta.xml` | 176,009 | **766** `CombatFragmentMetaData`; 585 with at least one `CombatHitInfo`, 181 self-closing |
+| `Libs/Tables/combat/combat_action_sync_attack.xml` | 812,456 | **470** rows |
+| `Libs/Tables/combat/combat_action_sync_hit.xml` | 1,230,764 | **876** rows |
+| `Libs/Tables/combat/combat_action_attack.xml` | 373,404 | **221** rows |
+| `Libs/Tables/combat/combat_action_fragment_id_mapping.xml` | 20,855 | **114** rows |
+
+Shape of a metadata entry, verbatim:
+
+```xml
+<CombatFragmentMetaData GUID="03f0183b-88be-3866-9fd7-22cb42a2e75b"
+                        AnimDatabaseId="20967892" ObstacleTestEnabled="false">
+  <CombatHitInfo BodySubpartId="55" AttackCoef="1" HandSlot="0" />
+</CombatFragmentMetaData>
+```
+
+**The join coverage — the number that settles the risk:**
+
+| descriptor table | distinct `mn_fragment_guid` | present in `combat_fragment_meta.xml` | of those, carrying `CombatHitInfo` |
+|---|---|---|---|
+| `combat_action_sync_attack` | 470 | **470 (100 %)** | **470 (100 %)** |
+| `combat_action_attack` | 221 | 18 | 18 |
+| `combat_action_sync_hit` | 876 | 107 | 0 |
+
+**Every shipped sync-attack has its metadata row, and every one of those rows
+carries hit info.** The asymmetry is exactly what the code predicts:
+`FillSyncHitInfo` is a method of `C_CombatActionHelperAttack`, which lives on the
+**attacker** (`SyncAttack+0xA0`, `Attack+0xB0`), so it looks up the *attacker's*
+anim-action GUID. Victim-side (`sync_hit`) rows have no reason to be in the table
+and mostly are not; unpaired `combat_action_attack` rows likewise.
+
+**Verdict: rung 3 is not data-blocked for any attack the game itself ships.** It
+would be blocked only for a *new* fragment a mod authored, which needs a row
+added to `combat_fragment_meta.xml` — an ordinary, moddable Tables edit, not a
+database resave. §5.3's warning stands only for that case, and should be read
+with this section.
+
+### 9.2 The unexpected payoff — the descriptors are shipped, readable data
+
+Worth more to WO-43 than the risk answer itself. What
+`SyncAttack + 0x60` / `+ 0x68` point at is a row of these tables, and every row
+carries its Mannequin coordinates **in exactly the format `ParseFragmentSpec` —
+and therefore `wh::tests::PlayAnim` — already accepts.** A real human
+sync-attack row, verbatim:
+
+```
+mn_fragment_id          = "CombatAttackSyncGen"
+mn_tags                 = "l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale"
+mn_fragment_guid        = "bc5d77a5-c2e9-3fdc-9da7-6063a3501379"
+mn_option_index         = "0"
+actor_class_hash        = "1578932418"      (the human class)
+opp_actor_classes       = "NPC"
+animation_duration      = "2.166667"
+attack_time_to_start    = "0.3"
+attack_time_to_hit      = "0.666667"
+attack_time_to_withdraw = "1.023994"
+attack_time_to_end      = "2.166667"
+anim_hit_count          = "1"
+attacking_hand          = "0"
+r_weapon_class_id       = "7"
+init_align0/1, init_sec_align0/1  = QuatT alignment pairs
+```
+
+`mn_fragment_id` plus `mn_tags` **is** the `'FragmentId, tag1+tag2'` string. So
+**rung 1 can play the game's real combat swings with the game's real tags**, read
+straight out of `Tables.pak`, without constructing a single combat class. That
+collapses most of rung 2's value into rung 1. The per-row timings
+(`attack_time_to_hit`, `animation_duration`) are also exactly what a wire
+protocol needs in order to schedule a remote swing.
+
+Fragment vocabulary actually shipped (human class `1578932418`; counts are rows):
+
+| table | top `mn_fragment_id` values |
+|---|---|
+| `sync_attack` | `CombatAttackComboGen` 158, `CombatAttackComboDeathGen` 82, `CombatStopMaster` 75, `CombatStealthAttackSuccess` 50, `CombatAttackSyncGen` 33, `CombatRiposteSyncGen` 23, `HorseCombatAttackSync` / `HorseCombatAttackSyncFail` 14 each |
+| `sync_hit` | `CombatHitComboGen` 232, `CombatHitComboDeathGen` 232, `CombatStopSlave` 99, `CombatHitSyncGen` 93, `CombatStopDeathSlave` 78, `CombatStealthHitSuccess` 51, `CombatHitSyncDeathGen` 34 |
+| `attack` (unpaired) | `CombatAttackSpecialGen` 84, `FreeAttack` 50, `CombatAttackGen` 41, `CombatAttackRiposteGen` 24, `CombatAttackMercy` 17 |
+
+Class hashes: **`1578932418` = human** (451 of 470 sync-attacks, 822 of 876
+sync-hits, 719 of 766 metadata rows); `20967892` = Dog; `1008263269` and
+`474619276` are two further small sets. `AnimDatabaseId` in the metadata table and
+`actor_class_hash` in the descriptor tables are the same identifier space —
+**observed**: the Dog rows carry `actor_class_hash="20967892"` and their metadata
+rows carry `AnimDatabaseId="20967892"`.
+
+`combat_action_fragment_id_mapping.xml` additionally maps `action_type_id` to
+`fragment_id` (114 rows, e.g. `0 → CombatHitMovement`, `3 → CombatAttack`), with a
+`sync_hit` boolean per row.
+
+### 9.3 Check 2 — the entity → `I_CombatActor*` path: partly answered, one hop still open
+
+`EntityModule.dll` is far richer in exports than the animation and combat
+modules: **827 export lines**, including a usable entry chain (**observed**):
+
+| export | RVA | note |
+|---|---|---|
+| `?m_Instance@C_EntityModule@entitymodule@wh@@0PEAV123@EA` | `0x12E5B10` | **the singleton pointer itself is exported** — `C_EntityModule* m = *(C_EntityModule**)(base + 0x12E5B10)` |
+| `?I@C_EntityModule@entitymodule@wh@@…` | — | the singleton accessor |
+| `?GetPlayerActor@C_EntityModule@entitymodule@wh@@UEBAPEAVC_Actor@23@XZ` | `0x71B330` | `C_Actor* GetPlayerActor() const` |
+| `?GetPlayer@…`, `?GetScriptBindHuman@…`, `?GetScriptBindActor@…` plus ~120 further `C_EntityModule` getters | — | all name-resolvable |
+
+**But `C_Actor` itself exports zero members.** So the last hop —
+`C_Actor` → `I_CombatActor*` — is not name-resolvable, and WO-41's
+`C_Actor::m_pCombatActor @ +0x278` (a libKCD2 claim) remains **unverified**.
+
+The anchor that settles it is located: **`wh::entitymodule::C_Actor::InitCombatActor`,
+`__FUNCTION__` string at EntityModule RVA `0xD43A30`** — the function that creates
+and stores the combat actor will show the real member offset. `EntityModule.dll`
+(20 MB) was still auto-analysing when this section was written; finishing it is
+the same one-command pipeline as §7.1. **This is the one open item, and it is a
+ten-minute job, not a research risk.**
+
+Two further leads found in `EntityModule.dll` while looking — both **observed**
+(string/RTTI anchored), neither followed yet:
+
+- **`PlayAnim`** as a plain Lua method-name string at RVA `0xE9FB98`, adjacent to
+  `wh::entitymodule::C_ScriptBindHuman::SetAnimMotionParam` at `0xE9FE40`, i.e.
+  inside the `C_ScriptBindHuman` registration block. Its xref leads to the native
+  implementation of `human:PlayAnim(fragment, tags)` — the call WO-40 already
+  proved **renders** a Mannequin fragment on a ghost. Reading it yields the game's
+  own entity→animation-controller walk *and* how it turns a tags string into a
+  `TagState`, from a class reachable through an exported getter
+  (`GetScriptBindHuman`). Probably the highest-value remaining read.
+- **`C_ActorActionCombat`** (EntityModule) carries pointer-to-member types
+  `void (C_ActorActionCombat::*)(I_CombatActor&, const int&, const _smart_ptr<I_CombatActorAction>&)`
+  and `(I_CombatActor&, E_CombatActorStateId::Type, …)`, mirroring the descriptors
+  on `C_CombatActorActionAttack` in CombatModule. That makes it the **bridge that
+  accepts an already-constructed `I_CombatActorAction`** — a higher-level
+  insertion point than queueing the anim action directly.
+
+### 9.4 Revised risk picture for WO-43
+
+| rung | risk before this assessment | after |
+|---|---|---|
+| 0 — RTTR `wh::tests::PlayAnim` | unknown | unchanged: free to try, needs the game running |
+| 1 — build `C_CallbackAction`, queue it | low | **lower, and much more valuable** — §9.2 supplies the real combat fragment IDs and tag strings, so rung 1 can render actual swings rather than placeholders |
+| 2 — `C_CombatAnimAction` via the actor's manager | "needs a valid descriptor pointer" | descriptors are **shipped, enumerable XML** (§9.2); the remaining unknown is only the runtime pointer to a loaded row |
+| 3 — the paired sync route | thought to be data-gated | **not data-gated** for shipped attacks (§9.1); the real remaining gates are a live opponent, the victim's `C_ActionDirector`, and whether `SetAction` accepts a ghost/puppet actor |
+| all rungs | needed a verified entity→`I_CombatActor*` path | **one open hop** (`C_Actor` → combat actor), anchor located at EntityModule `0xD43A30` |
