@@ -60,6 +60,10 @@ Confirmed from `git log --follow -- VERSION`, not assumed:
 | `0.11.5` | WO-29 | + WO-20/22/26/27/28 — real per-player ghost faces, the soul/brain fix and reactive combat, reconnect + launcher duplicate-agent fixes, shared player health/death/NPC-hits, and both save-reload bugs. User-chosen. See `docs/releases/RELEASE-NOTES-0.11.5.md`. |
 | `0.11.6` | WO-34 | + WO-34 — bandit-soul roster fix, walking-corpse fix. User-chosen, DirectInstall test build. |
 | `0.11.8` | WO-32 | + WO-32 — NPC sync (`0x26`/`0x27`, on by default, `mp_npc_sync off` to disable), and WO-33/35 already on `main` (dice wagers on the wire; C# master server). User-chosen. |
+| `0.12.6` | WO-38 | + WO-38 — time-skip sync (`0x28`/`0x29`), horse identity sync (`0x2A`/`0x2B`), ghost interp fixes, knockout freeze/corpse drag-follow. User-chosen. |
+| `0.13.6` | WO-39 | + WO-39 — combat visibility on NPC puppets. User-chosen. |
+| `0.14.4` | WO-40 | + WO-40 — mount-crash guards, weather sync `0x2E`/`0x2F`, reload time convergence, name-addressed NPC damage `0x30`/`0x31`, puppet combat cues + carry state, `MotionJump`, ghosts stimulus-deaf by default, quest-alias clothing map. User-chosen. |
+| `0.15.0` | WO-43 | + WO-42 (no code, reverse-engineering only) and WO-43 — the native `combat_playanim.cpp` diagnostic for the direct-call combat-swing route (`kcdmp-playanim.txt` opt-in), `mp_entity_id` console command, and the real (not guessed) sync-attack fragment/tag data documented for `mp_combat_frag`. User-chosen. Combat-swing fidelity itself is not yet confirmed live — see `docs/WO-43-findings.md`. |
 
 `0.9.2` was stated by the user explicitly. It is the label for everything on
 `main` as of WO-14 — WO-9, WO-10 and WO-13 together — not an increment
