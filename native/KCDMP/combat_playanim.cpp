@@ -266,4 +266,46 @@ void probe_play_anim() {
          "check in-game whether the fragment actually rendered a swing.");
 }
 
+namespace {
+
+// Live-reload wrapper, same rationale and pattern as
+// combat_construct.cpp's probe_combat_construct_watch(): entity ids are only
+// known once a ghost is already spawned in a running game, so re-checking
+// kcdmp-playanim.txt on the existing repeating-task timer (instead of only
+// once at DLL attach) lets a human spawn a ghost, read its id live, and drop
+// it into the file without a relaunch. Deliberately outside any __try (raw
+// file I/O + memcmp only), so it may hold an ordinary local buffer;
+// probe_play_anim() itself remains the SEH-isolated, one-shot body.
+char g_lastSeenPlayAnim[512]{};
+bool g_havePlayAnim = false;
+
+} // namespace
+
+void probe_play_anim_watch() {
+    char path[MAX_PATH]{};
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&probe_play_anim_watch), &self);
+    GetModuleFileNameA(self, path, MAX_PATH);
+    char* slash = std::strrchr(path, '\\');
+    if (!slash) return;
+    std::strcpy(slash + 1, "kcdmp-playanim.txt");
+
+    char text[512]{};
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") == 0 && f) {
+        const size_t n = std::fread(text, 1, sizeof(text) - 1, f);
+        text[n] = 0;
+        std::fclose(f);
+    }
+    if (g_havePlayAnim && std::strcmp(text, g_lastSeenPlayAnim) == 0) return;
+    std::strcpy(g_lastSeenPlayAnim, text);
+    g_havePlayAnim = true;
+
+    if (text[0] == 0) { logf("PLAYANIM-WATCH: kcdmp-playanim.txt cleared/absent -- idle"); return; }
+    logf("PLAYANIM-WATCH: kcdmp-playanim.txt changed -- re-running the probe");
+    probe_play_anim();
+}
+
 } // namespace kcdmp::rttr

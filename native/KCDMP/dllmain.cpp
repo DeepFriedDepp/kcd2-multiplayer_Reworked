@@ -21,6 +21,7 @@ void probe_faction();
 void probe_method_wrapper();
 void probe_dice_class();
 void probe_play_anim();
+void probe_play_anim_watch();
 void probe_combat_construct();
 void probe_combat_construct_watch();
 }
@@ -137,6 +138,10 @@ DWORD WINAPI plugin_main(LPVOID) {
     // can spawn a ghost, read its id live, and drop it into the file without
     // a relaunch. No-ops whenever the file's content is unchanged.
     kcdmp::main_thread::post_repeating(&kcdmp::rttr::probe_combat_construct_watch);
+    // Same live-reload treatment for WO-43's original PlayAnim diagnostic --
+    // needed to pin down a live discrepancy found while re-testing WO-44's
+    // ghost class-dispatch finding against a validated ghost.
+    kcdmp::main_thread::post_repeating(&kcdmp::rttr::probe_play_anim_watch);
 
     kcdmp::pipe::start();
     return 0;
