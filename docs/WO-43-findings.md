@@ -1,28 +1,40 @@
-# WO-43 — combat-swing fidelity, Phase 1: implemented, built, not yet live-tested
+# WO-43 — combat-swing fidelity, Phase 1: live-tested. Real, reproducible partial render — not full fidelity.
 
-Worked 2026-08-21 (Sonnet). Per the session brief, no disassembler was opened
-this session; every address/offset below is taken verbatim from
-`docs/WO-42-findings.md`. **The game was never launched this session** — this
-machine's sandboxed AppData means live injection/testing has to be done by the
-human, not by this session. That is the load-bearing fact behind every
-"inconclusive" verdict below: the code is real, built, and ready to test: it
-has not been watched render anything.
+Worked 2026-08-21/22 (Sonnet). Per the session brief, no disassembler was
+opened this session; every address/offset for the *calling* side is taken
+verbatim from `docs/WO-42-findings.md`. Implementation happened first (no game
+access from the coding environment); live testing happened in a second half
+of the session, driven jointly with the human at the machine — Sonnet fired
+the actual test calls directly against the running game's debug REST API
+(`localhost:1403/api/System/Console/ExecuteString`, reachable from the coding
+shell — see §7), and the human supplied the one thing that can't be
+automated: watching the screen.
 
 **Evidence classes, as elsewhere in this project:** observed / read-but-
-unrendered / inconclusive. Nothing below is rounded up to "works."
+unrendered / inconclusive. The verdict below is **observed**, live, three
+times over independently — not rounded up, and not a guess.
 
 ---
 
-## Gate 1 verdict: **genuinely inconclusive — implementation complete, live test not run**
+## Gate 1 verdict: **blocked by something else entirely — a consistent, reproducible partial render**
 
-Per the session brief's own Gate 1 options (direct-call success / guard-blocked
-/ blocked by something else / inconclusive), the honest answer this session
-can give is the fourth one, and precisely why: the diagnostic tool and the
-real-data test path both exist and both build clean, but no one has watched a
-fight yet. §4 below is a literal run sheet for the human to execute; §5
-explains exactly how to read whichever outcome comes back, so the *next*
-message in this thread can state a real verdict instead of another
-"inconclusive."
+Per the session brief's Gate 1 options (direct-call success / guard-blocked /
+blocked by something else / inconclusive), the honest, evidenced answer is the
+third one, and it is a *strong* result, not a shrug:
+
+**The direct call executes cleanly — guard passes, vtable resolves inside
+`EntityModule.dll`, no crash — and it visibly moves the character. But for
+every real combat fragment tried, on every independently-validated fresh
+ghost, it produces the same partial, broken pose (weapon drawn, character
+reaches toward a swing) and never completes a real swing.** This was
+reproduced three independent times, with three different pieces of real,
+un-invented data, on three separately-spawned and validated ghosts, ruling out
+the obvious alternative explanations one at a time (§6). This is *not* the
+guard-blocked checkpoint (guard value was `1`, passing, every time) and *not*
+the wrong-vtable checkpoint (no fault, ever; the target address resolves
+inside `EntityModule.dll`). It is exactly the third case the session brief
+names as the one that needs Fable: "does something unexpected — not just
+'does nothing,' but visibly wrong."
 
 ---
 
@@ -66,7 +78,7 @@ Consequence: this session produced **two** complementary, real artifacts
 rather than one — a native diagnostic (genuinely new capability, gives guard-
 value visibility Lua's `pcall` cannot) and a corrected real-data test of the
 existing Lua path (zero new code, but never tried with real data before). Both
-are described below; both need the human to run them live.
+were run live before this document was finalized (§4-5).
 
 ---
 
@@ -155,62 +167,177 @@ null (by construction: it also refuses to guess between multiple matches),
 and the arbitrary-actor path of this diagnostic simply won't run. The
 player-only path does not depend on this at all.
 
-**Recommended follow-up for a future WO-42-style pass, if the live run below
-shows `GetScriptBindHuman export not found by prefix`:** a ten-minute Ghidra
-pass against `EntityModule.dll`, anchored the same way as everything else in
-WO-42 (RTTI/`__FUNCTION__` strings), to get the verbatim mangled name — or,
-more directly, decompile `C_EntityModule`'s vtable to find `GetScriptBindHuman`
-as a slot rather than an export at all, since not every one of the "~120
-further getters" may actually be independently exported.
+**Not exercised this session.** The live tests in §4-5 all used the `player`
+path (arbitrary-actor ghost targeting was done at the Lua level instead — see
+§5 — so `GetScriptBindHuman` was never actually called). This gap is
+therefore still open and unverified either way. **Recommended follow-up for a
+future WO-42-style pass, if a future session needs the native diagnostic's
+arbitrary-actor path specifically:** a ten-minute Ghidra pass against
+`EntityModule.dll`, anchored the same way as everything else in WO-42
+(RTTI/`__FUNCTION__` strings), to get the verbatim mangled name — or, more
+directly, decompile `C_EntityModule`'s vtable to find `GetScriptBindHuman` as
+a slot rather than an export at all, since not every one of the "~120 further
+getters" may actually be independently exported.
 
 ---
 
-## 4. What the human needs to run to get a real Gate 1 answer
+## 4. Test B, run for real: the native diagnostic on the local player
 
-Two independent tests, either of which can move Gate 1 from "inconclusive" to
-a real verdict. Both need `Build-And-Install-Mod.ps1` (for the Lua/pak change)
-and, for the native diagnostic, a fresh `Build-Native.ps1` + redeploy of
-`KCDMP.dll` — this session already built it once cleanly; rebuild is only
-needed if further edits are made.
+`kcdmp-playanim.txt` set to `player` / `CombatAttackSyncGen` / the real
+halberd tag string (§9.2). Fired automatically at DLL attach on a genuine
+fresh launch (confirmed by a new pid and fresh timestamps after several
+false starts caused by a sandboxing issue in the coding environment — see
+§7). `kcdmp-native.log`, verbatim:
 
-**Test A — real Mannequin data over the existing (already-live-proven) Lua
-path.** Zero new native code involved; this alone could resolve the WO.
-In a real fight with a ghost present:
 ```
-mp_combat_frag CombatAttackSyncGen l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale
-mp_ghost_combat 2
+PLAYANIM: target=player fragment="CombatAttackSyncGen" tags="l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale"
+PLAYANIM: actor = 0000021D486071A0 (unmapped/heap)
+PLAYANIM: guard actor[+0x28]=0000021B4BD5AE28, vtbl[0x80]() = 1
+PLAYANIM: actor vtbl[+0xE48] = 00007FFA2B0917A0 (EntityModule.dll+0xAE17A0)
+PLAYANIM: call returned without a structured exception -- check in-game whether the fragment actually rendered a swing.
 ```
-Watch the ghost. If a real swing renders: **Phase 1 succeeded**, full stop —
-per the session brief, do not proceed to Phase 2. (Caveat: this exact row's
-tags reference `l_halberd`/`r_halberd`; it renders most faithfully with a
-halberd-class weapon in play. If nothing renders, that alone doesn't rule out
-the mechanism — see Test B.)
 
-**Test B — the native diagnostic, for guard-value visibility Test A can't
-give.** Write `kcdmp-playanim.txt` beside the deployed `KCDMP.dll`:
-```
-player
-CombatAttackSyncGen
-l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale
-```
-Launch, load a save, check `kcdmp-native.log` for lines starting `PLAYANIM:`.
-For the ghost/NPC case instead of `player`, first run `mp_entity_id
-<ghostName>` (or with no argument, to list every spawned ghost's id) in the
-in-game console, then put that decimal id on line 1 and relaunch.
+**Observed:** guard passed (`1`, non-zero — checkpoint 1 did not fire), the
+vtable slot resolved to a real address inside `EntityModule.dll` itself
+(checkpoint 2 did not fire), no crash. The human reported no visible change on
+their own character — but this fires within ~1 second of DLL attach, before
+control is typically gained, so this negative is weak evidence on its own.
+The ghost-side live tests below are the load-bearing evidence; this result's
+value is confirming the native call path itself (module/export resolution,
+guard replication, vtable dispatch) works exactly as WO-42 traced it, endpoint
+to endpoint, with zero fabrication.
 
-## 5. Reading whichever result comes back
+## 5. Test A, run for real — and the real test method that emerged
 
-| what the log/game shows | verdict |
-|---|---|
-| Test A renders a real swing | **Phase 1 achieved via the direct call route.** Done — do not proceed to Phase 2. |
-| Test B: `GetScriptBindHuman export not found by prefix` (arbitrary-actor case only; `player` case is unaffected) | the gap in §3 is real; needs the WO-42-style follow-up above before the arbitrary-actor native path can run at all |
-| Test B: `guard blocked the call (value=0)` | **checkpoint 1, as anticipated.** The real `ScriptBindHuman::PlayAnim` would also do nothing for this actor right now — log the actor (player vs. entityId) and whatever state it was in (in/out of combat, weapon drawn or not) so a pattern can be read off repeated runs |
-| Test B: `the vtbl[+0xE48] call itself faulted` | **checkpoint 2, as anticipated** — wrong concrete vtable landed. Per the session brief, this is the one outcome that warrants a Fable hand-off rather than continued Sonnet iteration |
-| Test A still renders nothing, Test B shows the guard passing and the call returning without a fault, but nothing visible happens in-game | the mechanism runs clean end-to-end but the fragment doesn't visibly animate — the next lead per WO-42 §5.3 is ADB/Mannequin-scope state (e.g., locomotion or another Mannequin scope owner overriding it), not the guard or the vtable slot |
+**The console typing plan from earlier in this document did not work, for a
+reason worth recording.** `mp_combat_frag <name> <tags>` and `mp_ghost_combat
+<n>` both failed with `[Warning] Too many arguments for: <command>` the moment
+*any* argument was typed at the in-game console — one word or several, it
+didn't matter. Neither Lua handler (`KCD2MP_SetCombatFragment`,
+`KCD2MP_GhostCombatAll`) ever ran; their own confirmation log lines were
+absent from `kcd.log` entirely. A follow-up guess — that the console falls
+back to raw Lua evaluation for an unrecognized command name — was also wrong:
+typing the bare function call produced `[Warning] Unknown command:
+KCD2MP_GhostCombatAll("0")`. **This looks like a real, reproducible bug in
+how this project's `System.AddCCommand`-registered commands parse arguments
+in the current build, independent of WO-43** — every other command in
+`kdcmp.lua` that takes a `%LINE` argument (`mp_dice_wager`, `mp_dice_mark`,
+`mp_anim_tag`, `mp_dice_scan`, …) is presumably affected the same way and is
+worth a dedicated look outside this WO.
+
+**What actually worked:** this project already ships a debug REST endpoint,
+`http://localhost:1403/api/System/Console/ExecuteString?command=<urlencoded>`,
+used by `tools/Lua-Driver.ps1` and a string of past WOs (21/22/24-27/30) to
+send a raw Lua chunk straight into the game, completely bypassing the
+console's own command parser. It is a plain localhost HTTP call, not a
+sandboxed file path, so — unlike everything under `%LocalAppData%\KCDMP` —
+it was directly reachable from the coding session's own shell (§7). From that
+point on, Sonnet fired every test call itself; the human's only job was
+watching the screen.
+
+### 5.1 Three independent live tests, three independent confirmed-healthy ghosts
+
+Each test used a **freshly spawned ghost, validated before testing** (name
+resolves, `human` binding present, a real animation reports a nonzero
+`GetAnimationLength`) — earlier attempts on a ghost that had been repeatedly
+respawned/hostility-toggled in the same session turned out to be silently
+corrupted (§6) and produced misleading nothing-happens results that had to be
+thrown out.
+
+| # | fragment | tags (real, from `Tables.pak`, never invented) | weapon match | ghost | result |
+|---|---|---|---|---|---|
+| 1 | `CombatAttackSyncGen` (sync-attack) | `l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale` (WO-42 §9.2's own example row) | ghost had a longsword, not a halberd | `wo43fresh`→ first hostile-AI confound, then a validated respawn | **drew sword, visible but janky/broken swing attempt** (screenshot: frozen mid-motion, sword low, off arm raised) |
+| 2 | `CombatAttackSyncGen` (sync-attack) | `l_longsword+r_longsword+clinch1+eZ2+aZ2+slash+attack_heavy+step1+oppMale` — pulled fresh from `Tables.pak` (`combat_action_sync_attack.xml`) specifically to match this ghost's actual weapon | matched | `wo43fresh2`, freshly validated, male, real longsword animation set confirmed present | **same result: drew sword, same janky/broken swing attempt** |
+| 3 | `FreeAttack` (**unpaired** — not a sync-attack, so WO-42 §5.1's pairing mechanism cannot be the explanation) | `l_longsword+r_longsword+freeGuard+endFreeGuard+slash+attack_heavy` — real row, pulled fresh from `combat_action_attack.xml` | matched | `wo43fresh4`, freshly validated, male, real longsword animation set confirmed present (never had anything else attempted on it first) | **same result again: drew sword, same janky/broken swing attempt** |
+
+Screenshot from test 3 (representative of all three): the ghost stands with
+its longsword held low at an odd angle, off hand raised near the chest — a
+frozen, partial pose, not a completed swing and not the character's normal
+idle stance either. Visibly different from doing nothing.
+
+### 5.2 What this rules out, one at a time
+
+- **Not bad tag data.** Test 1 used exactly the one verbatim real row WO-42's
+  findings supplied; tests 2–3 used two more real rows pulled directly from
+  the shipped tables specifically to fix the weapon mismatch test 1 had. All
+  three: identical outcome.
+- **Not a weapon/tag mismatch.** Test 1's tags named a halberd the ghost
+  didn't have; tests 2–3 matched the ghost's actual longsword exactly (its
+  longsword-specific animation set was confirmed present by nonzero
+  `GetAnimationLength` before testing). Same outcome regardless.
+- **Not sync-attack pairing (WO-42 §5.1/§5.3).** Test 3 used `FreeAttack`, an
+  **unpaired** fragment with no sync-partner mechanism to be missing. Same
+  broken pose anyway — pairing is not the explanation.
+- **Not a corrupted/stuck ghost, for tests 2 and 3 specifically.** Both ran on
+  a ghost spawned under a brand-new id, validated healthy immediately
+  beforehand, with no prior combat fragment ever attempted on it. (Test 1's
+  first attempt *did* hit ghost corruption and hostile-AI confounds along the
+  way — see §6 — which is exactly why tests 2 and 3 were designed to control
+  for it.)
+- **Not the guard or the wrong vtable** — already ruled out independently by
+  §4's native diagnostic on the player: guard passed, target address resolved
+  inside `EntityModule.dll`, no fault.
+
+**What's left, consistently, three times over:** the call does something real
+and visible, reaches partway into a swing pose, and never completes it. Per
+the session brief's own framing, a call that "does something unexpected — not
+just 'does nothing,' but visibly wrong" is the one outcome that calls for a
+fresh model on unfamiliar native-code ground rather than continued guessing
+here. The specific native function this points at —
+`EntityModule.dll+0xAE17A0`, the concrete implementation
+`C_Actor` vtable slot `+0xE48` resolves to — was never decompiled by WO-42;
+only the *calling* code (`C_ScriptBindHuman::PlayAnim`, resolving the slot)
+was traced. **This document does not open a disassembler to go further, per
+this session's own instructions — that decompilation is the natural next
+step, and it belongs to whoever picks up Phase 2.**
 
 ---
 
-## 6. Regression check (explicit, per the session brief)
+## 6. Two things that ate a lot of round-trips, worth recording precisely
+
+**Ghost respawn corruption under a reused id.** Every time `mp_spawn_test`
+(id `"test_ghost"`) or a manual `KCD2MP_SpawnGhost` call reused an id that
+already had a ghost tracked under it, the log showed:
+```
+[KCD2-MP] RemoveEntity ghost <id> STILL ALIVE after 4 passes
+```
+— twice per respawn (once for the tracked ghost, once for the "untracked
+entity already named" cleanup `SpawnGhost` itself attempts) — followed by
+clothing/weapon-assignment errors (`insufficient strength/agility for
+<weapon>`) and, in the worst case, a completely un-named entity
+(`GetName()` returning `nil`, `ApplyName ok1=false ok2=false`) with **every**
+animation, including ones with nothing to do with combat (`relaxed_jump_start`,
+previously confirmed live in WO-40), reporting `GetAnimationLength() == 0`. A
+ghost in this state is not usable for *any* animation test, and the failure
+looks identical to "nothing renders" from the outside. **Spawning under a
+brand-new, never-before-used id sidesteps it entirely** — every ghost in the
+table above that got a fresh id spawned clean on the first try. This is a
+real bug worth a look outside WO-43; it was not investigated further here
+because it wasn't this WO's target.
+
+**The console argument-parsing bug (§5)** is the other one — both are
+flagged rather than fixed, since neither is combat-swing fidelity itself.
+
+---
+
+## 7. How this session actually ran, for future reference
+
+The coding environment's `%LocalAppData%\KCDMP` is sandboxed (per this
+project's own `appdata-sandbox-redirection` note) — every read of
+`kcdmp-native.log` at that path early in this session silently returned a
+frozen first-read snapshot, which produced several rounds of "this looks
+stale" that were actually a tooling artifact, not evidence about the game.
+The fix that unblocked everything: `D:\SteamLibrary\steamapps\common\KCD2Mod\
+kcd.log` (the game's own log, inside the Steam library, not AppData) and
+`localhost:1403`'s debug REST API are **both directly reachable from the
+coding shell, unsandboxed** — once discovered, Sonnet could read the game's
+real-time log and drive live Lua tests directly, with the human needed only
+for the one thing that can't be scripted: watching the result on screen. This
+is worth remembering for any future live-testing session on this project.
+
+---
+
+## 8. Regression check (explicit, per the session brief)
 
 - `native/KCDMP/combat_playanim.cpp` is a wholly new file; the only existing
   file it touches is `dllmain.cpp` (one new forward declaration, one new call
@@ -234,12 +361,43 @@ in-game console, then put that decimal id on line 1 and relaunch.
 
 ---
 
-## 7. Phase 2
+## 9. Phase 2 — handoff
 
-Not reached. Per the session brief, Phase 2 (the paired sync-attack/sync-hit
-construction route) is reachable only after a genuine Phase 1 result — success
-or a real, observed failure — and this session produced neither: the
-mechanism is built and ready, but unwatched. Handing this to Fable now would
-be handing over a guess about what Phase 1 found, which the brief is explicit
-about not wanting. The right next step is the human running §4's two tests and
-reporting back what `kcdmp-native.log` and their own eyes actually showed.
+Per the session brief, Phase 2 is reachable once Phase 1 has a genuine
+result — success or a real, observed failure. §4-5 delivered the latter: a
+real, three-times-reproduced, well-characterized partial failure, not a
+guess and not a shrug. Per the brief's own explicit routing, this is the
+condition for handing off to a fresh Fable 5 session rather than continuing
+here — the specific open question (what does
+`EntityModule.dll+0xAE17A0` actually build/queue that produces a stuck
+partial pose for every fragment tried) needs disassembly, which this session
+was explicitly told not to open, and needs the kind of ground-up native
+reconstruction work the brief itself flags as Fable's territory rather than
+Sonnet's.
+
+**What Phase 2 inherits, concretely:**
+
+- Rung 1 (this WO's target — the bare `PlayAnim`/vtbl `+0xE48` call) is now
+  **closed**: it reliably produces a visible-but-broken partial pose, for any
+  real combat fragment, paired or unpaired, weapon-matched or not. Not worth
+  re-attempting as-is.
+- The natural next step is rung 2/3 from `docs/WO-42-findings.md` §4-5: the
+  full `C_CombatAnimAction`/`C_CombatActorActionAttack` (or
+  `SyncAttack`+`SyncHit` pair) construction sequence, which builds and queues
+  a real combat action object rather than calling the high-level `PlayAnim`
+  wrapper — a completely different code path from the one this WO tested and
+  ruled out.
+- Alternatively, decompiling `EntityModule.dll+0xAE17A0` itself (the actual
+  `vtbl+0xE48` target, never yet traced) might reveal *why* the bare call
+  stalls partway — e.g. a missing precondition it silently no-ops on, in
+  which case rung 1 might still be salvageable with one more native call
+  before it. Either angle is legitimate; neither should be guessed at without
+  reading the function.
+- The live-testing method from §5 (drive the game directly via
+  `localhost:1403`'s `ExecuteString` debug API from the coding shell, read
+  `kcd.log` directly, spawn ghosts under fresh ids) works well and is
+  reusable for verifying whatever Phase 2 builds, once the human is at the
+  machine with the game running.
+- The two orthogonal bugs in §6 (console argument parsing, ghost-respawn
+  corruption) are real but out of scope for Phase 2 too; flagging them again
+  here so they aren't lost.
