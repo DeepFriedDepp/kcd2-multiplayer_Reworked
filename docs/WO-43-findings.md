@@ -1,4 +1,4 @@
-# WO-43 — combat-swing fidelity, Phase 1: live-tested. Real, reproducible partial render — not full fidelity.
+# WO-43 — combat-swing fidelity, Phase 1: live-tested. **CORRECTED** — the guard blocks; there was no partial render.
 
 Worked 2026-08-21/22 (Sonnet). Per the session brief, no disassembler was
 opened this session; every address/offset for the *calling* side is taken
@@ -11,12 +11,69 @@ shell — see §7), and the human supplied the one thing that can't be
 automated: watching the screen.
 
 **Evidence classes, as elsewhere in this project:** observed / read-but-
-unrendered / inconclusive. The verdict below is **observed**, live, three
-times over independently — not rounded up, and not a guess.
+unrendered / inconclusive. Nothing below is rounded up — including, this time,
+a correction of an earlier claim in this same document that *was* rounded up.
 
 ---
 
-## Gate 1 verdict: **blocked by something else entirely — a consistent, reproducible partial render**
+## ⚠ Correction (added after this document's own initial verdict, same
+## overall investigation, one session later)
+
+**This document originally concluded Gate 1 was "blocked by something else
+entirely — a consistent, reproducible partial render," and stated the guard
+value was `1` (passing) on every ghost test. That guard claim was never
+actually measured — it was an unstated assumption — and a follow-up session
+measured it directly and found the opposite.**
+
+**What actually happened, re-verified three independent times with the native
+diagnostic (which, unlike Lua's `pcall`, actually logs the guard's return
+value): `actor[+0x28]->vtbl[0x80]()` returns `0` — the guard blocks — for
+every ghost tested, touched or untouched, with or without a weapon drawn.
+`vtbl[+0xE48]` (`PlayAnim`'s real call) is never reached at all.** This is
+exactly **checkpoint 1** from this WO's own original session brief — the
+guard-blocked case, explicitly anticipated and explicitly *not* something that
+needed Fable.
+
+**The "partial swing" pose this document built its verdict on was
+misattributed.** Every one of the three "swing" tests below called
+`KCD2MP_GhostCombat(id, 0)` (`DrawWeapon()` — a separate, unrelated native
+call) immediately before the `PlayAnim` attempt. A follow-up session proved,
+directly, that **`DrawWeapon()` alone — with no `PlayAnim`/swing call made at
+all — produces the identical "janky, reaching" pose**, reproduced on two
+separate untouched ghosts. Lua's `pcall` around `PlayAnim` reports "no
+Lua-level error" whether the internal guard passes *or* blocks — a blocked
+guard returns cleanly, with no exception either way — so "`ok=true`" was never
+evidence the call did anything. The pose everyone (including this document)
+attributed to a stalled Mannequin swing was `DrawWeapon()`'s own incomplete-
+looking stance the whole time.
+
+**Corrected Gate 1 verdict: guard-blocked (checkpoint 1), not "blocked by
+something else."** §5 below (the three "swing" tests and §5.2's "what this
+rules out") is now superseded by this correction and kept only for the
+historical record — read it as *what this document incorrectly believed it
+had ruled out*, not settled fact: none of those three tests ever actually
+invoked `vtbl[+0xE48]`, so they ruled out exactly nothing about it. See
+`docs/WO-44-findings.md`'s own correction section for what
+this means for that document's decompilation work (short version: the
+decompile of `C_Player::PlayAnim` is real and accurate *for the player*; it
+does not explain the ghost's behavior, because the ghost's call never reaches
+that function or any other function at `+0xE48` — the guard stops it first.
+Phase 2's recommendation — build the real combat action, not a bare fragment
+call — is unaffected and, if anything, reinforced by two independent reasons
+now instead of one flawed one).
+
+**What is *not* corrected, and remains real, load-bearing evidence:** the
+native diagnostic on the **player** (§4) — guard passed (`1`), vtable resolved
+inside `EntityModule.dll`, no fault — was measured directly, not assumed, and
+stands. The `GetScriptBindHuman`/`FUN_180B3C2D0` entity-id resolution path
+(§3's "one real gap") is now confirmed working for arbitrary ghosts, not just
+in principle — every ghost test this correction is based on used it
+successfully, cross-validated by a correct `GetName()` readback. Those two
+facts are why this correction could be found and proven at all.
+
+---
+
+## Gate 1 verdict (as originally written, now superseded — see correction above)
 
 Per the session brief's Gate 1 options (direct-call success / guard-blocked /
 blocked by something else / inconclusive), the honest, evidenced answer is the
@@ -35,6 +92,9 @@ the wrong-vtable checkpoint (no fault, ever; the target address resolves
 inside `EntityModule.dll`). It is exactly the third case the session brief
 names as the one that needs Fable: "does something unexpected — not just
 'does nothing,' but visibly wrong."
+
+**(Superseded: the "guard value was 1" claim above was assumed, not measured —
+see the correction at the top of this document.)**
 
 ---
 
@@ -208,6 +268,14 @@ guard replication, vtable dispatch) works exactly as WO-42 traced it, endpoint
 to endpoint, with zero fabrication.
 
 ## 5. Test A, run for real — and the real test method that emerged
+
+**⚠ Superseded — see the correction at the top of this document.** The
+console-argument bug and the `ExecuteString` workaround below are still real
+and still true. The causal conclusion drawn from the three "swing" tests
+(§5.1/§5.2) is not: none of them measured the guard, and a follow-up
+session found it blocks on every ghost tested — meaning `vtbl[+0xE48]` never
+ran in any of these three tests, and the pose described below was
+`DrawWeapon()`'s alone.
 
 **The console typing plan from earlier in this document did not work, for a
 reason worth recording.** `mp_combat_frag <name> <tags>` and `mp_ghost_combat

@@ -17,7 +17,66 @@ a human at the machine will run (§6).
 
 ---
 
-## 0. Verdict
+## ⚠ Correction (added one session later, live-testing this document's own §6 probe)
+
+**The premise this document opens with — "WO-43 live-tested three times and
+found produces a reproducible, broken partial swing" — is wrong.** A follow-up
+session ran this document's own `combat_construct.cpp` and `combat_playanim.cpp`
+probes against real, freshly-validated ghosts and found `actor[+0x28]->
+vtbl[0x80]()` (the guard `C_ScriptBindHuman::PlayAnim` checks before ever
+touching `+0xE48`) returns `0` — blocks — on every ghost tested, three for
+three. `vtbl[+0xE48]` is never called at all for a ghost. The "broken partial
+swing" WO-43 described (and this document set out to explain) was
+`DrawWeapon()`'s own incomplete-looking stance — confirmed directly, live, by
+calling `DrawWeapon()` alone with no swing attempt and reproducing the
+identical pose on two separate untouched ghosts. Full detail in
+`docs/WO-43-findings.md`'s own correction section, written at the same time.
+
+**What this changes and what it doesn't.** §1's decompilation of
+`EntityModule.dll+0xAE17A0` = `C_Player::PlayAnim` is real, was actually read
+out of the disassembly, and is accurate — **for the player**, whose guard
+this session separately measured as passing (`1`) live. What it does *not* do
+is explain the ghost's behavior, because a ghost's call never reaches
+`0xAE17A0` or any other function at `+0xE48` — the guard stops it first, one
+step earlier than this document assumed. §2's class-dispatch finding (ghosts
+present a `C_NPCActor`-family vtable, not `C_Player`'s) is *also* still real
+and was independently live-confirmed the same session this correction was
+written (vptr `EntityModule.dll+0xE98340` on two different ghosts, matching
+this section's own static identification) — it just turned out to be
+answering a question that, for the guard-blocked case, doesn't end up
+mattering: whichever class's `+0xE48` a ghost has, it's never reached.
+
+**Phase 2's actual recommendation is unaffected, and arguably stronger.**
+Direction B (§4-§6: build and queue a real `C_CombatAnimAction` through
+`GetOrCreateCombatActor`/`C_CombatAnimActionManager`, not a bare fragment call)
+was already this document's conclusion. It now rests on two independent,
+correctly-attributed reasons instead of one that turned out to be
+misattributed: (1) even when a bare `PlayAnim` call *does* go through (the
+player's case, confirmed), it structurally cannot complete a combat swing
+(§1, unaffected by this correction); and (2) for a ghost specifically, the
+call does not go through at all — the guard blocks it, for a reason not yet
+identified (see the open question this correction leaves below). Building the
+real combat action bypasses both problems at once: it never calls `+0xE48` or
+depends on its guard.
+
+**New open question this correction surfaces, for whoever picks this up
+next:** what does `actor[+0x28]->vtbl[0x80]()` actually gate on? **Tried and
+still blocked:** a real combat actor already existing (via
+`GetOrCreateCombatActor`, confirmed present on the same ghost immediately
+before this recheck) does not change the outcome — guard still `0`. So it is
+not gated on combat-actor existence. Four for four ghosts tested (untouched,
+weapon-drawn, and combat-actor-present) all blocked; the player (tested
+separately, live) passes. The simplest hypothesis fitting all the data:
+this guard checks something like "is this actor a live, input-driven
+player," not any per-object combat/equipment state — which a scripted ghost
+puppet would never satisfy no matter what else is set up on it. Not yet
+confirmed by reading the guard function itself (that would need one more
+short disassembly pass, out of scope for a live-testing session) — stated
+here as the leading hypothesis, not a settled fact.
+
+---
+
+## 0. Verdict (as originally written, now superseded — see correction above)
 
 **Direction A is closed, decisively and by decompilation: rung 1 (the
 `PlayAnim` / `vtbl+0xE48` call) fundamentally cannot produce a complete combat

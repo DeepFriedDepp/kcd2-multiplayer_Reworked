@@ -4,6 +4,15 @@ Worked 2026-08-21/22 (Sonnet). No disassembler opened. `docs/WO-43-findings.md`
 is the deliverable — read that for the full evidence chain; this is the
 session log.
 
+**⚠ Correction added same day, one session later:** this WO's own Gate 1
+verdict was wrong. The "reproducible partial swing" was `DrawWeapon()`'s own
+pose, not `PlayAnim`'s — the guard blocks on every ghost tested, so
+`vtbl[+0xE48]` never actually ran in any of the three tests below. Full
+correction in `docs/WO-43-findings.md`'s own correction section, written
+during a live-testing follow-up session (same day) that added a native probe
+watcher and re-measured the guard directly instead of inferring it from
+Lua's `pcall`.
+
 ## Part 1 — implementation (no game access)
 
 1. Read `docs/WO-42-findings.md` §9.5/§9.6 (the direct-call route), §9.2 (real

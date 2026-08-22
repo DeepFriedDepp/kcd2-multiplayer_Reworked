@@ -5,6 +5,19 @@ Worked 2026-08-22 (Fable 5). Phase 2 of the combat-swing-fidelity work
 rung-1 target, decide direction A vs B). `docs/WO-44-findings.md` is the
 deliverable; this is the session log.
 
+**⚠ Correction added same day, by a live-testing follow-up session:** this
+WO's own premise — that WO-43 observed a real partial-swing render from
+`vtbl[+0xE48]` — was wrong. A follow-up session ran this WO's own
+`combat_construct.cpp`/`combat_playanim.cpp` probes (adding a live-reload
+watcher to each) against real ghosts and found the guard
+(`actor[+0x28]->vtbl[0x80]()`) blocks on every ghost tested — `vtbl[+0xE48]`
+never runs for a ghost at all. The pose WO-43 attributed to it was
+`DrawWeapon()`'s own stance. §1's decompilation of `C_Player::PlayAnim`
+remains accurate (confirmed live for the player, whose guard passes); §2's
+class-dispatch finding remains accurate and was independently live-confirmed
+the same follow-up session. The direction-B recommendation is unaffected.
+Full correction in `docs/WO-44-findings.md`'s own correction section.
+
 ## What was done, in order
 
 1. Read the full handoff: `docs/WO-43-findings.md` (§4-5 live evidence, §9
