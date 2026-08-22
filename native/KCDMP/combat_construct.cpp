@@ -342,4 +342,47 @@ void probe_combat_construct() {
          "See docs/WO-44-findings.md for the rung-2 construction spec these pointers feed.");
 }
 
+namespace {
+
+// Live-reload wrapper: entity ids are assigned fresh every launch, so a ghost
+// id captured in one session is worthless in the next -- re-checking
+// kcdmp-combat.txt on a timer instead of only once at DLL attach lets a human
+// spawn a ghost, read its id via mp_entity_id, and drop that id into the file
+// while the game keeps running, no relaunch needed. Deliberately outside any
+// __try (raw file I/O + memcmp only) so it can hold an ordinary local buffer;
+// probe_combat_construct() itself remains the SEH-isolated, one-shot body.
+char g_lastSeen[256]{};
+bool g_haveLast = false;
+
+} // namespace
+
+void probe_combat_construct_watch() {
+    char path[MAX_PATH]{};
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&probe_combat_construct_watch), &self);
+    GetModuleFileNameA(self, path, MAX_PATH);
+    char* slash = std::strrchr(path, '\\');
+    if (!slash) return;
+    std::strcpy(slash + 1, "kcdmp-combat.txt");
+
+    char text[256]{};
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") == 0 && f) {
+        const size_t n = std::fread(text, 1, sizeof(text) - 1, f);
+        text[n] = 0;
+        std::fclose(f);
+    }
+    // Absent file reads as empty; only re-probe on an actual content change
+    // (including empty -> non-empty), never every tick on an unchanged file.
+    if (g_haveLast && std::strcmp(text, g_lastSeen) == 0) return;
+    std::strcpy(g_lastSeen, text);
+    g_haveLast = true;
+
+    if (text[0] == 0) { logf("COMBAT-WATCH: kcdmp-combat.txt cleared/absent -- idle"); return; }
+    logf("COMBAT-WATCH: kcdmp-combat.txt changed -- re-running the probe");
+    probe_combat_construct();
+}
+
 } // namespace kcdmp::rttr

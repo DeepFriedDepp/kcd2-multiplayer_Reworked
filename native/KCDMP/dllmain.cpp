@@ -22,6 +22,7 @@ void probe_method_wrapper();
 void probe_dice_class();
 void probe_play_anim();
 void probe_combat_construct();
+void probe_combat_construct_watch();
 }
 
 namespace {
@@ -128,6 +129,14 @@ DWORD WINAPI plugin_main(LPVOID) {
     if (kcdmp::dice::install_pause_hook()) {
         kcdmp::main_thread::post_repeating(&kcdmp::dice::sample_instance_if_changed);
     }
+
+    // WO-44 follow-up: entity ids are assigned fresh every launch, so testing
+    // the direction-B probe against a ghost (as opposed to the player) needs
+    // the id known only after the game is already running. Re-check
+    // kcdmp-combat.txt on a timer instead of only once at attach, so a human
+    // can spawn a ghost, read its id live, and drop it into the file without
+    // a relaunch. No-ops whenever the file's content is unchanged.
+    kcdmp::main_thread::post_repeating(&kcdmp::rttr::probe_combat_construct_watch);
 
     kcdmp::pipe::start();
     return 0;
