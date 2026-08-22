@@ -21,6 +21,7 @@ void probe_faction();
 void probe_method_wrapper();
 void probe_dice_class();
 void probe_play_anim();
+void probe_combat_construct();
 }
 
 namespace {
@@ -110,6 +111,11 @@ DWORD WINAPI plugin_main(LPVOID) {
         // WO-43 Phase 1: no-op unless kcdmp-playanim.txt exists beside the
         // DLL -- opt-in, same convention as probe_faction above.
         kcdmp::rttr::probe_play_anim();
+        // WO-44 direction-B precondition probe: no-op unless kcdmp-combat.txt
+        // exists beside the DLL -- opt-in, same convention. Read-only (or one
+        // idempotent GetOrCreateCombatActor call in mode=create); constructs
+        // and queues nothing.
+        kcdmp::rttr::probe_combat_construct();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");

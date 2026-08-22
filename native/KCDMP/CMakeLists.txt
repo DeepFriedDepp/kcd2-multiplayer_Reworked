@@ -3,6 +3,7 @@
     rttr_probe.cpp
     rttr_abi.cpp
     combat_playanim.cpp
+    combat_construct.cpp
     main_thread.cpp
     pipe_server.cpp
     dice_hook.cpp
