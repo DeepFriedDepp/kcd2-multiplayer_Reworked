@@ -27,26 +27,48 @@ inline std::string log_path() {
     return p + "kcdmp-native.log";
 }
 
+// WO-45: a second copy of every line, written into the game process's working
+// directory (where the game writes kcd.log). The primary log sits beside the
+// DLL under %LocalAppData%\KCDMP, and reads of that path from the coding shell
+// return silently stale snapshots (the sandbox redirection WO-43 §7 hit) --
+// the game's own directory does not have that problem. The DLL runs inside
+// the game process, so it can write there directly.
+inline std::string mirror_log_path() {
+    char cwd[MAX_PATH]{};
+    if (!GetCurrentDirectoryA(MAX_PATH, cwd) || !cwd[0]) return {};
+    std::string p(cwd);
+    if (p.back() != '\\') p += '\\';
+    return p + "kcdmp-native.mirror.log";
+}
+
 inline void logf(const char* fmt, ...) {
     std::lock_guard<std::mutex> lock(log_mutex());
     static FILE* f = nullptr;
-    if (!f) {
+    static FILE* mirror = nullptr;
+    static bool  opened = false;
+    if (!opened) {
+        opened = true;
         // _fsopen with _SH_DENYWR, not fopen: the game holds this handle for its
         // whole run, and fopen's default share mode makes the log unreadable
         // from outside until the process exits -- which defeats the point of
         // having a log at all.
         f = _fsopen(log_path().c_str(), "w", _SH_DENYWR);
-        if (!f) return;
+        const std::string mp = mirror_log_path();
+        if (!mp.empty()) mirror = _fsopen(mp.c_str(), "w", _SH_DENYWR);
     }
+    if (!f && !mirror) return;
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    fprintf(f, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
     va_list args;
-    va_start(args, fmt);
-    vfprintf(f, fmt, args);
-    va_end(args);
-    fputc('\n', f);
-    fflush(f);
+    for (FILE* dst : { f, mirror }) {
+        if (!dst) continue;
+        fprintf(dst, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        va_start(args, fmt);
+        vfprintf(dst, fmt, args);
+        va_end(args);
+        fputc('\n', dst);
+        fflush(dst);
+    }
 }
 
 } // namespace kcdmp
