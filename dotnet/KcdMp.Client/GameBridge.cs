@@ -2294,14 +2294,21 @@ public partial class GameBridge(ClientConfig config)
                     // hold; everything else (draw/sheathe/block, or a swing
                     // with no native path available) stays on the old call.
                     if (ceEvent == Protocol.CombatEventSwing
-                        && _ghostEntityIds.TryGetValue(ceSource.ToString(), out uint ceEntityId)
-                        && _combat.IsConnected)
+                        && _ghostEntityIds.TryGetValue(ceSource.ToString(), out uint ceEntityId))
                     {
+                        // No IsConnected pre-check: GhostSwingAsync connects the
+                        // pipe on demand (the agent's one startup connect can
+                        // race the injection and give up), and on failure —
+                        // DLL absent, stale entity id after a respawn — the old
+                        // Lua cue runs as the fallback, late but visible.
                         _ = _combat.GhostSwingAsync(ceEntityId, NativeSwingFragmentSpec, ct)
                             .ContinueWith(t =>
                             {
                                 if (t.IsFaulted || !t.Result)
-                                    Console.WriteLine($"[combatviz] native swing for ghost {ceSource} did not apply (stale id after respawn?)");
+                                {
+                                    Console.WriteLine($"[combatviz] native swing for ghost {ceSource} did not apply — falling back to the Lua cue");
+                                    _ = ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
+                                }
                             }, TaskScheduler.Default);
                         await ExecLuaAsync($"if KCD2MP_GhostNativeSwingHold then KCD2MP_GhostNativeSwingHold(\"{ceSource}\") end");
                     }
