@@ -24,6 +24,7 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte ApplyDeath        = 0x02;
     private const byte Ping              = 0x03;
     private const byte SetFactionHostile = 0x04;
+    private const byte GhostSwing        = 0x06;
     private const byte Result            = 0x81;
     private const byte Pong              = 0x83;
 
@@ -128,6 +129,26 @@ public sealed class CombatPipe : IAsyncDisposable
         WriteSoulGuid(ghostSoulGuid, payload);
         payload[16] = hostile ? (byte)0x01 : (byte)0x00;
         return SendAsync(SetFactionHostile, payload, ct);
+    }
+
+    /// <summary>
+    /// WO-46: queue a real combat-swing animation on the ghost with this
+    /// CryEngine entity id (the DLL runs the WO-45 rung-2 construction on the
+    /// game thread). The id comes from the mod's spawn-time "ghostid" event,
+    /// not a guid — entity ids are what the combat machinery natively
+    /// resolves. fragSpec is a real "FragmentId, tag1+tag2" row from the
+    /// shipped combat tables. A false return means an input failed to resolve
+    /// (stale id after a respawn, unknown fragment) — normal, not fatal; a
+    /// visually inert success (ghost's weapon sheathed) still returns true.
+    /// </summary>
+    public Task<bool> GhostSwingAsync(uint entityId, string fragSpec, CancellationToken ct = default)
+    {
+        var spec = System.Text.Encoding.UTF8.GetBytes(fragSpec);
+        if (spec.Length is 0 or > 191) return Task.FromResult(false);
+        var payload = new byte[4 + spec.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, entityId);
+        spec.CopyTo(payload.AsSpan(4));
+        return SendAsync(GhostSwing, payload, ct);
     }
 
     /// <summary>Round-trip check that the DLL is alive and pumping frames.</summary>

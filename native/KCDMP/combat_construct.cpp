@@ -214,6 +214,17 @@ bool call_queue_action(QueueActionFn fn, void* manager, void** sp, float time) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+// IAction::Release -- vtbl[0x10] (WO-44 §4). Drops one reference through the
+// object's own virtual, so the object's own destroy path (vtbl[0xB8]) runs if
+// this was the last one.
+bool call_release(void* obj) {
+    __try {
+        auto* vtbl = *reinterpret_cast<void***>(obj);
+        reinterpret_cast<void (*)(void*)>(vtbl[0x10 / 8])(obj);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
 bool read_u32(const void* base, size_t offset, uint32_t* out) {
     __try {
         *out = *reinterpret_cast<const uint32_t*>(reinterpret_cast<const char*>(base) + offset);
@@ -723,6 +734,162 @@ void probe_combat_construct_watch() {
     if (text[0] == 0) { logf("COMBAT-WATCH: kcdmp-combat.txt cleared/absent -- idle"); return; }
     logf("COMBAT-WATCH: kcdmp-combat.txt changed -- re-running the probe");
     probe_combat_construct();
+}
+
+// --- WO-46: the production swing path (combat_swing.h). ---------------------
+// The lean twin of run_rung2 above: same WO-45-live-verified steps, one log
+// line per swing instead of one per step, and a leak-free lifecycle -- hold a
+// reference across the queue call (so the post-queue state read can never
+// touch a destroyed object, even on QueueAction's internal no-controller
+// path), then release it through the action's own virtual. The controller's
+// own reference (live-measured in WO-45: refcount 2 with one retained ref
+// held) then owns the action until it completes.
+bool ghost_swing(uint32_t entityId, const char* fragSpec) {
+    if (!fragSpec || !fragSpec[0] || std::strlen(fragSpec) > 191) {
+        logf("SWING: rejected -- missing/oversized fragment spec");
+        return false;
+    }
+
+    HMODULE entityModule = GetModuleHandleA("EntityModule.dll");
+    HMODULE animModule   = GetModuleHandleA("AnimationModule.dll");
+    HMODULE combatModule = GetModuleHandleA("CombatModule.dll");
+    if (!entityModule || !animModule || !combatModule) {
+        logf("SWING: entity=%u rejected -- a required module is not loaded", entityId);
+        return false;
+    }
+
+    // Prologue-verify all three hardcoded RVAs once per process (fail closed,
+    // WO-42 §7's discipline). A build mismatch disables native swings rather
+    // than calling into the wrong bytes.
+    auto* parseFn = reinterpret_cast<char*>(animModule)   + kRvaParseFragmentSpec;
+    auto* ctorFn  = reinterpret_cast<char*>(combatModule) + kRvaCombatAnimCtor;
+    auto* queueFn = reinterpret_cast<char*>(combatModule) + kRvaQueueAction;
+    static int prologueState = 0;   // 0 unchecked, 1 ok, -1 mismatch
+    if (prologueState == 0) {
+        prologueState =
+            (prologue_matches(parseFn, kPrologueParse, sizeof(kPrologueParse)) &&
+             prologue_matches(ctorFn,  kPrologueCtor,  sizeof(kPrologueCtor))  &&
+             prologue_matches(queueFn, kPrologueQueue, sizeof(kPrologueQueue))) ? 1 : -1;
+        if (prologueState < 0)
+            logf("SWING: RVA prologue mismatch -- native swings disabled for this build");
+    }
+    if (prologueState < 0) return false;
+
+    const auto exports = module_exports(entityModule);
+    if (exports.empty()) {
+        logf("SWING: entity=%u -- EntityModule has no export table", entityId);
+        return false;
+    }
+    void* actor = resolve_actor(entityModule, exports, /*wantPlayer*/ false, entityId);
+    if (!actor) {
+        logf("SWING: entity=%u -- actor did not resolve (despawned or stale id)", entityId);
+        return false;
+    }
+
+    void* combatActor = nullptr;
+    if (!read_ptr(actor, kOffCombatActorInActor, &combatActor)) {
+        logf("SWING: entity=%u -- actor+0x300 read faulted", entityId);
+        return false;
+    }
+    if (!combatActor) {
+        auto fn = reinterpret_cast<GetOrCreateFn>(
+            reinterpret_cast<char*>(entityModule) + kRvaGetOrCreateCombat);
+        if (!call_get_or_create(fn, actor, &combatActor) || !combatActor) {
+            logf("SWING: entity=%u -- GetOrCreateCombatActor faulted/null", entityId);
+            return false;
+        }
+    }
+    void* manager = nullptr;
+    if (!read_ptr(combatActor, kOffAnimActionManager, &manager) || !manager) {
+        logf("SWING: entity=%u -- anim-action manager (+0x490) unreadable/null", entityId);
+        return false;
+    }
+
+    void* allocFn = nullptr;
+    if (!read_ptr(combatModule, kRvaCombatAllocGlobal, &allocFn) || !allocFn) {
+        logf("SWING: entity=%u -- CombatModule allocator global unreadable/null", entityId);
+        return false;
+    }
+
+    void* giFn = nullptr;
+    if (HMODULE shared = GetModuleHandleA("Shared.dll"))
+        giFn = GetProcAddress(shared, kGetGameIfaceName);
+    if (!giFn) {
+        HMODULE mods[1024];
+        DWORD needed = 0;
+        if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
+            const DWORD n = needed / sizeof(HMODULE);
+            for (DWORD i = 0; i < n && !giFn; ++i)
+                giFn = GetProcAddress(mods[i], kGetGameIfaceName);
+        }
+    }
+    const void* gi = nullptr;
+    if (!giFn || !call_get_game_iface(reinterpret_cast<GetGameIfaceFn>(giFn), &gi) || !gi) {
+        logf("SWING: entity=%u -- GetGameIface unavailable/faulted", entityId);
+        return false;
+    }
+
+    // The animDB chain, exactly as C_PlayAnim::Execute does (WO-45 live-verified).
+    void* actorClass = nullptr, *dbKey = nullptr, *sys = nullptr;
+    void* a = nullptr, *b = nullptr, *animDB = nullptr;
+    if (!call_vtbl_ptr(actor, kVtblGetActorClass, &actorClass) || !actorClass ||
+        !read_ptr(actorClass, 0x28, &dbKey) || !dbKey ||
+        !read_ptr(gi, 0x08, &sys) || !sys ||
+        !call_vtbl_ptr(sys, 0xB0, &a) || !a ||
+        !call_vtbl_ptr(a, 0x18, &b) || !b ||
+        !call_vtbl_ptr_arg(b, 0x20, dbKey, &animDB) || !animDB) {
+        logf("SWING: entity=%u -- animDB chain broke", entityId);
+        return false;
+    }
+
+    FakeCryStr s0{-1, 0, 0, {0}}, s38{-1, 0, 0, {0}};
+    ParseFragmentOut out{};
+    out.str0 = s0.data;
+    out.fragmentID = -1;
+    out.str38 = s38.data;
+    if (!call_parse_fragment_spec(reinterpret_cast<ParseFragSpecFn>(parseFn),
+                                  animDB, fragSpec, &out)) {
+        logf("SWING: entity=%u -- ParseFragmentSpec faulted", entityId);
+        return false;
+    }
+    if (out.fragmentID < 0) {
+        logf("SWING: entity=%u -- fragment unknown to this actor's animDB: \"%s\"",
+             entityId, fragSpec);
+        return false;
+    }
+
+    void* mem = nullptr;
+    if (!call_combat_alloc(reinterpret_cast<CombatAllocFn>(allocFn), 0x1A8, &mem) || !mem) {
+        logf("SWING: entity=%u -- allocator faulted/null", entityId);
+        return false;
+    }
+    void* anim = nullptr;
+    if (!call_anim_ctor(reinterpret_cast<AnimCtorFn>(ctorFn), mem, combatActor,
+                        /*priority*/ 5, static_cast<uint32_t>(out.fragmentID),
+                        out.tagsB, &anim) || !anim) {
+        logf("SWING: entity=%u -- C_CombatAnimAction ctor faulted/null", entityId);
+        return false;
+    }
+
+    // Two refs in: one for QueueAction to consume (the game's own convention),
+    // one held by us across the call and the state read below.
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(reinterpret_cast<char*>(anim) + 0x58));
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(reinterpret_cast<char*>(anim) + 0x58));
+    void* sp = anim;
+    if (!call_queue_action(reinterpret_cast<QueueActionFn>(queueFn), manager, &sp, -1.0f)) {
+        logf("SWING: entity=%u -- QueueAction FAULTED", entityId);
+        call_release(anim);   // still drop our ref; the object outlives the fault path
+        return false;
+    }
+    uint32_t status = ~0u, refc = ~0u;
+    read_u32(anim, 0x28, &status);
+    read_u32(anim, 0x58, &refc);
+    // Drop our reference through the object's own virtual. refc includes it,
+    // so the controller's view is refc-1.
+    call_release(anim);
+    logf("SWING: entity=%u queued fragment %d status=%u ref(controller)=%u spec=\"%s\"",
+         entityId, out.fragmentID, status, refc ? refc - 1 : 0, fragSpec);
+    return true;
 }
 
 } // namespace kcdmp::rttr

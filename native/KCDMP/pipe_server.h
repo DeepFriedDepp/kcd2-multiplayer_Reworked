@@ -19,6 +19,14 @@
 //     0x03 Ping         []                       -> replies 0x83
 //     0x04 SetFactionHostile [guid:16][hostile:1]                   (17)
 //     0x05 ResolveLuaClosure [closureAddr:8]      -> replies 0x84   (8)
+//     0x06 GhostSwing   [entityId:4 LE][fragSpec:N utf8, no NUL]    (5..196)
+//                        WO-46: queue a real combat-swing animation on the
+//                        ghost with this CryEngine entity id (the WO-45
+//                        rung-2 route; combat_swing.h). fragSpec is a real
+//                        "FragmentId, tag1+tag2" row from Tables.pak. The
+//                        entity id comes from the Lua spawn report, not a
+//                        guid -- entity ids are the address the combat
+//                        machinery natively resolves.
 //
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
@@ -55,6 +63,7 @@ constexpr uint8_t kApplyDeath         = 0x02;
 constexpr uint8_t kPing               = 0x03;
 constexpr uint8_t kSetFactionHostile  = 0x04;
 constexpr uint8_t kResolveLuaClosure  = 0x05;
+constexpr uint8_t kGhostSwing         = 0x06;
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;
@@ -65,6 +74,8 @@ constexpr int kApplyDamageLen           = kGuidLen + 4 + 4 + 1;
 constexpr int kApplyDeathLen            = kGuidLen;
 constexpr int kSetFactionHostileLen     = kGuidLen + 1;
 constexpr int kResolveLuaClosureLen     = 8;
+constexpr int kGhostSwingMinLen         = 4 + 1;      // entityId + at least one spec byte
+constexpr int kGhostSwingMaxLen         = 4 + 191;    // spec cap matches combat_swing.h
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not

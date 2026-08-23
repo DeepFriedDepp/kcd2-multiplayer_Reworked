@@ -1,6 +1,7 @@
 ﻿#include "pipe_server.h"
 #include "main_thread.h"
 #include "rttr_abi.h"
+#include "combat_swing.h"
 #include "lua_closure.h"
 #include "log.h"
 
@@ -230,6 +231,28 @@ void serve(HANDLE h) {
                 });
                 logf("PIPE: SetFactionHostile hostile=%s -> %s",
                      hostile ? "true" : "false", ok ? "applied" : "ghost not loaded / failed");
+                send_result(h, ran && ok, seq);
+                break;
+            }
+
+            case kGhostSwing: {
+                if (len < kGhostSwingMinLen || len > kGhostSwingMaxLen) {
+                    logf("PIPE: GhostSwing wrong length %u", len);
+                    send_result(h, false, seq);
+                    break;
+                }
+                uint32_t entityId = 0;
+                std::memcpy(&entityId, body, 4);
+                char spec[192];
+                const size_t specLen = len - 4;
+                std::memcpy(spec, body + 4, specLen);
+                spec[specLen] = 0;
+
+                bool ok = false;
+                const bool ran = main_thread::run_sync([&] {
+                    ok = rttr::ghost_swing(entityId, spec);
+                });
+                if (!ran) logf("PIPE: GhostSwing timed out waiting for a frame");
                 send_result(h, ran && ok, seq);
                 break;
             }

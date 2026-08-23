@@ -2699,6 +2699,22 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         spawnName = name,
     }
 
+    -- WO-46: report the ghost's raw CryEngine entity id to the agent, which
+    -- feeds it to the native swing path (the DLL addresses actors by this id,
+    -- not by name or guid). entity.id is a userdata whose tostring prints the
+    -- id as zero-padded hex -- the ONLY faithful numeric form this sandbox
+    -- can produce, since its 32-bit-float numbers lose integer precision
+    -- above 2^24 (WO-20/WO-40). Re-emitted naturally on every respawn because
+    -- all spawns funnel through here, so the agent's cache self-heals after
+    -- a save reload rebuilds the ghost bodies.
+    local hexid = string.match(tostring(entity.id), "(%x+)%s*$")
+    if hexid then
+        KCD2MP_EmitEvent("ghostid", tostring(id) .. " " .. hexid)
+    else
+        mp_log("SpawnGhost: could not extract entity id hex from " .. tostring(entity.id)
+               .. " -- native swings unavailable for ghost " .. tostring(id))
+    end
+
     -- WO-38 Phase 7: if the stimulus-deafness A/B toggle is on, new spawns
     -- get it too, or a reconnect would silently undo the experiment mid-test.
     if KCD2MP.ghostsIgnorant then
@@ -3810,6 +3826,18 @@ end
 -- Local eyeball test: play a combat event on every ghost in this world with
 -- no wire involved (mp_ghost_combat <0|1|2|3>). The apply path is identical
 -- to a real inbound packet.
+-- WO-46: the Lua half of a NATIVE swing. The agent queues the real Mannequin
+-- combat action through the DLL (a full swing, WO-45); this only holds the
+-- one-shot window so KCD2MP_UpdateAnimation's per-tick locomotion restart
+-- does not fight the playing action on a moving ghost. No clip is started
+-- here -- the native action owns the render.
+function KCD2MP_GhostNativeSwingHold(id)
+    local ghost = KCD2MP.ghosts[tostring(id)]
+    if ghost and ghost.istate then
+        ghost.istate.oneShotUntil = os.clock() + 0.9
+    end
+end
+
 function KCD2MP_GhostCombatAll(arg)
     local evt = tonumber(arg)
     if evt == nil then

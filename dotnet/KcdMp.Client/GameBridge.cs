@@ -63,6 +63,23 @@ public partial class GameBridge(ClientConfig config)
     // is asking instead of showing a bare relay id.
     private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
 
+    // ghostId → CryEngine entity id, from the mod's spawn-time "ghostid"
+    // event (WO-46). This is what the native swing path addresses a ghost by;
+    // entries go stale when a ghost despawns and are simply overwritten by
+    // the next spawn report — a stale id makes the DLL's resolve fail cleanly
+    // (Result=false), it cannot touch the wrong actor because entity ids are
+    // never reused within a session.
+    private readonly ConcurrentDictionary<string, uint> _ghostEntityIds = new();
+
+    // WO-46: the one fragment row native ghost swings play, verbatim from the
+    // shipped combat_action_attack.xml (WO-43 pulled it; WO-45 live-verified
+    // it renders a full swing). Longsword-tagged because the armed ghost
+    // loadout is the longsword preset; a ghost without a drawn weapon renders
+    // nothing on this row (also live-verified), which is the correct visual
+    // for a peer whose weapon state says sheathed anyway.
+    private const string NativeSwingFragmentSpec =
+        "FreeAttack, l_longsword+r_longsword+freeGuard+endFreeGuard+slash+attack_heavy";
+
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
     // for a peer whose Handshake carried none (an old build). Read by
     // VersionIpcServer so the launcher can compare it against this agent's
@@ -2269,7 +2286,29 @@ public partial class GameBridge(ClientConfig config)
                     // can emit new events without breaking us.
                     byte ceSource = payload[0];
                     byte ceEvent  = payload[1];
-                    await ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
+                    // WO-46: swings go native when the ghost's entity id is
+                    // known and the DLL pipe is up — the WO-45 rung-2 route
+                    // renders a real, complete Mannequin swing where the Lua
+                    // clip path could only manage a guard-transition cue. The
+                    // Lua side still gets a call for the one-shot locomotion
+                    // hold; everything else (draw/sheathe/block, or a swing
+                    // with no native path available) stays on the old call.
+                    if (ceEvent == Protocol.CombatEventSwing
+                        && _ghostEntityIds.TryGetValue(ceSource.ToString(), out uint ceEntityId)
+                        && _combat.IsConnected)
+                    {
+                        _ = _combat.GhostSwingAsync(ceEntityId, NativeSwingFragmentSpec, ct)
+                            .ContinueWith(t =>
+                            {
+                                if (t.IsFaulted || !t.Result)
+                                    Console.WriteLine($"[combatviz] native swing for ghost {ceSource} did not apply (stale id after respawn?)");
+                            }, TaskScheduler.Default);
+                        await ExecLuaAsync($"if KCD2MP_GhostNativeSwingHold then KCD2MP_GhostNativeSwingHold(\"{ceSource}\") end");
+                    }
+                    else
+                    {
+                        await ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
+                    }
                 }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
@@ -2371,6 +2410,29 @@ public partial class GameBridge(ClientConfig config)
                 OnWorldTimeReading(worldTime);
             else
                 Console.WriteLine($"[timeskip] malformed time_now '{arg}'");
+            return;
+        }
+
+        if (name == "ghostid")
+        {
+            // WO-46: "<ghostId> <entityIdHex>" from KCD2MP_SpawnGhost. The hex
+            // is the tail of Lua's tostring(entity.id) userdata print — the
+            // only numeric form the stripped sandbox can produce (its floats
+            // lose integer precision above 2^24, so a decimal path would
+            // corrupt large ids). Cached for the native swing path; consumed
+            // regardless of interaction-session state, like time_now above.
+            var giParts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (giParts.Length == 2
+                && ulong.TryParse(giParts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ulong rawId)
+                && rawId is > 0 and <= uint.MaxValue)
+            {
+                _ghostEntityIds[giParts[0]] = (uint)rawId;
+                Console.WriteLine($"[combatviz] ghost {giParts[0]} entity id 0x{rawId:X} cached for native swings");
+            }
+            else
+            {
+                Console.WriteLine($"[combatviz] malformed ghostid '{arg}'");
+            }
             return;
         }
 
