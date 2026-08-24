@@ -204,19 +204,62 @@ game-side path below is observed on real entities, not reasoned:
   `%LocalAppData%` — the standing WO-32 constraint; human-run before any
   release).
 
-### Live-gated (needs the human, two machines / real UI)
+### One-human live session (same day, second half) — OBSERVED
 
-1. A real manual UI drop producing the same PickableItem-plus-decrement
-   signature the detector keys on (Phase 1's one assumption). Everything
-   downstream of detection is observed.
-2. The full two-machine loop: A drops → B sees it appear → B picks up → gone
-   for A (and the reverse). Requires deploying the rebuilt pak + agents on
-   both machines (game closed for install — deploy matched sets, WO-46).
-3. The race with two real humans (the relay half of it is wire-verified in
-   I3; the rollback half is game-verified in R6).
-4. The reload restart-sweep semantics (reload-vs-menu discrimination via
-   ghost liveness) — reasoned and coded, not yet observed under a real save
-   load.
+Ran with the real game + the REAL rebuilt agent and relay + synthetic wire
+peers (`tools/Bot-ItemPeer.ps1`, `tools/Bot-ItemClaim.ps1`), the human at the
+keyboard. The old installed stack (launcher/agent/relay) was stopped first —
+it predates 0x32 and cannot carry the packets. The game itself never
+restarted: the new Lua section was already injected live, and the new agent's
+re-arm loop auto-started `KCD2MP_StartItemSync` within seconds of connecting.
+
+1. **Real manual UI drop** (Phase 1's one assumption) — OBSERVED. The human
+   dropped an armor piece (`LegsPadded02_m01_E1`) from the inventory screen:
+   detector emitted the exact contract line, the agent minted dropId
+   1659804366 and put it on the wire, the synthetic peer received it with
+   matching class/amount/health/position. The signature is identical to the
+   programmatic PlaceItem drop.
+2. **Inbound loop with real eyes and hands** — OBSERVED. A synthetic peer
+   sent a drop; the mod materialized it via a bot ghost; the human SAW a
+   hunting sword lying on the dirt (screenshot), got the genuine vanilla
+   "Pick up E" prompt, picked it up by hand; the watcher claimed it; the
+   relay echo confirmed (`claimed by us`) and both synthetic peers logged
+   `claimer=1`. (A first onion attempt was reported not-seen in tall grass —
+   likely occlusion, unresolved; the sword on dirt settled the render
+   question.)
+3. **Loser-sees-it-vanish** — OBSERVED. The human dropped a sword, kept
+   looking at it; a synthetic peer claimed the dropId; the sword visibly
+   disappeared in front of them; mod state `resolved`, `removedByUs` set
+   first (no re-claim echo emitted).
+4. **Reload restart-sweep under a real save load** — OBSERVED, all branches:
+   `reload detected, re-baselined` (ghost-liveness discriminator; zero false
+   drop emits from the rewound inventory), the human's own open drop
+   reclaimed over the wire (peers converge to the owner's save state), and
+   the peer-drop copy went back to pending and self-healed —
+   re-materialized, after correctly retrying while ghosts were still being
+   reconciled.
+5. The 30 s heartbeat was watched live re-sending the one open drop.
+
+Fidelity notes from the session:
+- Weapon condition may not carry: the sword was sent health=0.8 but its
+  tooltip showed 100% (the bandage's 0.8 DID carry to inventory earlier).
+  Cosmetic-grade gap, not chased.
+- The restart sweep's entity-missing check has no distance guard (unlike the
+  watcher). A far-away own drop could be reclaimed even where a nearer check
+  would have seen it. The outcome is still safe — peers drop their copies,
+  the owner's world keeps whatever the save says, no duplication — the drop
+  just leaves the sync early.
+
+### Still live-gated (needs a second human / second machine — next build)
+
+- The two-HUMAN race: both grabbing the same item within one RTT. The relay
+  ordering half is wire-verified (I3) and the rollback half is game-verified
+  (R6 + the vanish test above), but the combined human-timing case has not
+  been run.
+- The true two-machine loop with two full game installs (deploy matched
+  sets, WO-46). The rebuilt pak is committed but NOT yet installed — the
+  session ran on live-injected Lua; the next game restart loses item sync
+  until `Build-And-Install-Mod.ps1` runs with the game closed.
 
 ### Known limits (deliberate)
 

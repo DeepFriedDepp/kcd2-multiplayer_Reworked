@@ -46,3 +46,26 @@ item by recorded wuid. Relay stays stateless (leaner than TimeSkip's table).
 
 **Live-gated for the human** (findings §Live-gated): real UI drop signature,
 two-machine loop, two-human race, reload resweep under a real save load.
+
+## 2026-08-24 — one-human live E2E (second half of the day)
+
+Closed three of the four live-gated items with the human at the keyboard and
+synthetic wire peers standing in for player B (new tools: Bot-ItemPeer.ps1,
+Bot-ItemClaim.ps1). Old installed stack stopped first (predates 0x32); real
+rebuilt agent+relay ran from repo bin; game never restarted — the injected
+Lua section plus the new agent's auto re-arm carried the whole session.
+
+- Real UI drop: OBSERVED (armor piece; identical signature to PlaceItem).
+- Inbound loop: OBSERVED with eyes and hands — sword materialized, rendered
+  on dirt, vanilla Pick up prompt, hand pickup, claim echo to all peers.
+- Loser-vanish UX: OBSERVED — a peer's claim made the human's dropped sword
+  disappear in front of them; removedByUs flagged, no echo loop.
+- Reload restart-sweep: OBSERVED under a real save load — reload correctly
+  discriminated from a menu, zero false emits, own drop reclaimed, peer copy
+  re-materialized (self-healing, retried while ghosts reconciled).
+- Fidelity notes: weapon condition may not carry (0.8 sent, 100% shown);
+  sweep's entity check has no distance guard (safe outcome, noted).
+
+Still deferred to a second human/machine build: the two-human race timing
+and the true two-install loop. The pak is committed but NOT installed — run
+Build-And-Install-Mod.ps1 with the game closed before the next session.
