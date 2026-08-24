@@ -48,7 +48,57 @@ Research only, per the brief — nothing built. Full detail in
    `r_DisplayInfo` above (plus the human's visual check) — no Lua edits,
    no pak rebuild, no other state changed in the running game or the mod.
 
-**Nothing implemented.** `docs/WO-50-findings.md` has all three
-ready-to-build specs and exactly what blocks each: Phase 1 needs the
+**Nothing implemented in session 1.** `docs/WO-50-findings.md` has all
+three ready-to-build specs and exactly what blocks each: Phase 1 needs the
 human's Discord Client ID + asset key; Phases 2 and 3 need nothing further
 from the human before a build WO can start.
+
+## Session 2 — 2026-08-24 (Sonnet 5, same day)
+
+Human asked for the icon fixed and a walkthrough to get the Discord
+Client ID, then supplied it (`1541566715140243506`) and the asset key
+(`kcd_mp_color_2`) after uploading the logo themselves. Built both
+Phase 1 and Phase 3 from the session-1 specs. Full detail in
+`docs/WO-50-findings.md`'s "Session 2 — implementation" section.
+
+1. **Icon:** wrote `tools/Build-LauncherIcon.ps1`, generated
+   `KCDMP_launcher/app.ico` (real 6-size multi-resolution ICO, confirmed
+   via `file`), wired `ApplicationIcon` into the csproj and
+   `SetIconFile` into `Program.cs`. Verified by extracting the built
+   exe's own embedded icon and confirming it's the new logo pixel-for-
+   pixel, not the SDK default.
+2. **Discord presence:** built `DiscordPresence.cs`, wired into
+   `GameBridge`/`ClientConfig`/`Home.razor.cs` per the session-1 spec.
+   Smoke-tested the real compiled agent against a bogus relay (isolates
+   Discord from needing the full game+relay stack) and found a real bug
+   immediately: `System.NullReferenceException` inside
+   `DiscordRPC.Assets.Merge`, non-fatal (library catches it internally)
+   but real. Diagnosed by pulling the actual library source at the exact
+   installed tag rather than guessing — confirmed `Assets.Merge` in
+   `v1.6.1` calls `.StartsWith()` on a possibly-null field with no guard
+   (fixed upstream on `master`/`v1.6.2`, never republished to NuGet).
+   Fixed by always setting `SmallImageKey = ""` rather than leaving it at
+   its C# default.
+3. Re-ran the smoke test with added connection-state logging
+   (`OnReady`, `OnPresenceUpdate`, explicit `SetPresence` argument
+   logging) to get a real answer instead of guessing from silence:
+   confirmed `Initialize()` succeeded, `OnReady` fired with the real
+   logged-in Discord username, and `SetPresence` carried the exact
+   configured text/image key.
+4. Human's own Discord initially still showed the auto-detected
+   "Kingdom Come: Deliverance II Modding Tools" line instead of the new
+   presence. Rather than assume the code was broken, walked through:
+   is the game actually running (auto-detect is a separate mechanism),
+   is there a second activity entry on the full profile card, and
+   finally the real answer — Discord's "Display current activity as a
+   status message" privacy setting, separate from the game-auto-detect
+   one. Human confirmed it was already on and sent a screenshot:
+   Discord showing "Playing — KCD2 Multiplayer — Connecting... —
+   v0.16.8 · solo" with the logo and a live elapsed timer, exactly
+   matching the code. It "reverted" afterward only because the smoke
+   test's own `timeout` command killed the process — correct behavior
+   (presence should clear on exit), not a bug.
+5. Farkle suite re-run after all changes: 59/59 PASS.
+
+**Phase 1 and Phase 3 are done and live-verified. Phase 2 (HUD CVar) is
+still just a spec** — not touched this session.

@@ -1,7 +1,12 @@
 # WO-50 — research for main-release polish: Discord presence, HUD cleanup, launcher icon
 
-Worked 2026-08-24 (Sonnet 5). Research only, per the session brief — nothing
-in this WO is implemented. Three ready-to-build specs follow.
+Worked 2026-08-24 (Sonnet 5). Started research-only per the session brief;
+the human asked for the icon and Discord presence to be built the same
+session once the specs below existed. **Phase 1 and Phase 3 are now
+implemented and live-verified. Phase 2 remains a spec, not yet built.**
+See "Session 2 — implementation" at the end of this document for what
+actually shipped and what was learned building it that the original spec
+below did not (and could not) anticipate.
 
 `docs/branding/kcd2-mp-logo.png` committed — copied from the human-provided
 `docs/branding/npp_kcd_mp_color.png` (2048×2048, 8-bit RGBA, real alpha,
@@ -266,3 +271,96 @@ change alone.
 override in `KCDMP.iss`, no icon handling in `tools/Publish-Release.ps1`,
 and no other launcher-facing executable (agent, relay, injector) ships a
 visible icon anywhere a user would see it.
+
+---
+
+## Session 2 — implementation (same day)
+
+The human asked for the icon to be fixed and the Discord Client ID
+walkthrough to happen this same session, then supplied the Client ID
+(`1541566715140243506`) and, after upload, the Rich Presence asset key
+(`kcd_mp_color_2`). Both features below were built, and the taskbar-icon
+question above is now a real, live-checked answer, not a guess.
+
+### Phase 3, built: launcher icon
+
+- `tools/Build-LauncherIcon.ps1` — new. Resizes the source PNG to
+  16/32/48/64/128/256px and hand-writes a real multi-resolution `.ico`
+  (Vista+ PNG-compressed entries), zero new dependency
+  (`System.Drawing.Common` already comes in via `UseWindowsForms`).
+  Re-run any time the source art changes.
+- `KCDMP_launcher/app.ico` — generated output, committed.
+- `KCDMP_launcher/KCDMP_launcher.csproj` — added `<ApplicationIcon>app.ico
+  </ApplicationIcon>` plus a `None`/`CopyToOutputDirectory` item so the raw
+  file ships beside the exe (the embedded resource alone isn't enough —
+  see next line).
+- `KCDMP_launcher/Program.cs` — added `app.MainWindow.SetIconFile("app.ico")`
+  next to the existing `SetTitle`/`SetSize` chain, for Photino's own
+  runtime window/taskbar icon.
+- **Verified, not assumed:** built the project, extracted the compiled
+  exe's actual embedded icon via `System.Drawing.Icon.ExtractAssociatedIcon`
+  and confirmed pixel-for-pixel it's the new logo, not the SDK default.
+  The taskbar-icon risk flagged in the research section above (open
+  Photino.NET issue #106) was **not** separately re-verified live in this
+  session — that still needs an eyes-on check after a real install.
+
+### Phase 1, built: Discord Rich Presence in the agent
+
+New `dotnet/KcdMp.Client/DiscordPresence.cs`, `PackageReference` on
+`DiscordRichPresence` 1.6.1.70. Wired into `GameBridge.cs`: one instance
+per agent process (survives relay reconnects), `SetConnected(isHosting)`
+on a successful handshake, `SetPeerCount(...)` refreshed off the existing
+`_peerLastSeenUtc` 2-minute liveness window (same one `hasLivePeers`
+already used — reused, not invented) on every Ghost/Disconnect packet
+(cheap: it no-ops unless the count actually changed), `ResetForReconnect()`
+in the existing post-disconnect cleanup block, and `Dispose()` in
+`RunAsync`'s `finally`. `ClientConfig` gained `DiscordPresenceEnabled`,
+`DiscordClientId` (defaults to the real App ID — not a secret, it's the
+public identifier Discord's own client uses), `DiscordLargeImageKey`
+(defaults to `kcd_mp_color_2`), and `IsHosting`; `--discord`/`--no-discord`/
+`--hosting` command-line flags mirror the existing `--voice` pattern.
+`Home.razor.cs`'s `ConnectToGame` now passes `--hosting` when
+`hostedRelayProcess` is alive at that point — set by `OpenHostModal` before
+`LaunchAsHost` ever reaches `ConnectToGame`, so it's a reliable signal
+(`ServerHost`/IP alone is not: a LAN host address looks identical to a
+joiner pointed at the same address).
+
+**A real bug found and fixed, not guessed at:** a smoke-tested run threw
+```
+System.NullReferenceException at DiscordRPC.Assets.Merge(Assets other)
+```
+on Discord's own ready-handshake round-trip. Pulled the actual source at
+the exact installed tag (`v1.6.1`, matching NuGet `1.6.1.70`) and confirmed
+`Assets.Merge` calls `other._smallimagekey.StartsWith(...)` with **no null
+guard** — fixed later upstream (the null-check exists on `master`/`v1.6.2`)
+but never republished to NuGet, so the *currently-shipping* "actively
+maintained" package still carries it. The library's own internal catch
+logs it and keeps running (confirmed: the agent process never crashed,
+kept ticking normally past it) — but rather than rely on that, `Assets` in
+`DiscordPresence.cs` now always sets `SmallImageKey = ""` explicitly, since
+leaving it at its C# default (`null`) is the concrete trigger path for any
+presence that (like this one) has a large image but no small image.
+
+**Live-verified end-to-end**, not just "compiles": ran the built agent
+directly against a bogus relay (isolates Discord from the full
+game+relay stack), watched it log `Initialize() returned True`,
+`OnReady` firing with the real logged-in Discord username, and
+`SetPresence` being called with the exact configured details/state/image
+key. Human confirmed by screenshot: Discord showed **"Playing — KCD2
+Multiplayer — Connecting... — v0.16.8 · solo"** with the logo and a live
+elapsed-time counter, exactly matching the code. It later appeared to
+"revert" to Discord's own auto-detected "Kingdom Come: Deliverance II
+Modding Tools" line — traced to the smoke test's own `timeout` command
+killing the process, which is the **correct** behavior (presence should
+clear when the agent exits), not a bug.
+
+**One human-side gotcha surfaced and worth remembering:** Discord has two
+separate, independently-toggled settings — "Display currently running
+game as a status message" (governs the auto-detected line) and "Display
+current activity as a status message" (Settings → Activity Privacy —
+governs custom Rich Presence from apps like this one). Confirming the
+second one is on was part of getting to the working screenshot above; a
+future tester whose presence never shows should be pointed at that
+setting before assuming the code is broken.
+
+Farkle suite re-run after these changes: 59/59 PASS, unaffected.

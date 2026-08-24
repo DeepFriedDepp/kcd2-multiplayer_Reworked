@@ -117,6 +117,11 @@ public partial class GameBridge(ClientConfig config)
     // own ReleaseVersionInfo.Current without the wire protocol itself caring.
     private readonly ConcurrentDictionary<byte, string> _ghostReleaseVersions = new();
 
+    // WO-50: one instance for the whole agent process, surviving reconnects —
+    // see RunAsync. Null-safe throughout: Discord not running degrades to no
+    // presence shown, never to a crash.
+    private DiscordPresence? _discordPresence;
+
     // Appearance (WO-9 armor, WO-10 weapons). Outbound: the local player's
     // item classes as of the last successful send, so the poll loop only
     // sends on an actual change. Armor and weapon classes share this one set
@@ -398,12 +403,18 @@ public partial class GameBridge(ClientConfig config)
         await http.StartAsync(ct);
         _transport = http;
 
+        // WO-50: created once for the process's whole lifetime (not per relay
+        // connection) so a reconnect doesn't tear down and re-open the
+        // Discord IPC pipe.
+        _discordPresence = new DiscordPresence(config);
+
         try
         {
             await RunLoopAsync(http, ct);
         }
         finally
         {
+            _discordPresence?.Dispose();
             if (!ReferenceEquals(_transport, http))
                 await _transport.DisposeAsync();
             await http.DisposeAsync();
@@ -537,6 +548,18 @@ public partial class GameBridge(ClientConfig config)
     // Phase 2 – connected to relay server
     // -------------------------------------------------------------------------
 
+    // WO-50: same "seen within 2 minutes" liveness window this file's own
+    // hasLivePeers checks already use — reused here rather than invented, so
+    // a peer who silently vanished (crash, alt-F4, no Disconnect packet ever
+    // arriving) ages out of the presence text on the same schedule it
+    // already ages out everywhere else in this class.
+    private void RefreshDiscordPeerCount()
+    {
+        var now = DateTime.UtcNow;
+        int count = _peerLastSeenUtc.Count(kv => (now - kv.Value) < TimeSpan.FromMinutes(2));
+        _discordPresence?.SetPeerCount(count);
+    }
+
     private async Task ConnectAndRunAsync(CancellationToken appCt = default)
     {
         using var tcp = new TcpClient();
@@ -599,6 +622,8 @@ public partial class GameBridge(ClientConfig config)
         _myGhostId = myId;
         Console.WriteLine($"Connected! Assigned id={myId} (protocol v{Protocol.Version})");
         Console.WriteLine();
+
+        _discordPresence?.SetConnected(config.IsHosting);
 
         // WO-48: dropIds are minted per connection; a stale heartbeat after a
         // reconnect would re-broadcast drops the peers may already hold.
@@ -997,6 +1022,7 @@ public partial class GameBridge(ClientConfig config)
             _versionIpcServer = null;
             _ghostNames.Clear();
             _ghostReleaseVersions.Clear();
+            _discordPresence?.ResetForReconnect();
 
             Console.WriteLine("Removing all ghosts...");
             try { await ExecLuaAsync("KCD2MP_RemoveAllGhosts()"); } catch { }
@@ -2280,6 +2306,7 @@ public partial class GameBridge(ClientConfig config)
                     float rotZ     = ReadFloat(payload, 13);
                     bool  isRiding = (payload[17] & 0x01) != 0;
                     _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
+                    RefreshDiscordPeerCount();
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
                     await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding);
                 }
@@ -2305,6 +2332,7 @@ public partial class GameBridge(ClientConfig config)
                     byte ghostId = payload[0];
                     Console.WriteLine($"[disconnect] ghost {ghostId} removed");
                     _peerLastSeenUtc.TryRemove(ghostId, out _);
+                    RefreshDiscordPeerCount();
                     _voice?.RemovePlayer(ghostId);
                     _ghostAppearance.TryRemove(ghostId, out _);
                     _ghostKnownItemClasses.TryRemove(ghostId, out _);

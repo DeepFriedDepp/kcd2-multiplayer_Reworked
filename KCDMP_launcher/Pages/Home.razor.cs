@@ -638,8 +638,17 @@ namespace KCDMP_launcher.Pages
                     return;
                 }
 
+                // WO-50: --hosting is purely cosmetic (Discord Rich Presence
+                // text) -- the agent otherwise treats hosting and joining
+                // identically. hostedRelayProcess is set by OpenHostModal
+                // before LaunchAsHost ever reaches here, so its liveness at
+                // this point is a reliable "this session is hosting" signal;
+                // ServerHost/Ip alone is not, since a LAN host address looks
+                // identical to a joiner pointed at the same address.
+                bool isHosting = hostedRelayProcess != null && !hostedRelayProcess.HasExited;
                 var agentArgs = $"--host {pendingServer.Ip} --port {pendingServer.Port}" +
-                    (settings.VoiceChatEnabled ? "" : " --no-voice");
+                    (settings.VoiceChatEnabled ? "" : " --no-voice") +
+                    (isHosting ? " --hosting" : "");
 
                 var agentStartInfo = new ProcessStartInfo
                 {

@@ -24,6 +24,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="DiscordRichPresence" Version="1.6.1.70" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 

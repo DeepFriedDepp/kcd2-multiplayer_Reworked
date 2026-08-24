@@ -83,6 +83,36 @@ public sealed class ClientConfig
     /// </summary>
     public int VersionIpcPort { get; set; } = 5902;
 
+    /// <summary>
+    /// WO-50: whether to show a Discord Rich Presence status while connected.
+    /// Off means DiscordPresence never opens the IPC pipe at all.
+    /// </summary>
+    public bool DiscordPresenceEnabled { get; set; } = true;
+
+    /// <summary>
+    /// WO-50: this project's Discord Application ID. Not a secret — it is
+    /// the public identifier Discord's client uses to look up the Rich
+    /// Presence art assets and shows up in every Discord user's own client
+    /// regardless. Shipped as the real default so a fresh install needs no
+    /// configuration; still overridable for anyone running their own fork
+    /// under their own Discord application.
+    /// </summary>
+    public string DiscordClientId { get; set; } = "1541566715140243506";
+
+    /// <summary>
+    /// WO-50: the Rich Presence Art Asset key uploaded under this
+    /// application (Discord Developer Portal → Rich Presence → Art Assets).
+    /// </summary>
+    public string DiscordLargeImageKey { get; set; } = "kcd_mp_color_2";
+
+    /// <summary>
+    /// WO-50: set by the launcher (--hosting) when it also started the relay
+    /// this agent is connecting to, so Discord can show "Hosting" instead of
+    /// "Playing". Not derivable from ServerHost alone — a host on a LAN
+    /// address looks identical to a joiner pointed at the same address.
+    /// </summary>
+    public bool IsHosting { get; set; } = false;
+
     [JsonIgnore]
     public static string DefaultPath =>
         Path.Combine(
@@ -213,6 +243,15 @@ public sealed class ClientConfig
                         break;
                     case "--no-weather-sync":
                         WeatherSyncEnabled = false;
+                        break;
+                    case "--discord":
+                        DiscordPresenceEnabled = true;
+                        break;
+                    case "--no-discord":
+                        DiscordPresenceEnabled = false;
+                        break;
+                    case "--hosting":
+                        IsHosting = true;
                         break;
                     case "--benchmark":
                         // Handled in Program before the agent starts; listed
