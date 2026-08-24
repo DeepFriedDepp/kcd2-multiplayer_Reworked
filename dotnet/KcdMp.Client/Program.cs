@@ -37,6 +37,35 @@ catch (Exception ex)
     Console.WriteLine($"[log] file logging unavailable: {ex.Message}");
 }
 
+// --dump-swing-catalog (WO-47) prints the per-weapon-class swing rows parsed
+// out of the installed game's Tables.pak and exits. Offline diagnostic --
+// needs the game installed, not running. Optional extra args: item-class
+// GUIDs to resolve to a weapon class through the same catalog.
+if (args.Contains("--dump-swing-catalog"))
+{
+    var cat = KcdMp.Client.WeaponSwingCatalog.TryLoad(Console.WriteLine);
+    if (cat is null) return 1;
+    foreach (int wc in cat.KnownWeaponClasses)
+    {
+        foreach (var (shield, torch, label) in new[]
+                 { (false, false, "plain"), (true, false, "shield"), (false, true, "torch") })
+        {
+            var rows = cat.RowsFor(wc, shield, torch);
+            foreach (var row in rows)
+                Console.WriteLine($"class {wc} ({cat.WeaponClassName(wc)}) [{label}]: {row.Spec}");
+        }
+    }
+    foreach (var a in args)
+        if (Guid.TryParse(a, out var g))
+        {
+            int? wc = cat.WeaponClassOfItem(g);
+            Console.WriteLine($"item {g} -> " + (wc is null
+                ? "no melee weapon class"
+                : $"class {wc} ({cat.WeaponClassName(wc.Value)})"));
+        }
+    return 0;
+}
+
 // --benchmark measures the game channel and exits; it never touches the relay,
 // so it needs no name resolution and no server.
 if (args.Contains("--benchmark"))

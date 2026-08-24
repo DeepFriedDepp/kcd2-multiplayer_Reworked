@@ -77,8 +77,21 @@ public partial class GameBridge(ClientConfig config)
     // loadout is the longsword preset; a ghost without a drawn weapon renders
     // nothing on this row (also live-verified), which is the correct visual
     // for a peer whose weapon state says sheathed anyway.
+    // WO-47: now the fallback -- used when the shipped-table catalog below
+    // failed to load or has nothing for the ghost's synced weapon.
     private const string NativeSwingFragmentSpec =
         "FreeAttack, l_longsword+r_longsword+freeGuard+endFreeGuard+slash+attack_heavy";
+
+    // WO-47: per-weapon-class swing rows read from the installed game's own
+    // Tables.pak, so a ghost holding the peer's real synced weapon swings with
+    // that weapon's real animations instead of always the longsword row.
+    // Loaded off the hot path; null (load failed) keeps the WO-46 constant.
+    private readonly Task<WeaponSwingCatalog?> _swingCatalog =
+        Task.Run(() => WeaponSwingCatalog.TryLoad(Console.WriteLine));
+
+    // WO-47: per-ghost swing counter -- rotates through the several real rows
+    // a weapon class ships (slash/stab), so consecutive swings vary.
+    private readonly ConcurrentDictionary<byte, int> _ghostSwingIndex = new();
 
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
     // for a peer whose Handshake carried none (an old build). Read by
@@ -1107,6 +1120,33 @@ public partial class GameBridge(ClientConfig config)
         [Guid.Parse("e485dff2-7673-4b2b-9f5e-770b5bbcd800")] = Guid.Parse("d7b58b33-f452-4408-ba18-e8618eb3f1dd"),
         [Guid.Parse("ef6eb320-91c3-4f8e-a5c5-3640fe19a0da")] = Guid.Parse("4ea3ec22-970d-4ac7-b802-e801e0340253"),
     };
+
+    /// <summary>
+    /// WO-47: the swing spec for this ghost's currently-synced weapon, from
+    /// the shipped-table catalog; the WO-46 longsword constant when the
+    /// catalog is unavailable, still loading, or has no row for the weapon.
+    /// The appearance set is seeded with the spawn preset (longsword), so a
+    /// ghost that has not yet received an Appearance packet resolves to the
+    /// longsword rows -- the same visual WO-46 shipped.
+    /// </summary>
+    private string ResolveSwingSpec(byte ghostId)
+    {
+        var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
+        if (catalog is null || !_ghostAppearance.TryGetValue(ghostId, out var applied))
+            return NativeSwingFragmentSpec;
+
+        Guid[] snapshot;
+        lock (applied) snapshot = [.. applied];
+        int idx = _ghostSwingIndex.AddOrUpdate(ghostId, 0, static (_, v) => v + 1);
+        string? spec = catalog.SpecFor(snapshot, idx, out string weaponName);
+        if (spec is null)
+        {
+            Console.WriteLine($"[combatviz] ghost {ghostId}: no table row for its weapon set -- longsword fallback");
+            return NativeSwingFragmentSpec;
+        }
+        Console.WriteLine($"[combatviz] ghost {ghostId} swing as {weaponName}: {spec}");
+        return spec;
+    }
 
     /// <summary>
     /// Applies a received Appearance packet to the ghost identified by
@@ -2301,7 +2341,8 @@ public partial class GameBridge(ClientConfig config)
                         // race the injection and give up), and on failure —
                         // DLL absent, stale entity id after a respawn — the old
                         // Lua cue runs as the fallback, late but visible.
-                        _ = _combat.GhostSwingAsync(ceEntityId, NativeSwingFragmentSpec, ct)
+                        string fragSpec = ResolveSwingSpec(ceSource);
+                        _ = _combat.GhostSwingAsync(ceEntityId, fragSpec, ct)
                             .ContinueWith(t =>
                             {
                                 if (t.IsFaulted || !t.Result)
