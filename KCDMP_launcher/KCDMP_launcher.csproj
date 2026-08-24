@@ -9,6 +9,7 @@
 		<UseWindowsForms>true</UseWindowsForms>
 		<UseWPF>true</UseWPF>
 		<LangVersion>preview</LangVersion>
+		<ApplicationIcon>app.ico</ApplicationIcon>
 	</PropertyGroup>
 
 	<!--
@@ -44,6 +45,13 @@
 		</Content>
 		<Content Include="**\*.razor" Exclude="bin\**;obj\**" />
 		<Content Include="**\*.cshtml" Exclude="bin\**;obj\**" />
+		<!-- ApplicationIcon above embeds this into the exe's own icon resource
+		     (Explorer, shortcuts, taskbar when not running). Photino's window
+		     needs its own copy on disk at runtime, see Program.cs's
+		     SetIconFile call, so it must also ship as a physical file. -->
+		<None Include="app.ico">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
 	</ItemGroup>
 
 	<ItemGroup>

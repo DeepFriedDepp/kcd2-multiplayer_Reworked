@@ -61,6 +61,14 @@ class Program
                 .SetContextMenuEnabled(false)
                 .Center();
 
+            // WO-50: <ApplicationIcon> in the csproj only sets the .exe's own
+            // file icon (Explorer, shortcuts, taskbar when not running).
+            // Photino's actual window -- title bar, and the taskbar icon
+            // while it's running -- is a separate runtime setting. Relative
+            // path: SetIconFile resolves it against AppContext.BaseDirectory
+            // when it doesn't exist relative to the working directory.
+            app.MainWindow.SetIconFile("app.ico");
+
             AppDomain.CurrentDomain.UnhandledException += (sender, error) =>
             {
                 var ex = error.ExceptionObject as Exception;
