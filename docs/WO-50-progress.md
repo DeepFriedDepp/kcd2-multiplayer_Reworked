@@ -102,3 +102,34 @@ Phase 1 and Phase 3 from the session-1 specs. Full detail in
 
 **Phase 1 and Phase 3 are done and live-verified. Phase 2 (HUD CVar) is
 still just a spec** — not touched this session.
+
+## Session 3 — 2026-08-24 (Sonnet 5, same day)
+
+Human asked for Phase 2 built too, and set the version for this whole WO:
+`0.17.0`.
+
+1. Human reported Discord had reverted to showing the auto-detected
+   "Kingdom Come: Deliverance II Modding Tools" line again. Checked
+   directly instead of guessing: `tasklist` found no `KingdomCome.exe`,
+   and `localhost:1403` refused the connection — neither the game nor
+   the agent was running. Nothing to fix; Discord's own UI was just
+   showing a stale auto-detect line with nothing live feeding either
+   activity.
+2. Bumped `VERSION` `0.16.8` → `0.17.0` — explicit string from the
+   human, per `docs/VERSIONING.md`.
+3. Built Phase 2 per the session-1 spec: `KCD2MP.debugHud = false` +
+   `System.SetCVar("r_DisplayInfo","0")` at MOD INIT in `kdcmp.lua`,
+   `KCD2MP_DebugHud(arg)` mirroring the existing `KCD2MP_EnableAggro`
+   shape, registered as `mp_debug_hud on|off`.
+4. Confirmed the game was closed (same tasklist/1403 check as step 1),
+   then ran `tools\Build-And-Install-Mod.ps1` for real (no `-NoInstall`)
+   — deployed straight into
+   `D:\SteamLibrary\steamapps\common\KCD2Mod\Mods\kdcmp\`.
+5. Rebuilt both .NET projects so the shipped binaries carry the new
+   `0.17.0` informational version; re-ran Farkle: 59/59 PASS.
+
+**All three WO-50 phases are now built.** Not done: no installer/
+DirectInstall build (`Build-Installer.ps1`/`Build-DirectInstall.ps1`) —
+that's a separate step for whenever the human wants to actually cut the
+release, and Phase 2's mod-side change hasn't been re-verified live
+in-game this session (would need a fresh launch + save load).

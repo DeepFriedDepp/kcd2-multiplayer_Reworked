@@ -2,6 +2,21 @@
 System.LogAlways("[KCD2-MP] === MOD INIT ===")
 
 KCD2MP = {}
+
+-- WO-50: release default is the debug HUD (build/memory/FPS corner block)
+-- OFF. This is a mod-side CVar override, reasserted on every mod load,
+-- not an engine config file -- it does not touch the base game's own
+-- system.cfg/autoexec.cfg, and survives whatever CryEngine or the Modding
+-- Tools build shipped as ITS default (observed live as r_DisplayInfo=3).
+-- Deliberately unrelated to the ping/network indicator, which is the
+-- mod's own System.DrawText call elsewhere in this file and is not an
+-- engine overlay at all -- toggling this never touches it.
+-- `mp_debug_hud on|off` flips it live without a rebuild, same pattern as
+-- mp_dice_gate below.
+KCD2MP.debugHud = false
+if not KCD2MP.debugHud then
+    System.SetCVar("r_DisplayInfo", "0")
+end
 KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
@@ -1704,6 +1719,26 @@ function KCD2MP_InviteDiceAtTable()
         KCD2MP.dice.seat = nil
     end
     return KCD2MP_InviteNearest("dice", wager)
+end
+
+-- WO-50: mp_debug_hud on|off. Flips the release-default r_DisplayInfo
+-- override above without a rebuild, so a future debugging session can get
+-- the build/memory/FPS block back. Does not touch the ping/network
+-- indicator -- that is a separate System.DrawText call, not this CVar.
+function KCD2MP_DebugHud(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then
+        KCD2MP.debugHud = true
+        System.SetCVar("r_DisplayInfo", "3")
+    elseif s:find("off") then
+        KCD2MP.debugHud = false
+        System.SetCVar("r_DisplayInfo", "0")
+    else
+        mp_log("mp_debug_hud: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    mp_log("DEBUG HUD (r_DisplayInfo) = " .. tostring(System.GetCVarValue("r_DisplayInfo")))
+    return true
 end
 
 -- ===== Ghost NPC Spawn =====
@@ -6680,6 +6715,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_horse_adopt",     'KCD2MP_SetHorseAdopt("%LINE")', "WO-40: adopt real world horses for ghosts (default on). off = proxy horses only -- use if the game crashes when a peer mounts")
     System.AddCCommand("mp_weather",         'KCD2MP_WeatherCmd("%LINE")', "WO-40: bare = report rain intensity; mp_weather <profile> = blend to a time_of_day profile locally (probe, not broadcast)")
     System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
+    System.AddCCommand("mp_debug_hud",       'KCD2MP_DebugHud("%LINE")', "WO-50: toggle the CryEngine debug HUD (r_DisplayInfo), off by default in release: mp_debug_hud on|off")
 
     -- NPC sync (WO-32)
     System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%LINE")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")

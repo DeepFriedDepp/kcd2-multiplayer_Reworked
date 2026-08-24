@@ -364,3 +364,40 @@ future tester whose presence never shows should be pointed at that
 setting before assuming the code is broken.
 
 Farkle suite re-run after these changes: 59/59 PASS, unaffected.
+
+**Follow-up on "it reverted" (same day, second report):** the human later
+saw Discord fall back to "Kingdom Come: Deliverance II Modding Tools" a
+second time and asked about it. Checked directly rather than guessing:
+`tasklist` showed no `KingdomCome.exe` process and `localhost:1403`
+refused the connection — **neither the game nor the agent was running at
+that moment.** The auto-detected game line Discord was showing was
+already stale (the game itself had also closed); this is Discord's own
+UI lagging behind reality, not something either this feature or this
+project's code controls. No agent process, no custom presence — exactly
+the designed behavior, not a regression.
+
+### Phase 2, built (session 3): HUD CVar release-off
+
+`kdcmp/Data/Scripts/Startup/kdcmp.lua`: `KCD2MP.debugHud = false` right
+after `KCD2MP = {}` at MOD INIT, calling `System.SetCVar("r_DisplayInfo",
+"0")` when off (the release default). `KCD2MP_DebugHud(arg)` mirrors the
+existing `KCD2MP_EnableAggro`'s on/off shape exactly, and is registered as
+`mp_debug_hud on|off` alongside the other `mp_*` commands — flips
+`r_DisplayInfo` back to `3` live, no rebuild, for a future debugging
+session. Matches the spec above exactly: mod-side override, not an engine
+config file; independent of the ping indicator (untouched by any of this).
+
+Rebuilt and deployed via `tools\Build-And-Install-Mod.ps1` (game confirmed
+not running first: no `KingdomCome.exe` process, `localhost:1403`
+refused). Not re-verified live in-session (would need a fresh game
+launch + save load) — the Phase 2 research section above already
+live-verified the underlying CVar and its independence from the ping
+indicator; this session only added the mod-side gating code around a
+fact already confirmed true.
+
+### VERSION
+
+Bumped `0.16.8` → `0.17.0` for this WO's combined work (Discord presence,
+launcher icon, HUD default), on the human's own explicit instruction —
+see `docs/VERSIONING.md`. No installer/DirectInstall build was run; that
+remains a separate, explicitly-requested step.
