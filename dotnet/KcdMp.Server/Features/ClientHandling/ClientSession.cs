@@ -361,6 +361,35 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Dropped-item sync layer (WO-48) ---
+                // [dropId:4][itemClass:16][amount:2][health:4f][x:4f][y:4f][z:4f].
+                // Fixed-size, exact-length discipline like the combat layer: a
+                // short packet forwarded on becomes a call into the receiving
+                // client's game (it spawns an entity there).
+                if (type == Protocol.ItemDropUp && payloadLen == Protocol.ItemDropUpPayloadLen)
+                {
+                    var body = new byte[Protocol.ItemDropUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.BroadcastItemDrop(this, body);
+                    continue;
+                }
+
+                // [dropId:4]. Echoed to ALL clients including the claimant, in
+                // arrival order -- the relay's TCP serialization is the whole
+                // race arbiter (see Protocol's 0x34 notes: an others-only
+                // broadcast would make two simultaneous claimants both roll
+                // back and the item would evaporate). No claim table: clients
+                // resolve on the first echo they see and ignore repeats.
+                if (type == Protocol.ItemClaimUp && payloadLen == Protocol.ItemClaimUpPayloadLen)
+                {
+                    var body = new byte[Protocol.ItemClaimUpPayloadLen];
+                    await ReadExactAsync(body);
+                    _logger.Information("[itemsync] '{Name}' (id={Id}) claimed drop {DropId}.",
+                        Name, Id, BinaryPrimitives.ReadUInt32LittleEndian(body));
+                    _broadcastService.BroadcastItemClaim(this, body);
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -527,6 +556,32 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.NpcDamageDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue an ItemDropDown (0x33, WO-48). The body is the
+    /// upstream payload verbatim, prefixed with who dropped it.
+    /// </summary>
+    public void EnqueueItemDrop(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.ItemDropDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue an ItemClaimDown (0x35, WO-48). The body is the
+    /// upstream payload verbatim, prefixed with who claimed it. Unlike every
+    /// other Down packet this one also goes back to its own sender -- the
+    /// echo is the claim's confirmation (see Protocol's 0x34 notes).
+    /// </summary>
+    public void EnqueueItemClaim(byte claimerId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = claimerId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.ItemClaimDown, payload));
     }
 
     /// <summary>

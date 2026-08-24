@@ -194,6 +194,31 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays an ItemDropUp (0x32) from <paramref name="source"/> to all
+    /// other ready clients as an ItemDropDown (0x33) (WO-48). Stateless: the
+    /// dropper's agent heartbeats its own unclaimed drops for late joiners.
+    /// </summary>
+    public void BroadcastItemDrop(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueItemDrop(source.Id, body);
+    }
+
+    /// <summary>
+    /// Echoes an ItemClaimUp (0x34) to ALL ready clients -- including the
+    /// claimant -- as an ItemClaimDown (0x35) (WO-48). The echo-to-all is
+    /// deliberate and load-bearing: relay arrival order is the entire race
+    /// arbiter, and every client (the claimant above all) resolves the drop
+    /// on the first echo it receives. An others-only broadcast would make
+    /// two simultaneous claimants both conclude they lost.
+    /// </summary>
+    public void BroadcastItemClaim(ClientSession source, byte[] body)
+    {
+        foreach (var target in _clientHandler.GetClients().Where(c => c.IsReady))
+            target.EnqueueItemClaim(source.Id, body);
+    }
+
+    /// <summary>
     /// Routes a PlayerHitUp (0x21) to the single player it names, as a
     /// PlayerHitDown (0x22) (WO-28 Flow B).
     ///

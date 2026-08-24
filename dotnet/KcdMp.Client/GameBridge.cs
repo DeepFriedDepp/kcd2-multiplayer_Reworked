@@ -252,6 +252,27 @@ public partial class GameBridge(ClientConfig config)
     // by sending state for it; the relay arbitrates).
     private Func<string, float, float, float, float, float, byte, Task>? _sendNpcDrag;
 
+    // ---- Dropped-item sync (WO-48) ----
+    // Both reassigned per connection like _sendCombatEvent. Drop takes the
+    // prebuilt 0x32 payload because the heartbeat resends it verbatim.
+    private Func<byte[], Task>? _sendItemDrop;
+    private Func<uint, Task>? _sendItemClaim;
+
+    // This agent's own still-unclaimed drops: dropId -> the exact 0x32
+    // payload sent, re-broadcast every ItemDropHeartbeatSeconds so a late
+    // joiner converges (the relay replays nothing; receivers dedupe by
+    // dropId). An entry leaves on the drop's ItemClaimDown echo -- whoever
+    // claimed it -- and the whole map clears on disconnect: dropIds are
+    // minted per connection and a re-minted broadcast after reconnect would
+    // duplicate the item on every peer that kept the old one.
+    private readonly ConcurrentDictionary<uint, byte[]> _myOpenDrops = new();
+    private const int ItemDropHeartbeatEveryTicks = 3000;   // 30 s at TickMs=10
+
+    // Relay-assigned ghost id of THIS client, from the connect Ack. The
+    // receive loop needs it to tell the mod whether an ItemClaimDown echo
+    // means "you won" (claimer == us) or "you lost, roll back".
+    private byte _myGhostId;
+
     // ---- Shared player combat (WO-28) ----
 
     // Flow A outbound: the last health/stamina actually put on the wire, plus
@@ -557,8 +578,13 @@ public partial class GameBridge(ClientConfig config)
         }
 
         byte myId = reply[3];
+        _myGhostId = myId;
         Console.WriteLine($"Connected! Assigned id={myId} (protocol v{Protocol.Version})");
         Console.WriteLine();
+
+        // WO-48: dropIds are minted per connection; a stale heartbeat after a
+        // reconnect would re-broadcast drops the peers may already hold.
+        _myOpenDrops.Clear();
 
         _hasPushed = false;
         _lastSentAppearance = null;
@@ -707,6 +733,10 @@ public partial class GameBridge(ClientConfig config)
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
         _sendCombatEvent = evt => SendCombatEventAsync(stream, evt, cts.Token);
         _sendWeather = (profile, blend) => SendWeatherAsync(stream, profile, blend, cts.Token);
+        // Dropped-item sync (WO-48): both fire from the tail transport's event
+        // thread (item_drop / item_claim event lines), which has no stream.
+        _sendItemDrop = payload => SendItemDropAsync(stream, payload, cts.Token);
+        _sendItemClaim = dropId => SendItemClaimAsync(stream, dropId, cts.Token);
         void OnLocalPauseDetected(bool paused)
         {
             _localAutoPaused = paused;
@@ -801,8 +831,20 @@ public partial class GameBridge(ClientConfig config)
                         // The puppet chain needs no re-arm: any inbound
                         // NpcStateDown restarts it via KCD2MP_ApplyNpcState.
                         await ExecLuaAsync("if KCD2MP_StartNpcSync and KCD2MP.npcSync and KCD2MP.npcSync.enabled then KCD2MP_StartNpcSync() end");
+                        // WO-48: the item-sync tick is a Script.SetTimer chain
+                        // like the others and dies with them on a save load.
+                        await ExecLuaAsync("if KCD2MP_StartItemSync then KCD2MP_StartItemSync() end");
                     }
                     catch { }
+                }
+
+                // WO-48: re-broadcast my still-unclaimed drops so a peer who
+                // joined after the drop still converges. Receivers dedupe by
+                // dropId, so a resend costs nothing when everyone has it.
+                if (tickCount % ItemDropHeartbeatEveryTicks == 0 && !_myOpenDrops.IsEmpty)
+                {
+                    foreach (var payload in _myOpenDrops.Values)
+                        try { await SendItemDropAsync(stream, payload, cts.Token); } catch { }
                 }
 
                 // WO-28 Phase 0. A save load destroys every ghost entity while
@@ -906,6 +948,9 @@ public partial class GameBridge(ClientConfig config)
             _sendHorseInfo = null;
             _sendCombatEvent = null;
             _sendWeather = null;
+            _sendItemDrop = null;
+            _sendItemClaim = null;
+            _myOpenDrops.Clear();
             _sessionWeatherProfile = null;
             _lastAppliedWeatherProfile = null;
             _weatherNextRepickUtc = DateTime.MinValue;
@@ -1562,6 +1607,57 @@ public partial class GameBridge(ClientConfig config)
         try { guid = await _transport.ReadGhostSoulGuidAsync(npcName, ct); } catch { }
         _soulGuidByName[npcName] = (guid, now);
         return guid;
+    }
+
+    // -------------------------------------------------------------------------
+    // Dropped-item sync (WO-48)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Builds the exact ItemDropUp (0x32) payload -- kept verbatim in
+    /// <see cref="_myOpenDrops"/> so the late-joiner heartbeat resends the
+    /// identical bytes (receivers dedupe by the dropId inside).
+    /// </summary>
+    private static byte[] BuildItemDropPayload(uint dropId, Guid itemClass, ushort amount, float health, float x, float y, float z)
+    {
+        var payload = new byte[Protocol.ItemDropUpPayloadLen];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, dropId);
+        itemClass.TryWriteBytes(payload.AsSpan(4));
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(20), amount);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(22), health);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(26), x);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(30), y);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(34), z);
+        return payload;
+    }
+
+    /// <summary>Puts one ItemDropUp (0x32) on the wire (first send and heartbeat both).</summary>
+    private async Task SendItemDropAsync(NetworkStream stream, byte[] payload, CancellationToken ct)
+    {
+        try
+        {
+            var packet = new byte[3 + payload.Length];
+            packet[0] = Protocol.ItemDropUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payload.Length);
+            payload.CopyTo(packet, 3);
+            await stream.WriteAsync(packet, ct);
+        }
+        catch (Exception ex) { Console.WriteLine($"[itemsync] drop send failed: {ex.Message}"); }
+    }
+
+    /// <summary>Puts one ItemClaimUp (0x34) on the wire.</summary>
+    private async Task SendItemClaimAsync(NetworkStream stream, uint dropId, CancellationToken ct)
+    {
+        try
+        {
+            var packet = new byte[3 + Protocol.ItemClaimUpPayloadLen];
+            packet[0] = Protocol.ItemClaimUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.ItemClaimUpPayloadLen);
+            BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(3), dropId);
+            await stream.WriteAsync(packet, ct);
+            Console.WriteLine($"[itemsync] sent claim for drop {dropId}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[itemsync] claim send failed: {ex.Message}"); }
     }
 
     // -------------------------------------------------------------------------
@@ -2330,6 +2426,42 @@ public partial class GameBridge(ClientConfig config)
                             await ApplyWeatherAsync(wProfile, wBlend);
                     }
                 }
+                else if (type == Protocol.ItemDropDown && payloadLen == Protocol.ItemDropDownPayloadLen)
+                {
+                    // Dropped-item sync (WO-48):
+                    // [sourceGhostId:1][dropId:4][itemClass:16][amount:2][health:4f][x:4f][y:4f][z:4f].
+                    // Handed to the mod as a pending drop; it materializes the
+                    // pickup entity only once the local player is near enough
+                    // for the ground to be streamed (placing far away was
+                    // observed to drop the item through the world). Dedupe by
+                    // dropId is the mod's job -- heartbeats repeat this packet.
+                    byte idSource   = payload[0];
+                    uint idDropId   = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(1));
+                    var  idClass    = new Guid(payload.AsSpan(5, Protocol.ItemClassLen));
+                    ushort idAmount = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(21));
+                    float idHealth  = ReadFloat(payload, 23);
+                    float idX       = ReadFloat(payload, 27);
+                    float idY       = ReadFloat(payload, 31);
+                    float idZ       = ReadFloat(payload, 35);
+                    if (idDropId != 0 && idAmount > 0)
+                        await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
+                            "if KCD2MP_ItemDropAdd then KCD2MP_ItemDropAdd(\"{0}\",\"{1}\",{2},{3:F4},{4:F3},{5:F3},{6:F3},\"{7}\") end",
+                            idDropId, idClass, idAmount, idHealth, idX, idY, idZ, idSource));
+                }
+                else if (type == Protocol.ItemClaimDown && payloadLen == Protocol.ItemClaimDownPayloadLen)
+                {
+                    // [claimerGhostId:1][dropId:4]. The relay echoes claims to
+                    // everyone INCLUDING the claimant, in arrival order -- the
+                    // first echo a client sees for a dropId settles that drop
+                    // everywhere (the mod ignores repeats). Also retires the
+                    // drop from our own heartbeat set, whoever won it.
+                    byte icClaimer = payload[0];
+                    uint icDropId  = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(1));
+                    _myOpenDrops.TryRemove(icDropId, out _);
+                    bool claimIsMine = icClaimer == _myGhostId;
+                    Console.WriteLine($"[itemsync] drop {icDropId} claimed by {(claimIsMine ? "us" : $"ghost {icClaimer}")}");
+                    await ExecLuaAsync($"if KCD2MP_ItemDropClaimed then KCD2MP_ItemDropClaimed(\"{icDropId}\",\"{icClaimer}\",{(claimIsMine ? "true" : "false")}) end");
+                }
                 else if (type == Protocol.CombatEventDown && payloadLen == Protocol.CombatEventDownPayloadLen)
                 {
                     // Combat visibility (WO-39 Phase 1): [sourceGhostId:1][event:1].
@@ -2642,6 +2774,62 @@ public partial class GameBridge(ClientConfig config)
                 var sendCombat = _sendCombatEvent;
                 if (sendCombat is null) break;
                 _ = sendCombat(evt.Value);
+                break;
+            }
+
+            case "item_drop":
+            {
+                // Dropped-item sync (WO-48):
+                // "<classGuid> <amount> <health> <x> <y> <z> <entityName>"
+                // from the mod's drop detector. The agent mints the dropId
+                // here (random nonzero -- a player-dropped item has no
+                // authored identity) and hands it straight back to the mod so
+                // both sides key the same drop the same way. entityName is
+                // engine-generated; validated like every name that crosses
+                // back into a Lua string literal.
+                var df = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (df.Length < 7
+                    || !Guid.TryParse(df[0], out Guid dropClass)
+                    || !ushort.TryParse(df[1], out ushort dropAmount)
+                    || !float.TryParse(df[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float dropHealth)
+                    || !float.TryParse(df[3], NumberStyles.Float, CultureInfo.InvariantCulture, out float dropX)
+                    || !float.TryParse(df[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float dropY)
+                    || !float.TryParse(df[5], NumberStyles.Float, CultureInfo.InvariantCulture, out float dropZ)
+                    || !NpcNamePattern.IsMatch(df[6]))
+                {
+                    Console.WriteLine($"[itemsync] malformed item_drop '{arg}'");
+                    break;
+                }
+                var sendDrop = _sendItemDrop;
+                if (sendDrop is null) break;
+                uint dropId;
+                var dropPayload = BuildItemDropPayload(0, dropClass, dropAmount, dropHealth, dropX, dropY, dropZ);
+                do { dropId = (uint)Random.Shared.Next(1, int.MaxValue); }
+                while (!_myOpenDrops.TryAdd(dropId, dropPayload));
+                BinaryPrimitives.WriteUInt32LittleEndian(dropPayload, dropId);
+                Console.WriteLine($"[itemsync] local drop {dropId}: {dropClass} x{dropAmount} at {dropX:F1},{dropY:F1},{dropZ:F1}");
+                _ = sendDrop(dropPayload);
+                // The dropId travels to Lua as a STRING: the stripped Lua 5.1
+                // floats lose integer precision above 2^24 (the WO-46 ghostid
+                // lesson) and a random 31-bit id usually exceeds that.
+                _ = ExecLuaAsync($"if KCD2MP_ItemDropRegistered then KCD2MP_ItemDropRegistered(\"{dropId}\",\"{df[6]}\") end");
+                break;
+            }
+
+            case "item_claim":
+            {
+                // "<dropId>" -- the mod's watcher saw a tracked drop's entity
+                // vanish without the mod itself removing it: something in this
+                // world (normally the local player) took it. The relay's echo
+                // (ItemClaimDown) is what settles who actually won.
+                if (!uint.TryParse(arg.Trim(), out uint claimDropId) || claimDropId == 0)
+                {
+                    Console.WriteLine($"[itemsync] malformed item_claim '{arg}'");
+                    break;
+                }
+                var sendClaim = _sendItemClaim;
+                if (sendClaim is null) break;
+                _ = sendClaim(claimDropId);
                 break;
             }
 

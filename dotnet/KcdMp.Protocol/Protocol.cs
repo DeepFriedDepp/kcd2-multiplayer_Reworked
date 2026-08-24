@@ -522,7 +522,59 @@ namespace KcdMp.Wire;
 /// the guids happen to match. A sender uses 0x30 OR 0x12 for one hit, never
 /// both -- both resolving on the receiver would double-apply.
 ///
-/// Free type bytes for new features: 0x32 and up.
+/// ---- Dropped-item sync layer (WO-48) ----
+///
+/// C→S  0x32  ItemDropUp:   [dropId:4 LE][itemClass:16][amount:2 LE][health:4f][x:4f][y:4f][z:4f]  (38)
+/// S→C  0x33  ItemDropDown: [sourceGhostId:1] + the upstream body verbatim                          (39)
+/// C→S  0x34  ItemClaimUp:  [dropId:4 LE]                                                            (4)
+/// S→C  0x35  ItemClaimDown:[claimerGhostId:1][dropId:4 LE]                                          (5)
+///
+/// A player deliberately dropping an item for another player is direct
+/// interaction, so it is shared; chests and NPC pockets stay per-player on
+/// purpose (whoever loots first would empty them for everyone). This is a
+/// TRANSACTIONAL layer, not a stream: a drop happens once, sits inert, and is
+/// consumed exactly once — the time-skip arbitration shape, not the NPC
+/// sync's continuous per-entity authority (whose flapping risk a static item
+/// does not need to buy).
+///
+/// itemClass is the ItemClass GUID, the appearance layer's established
+/// per-type key (byte-identical on every install). dropId is minted by the
+/// dropping client's agent (random nonzero uint32) at broadcast time — a
+/// player-dropped item has no authored identity, so one is created for it,
+/// the same runtime-minting idiom as ghost ids. Every client keys its local
+/// bookkeeping (dropId → its own world's entity/wuid) off it. health rides
+/// along because two same-class items differ by condition, and the receiver's
+/// CreateItem wants it; amount covers stackables (arrows, herbs).
+///
+/// Drop flow: the dropper's mod detects its player's own drop locally (new
+/// PickableItem entity near the player + that class's inventory count
+/// decreased — both halves required, which is what filters out world items
+/// streaming in and NPCs dropping things nearby), the agent minted a dropId
+/// and sends 0x32, the relay broadcasts 0x33 to the others. Receivers hold
+/// the drop pending and only materialize the pickup entity once their local
+/// player is within ~70 m — placing farther away was observed to drop the
+/// entity through unstreamed ground (WO-48 findings). The dropper's agent
+/// re-sends its still-unclaimed drops every
+/// <see cref="ItemDropHeartbeatSeconds"/> so a late joiner converges;
+/// receivers dedupe by dropId. The relay is stateless and replays nothing,
+/// exactly as for Appearance.
+///
+/// Claim flow — the race case is the design case: both players can go for
+/// the same item within one RTT. Each client's watcher notices its local
+/// copy vanish (without the mod itself having removed it) and sends 0x34.
+/// The relay echoes 0x35 to ALL clients INCLUDING the claimant, in arrival
+/// order — its TCP serialization is the whole arbiter, no claim table. Every
+/// client resolves a dropId on the FIRST 0x35 it sees and ignores repeats:
+/// a copy still on the ground is removed (flagged first, so the watcher does
+/// not read the removal as another claim — the 0x13 loop-prevention idiom);
+/// the winning claimant keeps the item; a losing claimant deletes the gained
+/// item from its inventory by the wuid it recorded at spawn time. The echo
+/// must include the claimant: with others-only broadcast, two simultaneous
+/// claimants would each see only the OTHER's claim and both roll back — the
+/// item would evaporate. No client ever concludes "I won" from local state;
+/// only the echo decides.
+///
+/// Free type bytes for new features: 0x36 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -574,6 +626,8 @@ public static class Protocol
     public const byte CombatEventUp  = 0x2C;
     public const byte WeatherUp      = 0x2E;
     public const byte NpcDamageUp    = 0x30;
+    public const byte ItemDropUp     = 0x32;
+    public const byte ItemClaimUp    = 0x34;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -604,6 +658,8 @@ public static class Protocol
     public const byte CombatEventDown  = 0x2D;
     public const byte WeatherDown      = 0x2F;
     public const byte NpcDamageDown    = 0x31;
+    public const byte ItemDropDown     = 0x33;
+    public const byte ItemClaimDown    = 0x35;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -878,6 +934,27 @@ public static class Protocol
 
     /// <summary>Fixed tail after the name in an NpcDamage packet: stamina + health + flags.</summary>
     public const int NpcDamageFixedTail = 4 + 4 + 1;
+
+    // ---- Dropped-item sync layer (WO-48) ----
+
+    /// <summary>Exact ItemDropUp (0x32) payload length: dropId + itemClass GUID + amount + health + x/y/z.</summary>
+    public const int ItemDropUpPayloadLen = 4 + ItemClassLen + 2 + 4 + 4 + 4 + 4;
+
+    /// <summary>Exact ItemDropDown (0x33) payload length.</summary>
+    public const int ItemDropDownPayloadLen = 1 + ItemDropUpPayloadLen;
+
+    /// <summary>Exact ItemClaimUp (0x34) payload length.</summary>
+    public const int ItemClaimUpPayloadLen = 4;
+
+    /// <summary>Exact ItemClaimDown (0x35) payload length.</summary>
+    public const int ItemClaimDownPayloadLen = 1 + ItemClaimUpPayloadLen;
+
+    /// <summary>
+    /// How often the dropping agent re-sends a still-unclaimed drop, so a
+    /// peer who joined after the drop still converges. The relay is stateless
+    /// and replays nothing; receivers dedupe by dropId.
+    /// </summary>
+    public const int ItemDropHeartbeatSeconds = 30;
 }
 
 /// <summary>The sub-action inside a DiceIntent (0x16) payload.</summary>

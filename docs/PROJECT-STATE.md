@@ -176,11 +176,16 @@ itself) that both `KcdMp.Client` and `KcdMp.Server` reference. One copy, kept
 in sync with itself by construction.
 
 Since then: `0x1C`–`0x1D` (PauseUp/PauseDown, WO-11), `0x1E` (ReleaseVersion,
-WO-19), `0x1F`–`0x25` (shared player combat, WO-28), and `0x26`–`0x27`
+WO-19), `0x1F`–`0x25` (shared player combat, WO-28), `0x26`–`0x27`
 (NPC sync, WO-32 — real hand-placed NPCs streamed from the world authority,
-behind `mp_npc_sync`, off by default; see `docs/WO-32-findings.md`).
+behind `mp_npc_sync`, off by default; see `docs/WO-32-findings.md`),
+`0x28`–`0x29` (time-skip sync, WO-38), `0x2A`–`0x2B` (horse identity, WO-38),
+`0x2C`–`0x2D` (combat visibility, WO-39), `0x2E`–`0x2F` (weather, WO-40),
+`0x30`–`0x31` (name-addressed NPC damage, WO-40), and `0x32`–`0x35`
+(dropped-item sync, WO-48 — transactional drop/claim, relay echo is the race
+arbiter; see `docs/WO-48-findings.md`).
 
-**Next free type byte: `0x28`.** *(This line has been stale twice now.
+**Next free type byte: `0x36`.** *(This line has been stale twice now.
 `Protocol.cs`'s own "free type bytes" comment is the authority — check it
 there, not here.)*
 
