@@ -156,6 +156,24 @@ public sealed class WeaponSwingCatalog
     public int? WeaponClassOfItem(Guid itemClass) =>
         _itemToWeaponClass.TryGetValue(itemClass, out int c) ? c : null;
 
+    /// <summary>
+    /// WO-47: the equipped item whose weapon class lives in the Oversized
+    /// slot (halberds/polearms), or null. Those never attach through the
+    /// plain DrawWeapon() path -- the ghost draw event must go through
+    /// KCD2MP_GhostDrawItem (DrawFromInventory) for them instead.
+    /// </summary>
+    public Guid? OversizedItemOf(IReadOnlyCollection<Guid> equipped)
+    {
+        foreach (var g in equipped)
+        {
+            if (_itemToWeaponClass.TryGetValue(g, out int c)
+                && _weaponClasses.TryGetValue(c, out var wc)
+                && wc.EquipSlot == "Oversized")
+                return g;
+        }
+        return null;
+    }
+
     // -------------------------------------------------------------------------
 
     /// <summary>

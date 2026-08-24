@@ -3838,6 +3838,40 @@ function KCD2MP_GhostNativeSwingHold(id)
     end
 end
 
+-- WO-47: draw a SPECIFIC inventory item into the ghost's hands, for weapon
+-- classes DrawWeapon() ignores (equip_slot="Oversized": halberds/polearms).
+-- Live-verified this session: EquipItem reports a polearm equipped but never
+-- attaches the model, DrawWeapon() draws the sidearm instead, and
+-- human:DrawFromInventory(item, 0, true) is the one call that puts the
+-- polearm in hand. ORDER MATTERS (live-observed): DrawFromInventory AFTER a
+-- DrawWeapon()-style draw suppressed native swing rendering entirely;
+-- called INSTEAD of it, swings render. The agent routes a draw event here
+-- (rather than KCD2MP_GhostCombat) when its weapon catalog says the ghost's
+-- synced main-hand weapon is Oversized.
+function KCD2MP_GhostDrawItem(id, classGuid)
+    id = tostring(id)
+    local ghost = KCD2MP.ghosts[id]
+    if not (ghost and ghost.entity and ghost.entity.human and ghost.entity.inventory) then return end
+    if KCD2MP.ghostWeaponDrawn[id] then return end   -- heartbeat re-emits land here
+    local drew = false
+    pcall(function()
+        local it = ghost.entity.inventory:FindItem(tostring(classGuid))
+        if it then
+            ghost.entity.human:DrawFromInventory(it, 0, true)
+            drew = true
+        end
+    end)
+    if drew then
+        KCD2MP.ghostWeaponDrawn[id] = true
+        mp_log("CombatViz: ghost " .. id .. " drew oversized item from inventory")
+    else
+        -- Item not in the ghost's inventory (appearance apply still in
+        -- flight): fall back to the plain draw so the state flag and any
+        -- sidearm still behave as before.
+        KCD2MP_GhostCombat(id, 0)
+    end
+end
+
 function KCD2MP_GhostCombatAll(arg)
     local evt = tonumber(arg)
     if evt == nil then

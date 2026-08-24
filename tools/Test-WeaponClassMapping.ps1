@@ -27,10 +27,20 @@ $weapons = @(
 )
 
 function Read-WeaponMap {
+    # SelectSingleNode, not .Value: on an XmlElement, .Value is the XmlNode
+    # property (null), never the <Value> child element.
+    # The Value element also carries Type="N" -- the game's own weapon-class
+    # id for the equipped item, which is the whole question of this test.
     $xml = [xml](Invoke-RestMethod "$Api/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedWeaponsByClassId?depth=1")
     $pairs = @()
     foreach ($p in $xml.SelectNodes('//Pair')) {
-        $pairs += [pscustomobject]@{ Key = $p.Key; ItemClass = $p.Value.FirstChild.ItemClass }
+        $v = $p.SelectSingleNode('Value')
+        $pairs += [pscustomobject]@{
+            Key       = $p.GetAttribute('Key')
+            ItemClass = $v.GetAttribute('ItemClass')
+            ItemName  = $v.GetAttribute('Name')
+            Type      = $v.GetAttribute('Type')
+        }
     }
     return $pairs
 }
@@ -49,14 +59,16 @@ foreach ($w in $weapons) {
         $map = Read-WeaponMap
         $hit = $map | Where-Object { $_.ItemClass -eq $g }
         if ($hit) {
+            $typeOk = ([string]$hit.Type -eq [string]$w.cls)
             Write-Host ("{0}:" -f $w.name)
-            Write-Host ("  EquippedWeaponsByClassId reports  ItemClass={0}  (dictionary Key={1})" -f $hit.ItemClass, $hit.Key)
-            Write-Host ("  item.xml row for that GUID:       Class=""{0}""  ({1})" -f $w.cls, $w.clsName)
-            Write-Host ("  combat tables for class {0}:       see Test-SwingCatalog.ps1 rows" -f $w.cls)
+            Write-Host ("  EquippedWeaponsByClassId:  ItemClass={0}  Key={1}  Type={2}" -f $hit.ItemClass, $hit.Key, $hit.Type)
+            Write-Host ("  item.xml row for the GUID: Class=""{0}""  ({1})" -f $w.cls, $w.clsName)
+            Write-Host ("  live Type vs item.xml Class: {0}" -f $(if ($typeOk) { 'MATCH' } else { 'MISMATCH' }))
+            if (-not $typeOk) { $fail++ }
         }
         else {
             Write-Host ("{0}: FAIL - equipped but ItemClass {1} not in EquippedWeaponsByClassId. Map: {2}" `
-                -f $w.name, $g, (($map | ForEach-Object { $_.ItemClass }) -join ', '))
+                -f $w.name, $g, (($map | ForEach-Object { "$($_.ItemName)=$($_.ItemClass) Type=$($_.Type)" }) -join '; '))
             $fail++
         }
         # Unequip so the next weapon lands in a clean main-hand slot.

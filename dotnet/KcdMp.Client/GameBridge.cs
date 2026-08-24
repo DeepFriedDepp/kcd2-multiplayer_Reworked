@@ -1129,6 +1129,20 @@ public partial class GameBridge(ClientConfig config)
     /// ghost that has not yet received an Appearance packet resolves to the
     /// longsword rows -- the same visual WO-46 shipped.
     /// </summary>
+    /// <summary>
+    /// WO-47: the ghost's equipped Oversized-slot item class (halberd/polearm),
+    /// or null when it has none / the catalog is unavailable.
+    /// </summary>
+    private Guid? OversizedItemFor(byte ghostId)
+    {
+        var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
+        if (catalog is null || !_ghostAppearance.TryGetValue(ghostId, out var applied))
+            return null;
+        Guid[] snapshot;
+        lock (applied) snapshot = [.. applied];
+        return catalog.OversizedItemOf(snapshot);
+    }
+
     private string ResolveSwingSpec(byte ghostId)
     {
         var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
@@ -2352,6 +2366,16 @@ public partial class GameBridge(ClientConfig config)
                                 }
                             }, TaskScheduler.Default);
                         await ExecLuaAsync($"if KCD2MP_GhostNativeSwingHold then KCD2MP_GhostNativeSwingHold(\"{ceSource}\") end");
+                    }
+                    else if (ceEvent == Protocol.CombatEventWeaponDrawn
+                             && OversizedItemFor(ceSource) is Guid oversized)
+                    {
+                        // WO-47: a ghost whose synced main-hand weapon lives in
+                        // the Oversized slot (halberd/polearm) never gets it
+                        // attached by DrawWeapon() -- route the draw through
+                        // DrawFromInventory instead (live-verified; see
+                        // KCD2MP_GhostDrawItem for the ordering trap).
+                        await ExecLuaAsync($"if KCD2MP_GhostDrawItem then KCD2MP_GhostDrawItem(\"{ceSource}\",\"{oversized}\") end");
                     }
                     else
                     {
