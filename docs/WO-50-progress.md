@@ -133,3 +133,24 @@ DirectInstall build (`Build-Installer.ps1`/`Build-DirectInstall.ps1`) —
 that's a separate step for whenever the human wants to actually cut the
 release, and Phase 2's mod-side change hasn't been re-verified live
 in-game this session (would need a fresh launch + save load).
+
+## Session 4 — 2026-08-24 (Sonnet 5, same day)
+
+1. Built `release\KCDMP-Setup-0.17.0.exe` (95.7 MB) via
+   `tools\Build-Installer.ps1` — clean compile, 1022-file manifest,
+   `app.ico` present. `kdcmp.pak` re-packed identically (same as the
+   0.16.6 precedent: content unchanged, zip entry timestamps only).
+2. Human installed and ran the real 0.17.0 build; reported Discord stuck
+   on the auto-detected "Kingdom Come: Deliverance II Modding Tools" line
+   with the real game and agent both running together for the first
+   time (every prior check had only one or neither running). Read the
+   real installed `agent.log` (`%LocalAppData%\KCDMP\agent.log`) instead
+   of re-guessing: it showed the exact same correct sequence as the
+   working screenshot — `Initialize() = True`, `OnReady` with the real
+   username, `SetPresence` for both "Connecting..." and "Hosting" with
+   the right version and image key. Code confirmed doing its job
+   correctly; pointed at Discord's own handling of two simultaneous
+   activities (auto-detected game + custom RPC) as the remaining
+   variable, and asked the human to check the full profile card rather
+   than the compact hover status. **Resolved: working correctly** — no
+   code change needed.

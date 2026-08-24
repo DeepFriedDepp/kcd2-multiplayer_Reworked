@@ -399,5 +399,28 @@ fact already confirmed true.
 
 Bumped `0.16.8` → `0.17.0` for this WO's combined work (Discord presence,
 launcher icon, HUD default), on the human's own explicit instruction —
-see `docs/VERSIONING.md`. No installer/DirectInstall build was run; that
-remains a separate, explicitly-requested step.
+see `docs/VERSIONING.md`. `release\KCDMP-Setup-0.17.0.exe` was built the
+same day via `tools\Build-Installer.ps1` (95.7 MB, clean compile,
+1022-file manifest); uploading/distributing it remains the human's call.
+
+### Real-install follow-up: "Discord stuck on Modding Tools" (session 4)
+
+Reported again after installing and running the actual `0.17.0` build —
+this time with the real game AND the real agent running together for the
+first time (every earlier check had only one of the two, or neither).
+Read the real installed `agent.log`
+(`%LocalAppData%\KCDMP\agent.log`) rather than re-guessing: it logged the
+identical correct sequence as the working screenshot —
+`Initialize() returned True`, `OnReady` with the real Discord username,
+then `SetPresence` for both `"Connecting..."` and `"Hosting"` carrying
+the right version and image key. The known `Assets.Merge` NRE (see
+above) fired twice, same as always, still non-fatal. **The code is
+confirmed doing exactly what it should; the open variable was Discord's
+own handling of two simultaneous activities** (its own auto-detected
+game plus a custom RPC from a different Application ID) in the compact
+status view versus the full profile card. Human checked and confirmed:
+**it is working correctly.** No code change was needed. Worth remembering
+for a future report of the same shape: check `agent.log` for the
+`[discord]` lines before assuming the feature is broken — the first two
+"stuck" reports in this WO both turned out to be either nothing running
+at all, or Discord's own display, never the agent's code.
