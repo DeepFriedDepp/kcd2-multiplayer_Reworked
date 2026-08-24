@@ -26,9 +26,27 @@
 5. Suites: Farkle 59/59 PASS, Test-SwingCatalog PASS, build clean, pak
    rebuilt (-NoInstall — install is user-side, AppData is sandbox-redirected
    for this shell).
-6. **Game was not running this session — live gate PENDING.** Next step:
-   user deploys matched set + pak, runs Test-NpcSwingE2E.ps1 near a guard,
-   reports the render verdict (and the agent's `equipped item class(es)
-   read` line for the SoulsByName question).
+6. **Game was not running at commit time — live gate was PENDING** at
+   20df3b7 (committed honestly as UNTESTED).
 7. Joint-damage-on-shared-NPC flagged as out of scope for a future
    two-person session (findings, last section).
+
+## Session 1 continued — live gate, same day
+
+8. User deployed (Verify-Install ALL CHECKS PASSED) and ran
+   Test-NpcSwingE2E.ps1: **run 1, 8/8 checks, real swing observed** — and a
+   real regression: the NPC's unsuppressed brain re-holstered after two
+   swings (cue 3 bare-handed). SoulsByName probe settled by direct REST
+   query on the running game: world NPCs DO resolve by entity name
+   (ttkc_man_1 → longswordOld, Type=4). Native log's slash→stab→slash
+   rotation proved the catalog path ran (fallback is slash-only).
+9. Fix: drawn-state re-assert in the puppet tick (1.5 s throttle, real
+   IsWeaponDrawn vs streamed state, shared Oversized-aware mp_npc_draw).
+   Injected into the RUNNING game via loadfile (WO-48 idiom) — no restart —
+   and rebuilt into the pak.
+10. **Run 2: 8/8, human-confirmed** — "he sheathed his sword but then
+    grabbed it back out and swung"; kcd.log shows the re-assert fired
+    twice. **LIVE GATE PASSED.** Committed and pushed.
+11. Note for the user's next launch: run Build-And-Install-Mod.ps1 (without
+    -NoInstall) so the installed pak picks up the re-assert fix — the
+    running game has it only via the live patch.

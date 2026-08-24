@@ -2182,6 +2182,24 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     KCD2MP_StartNpcPuppet()
 end
 
+-- WO-49: draw the puppet's weapon, routing an Oversized main-hand through
+-- DrawFromInventory INSTEAD of DrawWeapon (WO-47's polearm lesson + ordering
+-- trap). Shared by the drawn-transition apply and the brain-fought-back
+-- re-assert below.
+local function mp_npc_draw(name, e)
+    local og, drew = (KCD2MP.npcOversized or {})[name], false
+    if og and e.inventory then
+        pcall(function()
+            local it = e.inventory:FindItem(tostring(og))
+            if it then
+                e.human:DrawFromInventory(it, 0, true)
+                drew = true
+            end
+        end)
+    end
+    if not drew then pcall(function() e.human:DrawWeapon() end) end
+end
+
 function KCD2MP_NpcPuppetTick(arg)
     if not KCD2MP.npcPuppetRunning then return end
     -- WO-40 Phase 2: same pump pattern as KCD2MP_InterpTick. A menu suspends
@@ -2226,27 +2244,10 @@ function KCD2MP_NpcPuppetTick(arg)
             if (p.drawn or false) ~= (p.appliedDrawn or false) then
                 p.appliedDrawn = p.drawn or false
                 if e.human then
-                    if p.drawn then
-                        -- WO-49: an Oversized main-hand (halberd/polearm)
-                        -- never attaches through DrawWeapon() -- WO-47's
-                        -- ghost lesson, applied here: DrawFromInventory
-                        -- INSTEAD of the draw (after is too late; it
-                        -- suppresses native swing rendering).
-                        local og, drew = (KCD2MP.npcOversized or {})[name], false
-                        if og and e.inventory then
-                            pcall(function()
-                                local it = e.inventory:FindItem(tostring(og))
-                                if it then
-                                    e.human:DrawFromInventory(it, 0, true)
-                                    drew = true
-                                end
-                            end)
-                        end
-                        if not drew then pcall(function() e.human:DrawWeapon() end) end
-                    else
-                        pcall(function() e.human:HolsterWeapon() end)
-                    end
+                    if p.drawn then mp_npc_draw(name, e)
+                    else pcall(function() e.human:HolsterWeapon() end) end
                 end
+                p.drawnCheckAt = now   -- give the draw/holster time before the re-assert below judges it
                 mp_log("NPC-SYNC " .. name .. (p.drawn and " drew weapon" or " sheathed weapon"))
             end
 
@@ -2302,6 +2303,25 @@ function KCD2MP_NpcPuppetTick(arg)
                 pcall(function() KCD2MP_PuppetSwingCue(name, p, e) end)
             end
             if (p.oneShotUntil or 0) > now then return end
+
+            -- WO-49 live-gate fix (observed): the NPC's own unsuppressed
+            -- brain can re-holster on its own schedule -- two swings in,
+            -- the puppet sheathed, went back to its wall lean, and cue 3
+            -- rendered bare-handed. The transition gate above never fires
+            -- again (p.appliedDrawn still matches p.drawn), so re-assert
+            -- the STREAMED drawn state against the entity's REAL state,
+            -- throttled, only for live non-held puppets (returns above).
+            if e.human and (now - (p.drawnCheckAt or 0)) >= 1.5 then
+                p.drawnCheckAt = now
+                local actual = nil
+                pcall(function() actual = e.human:IsWeaponDrawn() == true end)
+                if actual ~= nil and actual ~= (p.drawn or false) then
+                    if p.drawn then mp_npc_draw(name, e)
+                    else pcall(function() e.human:HolsterWeapon() end) end
+                    mp_log("NPC-SYNC " .. name .. " re-asserted "
+                        .. (p.drawn and "drawn" or "sheathed") .. " (local brain fought back)")
+                end
+            end
 
             -- WO-40 Phase 5 diagnostic: measure the tug-of-war instead of
             -- guessing. If the entity is found away from where we last wrote

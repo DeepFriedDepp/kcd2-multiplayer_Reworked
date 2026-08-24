@@ -4,9 +4,10 @@ Worked 2026-08-24 (Fable 5). Extends the WO-45/46/47 native swing mechanism
 (`ghost_swing` + the weapon-class catalog) from player ghosts to the NPC
 puppet stream, replacing the WO-40 Phase 6 guard-flick cue.
 
-**Status: code staged and suites green; NOT yet live-verified.** The game was
-not running during this session (REST :1403 refused), so every claim below is
-tiered explicitly. `tools/Test-NpcSwingE2E.ps1` is the one-human live gate.
+**Status: LIVE-VERIFIED, one-human gate passed 2026-08-24** (two harness runs,
+8/8 checks each; human watched real, complete swings on a world NPC). The
+first run also exposed a real regression — the NPC's own brain re-holstering
+mid-test — fixed and re-verified live the same session (§ Live gate below).
 
 > **Label collision, flagged:** memory from a same-day session
 > (`kcd2mp-wo49-state`) describes a *different* WO-49 — the dice-payout
@@ -66,9 +67,9 @@ native hook on the NPC attack path — new research, out of scope here.
 |---|---|
 | Puppet stream applies to the real local NPC; DrawWeapon/health/KO bits work | observed (WO-32/38/40, shipped) |
 | `ghost_swing` renders a full swing on a spawned ghost, per-weapon | observed (WO-45/46/47) |
-| `ghost_swing` addresses actors by entity id generically (resolve → GetOrCreateCombatActor → parse vs own animDB → QueueAction) | read in `combat_construct.cpp`; **never run against a world NPC** |
-| World NPC's live brain tolerates a queued combat action (no AI suppression in the puppet stream) | **unknown — the central live question** |
-| SoulsByName REST resolves world NPCs by entity name | **unknown — probed by the harness** |
+| `ghost_swing` addresses actors by entity id generically (resolve → GetOrCreateCombatActor → parse vs own animDB → QueueAction) | read in `combat_construct.cpp` at build time; **now observed on a world NPC** (live gate) |
+| World NPC's live brain tolerates a queued combat action (no AI suppression in the puppet stream) | **observed — swings render fully; the brain's pushback is on the DRAWN STATE, not the action** (live gate) |
+| SoulsByName REST resolves world NPCs by entity name | **observed** — `SoulsByName/ttkc_man_1/EquipmentManager/EquippedWeaponsByClassId` returned its real set (`longswordOld`, Type=4) |
 | Entity-id emit idiom (`tostring(e.id)` hex tail) works for any entity | observed for ghosts/horses/pickables (WO-46/48) |
 
 ## Phase 2 — what was built (staged, UNTESTED live)
@@ -91,20 +92,47 @@ id in the window fails clean in the DLL and falls back to the Lua cue.
 - Test-SwingCatalog PASS (rebuilt client).
 - `dotnet build` clean (0 errors), `kdcmp.pak` rebuilt (`-NoInstall`).
 
-## The live gate (pending — run when the game is up)
+## The live gate — PASSED (2026-08-24, two runs, one human)
 
-1. Deploy the matched set (client + server, client-first copy order — the
-   Json-10 trap) and the rebuilt pak; restart the game.
-2. `tools/Test-NpcSwingE2E.ps1` next to a weapon-carrying NPC (a guard is
-   ideal). Watch the NPC.
-3. Pass = real, complete swings at WO-47 player-ghost quality; the
-   `equipped item class(es) read` agent line also settles the SoulsByName
-   question. If the equipped read comes back empty, swings still render on
-   the longsword fallback row — that outcome = "mechanism generalizes,
-   weapon fidelity needs the GetItemInHand backup route" and is a valid,
-   documented partial.
-4. If practical, repeat near NPCs of other weapon families (WO-47 catalog
-   already covers them; nothing per-weapon was added here).
+Deploy verified first (Verify-Install ALL CHECKS PASSED — matched set +
+fresh pak on disk). Test NPC: `ttkc_man_1` (world NPC, own real longsword).
+
+**Run 1 (8/8 harness checks):** puppet start, npcid emit (entity 32981),
+drawn apply, three native `SWING entity=32981` lines with **row rotation**
+(slash→stab→slash — the stab row is proof the catalog + SoulsByName read
+ran, since the fallback constant is slash-only), old Lua cue did NOT run.
+**Human: the NPC drew his sword and did a real, successful swing** — but
+after two swings **his own brain re-holstered and returned him to his wall
+lean**, and cue 3 rendered bare-handed with a janky snap-back.
+
+**Diagnosis:** puppets keep their AI unsuppressed by design (WO-32); the
+drawn-state apply was transition-gated (`p.appliedDrawn`), so a brain-side
+holster was never corrected — the stream kept saying "drawn", the gate never
+fired again.
+
+**Fix (same session):** the puppet tick now re-asserts the streamed drawn
+state against the entity's REAL `IsWeaponDrawn()` every 1.5 s (live puppets
+only, held off during one-shots and right after a transition apply); a
+mismatch re-draws (Oversized-aware, via the shared `mp_npc_draw`) or
+re-holsters, logging `re-asserted drawn (local brain fought back)`. Deployed
+into the RUNNING game via loadfile injection (WO-48 idiom, mp_log shimmed —
+the timer chain resolves the global by name each reschedule, so the
+redefinition took effect on the next 50 ms tick), and into the pak for
+future sessions.
+
+**Run 2 (8/8 again):** kcd.log shows the re-assert fired twice; native log
+shows all three swings queued with rotation. **Human: "Much better that
+time, he sheathed his sword but then grabbed it back out and swung."** All
+three swings rendered with the weapon in hand — the re-holster happens, the
+re-assert corrects it before the next cue, exactly as designed.
+
+**Weapon generality:** not separately re-proven live here — the per-weapon
+rows are the SAME catalog WO-47 live-verified across four families on
+ghosts, and this WO's resolution path feeds it the same class ids (the
+longsword rotation above is the observed instance). The Oversized
+draw-through-DrawFromInventory branch for NPCs is implemented from WO-47's
+live-proven pattern but was not itself watched on a halberd NPC — stated
+as read-but-unrendered.
 
 ## Explicitly out of scope, flagged for the next two-person session
 
