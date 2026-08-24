@@ -1793,6 +1793,7 @@ KCD2MP.npcTracked      = {}   -- name -> {lastX,lastY,lastZ,lastRot,lastHp,lastS
 KCD2MP._npcScanAt      = 0
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
+KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
 KCD2MP.npcPuppetRunning  = false
 KCD2MP._npcPuppetAliveAt = nil
 
@@ -2147,6 +2148,12 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
         p = { cx = cur.x, cy = cur.y, cz = cur.z, cr = rot, animTag = "idle" }
         KCD2MP.npcPuppets[name] = p
         mp_log("NPC-SYNC puppet start " .. name)
+        -- WO-49: report this world's copy's entity id so the agent can
+        -- address it on the native swing path. Same tostring-hex idiom as
+        -- SpawnGhost's ghostid emit -- a decimal path would corrupt ids
+        -- above 2^24 in this float32 sandbox.
+        local hexid = string.match(tostring(e.id), "(%x+)%s*$")
+        if hexid then KCD2MP_EmitEvent("npcid", name .. " " .. hexid) end
     end
     p.tx, p.ty, p.tz, p.tr = x, y, z, rot
     p.hp = hp
@@ -2219,8 +2226,26 @@ function KCD2MP_NpcPuppetTick(arg)
             if (p.drawn or false) ~= (p.appliedDrawn or false) then
                 p.appliedDrawn = p.drawn or false
                 if e.human then
-                    if p.drawn then pcall(function() e.human:DrawWeapon() end)
-                    else pcall(function() e.human:HolsterWeapon() end) end
+                    if p.drawn then
+                        -- WO-49: an Oversized main-hand (halberd/polearm)
+                        -- never attaches through DrawWeapon() -- WO-47's
+                        -- ghost lesson, applied here: DrawFromInventory
+                        -- INSTEAD of the draw (after is too late; it
+                        -- suppresses native swing rendering).
+                        local og, drew = (KCD2MP.npcOversized or {})[name], false
+                        if og and e.inventory then
+                            pcall(function()
+                                local it = e.inventory:FindItem(tostring(og))
+                                if it then
+                                    e.human:DrawFromInventory(it, 0, true)
+                                    drew = true
+                                end
+                            end)
+                        end
+                        if not drew then pcall(function() e.human:DrawWeapon() end) end
+                    else
+                        pcall(function() e.human:HolsterWeapon() end)
+                    end
                 end
                 mp_log("NPC-SYNC " .. name .. (p.drawn and " drew weapon" or " sheathed weapon"))
             end
@@ -3735,6 +3760,37 @@ function KCD2MP_PuppetSwingCue(name, p, e)
     p.oneShotUntil = os.clock() + math.min(dur, 1.5)
     p.animTag = "swing"   -- locomotion re-asserts itself after the window
     mp_log("NPC-SYNC swing cue " .. name)
+end
+
+-- WO-49: the Lua half of a NATIVE puppet swing (KCD2MP_GhostNativeSwingHold's
+-- twin for NPC puppets): the agent queues the real Mannequin combat action
+-- through the DLL; this only pauses the puppet's per-tick writes so they do
+-- not stomp the playing action (WO-39's one-shot lesson). No clip is started
+-- here -- the native action owns the render. Clears any pending Lua cue so a
+-- packet that raced both paths cannot double-render.
+function KCD2MP_NpcNativeSwingHold(name)
+    local p = KCD2MP.npcPuppets[name]
+    if p then
+        p.swingCuePending = nil
+        p.oneShotUntil = os.clock() + 0.9
+        p.animTag = "swing"   -- locomotion re-asserts itself after the window
+    end
+end
+
+-- WO-49: agent-called fallback when the native swing did not apply (DLL
+-- absent, stale entity id after a save reload) -- re-arms the WO-40 cue the
+-- agent stripped from the flags byte, late but visible.
+function KCD2MP_NpcSwingCueFallback(name)
+    local p = KCD2MP.npcPuppets[name]
+    if p and not p.dead and not p.ko then p.swingCuePending = true end
+end
+
+-- WO-49: agent-pushed note that this NPC's main-hand weapon lives in the
+-- Oversized equip slot; the puppet tick's draw then goes through
+-- DrawFromInventory instead of DrawWeapon (see the draw branch).
+function KCD2MP_NpcSetOversized(name, classGuid)
+    KCD2MP.npcOversized = KCD2MP.npcOversized or {}
+    KCD2MP.npcOversized[name] = tostring(classGuid)
 end
 
 -- WO-40 Phase 6: probe-once accessor for the weapon-ready guard idle, shared

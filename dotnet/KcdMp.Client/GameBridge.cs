@@ -93,6 +93,24 @@ public partial class GameBridge(ClientConfig config)
     // a weapon class ships (slash/stab), so consecutive swings vary.
     private readonly ConcurrentDictionary<byte, int> _ghostSwingIndex = new();
 
+    // WO-49: npcName → local entity id of this world's copy of a puppeted
+    // NPC, from the mod's puppet-start "npcid" event (same tostring-hex idiom
+    // as _ghostEntityIds). What the native NPC-swing path addresses the local
+    // copy by. Same staleness policy as ghosts: a save reload mints new
+    // entity ids, the next puppet start re-reports, and a stale id in the
+    // window between fails cleanly in the DLL (falls back to the Lua cue).
+    private readonly ConcurrentDictionary<string, uint> _npcEntityIds = new();
+
+    // WO-49: npcName → the LOCAL copy's own equipped item classes, read over
+    // the same SoulsByName REST surface the ghost appearance layer uses
+    // (proven for spawned souls in WO-10/47; whether world NPCs resolve by
+    // entity name is probed live -- an empty read degrades to the WO-46
+    // longsword constant, never blocks the swing). Refreshed on each
+    // sheathed→drawn transition in the incoming stream.
+    private readonly ConcurrentDictionary<string, Guid[]> _npcEquipped = new();
+    private readonly ConcurrentDictionary<string, int> _npcSwingIndex = new();
+    private readonly ConcurrentDictionary<string, bool> _npcLastDrawn = new();
+
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
     // for a peer whose Handshake carried none (an old build). Read by
     // VersionIpcServer so the launcher can compare it against this agent's
@@ -1204,6 +1222,83 @@ public partial class GameBridge(ClientConfig config)
             return NativeSwingFragmentSpec;
         }
         Console.WriteLine($"[combatviz] ghost {ghostId} swing as {weaponName}: {spec}");
+        return spec;
+    }
+
+    /// <summary>
+    /// WO-49: reads the LOCAL copy of a puppeted NPC's own equipped item
+    /// classes off the hot path. Empty (soul not addressable by entity name,
+    /// REST down) leaves no entry -- the swing path then uses the WO-46
+    /// longsword constant, the same degradation a pre-appearance ghost gets.
+    /// </summary>
+    private void RefreshNpcEquipped(string npcName)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var set = await _transport.ReadGhostEquippedItemClassesAsync(npcName);
+                if (set.Length > 0)
+                {
+                    _npcEquipped[npcName] = set;
+                    Console.WriteLine($"[npcsync] {npcName}: {set.Length} equipped item class(es) read for swing resolution");
+                    // An Oversized main-hand (halberd/polearm) never attaches
+                    // through DrawWeapon() (WO-47) -- hand the guid to the
+                    // puppet tick so its draw goes through DrawFromInventory
+                    // INSTEAD (the WO-47 ordering trap: after is too late).
+                    var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
+                    if (catalog?.OversizedItemOf(set) is Guid npcOversized)
+                        await ExecLuaAsync($"if KCD2MP_NpcSetOversized then KCD2MP_NpcSetOversized(\"{npcName}\",\"{npcOversized}\") end");
+                }
+                else
+                {
+                    Console.WriteLine($"[npcsync] {npcName}: equipped-set read came back empty -- native swings will use the longsword fallback row");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[npcsync] {npcName}: equipped-set read failed: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// WO-49: the swing spec for a puppeted NPC, resolved from the LOCAL
+    /// copy's own equipment through the same shipped-table catalog as ghosts
+    /// -- the observer's copy swings with the weapon visible in the
+    /// observer's world. The WO-46 constant when nothing resolves.
+    /// </summary>
+    private string ResolveNpcSwingSpec(string npcName)
+    {
+        var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
+        if (catalog is null || !_npcEquipped.TryGetValue(npcName, out var equipped) || equipped.Length == 0)
+            return NativeSwingFragmentSpec;
+
+        int idx = _npcSwingIndex.AddOrUpdate(npcName, 0, static (_, v) => v + 1);
+
+        // Consistency with the draw: when an Oversized item is equipped the
+        // puppet tick drew THAT (DrawFromInventory), so the swing must use its
+        // class's rows -- SpecFor's min-class-first pick would choose a
+        // sidearm's rows over the halberd visibly in hand.
+        if (catalog.OversizedItemOf(equipped) is Guid oversized
+            && catalog.WeaponClassOfItem(oversized) is int oversizedClass)
+        {
+            var rows = catalog.RowsFor(oversizedClass, hasShield: false, hasTorch: false);
+            if (rows.Count > 0)
+            {
+                string ospec = rows[((idx % rows.Count) + rows.Count) % rows.Count].Spec;
+                Console.WriteLine($"[npcsync] {npcName} swing as {catalog.WeaponClassName(oversizedClass)}: {ospec}");
+                return ospec;
+            }
+        }
+
+        string? spec = catalog.SpecFor(equipped, idx, out string weaponName);
+        if (spec is null)
+        {
+            Console.WriteLine($"[npcsync] {npcName}: no table row for its equipped set -- longsword fallback");
+            return NativeSwingFragmentSpec;
+        }
+        Console.WriteLine($"[npcsync] {npcName} swing as {weaponName}: {spec}");
         return spec;
     }
 
@@ -2388,9 +2483,47 @@ public partial class GameBridge(ClientConfig config)
                             float nrot  = ReadFloat(payload, o + 12);
                             float nhp   = ReadFloat(payload, o + 16);
                             byte nflags = payload[o + 20];
+
+                            // WO-49: a sheathed→drawn transition in the stream
+                            // is the moment the local copy's hands change --
+                            // re-read its equipped set for swing resolution.
+                            bool npcDrawn = (nflags & 0x04) != 0;
+                            bool wasDrawn = _npcLastDrawn.TryGetValue(npcName, out bool d0) && d0;
+                            _npcLastDrawn[npcName] = npcDrawn;
+                            if (npcDrawn && !wasDrawn && _npcEntityIds.ContainsKey(npcName))
+                                RefreshNpcEquipped(npcName);
+
+                            // WO-49: the swing cue (bit 3) rides the same
+                            // native path ghost swings use (WO-46) when this
+                            // world's copy is known by entity id: strip the
+                            // bit so the Lua does not also play its WO-40
+                            // guard-flick cue; native failure re-arms that
+                            // cue explicitly, late but visible. Dead/KO bits
+                            // veto, matching the Lua cue's own guard.
+                            bool npcKnown = _npcEntityIds.TryGetValue(npcName, out uint npcEntityId);
+                            bool npcSwingNative = (nflags & 0x08) != 0
+                                && (nflags & 0x03) == 0
+                                && npcKnown;
+                            if (npcSwingNative) nflags &= 0xF7;
+
                             await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
                                 "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6}) end",
                                 npcName, nx, ny, nz, nrot, nhp, nflags));
+
+                            if (npcSwingNative)
+                            {
+                                string npcFragSpec = ResolveNpcSwingSpec(npcName);
+                                _ = _combat.GhostSwingAsync(npcEntityId, npcFragSpec, ct)
+                                    .ContinueWith(t =>
+                                    {
+                                        if (t.IsFaulted || !t.Result)
+                                        {
+                                            Console.WriteLine($"[npcsync] native swing for {npcName} did not apply — falling back to the Lua cue");
+                                            _ = ExecLuaAsync($"if KCD2MP_NpcSwingCueFallback then KCD2MP_NpcSwingCueFallback(\"{npcName}\") end");
+                                        }
+                                    }, TaskScheduler.Default);
+                                await ExecLuaAsync($"if KCD2MP_NpcNativeSwingHold then KCD2MP_NpcNativeSwingHold(\"{npcName}\") end");
+                            }
                         }
                     }
                 }
@@ -2636,6 +2769,29 @@ public partial class GameBridge(ClientConfig config)
             else
             {
                 Console.WriteLine($"[combatviz] malformed ghostid '{arg}'");
+            }
+            return;
+        }
+
+        if (name == "npcid")
+        {
+            // WO-49: "<npcName> <entityIdHex>" from KCD2MP_ApplyNpcState's
+            // puppet-start path -- the ghostid idiom applied to this world's
+            // copy of a puppeted NPC. The name is re-validated here because it
+            // is later interpolated into Lua on the swing-fallback path.
+            var niParts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (niParts.Length == 2
+                && NpcNamePattern.IsMatch(niParts[0])
+                && ulong.TryParse(niParts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ulong npcRawId)
+                && npcRawId is > 0 and <= uint.MaxValue)
+            {
+                _npcEntityIds[niParts[0]] = (uint)npcRawId;
+                Console.WriteLine($"[npcsync] puppet {niParts[0]} entity id 0x{npcRawId:X} cached for native swings");
+                RefreshNpcEquipped(niParts[0]);
+            }
+            else
+            {
+                Console.WriteLine($"[npcsync] malformed npcid '{arg}'");
             }
             return;
         }
