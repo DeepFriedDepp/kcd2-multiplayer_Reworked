@@ -424,3 +424,13 @@ for a future report of the same shape: check `agent.log` for the
 `[discord]` lines before assuming the feature is broken — the first two
 "stuck" reports in this WO both turned out to be either nothing running
 at all, or Discord's own display, never the agent's code.
+
+**The actual trigger, pinned down by the human:** Discord's compact
+status only swaps from the auto-detected game to the custom presence
+after an Alt+Tab away from the game (i.e. once Discord's own client
+window regains focus/redraws) *and* the agent has actually reached
+`SetConnected` — in practice, right when the player Alt+Tabs back to
+check and hits **Connect**. The human's call, and a reasonable one: this
+is a **feature, not a bug** — it doubles as a visible, free confirmation
+that the agent is actually connected, with no extra code needed to
+produce it. Nothing to fix.

@@ -154,3 +154,8 @@ in-game this session (would need a fresh launch + save load).
    variable, and asked the human to check the full profile card rather
    than the compact hover status. **Resolved: working correctly** — no
    code change needed.
+3. Human pinned down the actual trigger: Discord's compact status only
+   swaps from the auto-detected game to the custom presence after an
+   Alt+Tab away from the game and hitting Connect. Called it a feature,
+   not a bug — a free, visible confirmation that the agent connected,
+   no code change wanted or needed.
