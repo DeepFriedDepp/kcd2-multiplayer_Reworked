@@ -101,4 +101,47 @@ and closed the pause/menu twice in quick succession:
 - Still `ghosts=0` throughout — no second player has joined yet as of
   16:18:05.
 
+**16:18:37.868 → ~16:19:07 — the game process itself restarted mid-session
+(observed, cross-checked three ways).** Evidence:
+- `tasklist`/WMI: `KingdomCome.exe` PID changed 5568 → 2312,
+  `CreationDate = 2026-08-25 16:18:37.868823` — a genuinely new process, not
+  a stale PID read.
+- `kcd.log` was rotated: the pre-restart log (2.7 MB) was moved to
+  `logbackups\kcd.log` at 16:18, and a fresh `kcd.log` started from
+  `BugSplat initialized` / `CPU Information` (i.e. engine boot) — this is
+  what the kcd.log monitor's `BugSplat` keyword actually caught; it is the
+  crash-reporter **initializing**, not firing. No corresponding entry
+  appeared in `BugSplatAttachments\` (checked, empty of anything new) — **no
+  BugSplat crash report was generated for this restart.**
+- Fresh `=== MOD INIT ===` fired again in the new kcd.log (mod reloaded
+  clean).
+- `agent.log` (the .NET client) shows **no disconnect, no reconnect, no
+  error** across this transition — ping/stat ticks are continuous
+  16:18:0x→16:19:05 — then at 16:19:07.468: `[timeskip] clock went backward
+  (571172 -> 0) -- save reload detected`, `reload: no live peers -- leaving
+  the reloaded clock alone`. So the *agent* only learned of the restart
+  indirectly, via the mod's game-clock resetting to 0, not via any
+  process/connection-level signal — worth flagging: the agent's reload
+  detection is clock-based and silent about the underlying process bounce
+  itself.
+- Immediately pre-restart, the mirror log's last readable sample
+  (16:18:01.963) read `tracking 2 souls within 60 m` — up from 1 for the
+  preceding ~5 minutes (transition at 16:17:25). **Whether that second soul
+  was the second player's ghost or an ordinary wandering NPC is not
+  determinable from this log alone** — the mirror log stopped there because
+  of the restart, before anything could disambiguate it. Marked
+  **inconclusive**.
+- **No BugSplat dump, no `[Error]` stack trace, no "has no character"/"does
+  not have a faction" lines seen anywhere around this transition** — i.e.
+  nothing resembling WO-26's crash signature. This looks like either a
+  deliberate restart by whoever is at the keyboard, or a silent
+  crash-without-report; cannot distinguish the two from logs alone.
+- `ghosts=0` still held immediately after (`[KCD2-MP-EVT] v1 1 time_now 0`
+  is the first post-restart event line) — no peer has joined as of the
+  restart.
+
+Narration was not yet available for this session (no live human commentary
+channel open to this observer at start) — this restart's cause is recorded as
+unknown/inconclusive rather than guessed.
+
 *(entries continue below as observed)*
