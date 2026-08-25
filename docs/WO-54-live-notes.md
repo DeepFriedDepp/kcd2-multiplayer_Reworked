@@ -509,4 +509,9 @@ The 4th DiscordRPC `Assets.Merge` NullReferenceException also recurred at
 16:49:29.571, same signature as every prior occurrence, still apparently
 non-fatal to the client process (it kept logging afterward).
 
+**And the `kcd2mp_0` no-faction burst fired a third time** on this
+reconnect too (pid `16364` unchanged, RSS climbing normally) — three-for-
+three now on "first ghost respawn after a reconnect," not tallying each
+occurrence in full detail further unless the shape changes.
+
 *(entries continue below as observed)*
