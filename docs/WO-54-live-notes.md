@@ -222,4 +222,67 @@ resolved from logs alone — recorded as still open, not settled.
 *(monitors retightened here to drop per-tick NPC-position and hit-flood
 spam — see methodology note; full detail remains in the source logs)*
 
+---
+
+## The second player joins — 16:25:57.835
+
+**`ghost 6 = <second player>`** (name redacted per privacy rule — a real
+first name appeared in the log; not written here in full), release
+`0.17.1`, spawned at `760.83, 3346.42, 142.09` (`Spawning ghost '6' at
+760.8,3346.4,142.1`, `kcd.log`) — **inside the same siege
+(`zoufalaObranaZaBohutu`) the host had been fighting through solo** (the
+host's own position samples in the preceding minutes ranged ~745–768 in the
+same x, ~3345–3360 in the same y — this is the same battle, not a separate
+area). `TICK_ALIVE` flipped from `ghosts=0` to `ghosts=1` at this point.
+**This is the first live multi-human moment of the whole session — the
+question this WO exists to answer (joint combat on a shared NPC) becomes
+live from here on.**
+
+Immediately after join:
+- The ghost's interpolated position **did not change at all** across
+  16:25:58.281–16:26:04.700 (~6.4 s, repeated identically at
+  `760.83 3346.42 142.09`) while position packets kept arriving (multiple
+  `[ghost 6]` lines per second). Read plainly: either the joining player was
+  genuinely standing still (loading in, in a menu, at a siege-entry point),
+  or this is the stutter/non-motion class from the WO-38/40 footage
+  findings. **Not enough here to call it either way** — no narration
+  available yet to say what the joining player was actually doing at this
+  moment.
+- Appearance sync had friction: `[appearance] ghost 6: +19 -10` then, 1.3s
+  later, `2 item(s) still not applied, retrying` — the standing retry
+  behavior, not obviously a new problem.
+- The DiscordRPC `Assets.Merge` NullReferenceException (already noted
+  above) recurred a third time at 16:26:00.011, coincident with the join;
+  non-fatal, ticks continued.
+- A fatal hit landed on a new NPC guid (`9CA9B6BC-...`, 9.11 dmg) at
+  16:26:00.845 — almost certainly still the host's own solo siege kill
+  (the joiner had not been observed to draw a weapon or move yet); not
+  attributed to the joiner without more evidence.
+
+Watching closely from here for: joint engagement on a shared siege NPC
+(priority 1), item drops/claims if either player loots (priority 2), and
+whether the joiner's hits on a shared NPC register for the host (priority
+3, Flow B).
+
+**16:26:08–16:26:47 — the ghost resumed normal movement** (walked a ~15 m
+loop through the siege area, then climbed in elevation from z≈142 to
+z≈149.7 over 16:26:41–44, consistent with climbing a ladder/tower/wall
+section). So the earlier 6.4 s motionless window reads, in hindsight, as
+ordinary load-in/orientation, not a stutter — retracting the "not enough to
+call it either way" hedge in that direction, though still without narration
+to confirm what the joiner was actually doing.
+
+**16:26:43.491 — four fatal hits at the exact same mirror-log timestamp**
+(guids `2F5C6209`, `B73F54DA`, `C6FC0AA4`, `60CEB64D`, each `LocalHit 100.00
+(fatal)`). Four defenders dying in the same instant, right as the ghost was
+partway up its climb, reads more like a scripted siege moment (an
+explosive/AOE effect, a wall-collapse trigger — `zoufalaObranaZaBohutu` is
+quest-scripted, WO-57 Phase 8) than four discrete player swings. **Not
+attributed to either player** — no narration, and nothing in the logs
+distinguishes "quest script killed them" from "one player's single AOE-style
+action killed four." Two more solo-looking fatal hits followed
+(16:26:45.676, 16:26:47.053) on distinct guids. Still no direct evidence of
+two players hitting the *same* NPC yet — that is the thing to keep watching
+for specifically.
+
 *(entries continue below as observed)*
