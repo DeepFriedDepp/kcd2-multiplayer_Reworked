@@ -285,4 +285,27 @@ action killed four." Two more solo-looking fatal hits followed
 two players hitting the *same* NPC yet — that is the thing to keep watching
 for specifically.
 
+**16:27:31–16:28:18 — more solo siege kills** (fatal hits on guids
+`256D03B3`, `467646FE`, `5953FCCE`, `24834DF5`, `9DE95F04`, magnitudes
+2.5–100), same pattern as before, not reproduced line-by-line.
+
+**16:27:xx — the WO-48 drop/claim pipeline fired live, for the first time
+this session, on real spent crossbow bolts.** Three `item_drop` events
+carried the *same* leading id (`ad5bcf05-c082-4ead-be9c-2f16c6d3dde7`)
+against three different ground entities
+(`posledniPomazani_bohutaOpBolt001793/001811/001843`) — initially read as a
+possible dropId-collision bug, but the field order matches WO-48's own spec
+(`dropId, amount, health, x, y, z, entityName` — Q2, `WO-48-findings.md`)
+where the **leading field is the item-*class* GUID, not the per-drop id**;
+three spent bolts of the same class legitimately share it. **Correcting
+myself before writing this down as a bug — it is not one on this reading.**
+Shortly after: `combat sheathe` → `item_claim 1276324444` /
+`ITEM-SYNC drop 1276324444 taken locally -> claim sent` → `combat draw` —
+one player interrupted their swing to pick up a dropped bolt by its real
+per-drop id, then resumed fighting. **This is a single-claimant pickup, not
+a race** — no second claim attempt or "not mine" echo appeared. Still useful
+as the first live confirmation this session that the WO-48 pipeline
+actually fires end-to-end during real (not synthetic) play. Watching for an
+actual two-player race if it happens.
+
 *(entries continue below as observed)*
