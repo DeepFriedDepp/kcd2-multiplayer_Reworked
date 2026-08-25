@@ -461,4 +461,17 @@ minutes, the last two only ~4 minutes apart) it reads more like an
 involuntary crash-and-relaunch pattern than deliberate action, but this is
 inference, not observation, and is flagged as such.
 
+**And the `kcd2mp_0` no-faction burst recurred identically after this third
+restart too** (~51 lines, then `kcd2mp_0 deleted 0 reconciled changes`, then
+one more single recurrence — line-for-line the same shape as after restart
+#2). `KingdomCome.exe` (pid `7700`) stayed alive throughout (RSS climbed
+2.4→6.7 GB, consistent with continued ordinary play); native DLL re-attached
+(`16:47:38.216`) and the agent reconnected (`16:47:43.712`) normally right
+after. **This is now reproduced twice, identically, on the first ghost
+respawn after every observed reconnect-following-restart** — no longer a
+one-off. Still non-fatal both times, still consistent with WO-56's
+Player-class-only fatal path theory, and still not diagnosed beyond the
+code-shape inference already given (the unlogged `pcall` around
+`AI.ChangeParameter`, `kdcmp.lua:2685`).
+
 *(entries continue below as observed)*
