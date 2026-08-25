@@ -433,4 +433,32 @@ crash-adjacent signature showing up again) and a genuinely new data point
 for WO-56's file — its central claim (fatal-only-for-`C_Player`) now has a
 live confirmation, not just a disassembly-based inference.
 
+---
+
+## Third full game-process restart — 16:45:59, ~4 minutes after the second
+
+`KingdomCome.exe` PID changed again (`7700`, `CreationDate 16:45:59.919`).
+**The precursor sequence matches the prior two restarts exactly, this time
+confirmed from `agent.log` directly rather than inferred:**
+```
+16:44:59.814  [menu] local menu open -- pumping interp tick
+16:45:01.756  [combat] pipe reader exited
+16:45:02.396  [menu] local menu closed -- pumped 145 frames in 2.6s (56.2 Hz)
+16:45:59.919  (new KingdomCome.exe process created, ~57 s later)
+```
+**This is now three-for-three**: every game-process restart observed this
+session was preceded by opening the pause menu, during which the native
+combat pipe reader exited, followed by the menu closing and then a fresh
+process within roughly 30–60 s. Three independent occurrences of the same
+three-step order is hard to keep calling coincidence, though the mechanism
+connecting "menu open" to "process restart" is still not established from
+logs alone — it could be the menu action itself destabilizing something
+native-side, or an unrelated instability that happens to surface once the
+pipe reader (which runs while the menu machinery pumps ticks) drops. No
+narration exists to confirm whether the human deliberately restarted the
+game each time; given the rapid cadence (three restarts in under 30
+minutes, the last two only ~4 minutes apart) it reads more like an
+involuntary crash-and-relaunch pattern than deliberate action, but this is
+inference, not observation, and is flagged as such.
+
 *(entries continue below as observed)*
