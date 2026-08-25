@@ -379,4 +379,58 @@ multiplayer-session interruption mechanism (ghost presence lost mid-siege)
 that any future joint-combat measurement needs to account for as a
 confound.
 
+---
+
+## The WO-26/WO-56 "no faction" signature recurs live, on a real ghost, and does NOT crash
+
+Shortly after the second restart, while the host's client was reconnecting,
+`kcd.log` logged **52 consecutive `[Error] NPC kcd2mp_0 does not have a
+faction.` lines**, then `kcd2mp_0 deleted 0 reconciled changes`, and later
+**one more single recurrence** of the same error against the same name. This
+is the exact per-frame error signature WO-26 died on and WO-56 traced
+statically (`C_NPCFactionNode::GetFactionPtr`'s non-fatal null-return path,
+`WO-56-findings.md` §1.2b) — but this time on a **real ghost respawn during
+live play**, not a deliberately bare experimental spawn, and it is the first
+time this project has seen this exact signature outside that one WO-26
+crash and WO-56's disassembly.
+
+**Confirmed: the process did not crash.** `KingdomCome.exe` stayed on the
+same PID (`14380`) throughout, kcd.log kept logging ordinary gameplay
+(dialogue, animations) immediately after, and moments later (in real time)
+the native DLL re-attached (`16:43:53.386 KCDMP.dll attached, pid=14380`)
+and the agent reconnected (`16:43:59.684 PIPE: agent connected`) — i.e. the
+whole session kept recovering normally around this error. **This is a live
+confirmation of WO-56's prediction**: the fatal path is specific to
+`C_Player::Init`'s null-character check, which does not apply to an
+NPC-class ghost; a ghost missing its faction is the WO-26 warning-spam
+symptom without the WO-26 crash, exactly because it's the wrong class to hit
+the fatal guard.
+
+**Why the faction was missing this time — read from the actual spawn code,
+`kdcmp.lua:2599-2690`:** unlike WO-26's original bare spawn, this path *does*
+pass `SharedSoulGuid` at spawn time (the WO-22 fix — so the ghost is
+soul-backed, not starved the way WO-26's was). Faction is set in a
+**separate step immediately after**, inside its own `pcall` with no
+success/failure logging:
+```
+pcall(function()
+    entity.Properties.esFaction = "Civilians"
+    AI.ChangeParameter(entity.id, AIPARAM_FACTION, "Civilians")
+end)
+```
+If that call throws or silently no-ops (e.g. the entity not being fully
+ready in the exact frame right after a reconnect-triggered respawn), nothing
+would ever report it — this pcall swallows errors unconditionally, unlike
+most others in this file. **This reads as plausible and code-consistent,
+not confirmed** — no stack trace or pcall failure was logged, so the actual
+reason `AI.ChangeParameter` didn't stick is inferred from the code shape,
+not observed directly. First time this specific gap has been caught live;
+worth a follow-up WO adding failure logging to that one pcall so the next
+occurrence is diagnosable instead of inferred.
+
+**Relevance:** this is squarely a "priority 4" recurrence (a known
+crash-adjacent signature showing up again) and a genuinely new data point
+for WO-56's file — its central claim (fatal-only-for-`C_Player`) now has a
+live confirmation, not just a disassembly-based inference.
+
 *(entries continue below as observed)*
