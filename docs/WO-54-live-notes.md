@@ -144,4 +144,73 @@ Narration was not yet available for this session (no live human commentary
 channel open to this observer at start) — this restart's cause is recorded as
 unknown/inconclusive rather than guessed.
 
+**16:20:42–16:20:46 — native DLL re-injected + a fresh agent process
+started on the host/authority machine (observed).**
+- `kcdmp-native.mirror.log`: `KCDMP.dll attached, pid=2312` — the *same* PID
+  as the post-16:18:37-restart game process, so this is re-injection into
+  the already-running post-restart process, not a second engine restart.
+  RTTR ABI re-validated exactly as before (`GetState`/`SetState`/
+  `TakeDamage` signatures match); `SoulCount` this time 4911 (vs 1494 before
+  the restart) — consistent with a different/larger area now loaded.
+- `agent.log`: a **new** client process started at 16:20:44.174 (fresh
+  `agent output tee ->` banner, meaning the prior ticking process from
+  §16:19 was replaced/relaunched around this point, not merely reconnected).
+  Connection banner: `Server: 127.0.0.1:7778` (this machine's own local relay
+  — matches the standing port convention), `Voice: on`, `Protocol: v6`. This
+  client identified itself via a Steam display name and, moments later, a
+  Discord account handle — **both redacted here per the privacy rule**
+  (`<host Steam name>`, `<host Discord handle>`); neither is written to any
+  committed file in full.
+- **16:20:46.362 — a DiscordRPC exception fired**, caught by the agent's own
+  handler (logged as `ERR :`, process did not appear to die — ping/stat
+  ticks are expected to resume next, to be confirmed): `System.
+  NullReferenceException` inside `DiscordRPC.Assets.Merge(Assets other)` →
+  `RichPresence.Merge` → `DiscordRpcClient.ProcessMessage`. This is the
+  **same signature as the already-documented WO-50 `DiscordRPC 1.6.1
+  Assets.Merge` NRE bug** (project memory). Whether the WO-50 fix is present
+  in this build and simply didn't cover this code path, or wasn't deployed
+  here, was **not checked live** (would require reading the installed
+  agent's DLL/source — out of scope for a pure-observation session); recorded
+  as a recurrence, not re-diagnosed.
+- Still no peer ghost as of this point (not yet re-confirmed post-reinject;
+  watching).
+
+**16:20:48–16:22:12+ — solo siege combat (WO-15's `zoufalaObranaZaBohutu`), still no
+peer. Two things worth keeping, both solo-only:**
+
+1. **A real native fatal kill, captured end-to-end, twice.** `agent.log`
+   `[combat] sent hit 100.0 on '...frontWallShooter_5'` (16:20:59.667) and
+   again on `...attackers_frontWallStationaryShooter_5` (16:22:07.843),
+   matched 1:1 in the mirror log as `PIPE: LocalHit 100.00 (fatal)`. This is
+   the native `HIT_SENSOR`/Flow-B-sender path (WO-28/51) actually firing on a
+   real kill in real (non-synthetic) siege combat — confirms the sending
+   side works; says nothing about the never-verified cross-machine apply
+   side since there is no peer yet.
+2. **A sustained near-zero "hit" stream matching WO-40's documented
+   zero-damage-hit-flood signature, reproduced live.** From ~16:20:59 through
+   at least 16:22:11 (~70+ s, hundreds of frames), `agent.log`/mirror log
+   show a continuous `LocalHit 0.01`–`0.09` (drifting up/down slowly) against
+   one single stationary target,
+   `zoufalaObranaZaBohutu_defenders_sideWallSubstitute_4` (guid
+   `15aae88d-...`), at roughly 5–15 Hz, essentially the entire time the
+   player was near it with a weapon drawn — not discrete swings. Read
+   plainly: this looks like continuous weapon/collider contact against a
+   static "wall substitute" prop being reported through the same sensor as a
+   real hit, not a combat animation artifact. WO-51's table already flags
+   "zero-damage hit floods (engine stall → anim collapse)" as
+   mitigated-not-proven; this is a live, named recurrence of exactly that
+   signature, now tied to a specific prop class, not re-diagnosed further.
+   Not connected to any of the four open questions directly (no peer to
+   receive/attribute it), but relevant to "general stability" (priority
+   item 4) and worth a future WO's attention re: whether `sideWallSubstitute`
+   colliders should be filtered from the hit sensor.
+
+Both observations are solo-only — `ghosts=0` held throughout this entire
+combat episode. Full per-frame detail lives in `kcd.log` /
+`kcdmp-native.mirror.log` on this machine if anyone wants to re-derive exact
+counts; not reproduced line-by-line here to keep this readable.
+
+*(monitors retightened here to drop per-tick NPC-position and hit-flood
+spam — see methodology note; full detail remains in the source logs)*
+
 *(entries continue below as observed)*
