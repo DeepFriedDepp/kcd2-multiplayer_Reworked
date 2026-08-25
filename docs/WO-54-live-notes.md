@@ -514,4 +514,18 @@ reconnect too (pid `16364` unchanged, RSS climbing normally) — three-for-
 three now on "first ghost respawn after a reconnect," not tallying each
 occurrence in full detail further unless the shape changes.
 
+---
+
+**~16:55:37 — the peer reconnected cleanly as `ghost '3'`**, mounted
+(`riding=True`), at `142.0, 2058.9, 51.4` — a location far from the
+`zoufalaObranaZaBohutu` siege the session had been centered on (~750–770,
+3345–3360), consistent with either player having travelled or the outage
+having been long enough for real repositioning. **No `does not have a
+faction` recurrence for this spawn** — the bug appears specific to ghost id
+`0` (or to whatever the very-first-spawn-after-restart timing is) rather
+than a universal per-spawn defect; this cleaner spawn on id `3` is a useful
+contrast data point, not fully explaining the difference. Session appears
+to have stabilized post-troubleshooting; watching for renewed joint-combat
+opportunity now that both are reconnected.
+
 *(entries continue below as observed)*
