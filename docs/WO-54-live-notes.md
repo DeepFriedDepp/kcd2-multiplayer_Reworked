@@ -340,4 +340,43 @@ worth noting for whoever eventually revisits WO-40's `Reconcile` design: it
 worked, cleanly, on the first real-world trigger this project has observed
 outside its own synthetic tests.
 
+---
+
+## Second full game-process restart — 16:41:xx, mid-session with a peer connected
+
+**Observed (same three-way cross-check as the first restart, §above):**
+`KingdomCome.exe` PID changed (`14380`, `CreationDate 16:41:49.440`); the
+pre-restart `kcd.log` (24.8 MB — the whole siege session) was rotated into
+`logbackups\`; fresh `=== MOD INIT ===` fired in the new log. **No BugSplat
+crash dump was written** (checked, same as the first restart — the
+directory itself shows only a bare mtime touch, no new file). `agent.log`:
+`[combat] pipe reader exited` (16:41:37.424) → menu closed (16:41:38.225) →
+`[discord] SetPresence ... state='v0.17.1 · solo'` and **`Removing all
+ghosts...`** (16:41:39.833) — i.e. **this restart cost the live session its
+peer presence**; the host's client dropped straight to solo state.
+
+**A pattern is now visible across both restarts this session, worth
+recording as a pattern rather than two isolated events:** both times, the
+sequence was (1) player opens the pause/menu, (2) `[combat] pipe reader
+exited` fires *during* that menu window, (3) menu closes, (4) shortly after,
+the client logs a fresh `Connecting...`/reconnect sequence against a brand
+new game process. First restart: menu 16:17:58→16:18:05, restart detected
+~16:18:37 (~32 s later). Second restart: menu 16:41:31→16:41:38, restart
+detected ~16:41:39–49 (near-immediate). **Stated as carefully as the
+evidence allows: opening the pause menu is correlated, twice, with the
+native combat pipe disconnecting and the game process subsequently
+restarting — not proven as cause, since a deliberate human relaunch during
+a menu would look identical in these logs, and no crash dump exists either
+time to settle it.** No narration was available to say whether the human
+intentionally restarted the game both times or it happened to them. If this
+recurs a third time under the same menu-adjacent signature, that would be
+much harder to attribute to coincidence.
+
+**Impact on this WO's open questions:** neither restart happened *during* a
+period of confirmed joint engagement on a shared NPC, so neither directly
+answers priority 1 — but the second one demonstrates a real, live
+multiplayer-session interruption mechanism (ghost presence lost mid-siege)
+that any future joint-combat measurement needs to account for as a
+confound.
+
 *(entries continue below as observed)*
