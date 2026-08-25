@@ -30,7 +30,7 @@ namespace KCDMP_launcher.Services
             Log.Information($"{Prefix} Performing ping for IP: {ip}");
             int pingTime = -1;
 
-            if (!ValidateIpAddr(ip, showError: false))
+            if (!ValidateServerAddress(ip, showError: false))
             {
                 return -1;
             }
@@ -69,7 +69,7 @@ namespace KCDMP_launcher.Services
             Log.Information($"Performing ping async for IP: {ip}");
             int pingTime = -1;
 
-            if (!ValidateIpAddr(ip, showError: false))
+            if (!ValidateServerAddress(ip, showError: false))
             {
                 return -1;
             }
@@ -283,30 +283,54 @@ namespace KCDMP_launcher.Services
                 : ip;
 
         /// <summary>
-        /// Accepts anything the framework can parse as an address, IPv4 or IPv6.
+        /// Accepts a DNS hostname or an IP literal, IPv4 or IPv6 -- anything
+        /// the connection path itself can take, which is a plain string all
+        /// the way down to TcpClient.ConnectAsync(string, int).
         ///
-        /// The hand-rolled four-octet check this replaces rejected every IPv6
-        /// address, which matters now that relays self-register: the master
-        /// server falls back to the address the registration arrived from, and
-        /// that is "::1" for a relay on the same machine and can be a real IPv6
-        /// address for a remote one. Those servers reached the browser and were
-        /// then dropped as unreachable, having never been pinged.
-        ///
-        /// It also dropped the old "last octet cannot be 0" rule, which is not
-        /// a real constraint on a host address.
+        /// The IPAddress.TryParse check this replaces (WO-55) rejected every
+        /// hostname, so a friend with a Dynamic DNS address could not join at
+        /// all: their real, working name was refused at the Add Server form
+        /// without ever being tried. Uri.CheckHostName is the framework's own
+        /// syntax check for exactly this "host" position; whether the name
+        /// actually resolves is DNS's job at connect time, same as any client.
         /// </summary>
-        public bool ValidateIpAddr(string ip, bool showError = true)
+        public bool ValidateServerAddress(string address, bool showError = true)
         {
-            if (!string.IsNullOrWhiteSpace(ip) && System.Net.IPAddress.TryParse(ip, out _))
+            if (!string.IsNullOrWhiteSpace(address)
+                && Uri.CheckHostName(address.Trim()) != UriHostNameType.Unknown)
             {
                 return true;
             }
 
             if (showError)
             {
-                _uiService.ShowError("Invalid IP address. Enter an IPv4 address such as 192.168.1.10, or an IPv6 address.");
+                _uiService.ShowError("Invalid server address. Enter a hostname such as myserver.duckdns.org, or an IP address.");
             }
             return false;
+        }
+
+        /// <summary>
+        /// Can a TCP connection actually be opened to this host and port --
+        /// the same operation the agent's own relay connect performs, so it is
+        /// the truthful reachability test. Exists because ICMP ping is not:
+        /// home routers (exactly where a Dynamic DNS name points) commonly
+        /// drop WAN ping while forwarding the relay's TCP port fine, and the
+        /// launch gate used to trust ping alone (WO-55).
+        /// </summary>
+        public async Task<bool> CanConnectTcpAsync(string host, int port, int timeoutMs = 3000)
+        {
+            try
+            {
+                using var tcp = new TcpClient();
+                using var cts = new CancellationTokenSource(timeoutMs);
+                await tcp.ConnectAsync(host.Trim(), port, cts.Token);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("TCP reachability probe to {Host}:{Port} failed: {Message}", host, port, ex.Message);
+                return false;
+            }
         }
 
         public bool ValidatePort(int port, bool showError = true)

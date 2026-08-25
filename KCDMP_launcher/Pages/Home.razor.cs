@@ -489,7 +489,7 @@ namespace KCDMP_launcher.Pages
                 return;
             }
 
-            if (!IsServerReachable(server))
+            if (!await IsServerReachableAsync(server))
             {
                 UiService.ShowError("Server is unreachable. Cannot launch.");
                 return;
@@ -1205,13 +1205,21 @@ namespace KCDMP_launcher.Pages
             return !game.HasExited;
         }
 
-        private bool IsServerReachable(ServerInfo server)
+        /// <summary>
+        /// WO-55: a ping time proves reachability, but its absence proves
+        /// nothing -- home routers (exactly where a Dynamic DNS address
+        /// points) commonly drop WAN ICMP while forwarding the relay's TCP
+        /// port fine. So a failed ping falls back to the operation that
+        /// actually matters: opening a TCP connection to the relay port,
+        /// which is what the agent will do moments later anyway.
+        /// </summary>
+        private async Task<bool> IsServerReachableAsync(ServerInfo server)
         {
-            if (server.Ping < 0)
+            if (server.Ping >= 0)
             {
-                return false;
+                return true;
             }
-            return true;
+            return await NetService.CanConnectTcpAsync(server.Ip, server.Port);
         }
 
 

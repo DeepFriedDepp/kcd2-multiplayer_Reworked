@@ -20,8 +20,8 @@
                 </div>
                 <div style="display: flex; gap: 15px;">
                     <div class="kcd-input-group" style="flex-grow: 2;">
-                        <label class="kcd-label">IP Address</label>
-                        <input class="kcd-input" @bind="NewServer.Ip" placeholder="127.0.0.1" />
+                        <label class="kcd-label">Address (hostname or IP)</label>
+                        <input class="kcd-input" @bind="NewServer.Ip" placeholder="myserver.duckdns.org or 127.0.0.1" />
                     </div>
                     <div class="kcd-input-group" style="flex-grow: 1;">
                         <label class="kcd-label">Port</label>
@@ -109,7 +109,11 @@
     private bool ValidateInput()
     {
         if (string.IsNullOrWhiteSpace(NewServer.Ip)) return false;
-        if (!NetService.ValidateIpAddr(NewServer.Ip)) return false;
+        // Pasted addresses arrive with stray whitespace, and the address is
+        // later placed unquoted into the agent's command line -- trim before
+        // it can reach either.
+        NewServer.Ip = NewServer.Ip.Trim();
+        if (!NetService.ValidateServerAddress(NewServer.Ip)) return false;
         if (!NetService.ValidatePort(NewServer.Port)) return false;
         return true;
     }
