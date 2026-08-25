@@ -308,4 +308,36 @@ as the first live confirmation this session that the WO-48 pipeline
 actually fires end-to-end during real (not synthetic) play. Watching for an
 actual two-player race if it happens.
 
+**16:29:57.617–16:30:46.120 — a live, real-gameplay firing of the
+`Reconcile` ghost-recovery path (mp_log "Reconcile: N ghost(s) had lost
+their entity; will respawn", `kdcmp.lua:4811`), the same mechanism WO-40
+built for the general case of a ghost losing its world entity.** Timeline,
+cross-referenced kcd.log ↔ agent.log:
+- The ghost walked to a natural stop at `755.72, 3355.70, 141.85` (smooth
+  deceleration visible in the position stream, not an abrupt cut) and held
+  exactly there for the full ~48.5 s window — consistent with the joiner
+  standing still (at/near the same spot as the item pickup a few `v1`
+  sequence numbers earlier), not a stutter artifact.
+- At some point in that window the ghost's entity was lost; `kcd.log` logged
+  the `Reconcile` line and then `Spawning ghost '6' at 755.7,3355.7,141.9` —
+  i.e. **it respawned at the exact same position**, so from the position
+  stream alone this recovery is invisible to an observer.
+- `agent.log` confirms the moment the new entity became usable:
+  `16:30:46.120 [combatviz] ghost 6 entity id 0x803AD cached for native
+  swings` — a new native entity id, replacing whatever the ghost held
+  before.
+- **No error, no crash signature, no disconnect/reconnect banner** anywhere
+  in this window — the connection itself never dropped; only the world
+  entity did. Cause of the entity loss itself is **not visible from these
+  logs** (no "why" is logged, only "it happened, so we're respawning").
+  Given the siege setting, one plausible read is a streaming/despawn
+  interaction inside the quest-scripted battle (WO-57 Phase 8 already flags
+  siege NPC volume as untested territory) — **not confirmed, just the
+  most likely candidate; recorded as inconclusive.**
+
+Relevant to priority 4 (recurrence of a known footage-era failure class) and
+worth noting for whoever eventually revisits WO-40's `Reconcile` design: it
+worked, cleanly, on the first real-world trigger this project has observed
+outside its own synthetic tests.
+
 *(entries continue below as observed)*
