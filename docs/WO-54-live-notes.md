@@ -474,4 +474,39 @@ Player-class-only fatal path theory, and still not diagnosed beyond the
 code-shape inference already given (the unlogged `pcall` around
 `AI.ChangeParameter`, `kdcmp.lua:2685`).
 
+---
+
+## 16:49:2x — the game process exited fully (not another restart), agent looping reconnect
+
+Different from the prior three events: as of 16:49:53, `tasklist` shows
+**no `KingdomCome.exe` process at all** — only the launcher, master server,
+and relay (`KCDMP_launcher.exe`, `KcdMpMasterServer.exe`, `KcdMpServer.exe`)
+are running. `agent.log`: `Removing all ghosts...` / `Reconnecting in 3
+s...` (16:49:27.653) — the .NET client is alive and looping, waiting for a
+game to reattach to, rather than having already found a fresh one the way
+it did the previous three times.
+
+**Context for this one, unlike the prior three: the human asked this
+observer a live networking question in chat immediately beforehand** (how
+a remote player should connect — DDNS hostname + port-forwarding, answered
+16:48ish). It is a reasonable inference — stated as inference, not
+observed fact — that this quit was the human closing the game to check
+router/firewall settings, not an involuntary crash. Recorded as
+context, not as something this observer verified.
+
+**One new error line, not seen earlier this session:** `[version-ipc]
+request failed: Could not load file or assembly 'System.IO.Pipelines,
+Version=10.0.0.0, ...'. The system cannot find the file specified.`
+(16:49:26.380) — an assembly-version-mismatch shape, the same class of bug
+WO-46's own history notes ("partial publish broke the relay via
+System.Text.Json 10", project memory). This hit the `version-ipc` endpoint
+specifically (the launcher's version-check channel), not the main relay
+connection, so it reads as a peripheral-feature failure rather than the
+cause of the process exit. Not diagnosed further — no build/deploy action
+taken or inspected, per this session's scope.
+
+The 4th DiscordRPC `Assets.Merge` NullReferenceException also recurred at
+16:49:29.571, same signature as every prior occurrence, still apparently
+non-fatal to the client process (it kept logging afterward).
+
 *(entries continue below as observed)*
