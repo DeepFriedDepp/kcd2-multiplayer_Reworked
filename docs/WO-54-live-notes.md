@@ -210,6 +210,15 @@ combat episode. Full per-frame detail lives in `kcd.log` /
 `kcdmp-native.mirror.log` on this machine if anyone wants to re-derive exact
 counts; not reproduced line-by-line here to keep this readable.
 
+**Correction, 16:23:46.438:** the `sideWallSubstitute_4` target of the
+near-zero hit stream above eventually took `LocalHit 36.82 (fatal)` — i.e. it
+died. This weakens the "static collider / pure sensor artifact" reading:
+either the near-zero stream was genuine (if small) chip damage against a
+defender NPC that doesn't fight back, accumulating to a real kill, or it is
+still a flood artifact and the 36.82 was an unrelated discrete swing that
+happened to land the killing blow on an already-near-dead entity. Not
+resolved from logs alone — recorded as still open, not settled.
+
 *(monitors retightened here to drop per-tick NPC-position and hit-flood
 spam — see methodology note; full detail remains in the source logs)*
 
