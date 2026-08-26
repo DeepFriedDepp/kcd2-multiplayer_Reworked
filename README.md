@@ -7,7 +7,7 @@
 
 <p align="center">
   <a href="docs/releases/RELEASE-NOTES-0.18.2.md"><img alt="main" src="https://img.shields.io/badge/main-0.18.2-b8860b?style=flat-square"></a>
-  <a href="https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases/tag/0.11.5"><img alt="latest release" src="https://img.shields.io/badge/latest_release-0.11.5--beta-8a3324?style=flat-square"></a>
+  <a href="https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/DeepFriedDepp/kcd2-multiplayer_Reworked?label=latest%20release&color=8a3324&style=flat-square"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2c3e50?style=flat-square"></a>
   <a href="docs/LAUNCHING.md"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows-555555?style=flat-square"></a>
 </p>
@@ -23,12 +23,13 @@ against each other from inside the game itself.
 > Kingdom Come: Deliverance is a trademark of Warhorse Studios; this is a
 > non-commercial fan project.
 
-> **Two version numbers, on purpose.** `main` (this repo's source, `0.18.2`)
-> is well ahead of the last published installer (`v0.11.5-beta`) — the
-> feature list below describes `main`. If you install from the
-> [releases page](https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases),
-> you're getting `0.11.5-beta`'s feature set, not everything described here;
-> [Building from source](#building-from-source) gets you current `main`.
+> **Two version numbers, on purpose** — see the badges above. `main` (this
+> repo's source) is ahead of the last published installer; the feature list
+> below describes `main`. Installing from the
+> [releases page](https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases)
+> gets you that published build's feature set, not everything described
+> here — [Building from source](#building-from-source) gets you current
+> `main`.
 
 <!-- screenshot/gif here -->
 
