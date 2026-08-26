@@ -562,6 +562,8 @@ same few hundred milliseconds.
 
 **5th restart:** `KingdomCome.exe` new PID, `CreationDate 16:58:48.387` —
 about 3m15s after the pipe-reader-exit, longer than the ~30-60s gap seen on
-restarts 1-3. Still no BugSplat dump found.
+restarts 1-3. Still no BugSplat dump found. **The `kcd2mp_0` no-faction
+burst fired a fourth time on this reconnect** (pid `10224` unchanged,
+still non-fatal) — now four-for-four on first-ghost-after-reconnect.
 
 *(entries continue below as observed)*
