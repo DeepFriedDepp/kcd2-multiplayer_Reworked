@@ -1,22 +1,73 @@
-# KCD2 Multiplayer
+<p align="center">
+  <img src="docs/branding/kcd2-mp-logo.png" alt="KCD2 Multiplayer" width="220">
+</p>
 
-An unofficial multiplayer mod for Kingdom Come: Deliverance II. It lets two
-or more people play the same open world together at once: you see each
+<h1 align="center">KCD2 Multiplayer</h1>
+<p align="center"><em>An unofficial co-op mod for Kingdom Come: Deliverance II.</em></p>
+
+<p align="center">
+  <a href="docs/releases/RELEASE-NOTES-0.18.2.md"><img alt="Version" src="https://img.shields.io/badge/version-0.18.2-b8860b?style=flat-square"></a>
+  <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2c3e50?style=flat-square"></a>
+  <a href="docs/LAUNCHING.md"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows-555555?style=flat-square"></a>
+</p>
+
+Two or more people play the same open world together at once: you see each
 other as ghost NPCs (position, animation, nameplates, and each other's
-actual equipped armor *and* weapons — not one fixed costume), hear each other over
-proximity voice chat, can land shared damage on each other and on the
-world's NPCs, and can play a full relay-authoritative game of Farkle dice
+actual equipped armor *and* weapons — not one fixed costume), hear each
+other over proximity voice chat, can land shared damage on each other and on
+the world's NPCs, and can play a full relay-authoritative game of Farkle dice
 against each other from inside the game itself.
 
-**Not affiliated with, endorsed by, or supported by Warhorse Studios.**
-Kingdom Come: Deliverance is a trademark of Warhorse Studios; this is a
-non-commercial fan project.
+> **Not affiliated with, endorsed by, or supported by Warhorse Studios.**
+> Kingdom Come: Deliverance is a trademark of Warhorse Studios; this is a
+> non-commercial fan project.
 
-## Status
+<!-- screenshot/gif here -->
 
-Honest, code-verified as of this write-up — not "should work," what's
-actually been observed working. "Unverified" below means exactly that,
-never "probably fine."
+## Contents
+
+- [Features](#features)
+- [How to play with a friend](#how-to-play-with-a-friend)
+- [Install](#install)
+- [How to play dice](#how-to-play-dice)
+- [Architecture](#architecture)
+- [Repository layout](#repository-layout)
+- [Building from source](#building-from-source)
+- [Testing](#testing)
+- [What's left, and reporting bugs](#whats-left-undone-what-still-needs-a-human-and-reporting-bugs)
+- [License and provenance](#license-and-provenance)
+
+## Features
+
+At a glance — every row is expanded with the full evidence, caveats and
+known rough edges in [the detailed status table](#full-status-detail) below.
+"Unverified" always means exactly that, never "probably fine."
+
+| Feature | Status |
+|---|---|
+| Ghost presence (position, animation, nameplates, per-player face) | ✅ Working |
+| Appearance sync (real armor & weapons, not a costume) | ✅ Working solo — ⚠️ unverified with 2 real humans |
+| Shared combat (damage & death on world NPCs) | ✅ Working solo — ⚠️ unverified with 2 real humans |
+| Shared player health/death (HP on nameplate, death → reload) | ✅ Working, live-verified |
+| NPC hits on a player crossing between machines | 🚧 Built, guards verified — cross-machine hit unverified |
+| NPC sync (hand-placed NPCs mirrored across machines) | ✅ Working, on by default — proximity-based authority as of 0.18.2 |
+| Reactive ghost combat (self-defense, joins nearby fights) | ✅ Working, always on, no toggle |
+| Proactive NPC aggro on ghosts (`mp_enable_aggro`) | ✅ Working, opt-in, off by default |
+| Dropped-item sync (shared pickups, race-safe) | ✅ Working |
+| Voice chat | ✅ Working, proximity-based |
+| Reconnect / mid-session save-reload recovery | ✅ Fixed, live-verified |
+| Time-of-day, weather and horse-identity sync | ✅ Working |
+| Farkle dice, played in-game | ✅ Working vs a scripted opponent — ⚠️ unverified with 2 real humans |
+| Server browser (master server) | ✅ Working, live-tested |
+| Launcher (host/join, dependency handling) | 🚧 Built — end-to-end run unverified |
+| One-click installer | ✅ Working — automated + manual tests |
+| Emotes | ❌ Not implemented |
+| Duelling | ❌ Not implemented |
+| Dice wagers | ❌ Not implemented — score-only match, no groschen change hands |
+| Ranged weapon swings on ghosts | ❌ Melee only |
+
+<details>
+<summary><a id="full-status-detail"></a><strong>Full status detail — every caveat, every unverified claim</strong></summary>
 
 | Feature | Status |
 |---|---|
@@ -30,10 +81,12 @@ never "probably fine."
 | Shared combat | **Working** against synthetic peers and in real single-machine play; **unverified** with a second real human |
 | Shared player health and death | **Working** — every player's own health and stamina now reach everyone else, so a peer's ghost shows their real `HP`/`ST` on its nameplate instead of looking permanently healthy while its owner is being killed. A player who dies is announced explicitly by their own game (never guessed from health hitting zero) and their ghost is tagged **`[dead - reloading]`**, clearing by itself once they are back in the world. Live-verified end to end on one machine, 17/17. **What death does is ordinary single-player behaviour: you reload your own most recent save.** Nobody else's world reverts — every player has always had a completely separate save, and this mod has never had, and is not getting, a way to sync one player's save into another's |
 | NPC hits on a player crossing between players | **Built, guards verified, cross-machine step UNVERIFIED.** An NPC attacking your ghost in someone else's world reports the damage back to you, so NPC combat can hurt a remote player rather than only their stand-in. Exactly one client holds this authority at a time (the relay assigns it) — without that, every player's own NPCs would independently damage everyone and multiply the damage by the player count. All three guards around it are individually verified live, plus a positive control. The actual hit crossing two machines was **not** tested: there is one machine here and no second player. **This does not synchronise NPCs themselves** — each player still sees their own local version of any fight; what's shared is only who got hurt and who died, never the NPC's position, animation or AI state |
-| Recovering from a mid-session save reload | **Fixed this release, live-verified.** Loading a save used to permanently stop that player transmitting at all — they simply vanished for everyone else for the rest of the session — and destroyed every other player's ghost body in their world while leaving the floating nameplate walking around with nothing under it. Both were measured (dead for 197s and 187s respectively, still going when the test ended) and both now recover on their own in about 14 seconds |
+| Recovering from a mid-session save reload | **Fixed, live-verified.** Loading a save used to permanently stop that player transmitting at all — they simply vanished for everyone else for the rest of the session — and destroyed every other player's ghost body in their world while leaving the floating nameplate walking around with nothing under it. Both were measured (dead for 197s and 187s respectively, still going when the test ended) and both now recover on their own in about 14 seconds. Two more reload bugs — a peer going invisible after standing still, and an embedded save-file ghost impersonating a live one — were closed in WO-59 |
 | Reactive ghost combat (self-defense, joining nearby fights) | **Working, always on, no toggle** — a ghost has a real soul and brain, so it defends itself when attacked (treats it as a crime, arms itself, lands real damage) and will join a fight already happening near it, independent of `mp_enable_aggro` below. Verified taking a real player from 100 to 57 HP in one exchange, and separately pursuing and killing another ghost 340 m from where both spawned. A knocked-out ghost also gets back up on its own, usually within a minute. Its position is still pinned to its owner's real movement during a networked session, so it cannot step, close, or retreat — a real, unresolved gap. **A ghost's own attacks are not replicated to its owner** — a remote player's character can kill NPCs in your world that its owner never actually attacked, invisibly to them |
 | NPC aggro on ghosts (`mp_enable_aggro`) | **Working, opt-in, off by default** — this does NOT turn the reactive combat above on or off; that already happens regardless. What the toggle actually gates is *proactive, faction-wide* hostility: when on, a ghost that lands or receives a hit gets attached to one real hostile faction for ~20s, so *any* nearby NPC of an opposing faction — not just whoever it's already fighting — can recognize and attack it unprompted. When off, that native attach never fires. Verified end-to-end (synthetic peer → relay → agent → native plugin → game) via a live on/off comparison and repeated live fights; **unverified** with a second real human. **Known limits, not bugs** — see below |
-| NPC sync (`mp_npc_sync`) | **Working, ON by default** (WO-32) — up to 5 hand-placed NPCs within 30 m of the session's world-authority player mirror that player's world on everyone else's machine: position, walking/running animation, health, death. Verified end to end (15/15): the emitted stream matches engine-resolved positions, the relay refuses NPC state from any client that isn't the authority, and a real NPC was driven over the real wire, then released cleanly back to its own schedule (observed restoring to its exact anchor, still talkable, no crime/faction side effects). Costs less bandwidth than one player's position stream. **Turn it off with `mp_npc_sync off`** in the console — only meaningful on the authority's machine (the same client that holds combat authority; in practice, the host), since only that client transmits; everyone else just renders what arrives. **Unverified** with a second real human; dialogue with an NPC *while* it is actively being driven is untested (before/after works) |
+| NPC sync (`mp_npc_sync`) | **Working, ON by default** — up to 5 hand-placed NPCs within 30 m of a player mirror that player's world on everyone else's machine: position, walking/running animation, health, death. Costs less bandwidth than one player's position stream. **As of 0.18.2 (WO-60), tracking is proximity-based**: previously only the host's own surroundings were tracked, so an NPC fighting a joining player far from the host was never synced at all. Now whichever machine is actually near an NPC tracks and streams it, with a 15s "engagement hold" so an active fight can't bounce between machines through a brief packet gap. Wire-verified (35/35); **no live two-machine session has run this model yet** — rollback with `mp_npc_proximity off` on the joining machine if it behaves worse than the previous release. **Unverified** with a second real human; dialogue with an NPC *while* it is actively being driven is untested (before/after works) |
+| Dropped-item sync (`mp_item_sync`) | **Working** — a player who drops an item shares it: peers see it appear at the same spot, anyone can pick it up, and the first pickup wins for everyone (a losing pickup rolls back automatically). Verified across food, a bandage stack, armor and weapons. Late joiners converge via a 30s re-broadcast; a save reload self-heals both directions. Deliberately **not** shared: chests and NPC pockets — each player keeps their own loot pool, only deliberate player-to-player handoffs sync |
+| Time-of-day, weather and horse-identity sync | **Working** — a connecting player's clock is pulled forward to match the session's within ~10s, weather is arbitrated and blended across machines (eyeball-verified end to end), and a ridden horse's real identity is adopted by a ghost when that horse is within 60m, falling back to a cosmetic proxy horse otherwise (a hard freeze in this path was diagnosed and fixed) |
 | Voice chat | **Working**, proximity-based |
 | Session framework (invites/accept/decline) | **Working** |
 | Dice engine (Farkle) | **Working** — 59/59 unit tests |
@@ -41,9 +94,9 @@ never "probably fine."
 | In-game dice UI | **Working** — played to completion against a scripted opponent; **unverified** with two real humans |
 | Emotes | **Not implemented** |
 | Duelling | **Not implemented** — the wire protocol reserves a slot for it, nothing behind it |
-| Master server (server browser backend) | **Working, live-tested** (WO-35) — a community-contributed C# service (`dotnet/KcdMp.MasterServer/`) replaced the never-run Flask service. Relay↔master↔launcher exercised end-to-end with the real code on all three sides: announce, live update, and delisting within ~1s of a relay disconnecting |
+| Master server (server browser backend) | **Working, live-tested** — a community-contributed C# service (`dotnet/KcdMp.MasterServer/`) replaced the never-run Flask service. Relay↔master↔launcher exercised end-to-end with the real code on all three sides: announce, live update, and delisting within ~1s of a relay disconnecting |
 | Launcher (host/join, dependency handling) | **Built but unverified end-to-end** — see below. Shares the in-game dice overlay's art direction (aged parchment, oak, gold) across every screen rather than looking like a generic dark app; has a **REPORT BUG** button in the status bar that opens this project's GitHub Issues or Discord; and warns you before you connect if you and your peer are on different mod versions, naming which side needs to update |
-| Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md`. **Hardened against half-applied updates** (WO-32 follow-up, after a real one): Setup refuses to install while the launcher/agent/relay/game is running, verifies every installed file against a size manifest afterwards (verdict in `install-verify.txt`), and the launcher itself warns at startup if the install directory holds a mix of two builds |
+| Installer (`KCDMP-Setup-<version>.exe`) | **Working** — silent install/upgrade/uninstall and Steam detection both covered by automated suites (41/41, 21/21) on one machine; the interactive wizard and any clean machine are **unverified**, see `docs/INSTALLER-TESTING.md`. **Hardened against half-applied updates**: Setup refuses to install while the launcher/agent/relay/game is running, verifies every installed file against a size manifest afterwards (verdict in `install-verify.txt`), and the launcher itself warns at startup if the install directory holds a mix of two builds |
 
 **NPC aggro (`mp_enable_aggro`) — known limits, v1 scope, not bugs:**
 - **Hitting another player's ghost in a town is a crime.** A ghost is a real
@@ -61,6 +114,8 @@ never "probably fine."
 - **Not tested with a second real human** — verified end-to-end via a
   synthetic peer through the real relay and agent, not a real second player.
 
+</details>
+
 ## How to play with a friend
 
 1. Both of you install the mod (below) and the launcher.
@@ -77,9 +132,10 @@ Same Wi-Fi/LAN: that's it. Different houses: see
 over the internet (a VPN overlay like Tailscale — recommended — or port
 forwarding), including exactly what address and port to share.
 
-### Install
+## Install
 
-1. Download **`KCDMP-Setup-<version>.exe`** from the releases page.
+1. Download **`KCDMP-Setup-<version>.exe`** from the
+   [releases page](https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases).
 2. Run it.
 3. That's it — use Host or Join as above.
 
@@ -123,8 +179,9 @@ or your Steam setup is unusual.
 Everyone you play with needs the same version, not just the host — an old and
 a new build won't connect to each other.
 
-Download **`KCDMP-DirectInstall-0.11.5.zip`** from the release and unzip it. It
-contains two folders, `App` and `Mod`:
+Download **`KCDMP-DirectInstall-<version>.zip`** from the
+[releases page](https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases)
+and unzip it. It contains two folders, `App` and `Mod`:
 
 1. Copy the **`App`** folder's contents into your existing install folder
    (`%LocalAppData%\KCDMP` — paste that into Explorer's address bar),
@@ -137,9 +194,11 @@ contains two folders, `App` and `Mod`:
 
 Close the launcher first. That's it — no need to run Setup.exe again, and
 nothing else on your PC is touched. Prefer a full reinstall? Running
-`KCDMP-Setup-0.11.5.exe` over the top does that and keeps your settings too.
+`KCDMP-Setup-<version>.exe` over the top does that and keeps your settings
+too.
 
-**Building the installer yourself:**
+<details>
+<summary>Building the installer yourself</summary>
 
 ```
 powershell -ExecutionPolicy Bypass -File tools\Build-Installer.ps1
@@ -156,6 +215,8 @@ needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 Both read the version from the `VERSION` file at the repo root and from
 nowhere else, so they cannot disagree about it. That number is chosen by hand,
 never bumped automatically — see [docs/VERSIONING.md](docs/VERSIONING.md).
+
+</details>
 
 ## How to play dice
 
@@ -236,7 +297,8 @@ Every key above has a console equivalent if a key ever fails you:
 | `mp_dice_flush` | The board is stuck or flickering — clears every queued panel |
 | `mp_dice_close` | You want it gone |
 
-### Known rough edges
+<details>
+<summary>Known dice rough edges</summary>
 
 - **Inviting and accepting have no keybind.** `mp_dice`, `mp_accept` and
   `mp_decline` are the reliable path. Key bindings for these exist in the code
@@ -248,7 +310,9 @@ Every key above has a console equivalent if a key ever fails you:
   built.
 - **A full two-human match has never been played.** Everything above was
   verified against a scripted opponent (`tools\Bot-DiceOpponent.ps1`) on one
-  machine. See below.
+  machine.
+
+</details>
 
 ## Architecture
 
@@ -287,7 +351,7 @@ cross-machine game-API traffic, only the relay TCP connection.
 | `native/KCDMP/` | The injected plugin (C++) |
 | `native/KCDMP_LauncherInjector/` | The injector executable |
 | `KCDMP_launcher/` | The desktop launcher (Photino/Blazor) |
-| `dotnet/KcdMp.MasterServer/` | `KcdMpMasterServer.exe`, the server-discovery backend (WO-35) — see `docs/MASTER-SERVER.md` |
+| `dotnet/KcdMp.MasterServer/` | `KcdMpMasterServer.exe`, the server-discovery backend — see `docs/MASTER-SERVER.md` |
 | `docs/` | Design notes and session handoffs — start with `docs/PROJECT-STATE.md` |
 
 ## Building from source
@@ -344,9 +408,8 @@ rather than hardcoding it — never add a new literal version byte to a script.
 
 ## What's left undone, what still needs a human, and reporting bugs
 
-### Not done
-
-Things that are genuinely missing or impossible, as opposed to untested:
+<details>
+<summary><strong>Not done</strong> — genuinely missing or impossible, as opposed to untested</summary>
 
 - **Emotes** — not implemented.
 - **Duelling** — not implemented. The wire protocol reserves an
@@ -358,6 +421,8 @@ Things that are genuinely missing or impossible, as opposed to untested:
   (`mp_dice`, `mp_accept`, `mp_decline`) are the working path. The key
   bindings in the code are built on guessed engine action names that have
   never been confirmed to fire.
+- **Ranged weapon swings on ghosts** — melee is fully animated; bow/crossbow
+  ranged action names are recorded but not yet wired.
 - **Appearance sync's write latency is genuinely variable** — equipping or
   unequipping one item on a ghost usually lands within a second, but under
   heavier load it has taken up to a couple of minutes, and it self-heals via
@@ -380,10 +445,6 @@ Things that are genuinely missing or impossible, as opposed to untested:
   in-progress state isn't reachable from outside it. That's why dice is a
   separate relay-authoritative engine instead of mirroring the vanilla
   minigame.
-- **The master server (server browser backend)** — the Python service has
-  never been run on any machine that touched this project. The .NET side is
-  tested against a stub of its contract. The launcher's Join-by-address path
-  does not need it; the browsable server list does.
 - **Auto-detecting "you are actually in the world"** — the launcher still asks
   you to confirm you have loaded your save before it injects. Injecting too
   early is no longer fatal (the plugin waits for the game's tick instead of
@@ -393,8 +454,7 @@ Things that are genuinely missing or impossible, as opposed to untested:
   moving during your menu, but the `System.DrawLabel`/`DrawText` calls that
   draw names are immediate-mode, one frame per call, and the update pump is
   not frame-locked to the renderer. Pumping them would strobe rather than
-  render, so they stay off. This is unchanged from before the menu fix, not a
-  regression from it.
+  render, so they stay off.
 - **The installer does not detect an incomplete Modding Tools data
   install** — it verifies `Framework.dll`/`CrySystem.dll` exist beside
   `KingdomCome.exe`, which proves the *engine binaries* are the right build.
@@ -414,6 +474,13 @@ Things that are genuinely missing or impossible, as opposed to untested:
   shortcuts the installer creates set it correctly. Launch
   `KCDMP_launcher.exe` from some other directory and it will read and write
   its settings there instead.
+- **A claimed NPC's health still converges by damage events only** —
+  simultaneous kill/loot arbitration between two players fighting the same
+  NPC remains unhandled.
+- **Animals don't sync** — chickens, dogs, deer and the like are out of scope
+  by design, not a bug.
+
+</details>
 
 ### Reporting a bug
 
