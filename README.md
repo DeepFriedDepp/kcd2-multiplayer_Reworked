@@ -23,7 +23,7 @@ against each other from inside the game itself.
 > Kingdom Come: Deliverance is a trademark of Warhorse Studios; this is a
 > non-commercial fan project.
 
-> **Two version numbers, on purpose** — see the badges above. `main` (this
+> **Two version numbers**. `main` (this
 > repo's source) is ahead of the last published installer; the feature list
 > below describes `main`. Installing from the
 > [releases page](https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases)
