@@ -179,10 +179,10 @@ public sealed class LogTailGameTransport : IGameTransport
     // through the debug REST API regardless of which transport reads
     // position, so these simply delegate to the composed HttpGameTransport
     // exactly like ExecuteAsync/FlushAsync above.
-    public Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default) =>
+    public Task<Guid[]?> ReadEquippedItemClassesAsync(CancellationToken ct = default) =>
         _http.ReadEquippedItemClassesAsync(ct);
 
-    public Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default) =>
+    public Task<Guid[]?> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default) =>
         _http.ReadGhostEquippedItemClassesAsync(ghostSoulName, ct);
 
     public Task EquipItemOnGhostAsync(string ghostSoulName, Guid itemClass, bool createIfMissing, CancellationToken ct = default) =>

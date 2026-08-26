@@ -394,7 +394,38 @@ end
 function KCD2MP_EmitTick()
     if not KCD2MP.emitRunning then return end
     Script.SetTimer(KCD2MP.emitIntervalMs, KCD2MP_EmitTick)  -- reschedule FIRST: a Lua error must not kill the stream
-    KCD2MP._emitAliveAt = os.clock()
+    local nowClock = os.clock()
+
+    -- WO-59 Thread D: a frame-rate floor signal, so the next "FPS dropped"
+    -- report comes with numbers in the bundle instead of testimony.
+    -- Script.SetTimer fires on frames, so each tick's actual delay is
+    -- max(emitIntervalMs, frame time): while the game runs faster than
+    -- 1000/emitIntervalMs fps the average delta sits at the interval, and
+    -- when it runs slower the average delta IS the frame time (15 fps ==
+    -- ~67 ms deltas at the 20 ms interval). Logged every 15 s only while
+    -- degraded (avg > 2x interval, i.e. below ~25 fps -- quiet on a
+    -- healthy-but-modest 30 fps rig), plus one baseline line per 60 s.
+    local prev = KCD2MP._emitAliveAt
+    if prev then
+        local dtMs = (nowClock - prev) * 1000
+        local st = KCD2MP._tickStat
+        if not st then st = { n = 0, sum = 0, max = 0, winStart = nowClock, baseAt = nowClock }; KCD2MP._tickStat = st end
+        st.n, st.sum = st.n + 1, st.sum + dtMs
+        if dtMs > st.max then st.max = dtMs end
+        if (nowClock - st.winStart) >= 15 and st.n > 0 then
+            local avg = st.sum / st.n
+            local degraded = avg > KCD2MP.emitIntervalMs * 2.0
+            if degraded or (nowClock - st.baseAt) >= 60 then
+                System.LogAlways(string.format(
+                    "[KCD2-MP] tickstat avg=%.1fms max=%.1fms n=%d interval=%dms%s",
+                    avg, st.max, st.n, KCD2MP.emitIntervalMs,
+                    degraded and string.format(" DEGRADED (~%.0f fps floor)", 1000 / avg) or ""))
+                st.baseAt = nowClock
+            end
+            st.n, st.sum, st.max, st.winStart = 0, 0, 0, nowClock
+        end
+    end
+    KCD2MP._emitAliveAt = nowClock
 
     local ok, err = pcall(KCD2MP_EmitState)
     if not ok then
@@ -590,6 +621,14 @@ function KCD2MP_ApplyTimeSkip(who, kind, target, quiet)
         local ok2, err = pcall(function() Calendar.SetWorldTime(target) end)
         mp_log(string.format("ApplyTimeSkip: %d -> %d (%s)", cur, target,
             ok2 and "written" or ("FAILED " .. tostring(err))))
+        -- WO-59: a quiet apply that moves the clock more than an hour is a
+        -- session-convergence jump (connect-time sync across a multi-day
+        -- save gap), and silently changing the sky under the player without
+        -- a word reads as a bug. One neutral line, no peer attribution.
+        if quiet and ok2 and (target - cur) > 3600 then
+            KCD2MP_ShowInteractionMsg("Clock synced forward to the session's time ("
+                .. KCD2MP_FormatWorldTime(target) .. ")")
+        end
     else
         -- Forward-only: already at or past the target (e.g. our own skip
         -- overshot a peer's). Keep our clock; divergence is bounded by the
@@ -1907,6 +1946,19 @@ end
 -- Rebuild the tracked set: the maxTracked nearest live human NPCs within
 -- radius. Names not re-selected simply age out of KCD2MP.npcTracked (their
 -- entries are dropped so a re-entering NPC re-heartbeats immediately).
+--
+-- WO-59 Thread A: hysteresis. The old single-radius rescan was a documented
+-- ~5 s oscillator (WO-38 findings, "boundary flapping"): an NPC near the
+-- 30 m edge was tracked/untracked every 2 s rescan, and each untrack let
+-- the receiver's engine yank the puppet back to its own schedule position
+-- before the re-track snapped it away again -- jitter with no combat and no
+-- restart needed. Two asymmetries fix it: (1) an ALREADY-tracked NPC stays
+-- eligible out to 1.5x radius, so crossing the enter-edge back and forth
+-- cannot untrack it; (2) when more candidates exist than maxTracked slots,
+-- already-tracked NPCs win near-ties (an 8 m bonus), so the tracked set
+-- stops churning as ranks 5 and 6 swap places.
+local NPC_TRACK_EXIT_FACTOR  = 1.5   -- tracked NPCs stay eligible to radius*this
+local NPC_TRACK_STICKY_BONUS = 8.0   -- metres subtracted from a tracked NPC's rank distance
 local function mp_npc_rescan()
     if not player then return end
     local pp = nil
@@ -1914,7 +1966,9 @@ local function mp_npc_rescan()
     if not pp then return end
 
     local found = {}
-    local ents = System.GetEntitiesInSphere(pp, KCD2MP.npcSync.radius) or {}
+    local enterRadius = KCD2MP.npcSync.radius
+    local exitRadius  = enterRadius * NPC_TRACK_EXIT_FACTOR
+    local ents = System.GetEntitiesInSphere(pp, exitRadius) or {}
     for _, e in ipairs(ents) do
         local cls = e.class
         -- WO-38 Phase 5: Horse-class entities travel on the same channel --
@@ -1936,11 +1990,18 @@ local function mp_npc_rescan()
             if name and string.find(name, "^[%w_]+$") then
                 local ep = e:GetWorldPos()
                 local dx, dy = ep.x - pp.x, ep.y - pp.y
-                table.insert(found, { name = name, e = e, d2 = dx*dx + dy*dy })
+                local d = math.sqrt(dx*dx + dy*dy)
+                local tracked = KCD2MP.npcTracked[name] ~= nil
+                -- New NPCs must be inside the enter radius; tracked ones
+                -- survive out to the exit radius (the sphere query bound).
+                if tracked or d <= enterRadius then
+                    table.insert(found, { name = name, e = e,
+                        rank = tracked and (d - NPC_TRACK_STICKY_BONUS) or d })
+                end
             end
         end
     end
-    table.sort(found, function(a, b) return a.d2 < b.d2 end)
+    table.sort(found, function(a, b) return a.rank < b.rank end)
 
     local keep = {}
     for i = 1, math.min(#found, KCD2MP.npcSync.maxTracked) do
@@ -2797,8 +2858,14 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
 
     -- WO-38 Phase 7: if the stimulus-deafness A/B toggle is on, new spawns
     -- get it too, or a reconnect would silently undo the experiment mid-test.
+    -- WO-59: the result is now logged instead of discarded. A silently
+    -- failed SetIgnorant leaves the ghost's brain fully perceptive -- a real
+    -- crime witness -- and no log line ever recorded whether the one
+    -- spawn-time call actually ran (Thread C: the caught-stealing kill).
     if KCD2MP.ghostsIgnorant then
-        pcall(function() AI.SetIgnorant(entity.id, 1) end)
+        local igOk, igErr = pcall(function() AI.SetIgnorant(entity.id, 1) end)
+        System.LogAlways("[KCD2-MP] SetIgnorant at spawn for ghost " .. tostring(id)
+            .. " ok=" .. tostring(igOk) .. (igOk and "" or (" err=" .. tostring(igErr))))
     end
 
     -- Schedule name apply after entity fully inits (soul may not be ready at spawn time).
@@ -4826,6 +4893,24 @@ function KCD2MP_ReconcileGhosts()
             -- perfectly good standing body and must NOT be recycled -- WO-28
             -- chose to leave it exactly so a player back in seconds does not
             -- cost a full spawn cycle, and that reasoning is unchanged.
+            -- WO-59 Thread B: the name resolving is NOT the tracked body
+            -- surviving. A reload of a save that EMBEDS a same-id ghost body
+            -- (saved while that ghost stood nearby, reloaded in the same
+            -- session so the id matches) destroys the tracked entity but
+            -- leaves GetEntityByName answering with the embedded copy -- a
+            -- different entity. The old "did the name resolve" test then
+            -- passed forever: interp writes went to the destroyed entity,
+            -- the nameplate walked on (it renders from the interp table),
+            -- and the player was invisible -- WO-28's eyewitness shape,
+            -- WO-38 Section G's unexplained report. Compare identities and
+            -- treat a mismatch as an imposter: remove the embedded body and
+            -- fall through to the normal clear-and-respawn path.
+            if live and ghost.entityId and tostring(live.id) ~= tostring(ghost.entityId) then
+                mp_log("RECONCILE id=" .. tostring(id) .. " entity '" .. spawnName ..
+                       "' resolves to a DIFFERENT entity (save-embedded body?) -- removing the imposter so a fresh ghost respawns")
+                mp_remove_entity_verified(live.id, spawnName, "imposter ghost " .. tostring(id))
+                live = nil
+            end
             local corpse = false
             if live and live.actor then
                 pcall(function() corpse = live.actor:IsDead() and true or false end)
@@ -6212,6 +6297,34 @@ function KCD2MP_SetGhostsIgnorant(arg)
     end
     System.LogAlways("[KCD2-MP] mp_ghost_ignorant " .. s .. " applied to " .. n .. " ghost(s)"
         .. " -- new spawns " .. (KCD2MP.ghostsIgnorant and "WILL" or "will NOT") .. " get it")
+end
+
+-- WO-59 Thread C: re-assert stimulus-deafness on every live ghost. Called by
+-- the agent on the same 2.5 s re-arm cadence as StartInterp/SetGhostName.
+-- SetIgnorant was applied exactly once at spawn with its pcall result thrown
+-- away; if that one call failed, or the engine dropped the flag somewhere no
+-- doc covers, the ghost's brain was a full crime witness for the rest of the
+-- session with zero evidence trail (the field report: a ghost catching a
+-- sneaking player mid-theft, barking the authored catch line, and killing
+-- them). Re-asserting is one flag write per ghost; the engine treats a
+-- same-value write as a no-op, and a FAILURE is logged once per ghost id so
+-- a field bundle finally shows whether this lever works when it matters.
+function KCD2MP_ReassertGhostIgnorance()
+    if not KCD2MP.ghostsIgnorant then return end
+    KCD2MP._ignorantFailLogged = KCD2MP._ignorantFailLogged or {}
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        if ghost.entity then
+            local ok, err = pcall(function() AI.SetIgnorant(ghost.entity.id, 1) end)
+            if not ok and not KCD2MP._ignorantFailLogged[id] then
+                KCD2MP._ignorantFailLogged[id] = true
+                System.LogAlways("[KCD2-MP] ReassertGhostIgnorance: SetIgnorant FAILED for ghost "
+                    .. tostring(id) .. " err=" .. tostring(err))
+            elseif ok and KCD2MP._ignorantFailLogged[id] then
+                KCD2MP._ignorantFailLogged[id] = nil
+                System.LogAlways("[KCD2-MP] ReassertGhostIgnorance: SetIgnorant recovered for ghost " .. tostring(id))
+            end
+        end
+    end
 end
 
 -- ===== WO-40 Phase 9: hostility remediation + faction-bind probe =====

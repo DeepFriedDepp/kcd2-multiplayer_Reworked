@@ -837,6 +837,21 @@ public static class Protocol
     /// <summary>TimeSkip phase (S→C only): apply the time but do not announce it -- a joined player's own skip resolving.</summary>
     public const byte TimeSkipPhaseDoneQuiet = 2;
 
+    /// <summary>
+    /// TimeSkip phase (C→S only, WO-59): "here is my current clock" -- sent
+    /// once shortly after connecting and again when a new peer appears, so
+    /// two players whose saves sit days apart converge WITHOUT anyone having
+    /// to sleep first. Before this phase existed, 0x28 fired only on skips
+    /// and settled clock jumps, so a session that never slept simply stayed
+    /// diverged (the day/night split of the 2026-08 field reports). The
+    /// relay rebroadcasts it as <see cref="TimeSkipPhaseDoneQuiet"/> with no
+    /// active-skip bookkeeping: receivers apply it through the ordinary
+    /// forward-only path (the behind player leaps forward, the ahead player
+    /// keeps their clock), and it feeds the reload-convergence peer-clock
+    /// cache like any other done.
+    /// </summary>
+    public const byte TimeSkipPhaseSync = 3;
+
     /// <summary>TimeSkip kind: bed sleep ("slept till ...").</summary>
     public const byte TimeSkipKindSleep = 0;
 

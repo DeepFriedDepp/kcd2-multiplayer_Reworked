@@ -276,6 +276,10 @@ public class ClientSession
                     {
                         Protocol.TimeSkipPhaseStart => _clientHandler.BeginTimeSkip(this),
                         Protocol.TimeSkipPhaseDone  => _clientHandler.CompleteTimeSkip(this),
+                        // WO-59: a plain clock report -- no active-skip
+                        // bookkeeping at all; rebroadcast quietly so behind
+                        // peers converge forward without a toast.
+                        Protocol.TimeSkipPhaseSync  => ClientHandler.TimeSkipRouting.BroadcastDoneQuiet,
                         _ => ClientHandler.TimeSkipRouting.None,   // done-quiet is S→C only; a client sending it is malformed
                     };
                     switch (routing)
@@ -290,8 +294,9 @@ public class ClientSession
                             _broadcastService.BroadcastTimeSkip(this, body);
                             break;
                         case ClientHandler.TimeSkipRouting.BroadcastDoneQuiet:
-                            _logger.Information("[timeskip] '{Name}' (id={Id}) joined-skip done -> worldTime={Time} (quiet).",
-                                Name, Id, BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(2)));
+                            _logger.Information("[timeskip] '{Name}' (id={Id}) {What} -> worldTime={Time} (quiet).",
+                                Name, Id, phase == Protocol.TimeSkipPhaseSync ? "clock sync" : "joined-skip done",
+                                BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(2)));
                             body[0] = Protocol.TimeSkipPhaseDoneQuiet;
                             _broadcastService.BroadcastTimeSkip(this, body);
                             break;

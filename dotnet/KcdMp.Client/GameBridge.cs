@@ -141,9 +141,26 @@ public partial class GameBridge(ClientConfig config)
     // forever: the 2026-08-25 session shows the same 9 classes 404-ing
     // through equip retries every ~30 s on BOTH machines for the entire
     // session -- constant REST traffic into the game's main thread for
-    // items that will never take. One failed schedule is the retry budget;
-    // the set resets per ghost lifetime (disconnect/reconnect clears it).
-    private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostNeverEquips = new();
+    // items that will never take. One failed schedule is the retry budget.
+    //
+    // WO-59: entries now carry an expiry (value = UTC time the entry stops
+    // suppressing) instead of living for the whole ghost lifetime. A
+    // lifetime blacklist turned any transient failure -- game busy at the
+    // 800 ms REST timeout, a menu open, a slot exclusivity that resolves
+    // when the peer changes outfit again -- into "this player's clothing
+    // never updates again until reconnect", which is exactly the shape of
+    // the one-way clothing reports. Ten minutes keeps ~95% of WO-58's
+    // churn reduction (one 10 s retry cycle per item per 10 min instead of
+    // one every 30 s) while letting legitimate changes heal.
+    private readonly ConcurrentDictionary<byte, Dictionary<Guid, DateTime>> _ghostNeverEquips = new();
+
+    /// <summary>How long one exhausted verify schedule suppresses an item class for a ghost.</summary>
+    private static readonly TimeSpan NeverEquipTtl = TimeSpan.FromMinutes(10);
+
+    // WO-59: one-shot log latch for the local equipped-set read failing
+    // (see AppearanceLoopAsync) -- a busy game times out for minutes and a
+    // per-poll line would flood the agent log.
+    private bool _appearanceReadDown;
 
     // Set by the "appearance_sync" game event (mp_sync_appearance console
     // command) to force the next poll to send unconditionally, bypassing the
@@ -269,6 +286,12 @@ public partial class GameBridge(ClientConfig config)
     // Reassigned per connection, same idiom as _sendPauseIfChanged.
     private Func<byte, byte, uint, Task>? _sendTimeSkip;
 
+    // WO-59: when true, the next world-time reading is also announced to the
+    // session as a TimeSkipPhaseSync -- set at connect and whenever a new
+    // peer's ghost first appears, so clocks converge without anyone sleeping.
+    // Volatile: set from the receive loop, consumed on the position loop.
+    private volatile bool _timeSyncPending;
+
     // ---- Horse identity (WO-38 Phase 5) ----
     // Carries one horse_info event line from the mod onto the wire as a
     // HorseInfoUp (0x2A). Reassigned per connection like _sendNpcState.
@@ -345,6 +368,18 @@ public partial class GameBridge(ClientConfig config)
     /// brief freeze, slow enough to be free.
     /// </summary>
     private const int ReArmInterpEveryTicks = 250;
+
+    /// <summary>
+    /// WO-59: how often the last position is re-sent even when the player has
+    /// not moved (200 ticks x 10 ms = 2 s). Positions were purely
+    /// change-gated, which left a standing-still player unspawnable on any
+    /// peer whose reload had just cleared the ghost row -- WO-38's
+    /// "invisible after reload" candidate (a), now closed: Reconcile clears
+    /// the stale row within 5 s and this heartbeat re-delivers the spawn
+    /// trigger within 2 s more, moving or not. One 18-byte packet per 2 s
+    /// of stillness is the whole cost.
+    /// </summary>
+    private const int PositionHeartbeatEveryTicks = 200;
     // Reassigned per connection, same idiom as _combat.OnLocalHit: closes
     // over that connection's stream, so callers that don't have it
     // themselves (OnGameEvent, the tail transport's own event thread) can
@@ -663,6 +698,10 @@ public partial class GameBridge(ClientConfig config)
         _lastPlayerStateSentUtc = DateTime.MinValue;
         _sentDeathForThisLife = false;
         _isDamageAuthority = false;
+        // WO-59: announce our clock once this connection's first world-time
+        // reading arrives, so saves that sit days apart converge without
+        // anyone having to sleep first (Thread B: the day/night split).
+        _timeSyncPending = true;
         StopInterpPump();
 
         // --- Interaction layer ---
@@ -925,6 +964,15 @@ public partial class GameBridge(ClientConfig config)
                         foreach (var kv in _ghostNames)
                             await ExecLuaAsync(
                                 $"if KCD2MP_SetGhostName then KCD2MP_SetGhostName(\"{kv.Key}\", \"{EscapeLua(kv.Value)}\") end");
+                        // WO-59 Thread C: re-assert stimulus-deafness on every
+                        // live ghost. AI.SetIgnorant was applied exactly once
+                        // at spawn with its result discarded, so a failed call
+                        // or an engine-side reset left a ghost's brain fully
+                        // perceptive with nothing ever noticing -- and a
+                        // perceptive ghost brain is a real crime witness (the
+                        // "caught stealing, killed by the ghost" report). One
+                        // flag write per ghost per 2.5 s; failures log once.
+                        await ExecLuaAsync("if KCD2MP_ReassertGhostIgnorance then KCD2MP_ReassertGhostIgnorance() end");
                     }
                     catch { }
                 }
@@ -993,12 +1041,15 @@ public partial class GameBridge(ClientConfig config)
                         _voice.UpdateAllVolumes();
                     }
 
-                    if (!_hasPushed || HasChanged(x, y, z, rotZ))
+                    bool posHeartbeat = tickCount % PositionHeartbeatEveryTicks == 0;
+                    if (!_hasPushed || HasChanged(x, y, z, rotZ) || posHeartbeat)
                     {
+                        bool moved = !_hasPushed || HasChanged(x, y, z, rotZ);
                         _hasPushed = true;
                         _lastX = x; _lastY = y; _lastZ = z; _lastRotZ = rotZ;
                         await SendPositionAsync(stream, x, y, z, rotZ, riding);
-                        Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
+                        if (moved)
+                            Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
                     }
                 }
 
@@ -1135,8 +1186,27 @@ public partial class GameBridge(ClientConfig config)
             try
             {
                 var current = await _transport.ReadEquippedItemClassesAsync(ct);
-                if (current.Length > 0)
+                if (current is null)
                 {
+                    // WO-59: a failed read (either endpoint timed out) is not
+                    // an empty outfit. Acting on it was the host-outbound half
+                    // of the one-way clothing asymmetry: the busy host's
+                    // partial reads went out as real changes and peers
+                    // stripped half the outfit. Skip the poll; the next good
+                    // read diffs against _lastSentAppearance and self-heals.
+                    if (!_appearanceReadDown)
+                    {
+                        _appearanceReadDown = true;
+                        Console.WriteLine("[appearance] local equipped-set read failed -- skipping polls until it answers again");
+                    }
+                }
+                else if (current.Length > 0)
+                {
+                    if (_appearanceReadDown)
+                    {
+                        _appearanceReadDown = false;
+                        Console.WriteLine("[appearance] local equipped-set read recovered");
+                    }
                     var currentSet = new HashSet<Guid>(current);
                     bool changed = _lastSentAppearance is null || !currentSet.SetEquals(_lastSentAppearance);
                     bool heartbeatDue = ticksSinceSend >= ticksPerHeartbeat;
@@ -1312,7 +1382,7 @@ public partial class GameBridge(ClientConfig config)
             try
             {
                 var set = await _transport.ReadGhostEquippedItemClassesAsync(npcName);
-                if (set.Length > 0)
+                if (set is { Length: > 0 })
                 {
                     _npcEquipped[npcName] = set;
                     Console.WriteLine($"[npcsync] {npcName}: {set.Length} equipped item class(es) read for swing resolution");
@@ -1326,7 +1396,7 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else
                 {
-                    Console.WriteLine($"[npcsync] {npcName}: equipped-set read came back empty -- native swings will use the longsword fallback row");
+                    Console.WriteLine($"[npcsync] {npcName}: equipped-set read {(set is null ? "failed" : "came back empty")} -- native swings will use the longsword fallback row");
                 }
             }
             catch (Exception ex)
@@ -1413,7 +1483,14 @@ public partial class GameBridge(ClientConfig config)
         {
             toRemove = applied.Except(targetSet).ToList();
             lock (neverEquips)
-                toAdd = targetSet.Except(applied).Where(c => !neverEquips.Contains(c)).ToList();
+            {
+                // WO-59: prune expired blacklist entries so a transient
+                // failure stops suppressing once its TTL runs out.
+                var nowUtc = DateTime.UtcNow;
+                foreach (var expired in neverEquips.Where(kv => kv.Value <= nowUtc).Select(kv => kv.Key).ToList())
+                    neverEquips.Remove(expired);
+                toAdd = targetSet.Except(applied).Where(c => !neverEquips.ContainsKey(c)).ToList();
+            }
         }
 
         foreach (var cls in toRemove)
@@ -1478,7 +1555,16 @@ public partial class GameBridge(ClientConfig config)
             if (pending.Count == 0) return;
 
             await Task.Delay(delayMs, ct);
-            var actual = new HashSet<Guid>(await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct));
+            var actualArr = await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct);
+            if (actualArr is null)
+            {
+                // WO-59: the read failed -- we learned nothing about what is
+                // equipped. Re-equipping blind would be noise; skip this
+                // round and let the next delay try again.
+                Console.WriteLine($"[appearance] ghost {ghostId}: verify read failed -- skipping this round");
+                continue;
+            }
+            var actual = new HashSet<Guid>(actualArr);
             pending = pending.Where(cls => !actual.Contains(cls)).ToList();
             if (pending.Count == 0) return;
 
@@ -1493,19 +1579,33 @@ public partial class GameBridge(ClientConfig config)
         // Schedule exhausted: one final read to tell a genuine failure (a
         // slot the game will never grant, e.g. the Hood-vs-Helmet exclusivity
         // found in Phase 0) from one more round of lag.
-        var final = new HashSet<Guid>(await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct));
+        var finalArr = await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct);
+        if (finalArr is null)
+        {
+            // WO-59: the final read failed, so nothing was PROVEN unequippable.
+            // The pre-WO-58 behaviour is correct here: drop the items from
+            // `applied` so the next heartbeat retries, and blacklist nothing.
+            // Blacklisting on a timed-out read mass-suppressed whole outfits
+            // for the ghost's lifetime -- the receiver-side half of the
+            // one-way clothing asymmetry.
+            Console.WriteLine($"[appearance] ghost {ghostId}: final verify read failed -- {pending.Count} item(s) left for the next heartbeat, none blacklisted");
+            lock (applied) foreach (var cls in pending) applied.Remove(cls);
+            return;
+        }
+        var final = new HashSet<Guid>(finalArr);
         var blacklist = _ghostNeverEquips.GetOrAdd(ghostId, static _ => []);
         foreach (var cls in pending)
         {
             if (final.Contains(cls)) continue;
-            // WO-58: one exhausted schedule is the retry budget for this
-            // ghost lifetime. Dropping it from `applied` alone put it right
-            // back into the next heartbeat's diff, which re-ran the whole
-            // 10 s retry cycle forever (observed all session on both
-            // machines, 2026-08-25).
-            Console.WriteLine($"[appearance] ghost {ghostId}: {cls} never equipped after {AppearanceRetryDelaysMs.Sum()}ms of retrying -- blacklisting it for this ghost");
+            // WO-58: one exhausted schedule is the retry budget. Dropping it
+            // from `applied` alone put it right back into the next
+            // heartbeat's diff, which re-ran the whole 10 s retry cycle
+            // forever (observed all session on both machines, 2026-08-25).
+            // WO-59: the suppression now expires (NeverEquipTtl) instead of
+            // lasting the ghost's lifetime.
+            Console.WriteLine($"[appearance] ghost {ghostId}: {cls} never equipped after {AppearanceRetryDelaysMs.Sum()}ms of retrying -- suppressing it for {NeverEquipTtl.TotalMinutes:F0} min");
             lock (applied) applied.Remove(cls);
-            lock (blacklist) blacklist.Add(cls);
+            lock (blacklist) blacklist[cls] = DateTime.UtcNow + NeverEquipTtl;
         }
     }
 
@@ -1558,7 +1658,7 @@ public partial class GameBridge(ClientConfig config)
             packet[4] = kind;
             BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), worldTime);
             await stream.WriteAsync(packet, ct);
-            Console.WriteLine($"[timeskip] sent {(phase == Protocol.TimeSkipPhaseStart ? "start" : "done")} kind={kind} t={worldTime}");
+            Console.WriteLine($"[timeskip] sent {phase switch { Protocol.TimeSkipPhaseStart => "start", Protocol.TimeSkipPhaseSync => "sync", _ => "done" }} kind={kind} t={worldTime}");
         }
         catch (Exception ex) { Console.WriteLine($"[timeskip] send failed: {ex.Message}"); }
     }
@@ -1586,6 +1686,16 @@ public partial class GameBridge(ClientConfig config)
             _lastPollUtc = now;
             _fastAdvanceActive = false;
             return;
+        }
+
+        // WO-59: announce our clock to the session (connect-time sync, or a
+        // new peer just appeared). Quiet at the relay, forward-only at every
+        // receiver -- a behind player converges, an ahead player no-ops.
+        if (_timeSyncPending && !_localSkipActive)
+        {
+            _timeSyncPending = false;
+            Console.WriteLine($"[timeskip] announcing clock t={worldTime} (connect/new-peer sync)");
+            _ = _sendTimeSkip?.Invoke(Protocol.TimeSkipPhaseSync, Protocol.TimeSkipKindUnknown, worldTime);
         }
 
         if (_lastPolledWorldTime is uint last)
@@ -2362,6 +2472,14 @@ public partial class GameBridge(ClientConfig config)
                     float z        = ReadFloat(payload, 9);
                     float rotZ     = ReadFloat(payload, 13);
                     bool  isRiding = (payload[17] & 0x01) != 0;
+                    // WO-59: a ghost id we have never seen this connection is
+                    // a newly-arrived peer -- re-announce our clock so THEY
+                    // converge too (our connect-time sync went out before
+                    // they were ready to hear it). Consumed by the next
+                    // world-time poll (<=10 s), which is also a natural
+                    // debounce against their position stream.
+                    if (!_peerLastSeenUtc.ContainsKey(ghostId))
+                        _timeSyncPending = true;
                     _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
                     RefreshDiscordPeerCount();
                     _voice?.UpdateGhostPos(ghostId, x, y, z);

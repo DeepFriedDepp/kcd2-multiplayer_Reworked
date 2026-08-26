@@ -242,12 +242,20 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
     /// separate wire messages because EquipItem/UnequipItem do not care which
     /// map a class came from -- see the diff/apply path in GameBridge.
     /// </summary>
-    public async Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default)
+    public async Task<Guid[]?> ReadEquippedItemClassesAsync(CancellationToken ct = default)
     {
         var armor = await ReadItemClassMapAsync(
             $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
         var weapons = await ReadItemClassMapAsync(
             $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquippedWeaponsByClassId?depth=1", ct);
+        // WO-59: a failed half is not an empty half. Under load the game's
+        // REST API times out one endpoint while the other answers (host at
+        // 15 fps, WO-54 §5.1) -- merging a failed armor read with a good
+        // weapon read used to produce a REAL-looking smaller set, which the
+        // appearance loop then sent as a genuine outfit change and every
+        // peer unequipped half the player's clothes. Null means "don't know",
+        // and the caller skips the poll instead of acting on it.
+        if (armor is null || weapons is null) return null;
         return [.. armor, .. weapons];
     }
 
@@ -258,24 +266,28 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
     /// never needs to ask the game what is currently equipped -- but kept for
     /// verification retries, diagnostics and the manual test procedure.
     /// </summary>
-    public async Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default)
+    public async Task<Guid[]?> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default)
     {
         string soul = Uri.EscapeDataString(ghostSoulName);
         var armor = await ReadItemClassMapAsync(
             $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/EquippedArmorsByClassId?depth=1", ct);
         var weapons = await ReadItemClassMapAsync(
             $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/EquippedWeaponsByClassId?depth=1", ct);
+        // WO-59: same null discipline as the player read above. The verify
+        // path used to take a timed-out read for "nothing is equipped" and
+        // mass-blacklist a whole batch of perfectly equippable items.
+        if (armor is null || weapons is null) return null;
         return [.. armor, .. weapons];
     }
 
-    private async Task<Guid[]> ReadItemClassMapAsync(string url, CancellationToken ct)
+    private async Task<Guid[]?> ReadItemClassMapAsync(string url, CancellationToken ct)
     {
         try
         {
             var xml = await _http.GetStringAsync(url, ct);
             return ParseItemClasses(xml);
         }
-        catch { return []; }
+        catch { return null; }
     }
 
     public async Task EquipItemOnGhostAsync(string ghostSoulName, Guid itemClass, bool createIfMissing, CancellationToken ct = default)

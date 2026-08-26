@@ -87,10 +87,12 @@ public interface IGameTransport : IAsyncDisposable
     /// is safe because <c>EquipItem</c>/<c>UnequipItem</c> are item-class-
     /// agnostic (confirmed live, WO-10): the same call equips whatever slot
     /// an item class occupies, armor or weapon, so the wire and the apply
-    /// diff never need to know which map a class came from. Empty (not null)
-    /// if the game is not answering.
+    /// diff never need to know which map a class came from. Null if either
+    /// half of the read failed (game not answering, 800 ms timeout under
+    /// load) -- WO-59: a failed read must be distinguishable from a genuine
+    /// empty set, or partial reads masquerade as outfit changes.
     /// </summary>
-    Task<Guid[]> ReadEquippedItemClassesAsync(CancellationToken ct = default);
+    Task<Guid[]?> ReadEquippedItemClassesAsync(CancellationToken ct = default);
 
     /// <summary>
     /// Reads a named ghost soul's own equipped item classes back -- armor and
@@ -98,9 +100,11 @@ public interface IGameTransport : IAsyncDisposable
     /// Used to verify an apply actually took -- a fault-free EquipItem invoke
     /// is not a successful one, the same trap the native reflection ABI has
     /// everywhere else -- never to drive the outbound diff, which is
-    /// tracked client-side instead.
+    /// tracked client-side instead. Null if either half of the read failed
+    /// (WO-59): the verify path must never take a timed-out read for "none
+    /// of the items equipped".
     /// </summary>
-    Task<Guid[]> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default);
+    Task<Guid[]?> ReadGhostEquippedItemClassesAsync(string ghostSoulName, CancellationToken ct = default);
 
     /// <summary>
     /// Equips one item class onto a named ghost soul (e.g. "kcd2mp_5"), via

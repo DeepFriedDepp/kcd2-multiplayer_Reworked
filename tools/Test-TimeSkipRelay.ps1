@@ -54,7 +54,7 @@ $NPCDMG_DOWN   = 0x31
 $COMBAT_DOWN   = 0x2D
 $NPCSTATE_UP   = 0x26
 $NPCSTATE_DOWN = 0x27
-$PHASE_START = 0; $PHASE_DONE = 1; $PHASE_QUIET = 2
+$PHASE_START = 0; $PHASE_DONE = 1; $PHASE_QUIET = 2; $PHASE_SYNC = 3   # WO-59
 $KIND_SLEEP  = 0; $KIND_WAIT  = 1
 
 $script:Pass = 0; $script:Fail = 0
@@ -324,6 +324,13 @@ try {
     $gotA = Drain-TimeSkips $peerA.Stream; $gotB = Drain-TimeSkips $peerB.Stream
     Check "A received ANNOUNCED done t=200000 (instant skip)" ($gotA.Count -eq 1 -and $gotA[0].Phase -eq $PHASE_DONE -and $gotA[0].WorldTime -eq 200000 -and $gotA[0].Source -eq $peerC.Id) "got $($gotA | ConvertTo-Json -Compress)"
     Check "B received ANNOUNCED done t=200000 (instant skip)" ($gotB.Count -eq 1 -and $gotB[0].Phase -eq $PHASE_DONE -and $gotB[0].WorldTime -eq 200000) "got $($gotB | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T5b: WO-59 clock sync (phase=3) rebroadcasts quiet, touches no skip state ---"
+    Send-TimeSkip $peerB.Stream $PHASE_SYNC 255 250000
+    $gotA = Drain-TimeSkips $peerA.Stream; $gotC = Drain-TimeSkips $peerC.Stream; $gotB = Drain-TimeSkips $peerB.Stream
+    Check "A received done-QUIET t=250000 (src=B)" ($gotA.Count -eq 1 -and $gotA[0].Phase -eq $PHASE_QUIET -and $gotA[0].WorldTime -eq 250000 -and $gotA[0].Source -eq $peerB.Id) "got $($gotA | ConvertTo-Json -Compress)"
+    Check "C received done-QUIET t=250000 (src=B)" ($gotC.Count -eq 1 -and $gotC[0].Phase -eq $PHASE_QUIET -and $gotC[0].WorldTime -eq 250000) "got $($gotC | ConvertTo-Json -Compress)"
+    Check "B heard nothing back about its own sync" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
 
     Write-Host "`n--- T6: duplicate start markers from the owner are absorbed ---"
     Send-TimeSkip $peerA.Stream $PHASE_START $KIND_SLEEP 0
