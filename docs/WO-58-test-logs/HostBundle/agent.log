@@ -1,0 +1,991 @@
+16:51:40.184 [log] agent output tee -> C:\Users\HostUser\AppData\Local\KCDMP\agent.log
+16:51:40.199 [KcdLog] kcd.log = D:\SteamLibrary\steamapps\common\KCD2Mod\kcd.log
+16:51:40.201 [KcdLog] Found Steam name: HostNick
+16:51:40.201 === KCD2 Multiplayer Client Agent ===
+16:51:40.202 Server   : 127.0.0.1:7778
+16:51:40.202 Name     : HostNick
+16:51:40.202 Game     : http://localhost:1403
+16:51:40.202 Voice    : on
+16:51:40.202 Protocol : v6
+
+16:51:40.221 [discord] Initialize() returned True, IsInitialized=True
+16:51:40.221 [discord] SetPresence details='Connecting...' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:51:40.225 Waiting for game to load a save...
+16:51:40.297 [swingcatalog] loaded D:\SteamLibrary\steamapps\common\KCD2Mod\Data\Tables.pak: 675 melee items, explicit rows for [longsword,halberd,unarmed], 12 group rows
+16:51:41.328 [discord] ready, connected as HostDiscordUser
+16:51:42.345 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:51:42.345 ERR : Object reference not set to an instance of an object.
+16:51:42.350 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:51:44.049 Game ready!
+16:51:44.059 [transport] waiting for the mod's state emitter (kcd.log)...
+16:51:44.242 [transport] kcd-log-tail — 0 round trips per state read
+16:51:44.252 Connecting to relay server 127.0.0.1:7778...
+16:51:44.267 Connected! Assigned id=1 (protocol v6)
+
+16:51:44.267 [discord] SetPresence details='Hosting' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:51:44.279 [dice-ipc] Listening on http://localhost:5901/ for the launcher.
+16:51:44.283 [version-ipc] Listening on http://localhost:5902/ for the launcher.
+16:51:44.425 [voice] Started  16kHz mono PCM  frame=640B  range=20m
+16:51:44.428 [combat] connected to KCDMP.dll
+16:51:44.438 [role] this client now holds NPC->player damage authority
+16:51:44.458 [vitals] sent health=100.0 stamina=126.7 flags=0
+16:51:44.462 [pos] 2343.5 2084.2 111.3  rot=-1.33  riding=False  read=0ms
+16:51:44.480 [appearance] sent 7 item class(es)
+16:51:44.616 [horse] sent mount identity '(none)'
+16:51:44.831 [pos] 2343.5 2084.2 111.3  rot=-1.50  riding=False  read=0ms
+16:51:44.877 [pos] 2343.5 2084.2 111.3  rot=-1.62  riding=False  read=0ms
+16:51:44.938 [pos] 2343.5 2084.2 111.3  rot=-1.59  riding=False  read=0ms
+16:51:45.373 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:51:45.373 ERR : Object reference not set to an instance of an object.
+16:51:45.373 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:51:45.482 [pos] 2343.5 2084.2 111.3  rot=-1.61  riding=False  read=0ms
+16:51:45.945 [pos] 2343.5 2084.2 111.3  rot=-1.67  riding=False  read=0ms
+16:51:46.008 [stat] avg read=0ms over 100 ticks
+16:51:46.455 [ping] 5 ms
+16:51:47.562 [stat] avg read=0ms over 200 ticks
+16:51:48.458 [ping] 0 ms
+16:51:49.123 [stat] avg read=0ms over 300 ticks
+16:51:50.467 [ping] 0 ms
+16:51:50.668 [stat] avg read=0ms over 400 ticks
+16:51:52.201 [stat] avg read=0ms over 500 ticks
+16:51:52.482 [ping] 1 ms
+16:51:53.706 [stat] avg read=0ms over 600 ticks
+16:51:54.494 [ping] 0 ms
+16:51:55.247 [stat] avg read=0ms over 700 ticks
+16:51:56.505 [ping] 0 ms
+16:51:56.793 [stat] avg read=0ms over 800 ticks
+16:51:58.312 [stat] avg read=0ms over 900 ticks
+16:51:58.508 [ping] 0 ms
+16:51:59.862 [stat] avg read=0ms over 1000 ticks
+16:52:00.511 [ping] 0 ms
+16:52:01.411 [stat] avg read=0ms over 1100 ticks
+16:52:02.519 [ping] 0 ms
+16:52:02.951 [stat] avg read=0ms over 1200 ticks
+16:52:04.498 [stat] avg read=0ms over 1300 ticks
+16:52:04.529 [ping] 0 ms
+16:52:06.061 [stat] avg read=0ms over 1400 ticks
+16:52:06.545 [ping] 1 ms
+16:52:07.637 [stat] avg read=0ms over 1500 ticks
+16:52:08.556 [ping] 0 ms
+16:52:09.190 [stat] avg read=0ms over 1600 ticks
+16:52:10.560 [ping] 0 ms
+16:52:10.744 [stat] avg read=0ms over 1700 ticks
+16:52:12.281 [stat] avg read=0ms over 1800 ticks
+16:52:12.560 [ping] 0 ms
+16:52:13.835 [stat] avg read=0ms over 1900 ticks
+16:52:14.572 [ping] 0 ms
+16:52:14.741 [appearance] sent 7 item class(es) (heartbeat)
+16:52:15.393 [stat] avg read=0ms over 2000 ticks
+16:52:16.575 [ping] 0 ms
+16:52:16.955 [stat] avg read=0ms over 2100 ticks
+16:52:18.487 [stat] avg read=0ms over 2200 ticks
+16:52:18.579 [ping] 0 ms
+16:52:18.589 [pos] 2343.5 2084.2 111.3  rot=-1.78  riding=False  read=0ms
+16:52:18.645 [pos] 2343.5 2084.2 111.3  rot=-2.01  riding=False  read=0ms
+16:52:18.703 [pos] 2343.5 2084.2 111.3  rot=-1.96  riding=False  read=0ms
+16:52:18.751 [pos] 2343.5 2084.2 111.3  rot=-0.63  riding=False  read=0ms
+16:52:18.813 [pos] 2343.5 2084.2 111.3  rot=0.26  riding=False  read=0ms
+16:52:18.860 [pos] 2343.5 2084.2 111.3  rot=0.96  riding=False  read=0ms
+16:52:18.922 [pos] 2343.5 2084.2 111.3  rot=0.90  riding=False  read=0ms
+16:52:18.984 [pos] 2343.5 2084.2 111.3  rot=0.18  riding=False  read=0ms
+16:52:19.031 [pos] 2343.5 2084.2 111.3  rot=-1.25  riding=False  read=0ms
+16:52:19.079 [pos] 2343.5 2084.2 111.3  rot=-2.18  riding=False  read=0ms
+16:52:19.140 [pos] 2343.5 2084.2 111.3  rot=-2.48  riding=False  read=0ms
+16:52:19.699 [pos] 2343.5 2084.2 111.3  rot=-2.72  riding=False  read=0ms
+16:52:19.746 [pos] 2343.5 2084.2 111.3  rot=-3.13  riding=False  read=0ms
+16:52:19.808 [pos] 2343.5 2084.2 111.3  rot=3.00  riding=False  read=0ms
+16:52:19.915 [pos] 2343.5 2084.2 111.3  rot=2.89  riding=False  read=0ms
+16:52:19.961 [pos] 2343.5 2084.2 111.3  rot=2.67  riding=False  read=0ms
+16:52:20.011 [pos] 2343.5 2084.2 111.3  rot=2.65  riding=False  read=0ms
+16:52:20.056 [stat] avg read=0ms over 2300 ticks
+16:52:20.584 [ping] 0 ms
+16:52:21.007 [pos] 2343.5 2084.2 111.3  rot=2.69  riding=False  read=0ms
+16:52:21.065 [pos] 2343.5 2084.2 111.3  rot=2.88  riding=False  read=0ms
+16:52:21.126 [pos] 2343.5 2084.2 111.3  rot=2.97  riding=False  read=0ms
+16:52:21.227 [pos] 2343.5 2084.2 111.3  rot=2.91  riding=False  read=0ms
+16:52:21.281 [pos] 2343.5 2084.2 111.3  rot=2.66  riding=False  read=0ms
+16:52:21.336 [pos] 2343.5 2084.2 111.3  rot=2.26  riding=False  read=0ms
+16:52:21.391 [pos] 2343.5 2084.2 111.3  rot=1.86  riding=False  read=0ms
+16:52:21.608 [stat] avg read=0ms over 2400 ticks
+16:52:22.011 [pos] 2343.5 2084.2 111.3  rot=1.90  riding=False  read=0ms
+16:52:22.598 [ping] 0 ms
+16:52:23.149 [stat] avg read=0ms over 2500 ticks
+16:52:23.577 [pos] 2343.5 2084.2 111.3  rot=1.93  riding=False  read=0ms
+16:52:23.700 [pos] 2343.5 2084.2 111.3  rot=2.00  riding=False  read=0ms
+16:52:23.731 [pos] 2343.5 2084.2 111.3  rot=2.03  riding=False  read=0ms
+16:52:23.808 [pos] 2343.5 2084.2 111.3  rot=2.08  riding=False  read=0ms
+16:52:23.855 [pos] 2343.5 2084.2 111.3  rot=2.13  riding=False  read=0ms
+16:52:23.902 [pos] 2343.5 2084.2 111.3  rot=2.27  riding=False  read=0ms
+16:52:23.964 [pos] 2343.5 2084.2 111.3  rot=2.59  riding=False  read=0ms
+16:52:24.010 [pos] 2343.5 2084.2 111.3  rot=2.65  riding=False  read=0ms
+16:52:24.135 [pos] 2343.5 2084.2 111.3  rot=2.67  riding=False  read=0ms
+16:52:24.245 [pos] 2343.5 2084.2 111.3  rot=2.77  riding=False  read=0ms
+16:52:24.298 [pos] 2343.5 2084.2 111.3  rot=2.89  riding=False  read=0ms
+16:52:24.352 [pos] 2343.5 2084.2 111.3  rot=3.07  riding=False  read=0ms
+16:52:24.415 [pos] 2343.5 2084.2 111.3  rot=-2.91  riding=False  read=0ms
+16:52:24.478 [pos] 2343.5 2084.2 111.3  rot=-2.24  riding=False  read=0ms
+16:52:24.527 [pos] 2343.5 2084.2 111.3  rot=-1.93  riding=False  read=0ms
+16:52:24.576 [pos] 2343.5 2084.2 111.3  rot=-1.84  riding=False  read=0ms
+16:52:24.606 [ping] 0 ms
+16:52:24.683 [stat] avg read=0ms over 2600 ticks
+16:52:25.055 [pos] 2343.5 2084.2 111.3  rot=-1.74  riding=False  read=0ms
+16:52:25.118 [pos] 2343.5 2084.2 111.3  rot=-1.16  riding=False  read=0ms
+16:52:25.179 [pos] 2343.5 2084.2 111.3  rot=-0.86  riding=False  read=0ms
+16:52:25.227 [pos] 2343.5 2084.2 111.3  rot=-0.73  riding=False  read=0ms
+16:52:25.319 [pos] 2343.5 2084.2 111.3  rot=-0.66  riding=False  read=0ms
+16:52:25.395 [pos] 2343.5 2084.2 111.3  rot=-0.54  riding=False  read=0ms
+16:52:25.461 [pos] 2343.5 2084.2 111.3  rot=-0.13  riding=False  read=0ms
+16:52:25.495 [pos] 2343.5 2084.2 111.3  rot=0.27  riding=False  read=0ms
+16:52:25.550 [pos] 2343.5 2084.2 111.3  rot=0.32  riding=False  read=0ms
+16:52:26.235 [stat] avg read=0ms over 2700 ticks
+16:52:26.607 [ping] 0 ms
+16:52:27.795 [stat] avg read=0ms over 2800 ticks
+16:52:28.611 [ping] 0 ms
+16:52:29.142 [pos] 2343.5 2084.2 111.3  rot=0.30  riding=False  read=0ms
+16:52:29.188 [pos] 2343.5 2084.2 111.3  rot=-0.13  riding=False  read=0ms
+16:52:29.251 [pos] 2343.5 2084.2 111.3  rot=-0.61  riding=False  read=0ms
+16:52:29.296 [pos] 2343.5 2084.2 111.3  rot=-1.23  riding=False  read=0ms
+16:52:29.342 [pos] 2343.5 2084.2 111.3  rot=-1.84  riding=False  read=0ms
+16:52:29.342 [stat] avg read=0ms over 2900 ticks
+16:52:29.419 [pos] 2343.5 2084.2 111.3  rot=-2.34  riding=False  read=0ms
+16:52:29.467 [pos] 2343.5 2084.2 111.3  rot=-2.64  riding=False  read=0ms
+16:52:29.528 [pos] 2343.5 2084.2 111.3  rot=-2.91  riding=False  read=0ms
+16:52:29.575 [pos] 2343.5 2084.2 111.3  rot=3.12  riding=False  read=0ms
+16:52:29.609 [pos] 2343.5 2084.2 111.3  rot=2.94  riding=False  read=0ms
+16:52:29.669 [pos] 2343.5 2084.2 111.3  rot=2.89  riding=False  read=0ms
+16:52:29.717 [pos] 2343.5 2084.2 111.3  rot=2.78  riding=False  read=0ms
+16:52:30.010 [pos] 2343.5 2084.2 111.3  rot=2.81  riding=False  read=0ms
+16:52:30.182 [pos] 2343.5 2084.2 111.3  rot=2.84  riding=False  read=0ms
+16:52:30.613 [ping] 0 ms
+16:52:30.845 [pos] 2343.5 2084.2 111.3  rot=2.71  riding=False  read=0ms
+16:52:30.891 [pos] 2343.5 2084.2 111.3  rot=2.35  riding=False  read=0ms
+16:52:30.917 [stat] avg read=0ms over 3000 ticks
+16:52:32.475 [stat] avg read=0ms over 3100 ticks
+16:52:32.614 [ping] 0 ms
+16:52:34.006 [stat] avg read=0ms over 3200 ticks
+16:52:34.617 [ping] 0 ms
+16:52:35.577 [stat] avg read=0ms over 3300 ticks
+16:52:36.626 [ping] 0 ms
+16:52:37.156 [stat] avg read=0ms over 3400 ticks
+16:52:38.630 [ping] 0 ms
+16:52:38.729 [stat] avg read=0ms over 3500 ticks
+16:52:40.275 [stat] avg read=0ms over 3600 ticks
+16:52:40.635 [ping] 0 ms
+16:52:41.809 [stat] avg read=0ms over 3700 ticks
+16:52:42.636 [ping] 0 ms
+16:52:43.385 [stat] avg read=0ms over 3800 ticks
+16:52:44.639 [ping] 0 ms
+16:52:44.950 [stat] avg read=0ms over 3900 ticks
+16:52:45.019 [appearance] sent 7 item class(es) (heartbeat)
+16:52:46.499 [stat] avg read=0ms over 4000 ticks
+16:52:46.651 [ping] 0 ms
+16:52:48.087 [stat] avg read=0ms over 4100 ticks
+16:52:48.660 [ping] 0 ms
+16:52:49.652 [stat] avg read=0ms over 4200 ticks
+16:52:50.666 [ping] 0 ms
+16:52:51.210 [stat] avg read=0ms over 4300 ticks
+16:52:52.664 [ping] 0 ms
+16:52:52.727 [stat] avg read=0ms over 4400 ticks
+16:52:54.261 [stat] avg read=0ms over 4500 ticks
+16:52:54.669 [ping] 0 ms
+16:52:55.761 [stat] avg read=0ms over 4600 ticks
+16:52:56.672 [ping] 1 ms
+16:52:57.325 [stat] avg read=0ms over 4700 ticks
+16:52:58.679 [ping] 0 ms
+16:52:58.957 [stat] avg read=0ms over 4800 ticks
+16:53:00.502 [stat] avg read=0ms over 4900 ticks
+16:53:00.687 [ping] 0 ms
+16:53:02.073 [stat] avg read=0ms over 5000 ticks
+16:53:02.691 [ping] 1 ms
+16:53:03.603 [stat] avg read=0ms over 5100 ticks
+16:53:04.696 [ping] 0 ms
+16:53:05.146 [stat] avg read=0ms over 5200 ticks
+16:53:06.679 [stat] avg read=0ms over 5300 ticks
+16:53:06.711 [ping] 0 ms
+16:53:08.247 [stat] avg read=0ms over 5400 ticks
+16:53:08.713 [ping] 0 ms
+16:53:09.823 [stat] avg read=0ms over 5500 ticks
+16:53:10.716 [ping] 0 ms
+16:53:11.383 [stat] avg read=0ms over 5600 ticks
+16:53:12.717 [ping] 0 ms
+16:53:12.935 [stat] avg read=0ms over 5700 ticks
+16:53:14.504 [stat] avg read=0ms over 5800 ticks
+16:53:14.719 [ping] 0 ms
+16:53:15.321 [appearance] sent 7 item class(es) (heartbeat)
+16:53:16.064 [stat] avg read=0ms over 5900 ticks
+16:53:16.721 [ping] 0 ms
+16:53:17.640 [stat] avg read=0ms over 6000 ticks
+16:53:18.729 [ping] 0 ms
+16:53:19.189 [stat] avg read=0ms over 6100 ticks
+16:53:20.712 [stat] avg read=0ms over 6200 ticks
+16:53:20.739 [ping] 0 ms
+16:53:22.313 [stat] avg read=0ms over 6300 ticks
+16:53:22.743 [ping] 0 ms
+16:53:23.875 [stat] avg read=0ms over 6400 ticks
+16:53:24.758 [ping] 0 ms
+16:53:25.443 [stat] avg read=0ms over 6500 ticks
+16:53:26.758 [ping] 1 ms
+16:53:26.973 [stat] avg read=0ms over 6600 ticks
+16:53:28.516 [stat] avg read=0ms over 6700 ticks
+16:53:28.773 [ping] 0 ms
+16:53:30.074 [stat] avg read=0ms over 6800 ticks
+16:53:30.782 [ping] 0 ms
+16:53:31.630 [stat] avg read=0ms over 6900 ticks
+16:53:32.787 [ping] 0 ms
+16:53:33.205 [stat] avg read=0ms over 7000 ticks
+16:53:34.757 [stat] avg read=0ms over 7100 ticks
+16:53:34.790 [ping] 0 ms
+16:53:36.316 [stat] avg read=0ms over 7200 ticks
+16:53:36.804 [ping] 0 ms
+16:53:37.884 [stat] avg read=0ms over 7300 ticks
+16:53:38.805 [ping] 0 ms
+16:53:39.425 [stat] avg read=0ms over 7400 ticks
+16:53:40.821 [ping] 3 ms
+16:53:40.990 [stat] avg read=0ms over 7500 ticks
+16:53:42.522 [stat] avg read=0ms over 7600 ticks
+16:53:42.835 [ping] 3 ms
+16:53:44.086 [stat] avg read=0ms over 7700 ticks
+16:53:44.833 [ping] 0 ms
+16:53:45.635 [appearance] sent 7 item class(es) (heartbeat)
+16:53:45.672 [stat] avg read=0ms over 7800 ticks
+16:53:46.837 [ping] 0 ms
+16:53:47.227 [stat] avg read=0ms over 7900 ticks
+16:53:48.758 [stat] avg read=0ms over 8000 ticks
+16:53:48.847 [ping] 0 ms
+16:53:50.307 [stat] avg read=0ms over 8100 ticks
+16:53:50.848 [ping] 0 ms
+16:53:51.836 [stat] avg read=0ms over 8200 ticks
+16:53:52.859 [ping] 0 ms
+16:53:53.446 [stat] avg read=0ms over 8300 ticks
+16:53:54.861 [ping] 0 ms
+16:53:55.017 [stat] avg read=0ms over 8400 ticks
+16:53:56.589 [stat] avg read=0ms over 8500 ticks
+16:53:56.865 [ping] 0 ms
+16:53:58.164 [stat] avg read=0ms over 8600 ticks
+16:53:58.865 [ping] 0 ms
+16:53:59.768 [stat] avg read=0ms over 8700 ticks
+16:54:00.871 [ping] 0 ms
+16:54:01.430 [stat] avg read=0ms over 8800 ticks
+16:54:02.160 [pos] 2343.5 2084.2 111.3  rot=2.33  riding=False  read=0ms
+16:54:02.594 [pos] 2343.5 2084.2 111.3  rot=2.43  riding=False  read=0ms
+16:54:02.673 [pos] 2343.5 2084.2 111.3  rot=2.90  riding=False  read=0ms
+16:54:02.736 [pos] 2343.5 2084.2 111.3  rot=3.09  riding=False  read=0ms
+16:54:02.779 [pos] 2343.5 2084.2 111.3  rot=-3.07  riding=False  read=0ms
+16:54:02.840 [pos] 2343.5 2084.2 111.3  rot=-3.04  riding=False  read=0ms
+16:54:02.871 [ping] 0 ms
+16:54:02.993 [stat] avg read=0ms over 8900 ticks
+16:54:04.128 [pos] 2343.5 2084.1 111.3  rot=-3.04  riding=False  read=0ms
+16:54:04.191 [pos] 2343.5 2084.0 111.3  rot=-3.04  riding=False  read=0ms
+16:54:04.252 [pos] 2343.5 2083.9 111.2  rot=-3.04  riding=False  read=0ms
+16:54:04.282 [pos] 2343.5 2083.8 111.2  rot=-3.02  riding=False  read=0ms
+16:54:04.360 [pos] 2343.5 2083.6 111.2  rot=-2.65  riding=False  read=0ms
+16:54:04.422 [pos] 2343.5 2083.5 111.2  rot=-2.57  riding=False  read=0ms
+16:54:04.452 [pos] 2343.4 2083.3 111.2  rot=-2.24  riding=False  read=0ms
+16:54:04.499 [pos] 2343.4 2083.2 111.2  rot=-1.79  riding=False  read=0ms
+16:54:04.540 [stat] avg read=0ms over 9000 ticks
+16:54:04.581 [pos] 2343.4 2083.0 111.2  rot=-1.60  riding=False  read=0ms
+16:54:04.639 [pos] 2343.5 2082.9 111.2  rot=-1.31  riding=False  read=0ms
+16:54:04.701 [pos] 2343.6 2082.8 111.2  rot=-1.11  riding=False  read=0ms
+16:54:04.747 [pos] 2343.7 2082.7 111.2  rot=-0.87  riding=False  read=0ms
+16:54:04.794 [pos] 2343.8 2082.6 111.2  rot=-0.59  riding=False  read=0ms
+16:54:04.843 [pos] 2344.0 2082.6 111.2  rot=-0.56  riding=False  read=0ms
+16:54:04.874 [ping] 0 ms
+16:54:04.888 [pos] 2344.2 2082.6 111.2  rot=-0.56  riding=False  read=0ms
+16:54:04.951 [pos] 2344.3 2082.6 111.2  rot=-0.56  riding=False  read=0ms
+16:54:04.997 [pos] 2344.5 2082.6 111.2  rot=-0.56  riding=False  read=0ms
+16:54:05.078 [pos] 2344.7 2082.7 111.2  rot=-0.18  riding=False  read=0ms
+16:54:05.122 [pos] 2344.8 2082.7 111.2  rot=-0.11  riding=False  read=0ms
+16:54:05.183 [pos] 2345.0 2082.8 111.2  rot=-0.08  riding=False  read=0ms
+16:54:05.233 [pos] 2345.1 2082.9 111.2  rot=-0.08  riding=False  read=0ms
+16:54:05.278 [pos] 2345.3 2083.0 111.3  rot=-0.08  riding=False  read=0ms
+16:54:05.342 [pos] 2345.4 2083.1 111.3  rot=-0.08  riding=False  read=0ms
+16:54:05.391 [pos] 2345.5 2083.2 111.3  rot=-0.08  riding=False  read=0ms
+16:54:05.449 [pos] 2345.7 2083.3 111.3  rot=-0.08  riding=False  read=0ms
+16:54:05.514 [pos] 2345.8 2083.4 111.3  rot=-0.07  riding=False  read=0ms
+16:54:05.562 [pos] 2346.0 2083.6 111.3  rot=-0.07  riding=False  read=0ms
+16:54:05.605 [pos] 2346.1 2083.6 111.3  rot=-0.07  riding=False  read=0ms
+16:54:05.669 [pos] 2346.2 2083.7 111.3  rot=-0.07  riding=False  read=0ms
+16:54:05.731 [pos] 2346.3 2083.9 111.4  rot=-0.07  riding=False  read=0ms
+16:54:05.778 [pos] 2346.4 2084.0 111.4  rot=-0.07  riding=False  read=0ms
+16:54:05.826 [pos] 2346.5 2084.1 111.4  rot=-0.07  riding=False  read=0ms
+16:54:05.873 [pos] 2346.6 2084.2 111.4  rot=-0.07  riding=False  read=0ms
+16:54:05.936 [pos] 2346.8 2084.3 111.4  rot=-0.07  riding=False  read=0ms
+16:54:05.982 [pos] 2346.9 2084.4 111.4  rot=-0.06  riding=False  read=0ms
+16:54:06.045 [pos] 2347.0 2084.5 111.4  rot=-0.06  riding=False  read=0ms
+16:54:06.092 [pos] 2347.1 2084.6 111.4  rot=-0.06  riding=False  read=0ms
+16:54:06.123 [stat] avg read=0ms over 9100 ticks
+16:54:06.154 [pos] 2347.2 2084.7 111.4  rot=-0.06  riding=False  read=0ms
+16:54:06.202 [pos] 2347.4 2084.8 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.264 [pos] 2347.4 2085.0 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.313 [pos] 2347.5 2085.2 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.358 [pos] 2347.5 2085.3 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.419 [pos] 2347.5 2085.4 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.466 [pos] 2347.5 2085.6 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.528 [pos] 2347.5 2085.7 111.5  rot=-0.06  riding=False  read=0ms
+16:54:06.575 [pos] 2347.5 2086.0 111.5  rot=-0.08  riding=False  read=0ms
+16:54:06.637 [pos] 2347.5 2086.1 111.5  rot=-0.18  riding=False  read=0ms
+16:54:06.680 [pos] 2347.5 2086.3 111.5  rot=-0.59  riding=False  read=0ms
+16:54:06.746 [pos] 2347.5 2086.5 111.5  rot=-1.36  riding=False  read=0ms
+16:54:06.809 [pos] 2347.5 2086.6 111.5  rot=-1.76  riding=False  read=0ms
+16:54:06.854 [pos] 2347.6 2086.7 111.5  rot=-2.01  riding=False  read=0ms
+16:54:06.886 [ping] 0 ms
+16:54:06.898 [pos] 2347.7 2086.9 111.5  rot=-2.47  riding=False  read=0ms
+16:54:06.963 [pos] 2347.8 2086.9 111.5  rot=-2.63  riding=False  read=0ms
+16:54:07.001 [pos] 2347.9 2087.0 111.6  rot=-2.82  riding=False  read=0ms
+16:54:07.070 [pos] 2348.1 2087.1 111.6  rot=-3.03  riding=False  read=0ms
+16:54:07.130 [pos] 2348.2 2087.1 111.6  rot=-3.14  riding=False  read=0ms
+16:54:07.179 [pos] 2348.2 2087.1 111.6  rot=3.06  riding=False  read=0ms
+16:54:07.240 [pos] 2348.3 2087.2 111.6  rot=2.88  riding=False  read=0ms
+16:54:07.300 [pos] 2348.3 2087.2 111.6  rot=2.80  riding=False  read=0ms
+16:54:07.669 [stat] avg read=0ms over 9200 ticks
+16:54:07.962 [pos] 2348.3 2087.2 111.6  rot=2.78  riding=False  read=0ms
+16:54:08.889 [ping] 0 ms
+16:54:09.214 [stat] avg read=0ms over 9300 ticks
+16:54:10.760 [stat] avg read=0ms over 9400 ticks
+16:54:10.900 [ping] 1 ms
+16:54:12.309 [stat] avg read=0ms over 9500 ticks
+16:54:12.905 [ping] 0 ms
+16:54:13.849 [stat] avg read=0ms over 9600 ticks
+16:54:14.917 [ping] 6 ms
+16:54:15.422 [stat] avg read=0ms over 9700 ticks
+16:54:16.071 [appearance] sent 7 item class(es) (heartbeat)
+16:54:16.918 [ping] 0 ms
+16:54:16.954 [stat] avg read=0ms over 9800 ticks
+16:54:18.499 [stat] avg read=0ms over 9900 ticks
+16:54:18.918 [ping] 0 ms
+16:54:20.023 [stat] avg read=0ms over 10000 ticks
+16:54:20.931 [ping] 0 ms
+16:54:21.567 [stat] avg read=0ms over 10100 ticks
+16:54:22.945 [ping] 0 ms
+16:54:23.129 [stat] avg read=0ms over 10200 ticks
+16:54:24.672 [stat] avg read=0ms over 10300 ticks
+16:54:24.948 [ping] 0 ms
+16:54:26.213 [stat] avg read=0ms over 10400 ticks
+16:54:26.948 [ping] 0 ms
+16:54:27.771 [stat] avg read=0ms over 10500 ticks
+16:54:28.952 [ping] 0 ms
+16:54:29.308 [stat] avg read=0ms over 10600 ticks
+16:54:30.849 [stat] avg read=0ms over 10700 ticks
+16:54:30.957 [ping] 0 ms
+16:54:32.397 [stat] avg read=0ms over 10800 ticks
+16:54:32.968 [ping] 0 ms
+16:54:33.909 [stat] avg read=0ms over 10900 ticks
+16:54:34.972 [ping] 0 ms
+16:54:35.489 [stat] avg read=0ms over 11000 ticks
+16:54:36.977 [ping] 0 ms
+16:54:37.056 [stat] avg read=0ms over 11100 ticks
+16:54:38.564 [stat] avg read=0ms over 11200 ticks
+16:54:38.983 [ping] 0 ms
+16:54:40.107 [stat] avg read=0ms over 11300 ticks
+16:54:40.989 [ping] 0 ms
+16:54:41.638 [stat] avg read=0ms over 11400 ticks
+16:54:42.993 [ping] 0 ms
+16:54:43.201 [stat] avg read=0ms over 11500 ticks
+16:54:44.708 [stat] avg read=0ms over 11600 ticks
+16:54:44.999 [ping] 0 ms
+16:54:46.265 [stat] avg read=0ms over 11700 ticks
+16:54:46.316 [appearance] sent 7 item class(es) (heartbeat)
+16:54:47.007 [ping] 0 ms
+16:54:47.827 [stat] avg read=0ms over 11800 ticks
+16:54:49.012 [ping] 0 ms
+16:54:49.365 [stat] avg read=0ms over 11900 ticks
+16:54:50.909 [stat] avg read=0ms over 12000 ticks
+16:54:51.025 [ping] 0 ms
+16:54:52.470 [stat] avg read=0ms over 12100 ticks
+16:54:53.035 [ping] 0 ms
+16:54:54.032 [stat] avg read=0ms over 12200 ticks
+16:54:55.047 [ping] 0 ms
+16:54:55.662 [stat] avg read=0ms over 12300 ticks
+16:54:57.051 [ping] 0 ms
+16:54:57.221 [stat] avg read=0ms over 12400 ticks
+16:54:58.788 [stat] avg read=0ms over 12500 ticks
+16:54:59.052 [ping] 0 ms
+16:55:00.369 [stat] avg read=0ms over 12600 ticks
+16:55:01.052 [ping] 0 ms
+16:55:01.945 [stat] avg read=0ms over 12700 ticks
+16:55:03.062 [ping] 0 ms
+16:55:03.542 [stat] avg read=0ms over 12800 ticks
+16:55:05.074 [ping] 0 ms
+16:55:05.130 [stat] avg read=0ms over 12900 ticks
+16:55:06.722 [stat] avg read=0ms over 13000 ticks
+16:55:07.076 [ping] 0 ms
+16:55:08.288 [stat] avg read=0ms over 13100 ticks
+16:55:09.077 [ping] 0 ms
+16:55:09.852 [stat] avg read=0ms over 13200 ticks
+16:55:11.082 [ping] 0 ms
+16:55:11.505 [stat] avg read=0ms over 13300 ticks
+16:55:13.060 [stat] avg read=0ms over 13400 ticks
+16:55:13.091 [ping] 0 ms
+16:55:14.659 [stat] avg read=0ms over 13500 ticks
+16:55:15.092 [ping] 0 ms
+16:55:16.219 [stat] avg read=0ms over 13600 ticks
+16:55:17.012 [appearance] sent 7 item class(es) (heartbeat)
+16:55:17.093 [ping] 0 ms
+16:55:17.793 [stat] avg read=0ms over 13700 ticks
+16:55:19.099 [ping] 0 ms
+16:55:19.395 [stat] avg read=0ms over 13800 ticks
+16:55:20.948 [stat] avg read=0ms over 13900 ticks
+16:55:21.103 [ping] 0 ms
+16:55:22.563 [stat] avg read=0ms over 14000 ticks
+16:55:23.110 [ping] 0 ms
+16:55:23.275 [name] ghost 3 = JoinerNick
+16:55:23.275 [version] ghost 3 is on release 0.17.1
+16:55:23.515 [appearance] ghost 3: alias 33d169b5-b511-4149-ae1b-96d964ddd15a -> source ec7148ad-7998-455d-ade8-7bddf358d515
+16:55:23.515 [appearance] ghost 3: alias 45a8290d-4491-43bc-8d2e-c5962b94ed50 -> source 6f6bc011-d298-4f69-8877-71f94abe6d9e
+16:55:23.515 [appearance] ghost 3: alias 5bf2deb5-22b7-4d21-9f37-7892205fd204 -> source 18f3756f-9d76-48a4-afa5-72f4ccc0e16b
+16:55:23.515 [appearance] ghost 3: alias a4d57e1d-217a-4f02-84a2-4052b4cf150a -> source a8723887-ac6e-45a0-a6a4-0cf905716b6d
+16:55:23.515 [appearance] ghost 3: alias a8d552a9-3f9b-4e4e-b032-7328bdac5d96 -> source 8662ab7a-6af0-468a-8bce-a1a8768c24b7
+16:55:23.515 [appearance] ghost 3: alias ab5b3ad5-5bb5-4fe9-a5bb-8ee1c4f713b5 -> source 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4
+16:55:23.515 [appearance] ghost 3: alias b862b26e-0ec4-4932-89ca-e99c05c970e1 -> source a363573e-57dd-4eda-9b44-d9d9ddf47a5d
+16:55:23.515 [appearance] ghost 3: alias cb8ab8cb-949a-4e9f-910a-0a7dfd5b9cac -> source 4835b390-05a4-42d8-a77d-d4fb30ea03d9
+16:55:23.515 [appearance] ghost 3: alias cd7ac55b-4bda-43d6-a58d-331a30733eda -> source 1113ab25-a055-478e-b0c9-42b5d0cb2c6d
+16:55:23.531 [appearance] unequip a8b22da0-e42e-4d79-abe7-52e6eebad6eb on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.568 [appearance] unequip cc1adb78-fa5a-45c9-be7b-b7b50e182cb3 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.606 [appearance] unequip 36a701ed-2144-452a-b113-385efba2c0d1 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.649 [appearance] unequip 46b051c4-d4e2-4f3a-8b88-e3f64dae4618 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.696 [appearance] unequip 1aadf1e5-c37b-41c3-bc65-354187022c91 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.736 [appearance] unequip a5322fcd-27b4-4f4e-bfbf-49c519c74c74 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.775 [appearance] unequip cfc1fd72-dbb7-49a4-8713-6acf215a72be on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.812 [appearance] unequip b6fe59ec-c854-402a-848e-a77f55661c19 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.855 [appearance] unequip a06cfbf0-3d59-4003-89d4-69a82eb735af on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.897 [appearance] unequip 204c1852-dd30-42ae-9317-bc3123a3e301 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.935 [appearance] equip ec7148ad-7998-455d-ade8-7bddf358d515 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:23.973 [appearance] equip 6f6bc011-d298-4f69-8877-71f94abe6d9e on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.011 [appearance] equip 18f3756f-9d76-48a4-afa5-72f4ccc0e16b on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.049 [appearance] equip a8723887-ac6e-45a0-a6a4-0cf905716b6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.092 [appearance] equip 8662ab7a-6af0-468a-8bce-a1a8768c24b7 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.129 [appearance] equip 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.166 [appearance] equip a363573e-57dd-4eda-9b44-d9d9ddf47a5d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.204 [appearance] equip 4835b390-05a4-42d8-a77d-d4fb30ea03d9 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.220 [stat] avg read=0ms over 14100 ticks
+16:55:24.243 [appearance] equip 1113ab25-a055-478e-b0c9-42b5d0cb2c6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:24.244 [appearance] ghost 3: +9 -10
+16:55:25.119 [ping] 0 ms
+16:55:25.319 [appearance] ghost 3: 9 item(s) still not applied, retrying
+16:55:25.356 [appearance] retry equip ec7148ad-7998-455d-ade8-7bddf358d515 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.395 [appearance] retry equip 6f6bc011-d298-4f69-8877-71f94abe6d9e on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.437 [appearance] retry equip 18f3756f-9d76-48a4-afa5-72f4ccc0e16b on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.476 [appearance] retry equip a8723887-ac6e-45a0-a6a4-0cf905716b6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.515 [appearance] retry equip 8662ab7a-6af0-468a-8bce-a1a8768c24b7 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.553 [appearance] retry equip 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.590 [appearance] retry equip a363573e-57dd-4eda-9b44-d9d9ddf47a5d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.634 [appearance] retry equip 4835b390-05a4-42d8-a77d-d4fb30ea03d9 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.674 [appearance] retry equip 1113ab25-a055-478e-b0c9-42b5d0cb2c6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:25.801 [stat] avg read=0ms over 14200 ticks
+16:55:26.759 [appearance] ghost 3: 9 item(s) still not applied, retrying
+16:55:26.804 [appearance] retry equip ec7148ad-7998-455d-ade8-7bddf358d515 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:26.840 [appearance] retry equip 6f6bc011-d298-4f69-8877-71f94abe6d9e on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:26.883 [appearance] retry equip 18f3756f-9d76-48a4-afa5-72f4ccc0e16b on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:26.919 [appearance] retry equip a8723887-ac6e-45a0-a6a4-0cf905716b6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:26.956 [appearance] retry equip 8662ab7a-6af0-468a-8bce-a1a8768c24b7 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:26.997 [appearance] retry equip 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:27.036 [appearance] retry equip a363573e-57dd-4eda-9b44-d9d9ddf47a5d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:27.074 [appearance] retry equip 4835b390-05a4-42d8-a77d-d4fb30ea03d9 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:27.111 [appearance] retry equip 1113ab25-a055-478e-b0c9-42b5d0cb2c6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:27.121 [ping] 0 ms
+16:55:27.396 [stat] avg read=0ms over 14300 ticks
+16:55:28.193 [appearance] ghost 3: 9 item(s) still not applied, retrying
+16:55:28.230 [appearance] retry equip ec7148ad-7998-455d-ade8-7bddf358d515 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.272 [appearance] retry equip 6f6bc011-d298-4f69-8877-71f94abe6d9e on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.310 [appearance] retry equip 18f3756f-9d76-48a4-afa5-72f4ccc0e16b on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.352 [appearance] retry equip a8723887-ac6e-45a0-a6a4-0cf905716b6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.390 [appearance] retry equip 8662ab7a-6af0-468a-8bce-a1a8768c24b7 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.431 [appearance] retry equip 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.468 [appearance] retry equip a363573e-57dd-4eda-9b44-d9d9ddf47a5d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.507 [appearance] retry equip 4835b390-05a4-42d8-a77d-d4fb30ea03d9 on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.551 [appearance] retry equip 1113ab25-a055-478e-b0c9-42b5d0cb2c6d on kcd2mp_3 failed: Response status code does not indicate success: 404 (Not Found).
+16:55:28.581 [discord] SetPresence details='Hosting' state='v0.17.1 · 2 players' key='kcd_mp_color_2' IsInitialized=True
+16:55:28.582 [ghost 3] 141.99 2058.89 51.40 riding=True
+16:55:28.642 [ghost 3] 142.26 2059.08 51.28 riding=True
+16:55:28.671 [combatviz] ghost 3 entity id 0x100015 cached for native swings
+16:55:28.687 [ghost 3] 142.74 2059.44 51.06 riding=True
+16:55:28.732 [ghost 3] 143.18 2059.78 50.83 riding=True
+16:55:28.812 [ghost 3] 143.63 2060.12 50.56 riding=True
+16:55:28.844 [ghost 3] 144.06 2060.46 50.31 riding=True
+16:55:28.951 [ghost 3] 144.49 2060.78 50.09 riding=True
+16:55:28.978 [ghost 3] 144.94 2061.11 49.85 riding=True
+16:55:29.076 [ghost 3] 145.42 2061.43 49.64 riding=True
+16:55:29.125 [ghost 3] 145.90 2061.75 49.43 riding=True
+16:55:29.127 [ping] 0 ms
+16:55:29.189 [stat] avg read=0ms over 14400 ticks
+16:55:29.189 [ghost 3] 146.39 2062.06 49.23 riding=True
+16:55:29.297 [ghost 3] 146.89 2062.38 49.02 riding=True
+16:55:29.297 [ghost 3] 147.37 2062.68 48.81 riding=True
+16:55:29.385 [ghost 3] 147.85 2062.94 48.59 riding=True
+16:55:29.385 [ghost 3] 148.32 2063.20 48.37 riding=True
+16:55:29.481 [ghost 3] 148.80 2063.46 48.17 riding=True
+16:55:29.506 [ghost 3] 149.27 2063.73 47.97 riding=True
+16:55:29.569 [ghost 3] 149.74 2064.00 47.74 riding=True
+16:55:29.652 [ghost 3] 150.23 2064.27 47.54 riding=True
+16:55:29.741 [ghost 3] 150.70 2064.52 47.36 riding=True
+16:55:29.741 [ghost 3] 151.19 2064.77 47.22 riding=True
+16:55:29.817 [ghost 3] 151.67 2065.03 47.09 riding=True
+16:55:29.883 [ghost 3] 152.33 2065.40 46.88 riding=True
+16:55:29.945 [ghost 3] 152.55 2065.52 46.81 riding=True
+16:55:29.989 [ghost 3] 153.00 2065.77 46.64 riding=True
+16:55:30.038 [ghost 3] 153.46 2066.02 46.50 riding=True
+16:55:30.052 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:55:30.052 ERR : Object reference not set to an instance of an object.
+16:55:30.052 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:55:30.113 [ghost 3] 153.91 2066.28 46.35 riding=True
+16:55:30.161 [ghost 3] 154.40 2066.52 46.19 riding=True
+16:55:30.271 [ghost 3] 154.91 2066.76 46.05 riding=True
+16:55:30.285 [ghost 3] 155.41 2066.99 45.89 riding=True
+16:55:30.327 [ghost 3] 156.21 2067.34 45.69 riding=True
+16:55:30.435 [ghost 3] 156.46 2067.44 45.63 riding=True
+16:55:30.471 [ghost 3] 156.93 2067.65 45.50 riding=True
+16:55:30.547 [ghost 3] 157.41 2067.85 45.33 riding=True
+16:55:30.595 [ghost 3] 157.94 2068.07 45.14 riding=True
+16:55:30.614 [appearance] ghost 3: 9 item(s) still not applied, retrying
+16:55:30.643 [ghost 3] 158.47 2068.26 44.97 riding=True
+16:55:30.730 [ghost 3] 159.00 2068.44 44.77 riding=True
+16:55:30.812 [ghost 3] 159.54 2068.63 44.59 riding=True
+16:55:30.854 [ghost 3] 160.08 2068.80 44.45 riding=True
+16:55:30.947 [ghost 3] 160.61 2068.98 44.32 riding=True
+16:55:31.027 [ghost 3] 161.16 2069.16 44.22 riding=True
+16:55:31.027 [ghost 3] 161.70 2069.35 44.11 riding=True
+16:55:31.128 [ping] 0 ms
+16:55:31.160 [ghost 3] 162.20 2069.53 43.99 riding=True
+16:55:31.160 [ghost 3] 162.70 2069.72 43.85 riding=True
+16:55:31.206 [ghost 3] 163.22 2069.91 43.70 riding=True
+16:55:31.284 [ghost 3] 163.74 2070.10 43.58 riding=True
+16:55:31.332 [ghost 3] 164.29 2070.29 43.44 riding=True
+16:55:31.423 [ghost 3] 165.14 2070.57 43.27 riding=True
+16:55:31.503 [ghost 3] 165.41 2070.66 43.21 riding=True
+16:55:31.503 [ghost 3] 165.99 2070.83 43.09 riding=True
+16:55:31.581 [weather] arbiter picked 'semicloudy_clear_B'
+16:55:31.582 [weather] sent profile 'semicloudy_clear_B' blend=30
+16:55:31.583 [weather] applying profile 'semicloudy_clear_B' blend=30
+16:55:31.598 [ghost 3] 166.57 2071.02 42.97 riding=True
+16:55:31.607 [stat] avg read=0ms over 14500 ticks
+16:55:31.692 [ghost 3] 167.12 2071.19 42.83 riding=True
+16:55:31.692 [ghost 3] 167.67 2071.35 42.66 riding=True
+16:55:31.768 [ghost 3] 168.22 2071.50 42.50 riding=True
+16:55:31.862 [ghost 3] 168.75 2071.65 42.37 riding=True
+16:55:31.922 [ghost 3] 169.27 2071.80 42.22 riding=True
+16:55:31.922 [ghost 3] 169.79 2071.95 42.08 riding=True
+16:55:31.985 [ghost 3] 170.31 2072.08 41.96 riding=True
+16:55:32.094 [ghost 3] 170.79 2072.19 41.84 riding=True
+16:55:32.110 [ghost 3] 171.29 2072.30 41.74 riding=True
+16:55:32.249 [ghost 3] 171.76 2072.42 41.65 riding=True
+16:55:32.249 [ghost 3] 172.18 2072.52 41.53 riding=True
+16:55:32.282 [ghost 3] 172.60 2072.63 41.39 riding=True
+16:55:32.453 [ghost 3] 173.03 2072.72 41.26 riding=True
+16:55:32.453 [ghost 3] 173.42 2072.79 41.12 riding=True
+16:55:32.453 [ghost 3] 173.80 2072.84 41.00 riding=True
+16:55:32.681 [ghost 3] 174.17 2072.89 40.90 riding=True
+16:55:32.682 [ghost 3] 174.53 2072.94 40.77 riding=True
+16:55:32.682 [ghost 3] 174.90 2073.01 40.61 riding=True
+16:55:32.896 [ghost 3] 175.26 2073.11 40.43 riding=True
+16:55:32.896 [ghost 3] 175.62 2073.20 40.27 riding=True
+16:55:32.896 [ghost 3] 176.01 2073.30 40.17 riding=True
+16:55:32.896 [ghost 3] 176.39 2073.39 40.09 riding=True
+16:55:33.098 [ghost 3] 176.75 2073.47 40.02 riding=True
+16:55:33.098 [ghost 3] 177.09 2073.52 39.98 riding=True
+16:55:33.098 [ghost 3] 177.41 2073.58 39.90 riding=True
+16:55:33.143 [ping] 0 ms
+16:55:33.215 [combat] pipe reader exited
+16:55:33.282 [ghost 3] 177.72 2073.65 39.79 riding=True
+16:55:33.282 [ghost 3] 178.05 2073.72 39.65 riding=True
+16:55:33.282 [ghost 3] 178.39 2073.79 39.52 riding=True
+16:55:33.497 [ghost 3] 178.74 2073.87 39.40 riding=True
+16:55:33.497 [ghost 3] 179.11 2073.96 39.34 riding=True
+16:55:33.497 [ghost 3] 179.49 2074.05 39.29 riding=True
+16:55:33.497 [ghost 3] 179.85 2074.12 39.23 riding=True
+16:55:33.715 [ghost 3] 180.20 2074.17 39.19 riding=True
+16:55:33.715 [ghost 3] 180.54 2074.23 39.13 riding=True
+16:55:33.715 [ghost 3] 180.86 2074.29 39.04 riding=True
+16:55:33.715 [ghost 3] 181.20 2074.35 38.94 riding=True
+16:55:33.886 [ghost 3] 181.55 2074.41 38.82 riding=True
+16:55:33.886 [ghost 3] 181.92 2074.48 38.67 riding=True
+16:55:33.886 [ghost 3] 182.28 2074.56 38.55 riding=True
+16:55:34.102 [ghost 3] 182.66 2074.66 38.51 riding=True
+16:55:34.102 [ghost 3] 183.03 2074.76 38.46 riding=True
+16:55:34.102 [ghost 3] 183.38 2074.84 38.42 riding=True
+16:55:34.316 [ghost 3] 183.72 2074.90 38.38 riding=True
+16:55:34.316 [ghost 3] 184.05 2074.96 38.32 riding=True
+16:55:34.316 [ghost 3] 184.38 2075.04 38.23 riding=True
+16:55:34.316 [ghost 3] 184.71 2075.12 38.12 riding=True
+16:55:34.532 [ghost 3] 185.08 2075.22 38.03 riding=True
+16:55:34.532 [ghost 3] 185.45 2075.32 37.94 riding=True
+16:55:34.532 [ghost 3] 185.80 2075.44 37.88 riding=True
+16:55:34.532 [ghost 3] 186.15 2075.58 37.85 riding=True
+16:55:34.597 [appearance] ghost 3: 9 item(s) still not applied, retrying
+16:55:34.708 [ghost 3] 186.50 2075.69 37.82 riding=True
+16:55:34.708 [ghost 3] 186.84 2075.78 37.81 riding=True
+16:55:34.708 [ghost 3] 187.33 2075.92 37.76 riding=True
+16:55:34.741 [ghost 3] 187.49 2075.97 37.72 riding=True
+16:55:34.801 [ghost 3] 187.84 2076.08 37.62 riding=True
+16:55:34.848 [ghost 3] 188.21 2076.20 37.51 riding=True
+16:55:34.910 [ghost 3] 188.59 2076.32 37.40 riding=True
+16:55:34.972 [ghost 3] 188.97 2076.45 37.32 riding=True
+16:55:35.020 [ghost 3] 189.36 2076.58 37.29 riding=True
+16:55:35.157 [ping] 0 ms
+16:55:35.188 [ghost 3] 189.75 2076.71 37.25 riding=True
+16:55:35.188 [ghost 3] 190.13 2076.81 37.23 riding=True
+16:55:35.236 [ghost 3] 190.49 2076.90 37.20 riding=True
+16:55:35.403 [ghost 3] 190.84 2076.99 37.13 riding=True
+16:55:35.403 [appearance] retry equip ec7148ad-7998-455d-ade8-7bddf358d515 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:35.403 [ghost 3] 191.20 2077.10 37.02 riding=True
+16:55:35.403 [ghost 3] 191.58 2077.21 36.89 riding=True
+16:55:35.451 [ghost 3] 191.96 2077.33 36.78 riding=True
+16:55:35.570 [ghost 3] 192.35 2077.45 36.69 riding=True
+16:55:35.570 [ghost 3] 192.74 2077.58 36.66 riding=True
+16:55:35.668 [ghost 3] 193.13 2077.70 36.62 riding=True
+16:55:35.668 [ghost 3] 193.50 2077.80 36.58 riding=True
+16:55:35.749 [ghost 3] 193.85 2077.89 36.54 riding=True
+16:55:35.883 [ghost 3] 194.20 2077.99 36.47 riding=True
+16:55:35.883 [ghost 3] 194.53 2078.10 36.39 riding=True
+16:55:35.963 [ghost 3] 194.87 2078.21 36.32 riding=True
+16:55:35.964 [ghost 3] 195.21 2078.31 36.23 riding=True
+16:55:36.099 [ghost 3] 195.55 2078.43 36.15 riding=True
+16:55:36.099 [ghost 3] 195.89 2078.57 36.14 riding=True
+16:55:36.179 [ghost 3] 196.40 2078.80 36.15 riding=True
+16:55:36.179 [ghost 3] 196.57 2078.88 36.15 riding=True
+16:55:36.205 [appearance] retry equip 6f6bc011-d298-4f69-8877-71f94abe6d9e on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:36.314 [ghost 3] 196.90 2079.00 36.13 riding=True
+16:55:36.314 [ghost 3] 197.24 2079.12 36.10 riding=True
+16:55:36.378 [ghost 3] 197.41 2079.18 36.07 riding=True
+16:55:36.378 [ghost 3] 197.58 2079.24 36.03 riding=True
+16:55:36.531 [ghost 3] 197.91 2079.37 35.93 riding=True
+16:55:36.531 [ghost 3] 198.28 2079.51 35.85 riding=True
+16:55:36.531 [ghost 3] 198.65 2079.65 35.77 riding=True
+16:55:36.594 [ghost 3] 199.01 2079.79 35.71 riding=True
+16:55:36.749 [ghost 3] 199.36 2079.95 35.68 riding=True
+16:55:36.749 [ghost 3] 199.72 2080.10 35.66 riding=True
+16:55:36.749 [ghost 3] 200.07 2080.23 35.65 riding=True
+16:55:36.809 [ghost 3] 200.41 2080.33 35.63 riding=True
+16:55:36.968 [ghost 3] 200.75 2080.45 35.58 riding=True
+16:55:36.968 [ghost 3] 201.07 2080.58 35.51 riding=True
+16:55:37.010 [appearance] retry equip 18f3756f-9d76-48a4-afa5-72f4ccc0e16b on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:37.025 [ghost 3] 201.40 2080.71 35.42 riding=True
+16:55:37.164 [ping] 0 ms
+16:55:37.183 [ghost 3] 201.74 2080.84 35.33 riding=True
+16:55:37.183 [ghost 3] 202.09 2081.00 35.25 riding=True
+16:55:37.183 [ghost 3] 202.44 2081.16 35.21 riding=True
+16:55:37.242 [ghost 3] 202.80 2081.32 35.19 riding=True
+16:55:37.406 [ghost 3] 203.15 2081.49 35.16 riding=True
+16:55:37.406 [ghost 3] 203.49 2081.64 35.16 riding=True
+16:55:37.406 [ghost 3] 203.82 2081.78 35.14 riding=True
+16:55:37.458 [ghost 3] 204.14 2081.92 35.08 riding=True
+16:55:37.628 [ghost 3] 204.46 2082.06 34.98 riding=True
+16:55:37.628 [ghost 3] 204.82 2082.23 34.84 riding=True
+16:55:37.628 [ghost 3] 205.20 2082.41 34.72 riding=True
+16:55:37.676 [ghost 3] 205.58 2082.60 34.60 riding=True
+16:55:37.799 [ghost 3] 205.96 2082.78 34.54 riding=True
+16:55:37.799 [ghost 3] 206.34 2082.97 34.48 riding=True
+16:55:37.813 [appearance] retry equip a8723887-ac6e-45a0-a6a4-0cf905716b6d on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:37.892 [ghost 3] 206.69 2083.12 34.42 riding=True
+16:55:37.892 [ghost 3] 207.03 2083.25 34.36 riding=True
+16:55:38.015 [ghost 3] 207.37 2083.39 34.28 riding=True
+16:55:38.015 [ghost 3] 207.71 2083.54 34.15 riding=True
+16:55:38.107 [ghost 3] 208.05 2083.68 34.03 riding=True
+16:55:38.231 [ghost 3] 208.41 2083.83 33.88 riding=True
+16:55:38.231 [ghost 3] 208.77 2083.98 33.70 riding=True
+16:55:38.231 [ghost 3] 209.11 2084.15 33.59 riding=True
+16:55:38.326 [ghost 3] 209.46 2084.33 33.54 riding=True
+16:55:38.449 [ghost 3] 209.81 2084.51 33.47 riding=True
+16:55:38.449 [ghost 3] 210.13 2084.65 33.41 riding=True
+16:55:38.539 [ghost 3] 210.47 2084.77 33.35 riding=True
+16:55:38.539 [ghost 3] 210.80 2084.89 33.25 riding=True
+16:55:38.615 [appearance] retry equip 8662ab7a-6af0-468a-8bce-a1a8768c24b7 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:38.662 [ghost 3] 211.13 2085.02 33.11 riding=True
+16:55:38.662 [ghost 3] 211.49 2085.15 32.97 riding=True
+16:55:38.753 [ghost 3] 211.87 2085.28 32.85 riding=True
+16:55:38.753 [ghost 3] 212.24 2085.41 32.73 riding=True
+16:55:38.879 [ghost 3] 212.61 2085.56 32.66 riding=True
+16:55:38.879 [ghost 3] 212.98 2085.69 32.59 riding=True
+16:55:38.970 [ghost 3] 213.33 2085.79 32.51 riding=True
+16:55:38.970 [ghost 3] 213.68 2085.90 32.46 riding=True
+16:55:39.104 [ghost 3] 214.00 2086.00 32.37 riding=True
+16:55:39.104 [ghost 3] 214.32 2086.12 32.25 riding=True
+16:55:39.169 [ping] 0 ms
+16:55:39.183 [ghost 3] 214.66 2086.24 32.11 riding=True
+16:55:39.328 [ghost 3] 215.02 2086.37 31.97 riding=True
+16:55:39.328 [ghost 3] 215.37 2086.50 31.82 riding=True
+16:55:39.328 [ghost 3] 215.73 2086.64 31.73 riding=True
+16:55:39.400 [ghost 3] 216.10 2086.78 31.67 riding=True
+16:55:39.430 [appearance] retry equip 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:39.555 [ghost 3] 216.46 2086.91 31.61 riding=True
+16:55:39.555 [ghost 3] 216.80 2087.01 31.59 riding=True
+16:55:39.555 [ghost 3] 217.12 2087.11 31.55 riding=True
+16:55:39.615 [ghost 3] 217.59 2087.26 31.41 riding=True
+16:55:39.769 [ghost 3] 217.75 2087.32 31.35 riding=True
+16:55:39.769 [ghost 3] 218.10 2087.44 31.22 riding=True
+16:55:39.769 [ghost 3] 218.45 2087.57 31.11 riding=True
+16:55:39.988 [ghost 3] 218.82 2087.70 31.03 riding=True
+16:55:39.988 [ghost 3] 219.19 2087.84 31.01 riding=True
+16:55:39.988 [ghost 3] 219.56 2087.98 30.98 riding=True
+16:55:39.988 [ghost 3] 219.91 2088.08 30.97 riding=True
+16:55:40.203 [ghost 3] 220.24 2088.17 30.94 riding=True
+16:55:40.203 [ghost 3] 220.57 2088.27 30.88 riding=True
+16:55:40.203 [ghost 3] 220.90 2088.38 30.80 riding=True
+16:55:40.203 [ghost 3] 221.25 2088.48 30.71 riding=True
+16:55:40.233 [appearance] retry equip a363573e-57dd-4eda-9b44-d9d9ddf47a5d on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:40.419 [ghost 3] 221.64 2088.59 30.60 riding=True
+16:55:40.419 [ghost 3] 222.02 2088.71 30.53 riding=True
+16:55:40.419 [ghost 3] 222.39 2088.84 30.52 riding=True
+16:55:40.419 [ghost 3] 222.77 2088.98 30.54 riding=True
+16:55:40.634 [ghost 3] 223.13 2089.08 30.55 riding=True
+16:55:40.634 [ghost 3] 223.46 2089.17 30.55 riding=True
+16:55:40.634 [ghost 3] 223.79 2089.25 30.51 riding=True
+16:55:40.850 [ghost 3] 224.12 2089.35 30.45 riding=True
+16:55:40.850 [ghost 3] 224.48 2089.45 30.37 riding=True
+16:55:40.851 [ghost 3] 224.87 2089.56 30.33 riding=True
+16:55:40.851 [ghost 3] 225.26 2089.68 30.29 riding=True
+16:55:41.038 [appearance] retry equip 4835b390-05a4-42d8-a77d-d4fb30ea03d9 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:41.070 [ghost 3] 225.63 2089.80 30.28 riding=True
+16:55:41.070 [ghost 3] 226.00 2089.93 30.30 riding=True
+16:55:41.070 [ghost 3] 226.35 2090.04 30.32 riding=True
+16:55:41.070 [ghost 3] 226.70 2090.12 30.32 riding=True
+16:55:41.178 [ping] 0 ms
+16:55:41.287 [ghost 3] 227.03 2090.21 30.30 riding=True
+16:55:41.287 [ghost 3] 227.36 2090.30 30.25 riding=True
+16:55:41.287 [ghost 3] 227.53 2090.36 30.22 riding=True
+16:55:41.287 [ghost 3] 227.71 2090.41 30.19 riding=True
+16:55:41.287 [ghost 3] 228.07 2090.52 30.12 riding=True
+16:55:41.503 [ghost 3] 228.43 2090.64 30.08 riding=True
+16:55:41.503 [ghost 3] 228.80 2090.76 30.06 riding=True
+16:55:41.503 [ghost 3] 229.15 2090.88 30.09 riding=True
+16:55:41.504 [ghost 3] 229.52 2091.00 30.14 riding=True
+16:55:41.723 [ghost 3] 229.86 2091.09 30.19 riding=True
+16:55:41.723 [ghost 3] 230.18 2091.17 30.22 riding=True
+16:55:41.723 [ghost 3] 230.51 2091.25 30.22 riding=True
+16:55:41.723 [ghost 3] 230.85 2091.35 30.18 riding=True
+16:55:41.845 [appearance] retry equip 1113ab25-a055-478e-b0c9-42b5d0cb2c6d on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:41.895 [ghost 3] 231.20 2091.45 30.12 riding=True
+16:55:41.895 [ghost 3] 231.56 2091.56 30.06 riding=True
+16:55:41.895 [ghost 3] 231.93 2091.67 30.03 riding=True
+16:55:42.107 [ghost 3] 232.30 2091.79 30.03 riding=True
+16:55:42.107 [ghost 3] 232.67 2091.91 30.06 riding=True
+16:55:42.107 [ghost 3] 233.05 2092.03 30.08 riding=True
+16:55:42.107 [ghost 3] 233.40 2092.12 30.11 riding=True
+16:55:42.327 [ghost 3] 233.74 2092.20 30.10 riding=True
+16:55:42.327 [ghost 3] 234.09 2092.29 30.07 riding=True
+16:55:42.327 [ghost 3] 234.44 2092.38 30.01 riding=True
+16:55:42.327 [ghost 3] 234.78 2092.47 29.96 riding=True
+16:55:42.542 [ghost 3] 235.14 2092.57 29.89 riding=True
+16:55:42.542 [ghost 3] 235.52 2092.67 29.83 riding=True
+16:55:42.542 [ghost 3] 235.88 2092.78 29.81 riding=True
+16:55:42.542 [ghost 3] 236.24 2092.91 29.83 riding=True
+16:55:42.762 [ghost 3] 236.60 2093.03 29.86 riding=True
+16:55:42.762 [ghost 3] 236.94 2093.14 29.87 riding=True
+16:55:42.762 [ghost 3] 237.26 2093.22 29.86 riding=True
+16:55:42.762 [ghost 3] 237.60 2093.31 29.82 riding=True
+16:55:42.982 [ghost 3] 237.93 2093.41 29.76 riding=True
+16:55:42.983 [ghost 3] 238.28 2093.51 29.68 riding=True
+16:55:42.983 [ghost 3] 238.65 2093.61 29.63 riding=True
+16:55:42.983 [ghost 3] 239.01 2093.72 29.59 riding=True
+16:55:43.179 [ping] 0 ms
+16:55:43.194 [ghost 3] 239.37 2093.84 29.58 riding=True
+16:55:43.194 [ghost 3] 239.72 2093.97 29.59 riding=True
+16:55:43.194 [ghost 3] 240.07 2094.08 29.61 riding=True
+16:55:43.194 [ghost 3] 240.42 2094.16 29.63 riding=True
+16:55:43.411 [ghost 3] 240.77 2094.24 29.62 riding=True
+16:55:43.411 [ghost 3] 241.10 2094.33 29.59 riding=True
+16:55:43.411 [ghost 3] 241.44 2094.42 29.53 riding=True
+16:55:43.411 [ghost 3] 241.80 2094.51 29.46 riding=True
+16:55:43.632 [ghost 3] 242.17 2094.61 29.40 riding=True
+16:55:43.632 [ghost 3] 242.54 2094.72 29.35 riding=True
+16:55:43.632 [ghost 3] 242.91 2094.82 29.34 riding=True
+16:55:43.632 [ghost 3] 243.29 2094.93 29.36 riding=True
+16:55:43.802 [ghost 3] 243.66 2095.03 29.39 riding=True
+16:55:43.802 [ghost 3] 244.02 2095.11 29.42 riding=True
+16:55:43.802 [ghost 3] 244.36 2095.19 29.42 riding=True
+16:55:44.027 [ghost 3] 244.70 2095.27 29.38 riding=True
+16:55:44.027 [ghost 3] 245.05 2095.36 29.31 riding=True
+16:55:44.027 [ghost 3] 245.43 2095.46 29.22 riding=True
+16:55:44.027 [ghost 3] 245.82 2095.57 29.15 riding=True
+16:55:44.245 [ghost 3] 246.21 2095.68 29.12 riding=True
+16:55:44.245 [ghost 3] 246.60 2095.79 29.12 riding=True
+16:55:44.245 [ghost 3] 246.99 2095.90 29.14 riding=True
+16:55:44.245 [ghost 3] 247.36 2096.00 29.15 riding=True
+16:55:44.456 [ghost 3] 247.70 2096.06 29.15 riding=True
+16:55:44.456 [ghost 3] 248.04 2096.14 29.11 riding=True
+16:55:44.456 [ghost 3] 248.39 2096.22 29.06 riding=True
+16:55:44.456 [ghost 3] 248.73 2096.30 29.00 riding=True
+16:55:44.672 [ghost 3] 249.10 2096.38 28.93 riding=True
+16:55:44.672 [ghost 3] 249.49 2096.45 28.86 riding=True
+16:55:44.672 [ghost 3] 249.88 2096.54 28.83 riding=True
+16:55:44.672 [ghost 3] 250.26 2096.63 28.85 riding=True
+16:55:44.890 [ghost 3] 250.65 2096.72 28.86 riding=True
+16:55:44.890 [ghost 3] 251.01 2096.78 28.87 riding=True
+16:55:44.890 [ghost 3] 251.37 2096.83 28.86 riding=True
+16:55:44.890 [ghost 3] 251.72 2096.88 28.82 riding=True
+16:55:45.108 [ghost 3] 252.06 2096.94 28.75 riding=True
+16:55:45.108 [ghost 3] 252.63 2097.03 28.65 riding=True
+16:55:45.108 [ghost 3] 252.83 2097.06 28.63 riding=True
+16:55:45.108 [ghost 3] 253.21 2097.13 28.60 riding=True
+16:55:45.184 [ping] 0 ms
+16:55:45.324 [ghost 3] 253.59 2097.21 28.59 riding=True
+16:55:45.324 [ghost 3] 253.97 2097.30 28.61 riding=True
+16:55:45.324 [ghost 3] 254.34 2097.36 28.63 riding=True
+16:55:45.324 [ghost 3] 254.70 2097.40 28.63 riding=True
+16:55:45.540 [ghost 3] 255.07 2097.46 28.60 riding=True
+16:55:45.540 [ghost 3] 255.43 2097.52 28.55 riding=True
+16:55:45.540 [ghost 3] 255.81 2097.59 28.47 riding=True
+16:55:45.760 [ghost 3] 256.21 2097.64 28.40 riding=True
+16:55:45.761 [ghost 3] 256.61 2097.70 28.33 riding=True
+16:55:45.761 [ghost 3] 257.02 2097.75 28.31 riding=True
+16:55:45.761 [ghost 3] 257.44 2097.80 28.31 riding=True
+16:55:45.932 [ghost 3] 257.85 2097.83 28.32 riding=True
+16:55:45.932 [ghost 3] 258.24 2097.83 28.32 riding=True
+16:55:45.932 [ghost 3] 258.62 2097.83 28.29 riding=True
+16:55:46.149 [ghost 3] 259.02 2097.83 28.21 riding=True
+16:55:46.149 [ghost 3] 259.42 2097.85 28.10 riding=True
+16:55:46.149 [ghost 3] 259.83 2097.87 27.99 riding=True
+16:55:46.149 [ghost 3] 260.24 2097.90 27.91 riding=True
+16:55:46.366 [ghost 3] 260.64 2097.92 27.86 riding=True
+16:55:46.366 [ghost 3] 261.05 2097.95 27.85 riding=True
+16:55:46.366 [ghost 3] 261.46 2097.98 27.84 riding=True
+16:55:46.367 [ghost 3] 261.84 2097.99 27.83 riding=True
+16:55:46.473 [appearance] ghost 3: 9 item(s) still not applied, retrying
+16:55:46.593 [ghost 3] 262.22 2097.99 27.80 riding=True
+16:55:46.593 [ghost 3] 262.59 2098.00 27.73 riding=True
+16:55:46.593 [ghost 3] 262.96 2098.01 27.67 riding=True
+16:55:46.593 [ghost 3] 263.31 2098.02 27.60 riding=True
+16:55:46.818 [ghost 3] 263.69 2098.02 27.54 riding=True
+16:55:46.818 [ghost 3] 264.07 2098.05 27.51 riding=True
+16:55:46.818 [ghost 3] 264.45 2098.09 27.55 riding=True
+16:55:46.818 [ghost 3] 264.84 2098.14 27.59 riding=True
+16:55:47.033 [ghost 3] 265.21 2098.16 27.61 riding=True
+16:55:47.033 [ghost 3] 265.57 2098.17 27.61 riding=True
+16:55:47.033 [ghost 3] 265.94 2098.18 27.58 riding=True
+16:55:47.033 [ghost 3] 266.30 2098.20 27.52 riding=True
+16:55:47.197 [ping] 0 ms
+16:55:47.246 [ghost 3] 266.69 2098.22 27.47 riding=True
+16:55:47.246 [ghost 3] 267.10 2098.24 27.45 riding=True
+16:55:47.246 [ghost 3] 267.50 2098.27 27.47 riding=True
+16:55:47.276 [appearance] retry equip ec7148ad-7998-455d-ade8-7bddf358d515 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:47.461 [ghost 3] 267.88 2098.31 27.50 riding=True
+16:55:47.461 [ghost 3] 268.27 2098.35 27.56 riding=True
+16:55:47.461 [ghost 3] 268.64 2098.36 27.62 riding=True
+16:55:47.461 [ghost 3] 269.00 2098.36 27.65 riding=True
+16:55:47.682 [ghost 3] 269.38 2098.38 27.65 riding=True
+16:55:47.682 [ghost 3] 269.76 2098.41 27.62 riding=True
+16:55:47.682 [ghost 3] 270.15 2098.43 27.58 riding=True
+16:55:47.682 [ghost 3] 270.57 2098.46 27.55 riding=True
+16:55:47.852 [ghost 3] 270.98 2098.50 27.55 riding=True
+16:55:47.852 [ghost 3] 271.39 2098.54 27.59 riding=True
+16:55:48.066 [ghost 3] 271.82 2098.57 27.66 riding=True
+16:55:48.066 [ghost 3] 272.23 2098.59 27.72 riding=True
+16:55:48.066 [ghost 3] 272.62 2098.58 27.74 riding=True
+16:55:48.066 [ghost 3] 273.04 2098.58 27.72 riding=True
+16:55:48.076 [appearance] retry equip 6f6bc011-d298-4f69-8877-71f94abe6d9e on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:48.278 [ghost 3] 273.48 2098.59 27.66 riding=True
+16:55:48.278 [ghost 3] 273.93 2098.61 27.58 riding=True
+16:55:48.278 [ghost 3] 274.38 2098.63 27.53 riding=True
+16:55:48.496 [ghost 3] 274.83 2098.65 27.52 riding=True
+16:55:48.496 [ghost 3] 275.27 2098.68 27.56 riding=True
+16:55:48.496 [ghost 3] 275.70 2098.70 27.59 riding=True
+16:55:48.496 [ghost 3] 276.11 2098.69 27.62 riding=True
+16:55:48.715 [ghost 3] 276.50 2098.68 27.60 riding=True
+16:55:48.715 [ghost 3] 276.92 2098.67 27.55 riding=True
+16:55:48.715 [ghost 3] 277.35 2098.64 27.49 riding=True
+16:55:48.881 [appearance] retry equip 18f3756f-9d76-48a4-afa5-72f4ccc0e16b on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:48.943 [ghost 3] 277.82 2098.58 27.40 riding=True
+16:55:48.943 [ghost 3] 278.29 2098.52 27.35 riding=True
+16:55:48.943 [ghost 3] 278.76 2098.46 27.37 riding=True
+16:55:48.943 [ghost 3] 279.22 2098.40 27.42 riding=True
+16:55:49.159 [ghost 3] 279.43 2098.36 27.43 riding=True
+16:55:49.159 [ghost 3] 279.85 2098.26 27.42 riding=True
+16:55:49.159 [ghost 3] 280.48 2098.12 27.33 riding=True
+16:55:49.205 [ping] 0 ms
+16:55:49.375 [ghost 3] 280.69 2098.08 27.28 riding=True
+16:55:49.375 [ghost 3] 281.15 2098.00 27.21 riding=True
+16:55:49.376 [ghost 3] 281.61 2097.91 27.17 riding=True
+16:55:49.376 [ghost 3] 282.05 2097.85 27.16 riding=True
+16:55:49.592 [ghost 3] 282.27 2097.83 27.17 riding=True
+16:55:49.592 [ghost 3] 282.71 2097.77 27.21 riding=True
+16:55:49.592 [ghost 3] 282.91 2097.73 27.22 riding=True
+16:55:49.592 [ghost 3] 283.32 2097.64 27.22 riding=True
+16:55:49.683 [appearance] retry equip a8723887-ac6e-45a0-a6a4-0cf905716b6d on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:49.810 [ghost 3] 283.74 2097.56 27.18 riding=True
+16:55:49.810 [ghost 3] 284.19 2097.47 27.09 riding=True
+16:55:49.810 [ghost 3] 284.66 2097.35 27.00 riding=True
+16:55:49.810 [ghost 3] 285.13 2097.21 26.94 riding=True
+16:55:49.982 [ghost 3] 285.58 2097.05 26.93 riding=True
+16:55:49.982 [ghost 3] 286.04 2096.88 26.96 riding=True
+16:55:50.198 [ghost 3] 286.24 2096.78 26.99 riding=True
+16:55:50.198 [ghost 3] 286.63 2096.58 27.02 riding=True
+16:55:50.198 [ghost 3] 287.00 2096.38 27.01 riding=True
+16:55:50.198 [ghost 3] 287.38 2096.19 26.95 riding=True
+16:55:50.414 [ghost 3] 287.79 2096.01 26.86 riding=True
+16:55:50.414 [ghost 3] 288.22 2095.82 26.81 riding=True
+16:55:50.414 [ghost 3] 288.44 2095.73 26.80 riding=True
+16:55:50.414 [ghost 3] 288.65 2095.63 26.80 riding=True
+16:55:50.491 [appearance] retry equip 8662ab7a-6af0-468a-8bce-a1a8768c24b7 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:50.631 [ghost 3] 289.10 2095.45 26.83 riding=True
+16:55:50.631 [ghost 3] 289.32 2095.36 26.85 riding=True
+16:55:50.631 [ghost 3] 289.72 2095.17 26.88 riding=True
+16:55:50.631 [ghost 3] 290.11 2094.98 26.86 riding=True
+16:55:50.850 [ghost 3] 290.50 2094.81 26.81 riding=True
+16:55:50.850 [ghost 3] 290.88 2094.63 26.76 riding=True
+16:55:50.850 [ghost 3] 291.28 2094.45 26.69 riding=True
+16:55:51.068 [ghost 3] 291.70 2094.27 26.64 riding=True
+16:55:51.068 [ghost 3] 292.11 2094.11 26.65 riding=True
+16:55:51.068 [ghost 3] 292.54 2093.95 26.69 riding=True
+16:55:51.068 [ghost 3] 292.93 2093.78 26.72 riding=True
+16:55:51.206 [ping] 0 ms
+16:55:51.283 [ghost 3] 293.31 2093.58 26.70 riding=True
+16:55:51.283 [ghost 3] 293.68 2093.36 26.65 riding=True
+16:55:51.283 [ghost 3] 293.86 2093.25 26.60 riding=True
+16:55:51.300 [appearance] retry equip 0a8b54b4-93f5-4b21-bb1e-4bc94b9724b4 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:51.502 [ghost 3] 294.26 2093.01 26.51 riding=True
+16:55:51.502 [ghost 3] 294.69 2092.74 26.46 riding=True
+16:55:51.502 [ghost 3] 295.09 2092.48 26.46 riding=True
+16:55:51.502 [ghost 3] 295.50 2092.23 26.48 riding=True
+16:55:51.718 [ghost 3] 295.86 2091.98 26.52 riding=True
+16:55:51.718 [ghost 3] 296.02 2091.85 26.53 riding=True
+16:55:51.718 [ghost 3] 296.36 2091.59 26.51 riding=True
+16:55:51.890 [ghost 3] 296.71 2091.35 26.46 riding=True
+16:55:51.890 [ghost 3] 297.07 2091.11 26.38 riding=True
+16:55:51.890 [ghost 3] 297.45 2090.86 26.31 riding=True
+16:55:52.101 [appearance] retry equip a363573e-57dd-4eda-9b44-d9d9ddf47a5d on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:52.118 [ghost 3] 297.83 2090.63 26.27 riding=True
+16:55:52.118 [ghost 3] 298.21 2090.40 26.28 riding=True
+16:55:52.118 [ghost 3] 298.77 2090.05 26.33 riding=True
+16:55:52.118 [ghost 3] 298.94 2089.94 26.35 riding=True
+16:55:52.334 [ghost 3] 299.26 2089.70 26.37 riding=True
+16:55:52.334 [ghost 3] 299.59 2089.48 26.34 riding=True
+16:55:52.334 [ghost 3] 299.92 2089.26 26.28 riding=True
+16:55:52.554 [ghost 3] 300.29 2089.03 26.20 riding=True
+16:55:52.554 [ghost 3] 300.47 2088.91 26.17 riding=True
+16:55:52.554 [ghost 3] 300.85 2088.68 26.13 riding=True
+16:55:52.554 [ghost 3] 301.24 2088.44 26.15 riding=True
+16:55:52.765 [ghost 3] 301.62 2088.20 26.18 riding=True
+16:55:52.765 [ghost 3] 301.98 2087.96 26.21 riding=True
+16:55:52.765 [ghost 3] 302.31 2087.72 26.22 riding=True
+16:55:52.765 [ghost 3] 302.63 2087.50 26.18 riding=True
+16:55:52.901 [appearance] retry equip 4835b390-05a4-42d8-a77d-d4fb30ea03d9 on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:52.981 [ghost 3] 302.96 2087.27 26.13 riding=True
+16:55:52.981 [ghost 3] 303.30 2087.04 26.07 riding=True
+16:55:52.981 [ghost 3] 303.67 2086.78 26.01 riding=True
+16:55:53.200 [ghost 3] 303.86 2086.66 26.00 riding=True
+16:55:53.200 [ghost 3] 304.24 2086.43 26.02 riding=True
+16:55:53.200 [ghost 3] 304.63 2086.20 26.08 riding=True
+16:55:53.200 [ghost 3] 304.99 2085.97 26.12 riding=True
+16:55:53.211 [ping] 0 ms
+16:55:53.413 [ghost 3] 305.31 2085.72 26.11 riding=True
+16:55:53.413 [ghost 3] 305.65 2085.48 26.06 riding=True
+16:55:53.413 [ghost 3] 306.00 2085.22 25.98 riding=True
+16:55:53.633 [ghost 3] 306.39 2084.94 25.92 riding=True
+16:55:53.633 [ghost 3] 306.58 2084.79 25.90 riding=True
+16:55:53.633 [ghost 3] 306.95 2084.52 25.88 riding=True
+16:55:53.633 [ghost 3] 307.33 2084.27 25.89 riding=True
+16:55:53.708 [appearance] retry equip 1113ab25-a055-478e-b0c9-42b5d0cb2c6d on kcd2mp_3 failed: The request was canceled due to the configured HttpClient.Timeout of 0.8 seconds elapsing.
+16:55:53.803 [ghost 3] 307.83 2083.89 25.94 riding=True
+16:55:53.803 [ghost 3] 307.98 2083.76 25.94 riding=True
+16:55:53.803 [ghost 3] 308.29 2083.52 25.92 riding=True

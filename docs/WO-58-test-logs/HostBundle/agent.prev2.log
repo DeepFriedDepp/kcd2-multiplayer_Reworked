@@ -1,0 +1,304 @@
+16:43:54.761 [log] agent output tee -> C:\Users\HostUser\AppData\Local\KCDMP\agent.log
+16:43:54.778 [KcdLog] kcd.log = D:\SteamLibrary\steamapps\common\KCD2Mod\kcd.log
+16:43:54.779 [KcdLog] Found Steam name: HostNick
+16:43:54.780 === KCD2 Multiplayer Client Agent ===
+16:43:54.780 Server   : 127.0.0.1:7778
+16:43:54.780 Name     : HostNick
+16:43:54.780 Game     : http://localhost:1403
+16:43:54.780 Voice    : on
+16:43:54.780 Protocol : v6
+
+16:43:54.798 [discord] Initialize() returned True, IsInitialized=True
+16:43:54.798 [discord] SetPresence details='Connecting...' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:43:54.803 Waiting for game to load a save...
+16:43:54.874 [swingcatalog] loaded D:\SteamLibrary\steamapps\common\KCD2Mod\Data\Tables.pak: 675 melee items, explicit rows for [longsword,halberd,unarmed], 12 group rows
+16:43:55.911 [discord] ready, connected as HostDiscordUser
+16:43:56.934 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:43:56.934 ERR : Object reference not set to an instance of an object.
+16:43:56.939 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:43:58.626 Game ready!
+16:43:58.636 [transport] waiting for the mod's state emitter (kcd.log)...
+16:43:59.540 [transport] kcd-log-tail — 0 round trips per state read
+16:43:59.547 Connecting to relay server 127.0.0.1:7778...
+16:43:59.551 Connected! Assigned id=8 (protocol v6)
+
+16:43:59.551 [discord] SetPresence details='Playing' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:43:59.561 [dice-ipc] Listening on http://localhost:5901/ for the launcher.
+16:43:59.563 [version-ipc] Listening on http://localhost:5902/ for the launcher.
+16:43:59.683 [voice] Started  16kHz mono PCM  frame=640B  range=20m
+16:43:59.686 [combat] connected to KCDMP.dll
+16:43:59.696 [name] ghost 6 = JoinerNick
+16:43:59.696 [version] ghost 6 is on release 0.17.1
+16:43:59.709 [vitals] sent health=100.0 stamina=126.7 flags=0
+16:43:59.713 [pos] 2343.5 2118.8 115.0  rot=2.58  riding=False  read=0ms
+16:43:59.726 [appearance] sent 7 item class(es)
+16:43:59.865 [horse] sent mount identity '(none)'
+16:44:00.962 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:44:00.962 ERR : Object reference not set to an instance of an object.
+16:44:00.963 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:44:01.256 [stat] avg read=0ms over 100 ticks
+16:44:01.706 [ping] 5 ms
+16:44:02.793 [stat] avg read=0ms over 200 ticks
+16:44:03.717 [ping] 0 ms
+16:44:04.349 [stat] avg read=0ms over 300 ticks
+16:44:05.722 [ping] 0 ms
+16:44:05.901 [stat] avg read=0ms over 400 ticks
+16:44:07.452 [stat] avg read=0ms over 500 ticks
+16:44:07.722 [ping] 0 ms
+16:44:08.988 [stat] avg read=0ms over 600 ticks
+16:44:09.725 [ping] 0 ms
+16:44:10.587 [stat] avg read=0ms over 700 ticks
+16:44:11.745 [ping] 4 ms
+16:44:12.218 [stat] avg read=0ms over 800 ticks
+16:44:12.433 [weather] applying profile 'cloudless_sunny_B' blend=30
+16:44:13.742 [ping] 0 ms
+16:44:13.786 [stat] avg read=0ms over 900 ticks
+16:44:15.309 [stat] avg read=0ms over 1000 ticks
+16:44:15.745 [ping] 1 ms
+16:44:16.853 [stat] avg read=0ms over 1100 ticks
+16:44:17.750 [ping] 0 ms
+16:44:18.395 [stat] avg read=0ms over 1200 ticks
+16:44:19.753 [ping] 0 ms
+16:44:19.966 [stat] avg read=0ms over 1300 ticks
+16:44:21.490 [stat] avg read=0ms over 1400 ticks
+16:44:21.753 [ping] 0 ms
+16:44:23.052 [stat] avg read=0ms over 1500 ticks
+16:44:23.764 [ping] 0 ms
+16:44:24.612 [stat] avg read=0ms over 1600 ticks
+16:44:25.773 [ping] 0 ms
+16:44:26.160 [stat] avg read=0ms over 1700 ticks
+16:44:27.307 [pos] 2343.5 2118.8 115.0  rot=2.83  riding=False  read=0ms
+16:44:27.369 [pos] 2343.5 2118.8 115.0  rot=2.91  riding=False  read=0ms
+16:44:27.463 [pos] 2343.5 2118.8 115.0  rot=2.87  riding=False  read=0ms
+16:44:27.540 [pos] 2343.5 2118.8 115.0  rot=2.69  riding=False  read=0ms
+16:44:27.603 [pos] 2343.5 2118.8 115.0  rot=2.63  riding=False  read=0ms
+16:44:27.645 [pos] 2343.5 2118.8 115.0  rot=2.52  riding=False  read=0ms
+16:44:27.710 [pos] 2343.5 2118.8 115.0  rot=2.33  riding=False  read=0ms
+16:44:27.711 [stat] avg read=0ms over 1800 ticks
+16:44:27.764 [pos] 2343.5 2118.8 115.0  rot=1.93  riding=False  read=0ms
+16:44:27.789 [ping] 0 ms
+16:44:27.833 [pos] 2343.5 2118.8 115.0  rot=1.90  riding=False  read=0ms
+16:44:29.193 [pos] 2343.5 2118.8 115.0  rot=1.88  riding=False  read=0ms
+16:44:29.272 [stat] avg read=0ms over 1900 ticks
+16:44:29.285 [pos] 2343.5 2118.8 115.0  rot=1.85  riding=False  read=0ms
+16:44:29.516 [pos] 2343.5 2118.8 115.0  rot=1.82  riding=False  read=0ms
+16:44:29.563 [pos] 2343.5 2118.8 115.0  rot=1.79  riding=False  read=0ms
+16:44:29.622 [pos] 2343.5 2118.8 115.0  rot=1.76  riding=False  read=0ms
+16:44:29.668 [pos] 2343.5 2118.8 115.0  rot=1.74  riding=False  read=0ms
+16:44:29.792 [ping] 0 ms
+16:44:29.887 [pos] 2343.5 2118.8 115.0  rot=1.69  riding=False  read=0ms
+16:44:30.019 [appearance] sent 7 item class(es) (heartbeat)
+16:44:30.818 [stat] avg read=0ms over 2000 ticks
+16:44:31.801 [ping] 1 ms
+16:44:32.336 [stat] avg read=0ms over 2100 ticks
+16:44:33.813 [ping] 0 ms
+16:44:33.858 [stat] avg read=0ms over 2200 ticks
+16:44:35.405 [stat] avg read=0ms over 2300 ticks
+16:44:35.820 [ping] 0 ms
+16:44:36.953 [stat] avg read=0ms over 2400 ticks
+16:44:37.833 [ping] 0 ms
+16:44:38.507 [stat] avg read=0ms over 2500 ticks
+16:44:39.835 [ping] 0 ms
+16:44:40.052 [stat] avg read=0ms over 2600 ticks
+16:44:41.590 [stat] avg read=0ms over 2700 ticks
+16:44:41.837 [ping] 0 ms
+16:44:43.152 [stat] avg read=0ms over 2800 ticks
+16:44:43.841 [ping] 0 ms
+16:44:44.655 [stat] avg read=0ms over 2900 ticks
+16:44:45.844 [ping] 0 ms
+16:44:46.217 [stat] avg read=0ms over 3000 ticks
+16:44:47.012 [pos] 2343.5 2118.8 115.0  rot=1.52  riding=False  read=0ms
+16:44:47.077 [pos] 2343.5 2118.8 115.0  rot=0.71  riding=False  read=0ms
+16:44:47.119 [pos] 2343.5 2118.8 115.0  rot=-0.48  riding=False  read=0ms
+16:44:47.179 [pos] 2343.5 2118.8 115.0  rot=-0.91  riding=False  read=0ms
+16:44:47.214 [pos] 2343.5 2118.8 115.0  rot=-1.29  riding=False  read=0ms
+16:44:47.286 [pos] 2343.5 2118.8 115.0  rot=-1.64  riding=False  read=0ms
+16:44:47.398 [pos] 2343.5 2118.8 115.0  rot=-1.51  riding=False  read=0ms
+16:44:47.459 [pos] 2343.5 2118.8 115.0  rot=-0.87  riding=False  read=0ms
+16:44:47.500 [pos] 2343.5 2118.8 115.0  rot=-0.30  riding=False  read=0ms
+16:44:47.567 [pos] 2343.5 2118.8 115.0  rot=-0.24  riding=False  read=0ms
+16:44:47.736 [stat] avg read=0ms over 3100 ticks
+16:44:47.845 [ping] 0 ms
+16:44:49.287 [stat] avg read=0ms over 3200 ticks
+16:44:49.845 [ping] 0 ms
+16:44:50.831 [stat] avg read=0ms over 3300 ticks
+16:44:51.852 [ping] 0 ms
+16:44:52.388 [stat] avg read=0ms over 3400 ticks
+16:44:53.857 [ping] 0 ms
+16:44:53.947 [stat] avg read=0ms over 3500 ticks
+16:44:55.472 [stat] avg read=0ms over 3600 ticks
+16:44:55.857 [ping] 0 ms
+16:44:57.008 [stat] avg read=0ms over 3700 ticks
+16:44:57.865 [ping] 0 ms
+16:44:58.664 [stat] avg read=0ms over 3800 ticks
+16:44:59.813 [pause] local state -> entered
+16:44:59.814 [menu] local menu open -- pumping interp tick
+16:44:59.873 [ping] 0 ms
+16:45:00.194 [stat] avg read=0ms over 3900 ticks
+16:45:00.266 [appearance] sent 7 item class(es) (heartbeat)
+16:45:01.756 [combat] pipe reader exited
+16:45:01.886 [ping] 0 ms
+16:45:02.396 [menu] local menu closed -- pumped 145 frames in 2.6s (56.2 Hz)
+16:45:02.534 [stat] avg read=0ms over 4000 ticks
+16:45:03.900 [ping] 0 ms
+16:45:05.693 [stat] avg read=0ms over 4100 ticks
+16:45:05.911 [ping] 0 ms
+16:45:07.911 [ping] 0 ms
+16:45:08.852 [stat] avg read=0ms over 4200 ticks
+16:45:09.920 [ping] 0 ms
+16:45:11.934 [ping] 0 ms
+16:45:12.814 [stat] avg read=0ms over 4300 ticks
+16:45:13.936 [ping] 0 ms
+16:45:15.158 [stat] avg read=0ms over 4400 ticks
+16:45:15.937 [ping] 0 ms
+16:45:17.938 [ping] 0 ms
+16:45:18.321 [stat] avg read=0ms over 4500 ticks
+16:45:19.945 [ping] 0 ms
+16:45:21.488 [stat] avg read=0ms over 4600 ticks
+16:45:21.953 [ping] 0 ms
+16:45:23.849 [stat] avg read=0ms over 4700 ticks
+16:45:23.958 [ping] 0 ms
+16:45:25.970 [ping] 0 ms
+16:45:27.806 [stat] avg read=0ms over 4800 ticks
+16:45:27.977 [ping] 0 ms
+16:45:29.991 [ping] 0 ms
+16:45:30.966 [stat] avg read=0ms over 4900 ticks
+16:45:31.992 [ping] 0 ms
+16:45:34.006 [ping] 0 ms
+16:45:34.130 [stat] avg read=0ms over 5000 ticks
+16:45:36.008 [ping] 0 ms
+16:45:37.289 [stat] avg read=0ms over 5100 ticks
+16:45:38.016 [ping] 0 ms
+16:45:39.640 [stat] avg read=0ms over 5200 ticks
+16:45:40.028 [ping] 0 ms
+16:45:42.041 [ping] 0 ms
+16:45:43.600 [stat] avg read=0ms over 5300 ticks
+16:45:44.050 [ping] 0 ms
+16:45:45.960 [stat] avg read=0ms over 5400 ticks
+16:45:46.053 [ping] 0 ms
+16:45:48.066 [ping] 0 ms
+16:45:49.929 [stat] avg read=0ms over 5500 ticks
+16:45:50.069 [ping] 0 ms
+16:45:52.082 [ping] 0 ms
+16:45:53.086 [stat] avg read=0ms over 5600 ticks
+16:45:54.092 [ping] 0 ms
+16:45:55.439 [stat] avg read=0ms over 5700 ticks
+16:45:56.104 [ping] 0 ms
+16:45:58.117 [ping] 0 ms
+16:45:59.401 [stat] avg read=0ms over 5800 ticks
+16:46:00.128 [ping] 0 ms
+16:46:01.749 [stat] avg read=0ms over 5900 ticks
+16:46:02.137 [ping] 0 ms
+16:46:04.151 [ping] 0 ms
+16:46:04.910 [stat] avg read=0ms over 6000 ticks
+16:46:06.152 [ping] 0 ms
+16:46:08.076 [stat] avg read=0ms over 6100 ticks
+16:46:08.154 [ping] 0 ms
+16:46:10.161 [ping] 0 ms
+16:46:11.226 [stat] avg read=0ms over 6200 ticks
+16:46:12.176 [ping] 0 ms
+16:46:14.181 [ping] 0 ms
+16:46:15.191 [stat] avg read=0ms over 6300 ticks
+16:46:16.189 [ping] 0 ms
+16:46:17.556 [stat] avg read=0ms over 6400 ticks
+16:46:18.196 [ping] 0 ms
+16:46:20.210 [ping] 0 ms
+16:46:20.718 [stat] avg read=0ms over 6500 ticks
+16:46:22.222 [ping] 0 ms
+16:46:23.884 [stat] avg read=0ms over 6600 ticks
+16:46:24.225 [ping] 0 ms
+16:46:26.234 [stat] avg read=0ms over 6700 ticks
+16:46:26.234 [ping] 0 ms
+16:46:28.239 [ping] 0 ms
+16:46:29.183 [stat] avg read=0ms over 6800 ticks
+16:46:30.247 [ping] 0 ms
+16:46:30.742 [stat] avg read=0ms over 6900 ticks
+16:46:32.252 [ping] 0 ms
+16:46:32.320 [stat] avg read=0ms over 7000 ticks
+16:46:32.406 [timeskip] clock went backward (569941 -> 0) -- save reload detected
+16:46:32.409 [timeskip] reload: no live peers -- leaving the reloaded clock alone
+16:46:33.885 [stat] avg read=0ms over 7100 ticks
+16:46:34.253 [ping] 0 ms
+16:46:36.248 [stat] avg read=0ms over 7200 ticks
+16:46:36.264 [ping] 0 ms
+16:46:38.273 [ping] 0 ms
+16:46:40.212 [stat] avg read=0ms over 7300 ticks
+16:46:40.274 [ping] 0 ms
+16:46:42.276 [ping] 0 ms
+16:46:43.378 [stat] avg read=0ms over 7400 ticks
+16:46:44.283 [ping] 0 ms
+16:46:46.290 [ping] 0 ms
+16:46:46.582 [stat] avg read=0ms over 7500 ticks
+16:46:48.292 [ping] 0 ms
+16:46:49.744 [stat] avg read=0ms over 7600 ticks
+16:46:50.301 [ping] 0 ms
+16:46:52.093 [stat] avg read=0ms over 7700 ticks
+16:46:52.310 [ping] 0 ms
+16:46:54.314 [ping] 0 ms
+16:46:56.068 [stat] avg read=0ms over 7800 ticks
+16:46:56.319 [ping] 0 ms
+16:46:58.327 [ping] 0 ms
+16:46:59.245 [stat] avg read=0ms over 7900 ticks
+16:47:00.332 [ping] 0 ms
+16:47:02.337 [ping] 0 ms
+16:47:02.413 [stat] avg read=0ms over 8000 ticks
+16:47:03.987 [timeskip] clock jumping (0 -> 118800); waiting for it to settle
+16:47:04.342 [ping] 0 ms
+16:47:04.976 [stat] avg read=0ms over 8100 ticks
+16:47:06.346 [ping] 0 ms
+16:47:07.340 [stat] avg read=0ms over 8200 ticks
+16:47:08.351 [ping] 0 ms
+16:47:10.357 [ping] 0 ms
+16:47:11.325 [stat] avg read=0ms over 8300 ticks
+16:47:12.364 [ping] 0 ms
+16:47:13.686 [stat] avg read=0ms over 8400 ticks
+16:47:14.372 [ping] 0 ms
+16:47:16.378 [ping] 0 ms
+16:47:16.855 [stat] avg read=0ms over 8500 ticks
+16:47:18.390 [ping] 0 ms
+16:47:20.018 [stat] avg read=0ms over 8600 ticks
+16:47:20.395 [ping] 0 ms
+16:47:22.392 [stat] avg read=0ms over 8700 ticks
+16:47:22.407 [ping] 0 ms
+16:47:24.416 [ping] 0 ms
+16:47:26.377 [stat] avg read=0ms over 8800 ticks
+16:47:26.423 [ping] 0 ms
+16:47:28.429 [ping] 0 ms
+16:47:28.495 [stat] avg read=0ms over 8900 ticks
+16:47:29.567 [appearance] sent 7 item class(es) (heartbeat)
+16:47:30.070 [stat] avg read=0ms over 9000 ticks
+16:47:30.158 [vitals] sent health=100.0 stamina=112.6 flags=0
+16:47:30.158 [pos] 2340.1 2080.8 110.7  rot=1.46  riding=False  read=0ms
+16:47:30.304 [horse] sent mount identity '(none)'
+16:47:30.418 [vitals] sent health=100.0 stamina=114.4 flags=0
+16:47:30.433 [ping] 0 ms
+16:47:30.684 [vitals] sent health=100.0 stamina=115.9 flags=0
+16:47:30.946 [vitals] sent health=100.0 stamina=116.9 flags=0
+16:47:31.595 [vitals] sent health=100.0 stamina=117.9 flags=0
+16:47:31.625 [stat] avg read=0ms over 9100 ticks
+16:47:31.860 [vitals] sent health=100.0 stamina=123.8 flags=0
+16:47:32.124 [vitals] sent health=100.0 stamina=126.7 flags=0
+16:47:32.448 [ping] 0 ms
+16:47:33.222 [stat] avg read=0ms over 9200 ticks
+16:47:34.448 [ping] 0 ms
+16:47:34.827 [pos] 2340.1 2080.8 110.7  rot=1.41  riding=False  read=0ms
+16:47:34.838 [stat] avg read=0ms over 9300 ticks
+16:47:34.869 [pos] 2340.1 2080.8 110.7  rot=0.97  riding=False  read=0ms
+16:47:34.914 [pos] 2340.1 2080.8 110.7  rot=0.55  riding=False  read=0ms
+16:47:34.976 [pos] 2340.1 2080.8 110.7  rot=-0.35  riding=False  read=0ms
+16:47:35.023 [pos] 2340.1 2080.8 110.7  rot=-0.39  riding=False  read=0ms
+16:47:35.086 [pos] 2340.1 2080.8 110.7  rot=-0.45  riding=False  read=0ms
+16:47:35.148 [pos] 2340.1 2080.8 110.7  rot=-0.69  riding=False  read=0ms
+16:47:35.194 [pos] 2340.1 2080.8 110.7  rot=-0.82  riding=False  read=0ms
+16:47:36.388 [stat] avg read=0ms over 9400 ticks
+16:47:36.450 [ping] 0 ms
+16:47:37.953 [stat] avg read=0ms over 9500 ticks
+16:47:38.452 [ping] 0 ms

@@ -1,0 +1,82 @@
+2026-08-24 08:03:54.262 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 08:03:55.480 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 08:03:56.535 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 15656)
+2026-08-24 08:03:57.813 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 08:05:13.014 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 08:05:30.311 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 08:05:30.830 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 08:05:31.848 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 18576)
+2026-08-24 08:05:32.439 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 08:36:58.572 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 08:36:59.283 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 08:36:59.602 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 08:37:00.651 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 19116)
+2026-08-24 08:37:01.925 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 09:18:41.367 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 09:19:04.917 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 09:19:05.523 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 09:19:05.825 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 09:19:06.842 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 13560)
+2026-08-24 09:19:07.423 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 09:22:30.082 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 09:23:13.469 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 09:23:13.953 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 09:23:13.973 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 09:23:14.997 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 19992)
+2026-08-24 09:23:15.577 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 11:04:29.079 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 11:04:29.665 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 11:04:29.685 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 11:04:30.740 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 15248)
+2026-08-24 11:04:31.320 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 11:28:10.037 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 13:42:51.427 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 13:42:52.236 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 13:42:52.256 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 13:42:53.270 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 14800)
+2026-08-24 13:42:53.861 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 13:46:37.306 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 13:46:37.981 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 13:46:38.043 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 13:46:39.092 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 7928)
+2026-08-24 13:46:40.394 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 14:01:28.855 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 14:30:01.227 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 14:30:01.777 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 14:30:01.799 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 14:30:02.818 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 8496)
+2026-08-24 14:30:03.409 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 14:38:49.203 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 14:43:20.614 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 14:43:21.256 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 14:43:21.280 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 14:43:22.327 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 22028)
+2026-08-24 14:43:22.924 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 15:13:40.257 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 15:13:47.793 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 15:13:48.335 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 15:13:48.357 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 15:13:49.384 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 14652)
+2026-08-24 15:13:49.979 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 15:20:43.445 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 15:30:23.588 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 15:30:24.153 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 15:30:24.177 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 15:30:25.225 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 14860)
+2026-08-24 15:30:25.813 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 15:34:56.667 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 15:36:14.832 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 15:36:15.352 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 15:36:15.372 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 15:36:16.384 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 14492)
+2026-08-24 15:36:16.967 -07:00 [INF] Master server is up on port 5100.
+2026-08-24 15:39:08.103 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-24 15:41:05.690 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 15:41:06.286 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 15:41:06.309 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 15:41:06.380 -07:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-24 17:50:01.111 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-24 17:50:01.629 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-24 17:50:01.649 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-24 17:50:01.698 -07:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-24 17:50:14.635 -07:00 [INF] === Launcher exiting (clean) ===

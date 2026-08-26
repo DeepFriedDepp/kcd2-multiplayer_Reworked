@@ -1,0 +1,42 @@
+2026-08-25 09:17:55.573 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 09:17:56.870 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 09:17:57.180 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 09:17:58.226 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 3432)
+2026-08-25 09:17:59.530 -07:00 [INF] Master server is up on port 5100.
+2026-08-25 11:12:22.989 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 11:12:23.565 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 11:12:23.585 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 11:12:24.605 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 17176)
+2026-08-25 11:12:25.198 -07:00 [INF] Master server is up on port 5100.
+2026-08-25 11:12:39.407 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-25 11:27:01.793 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 11:27:02.439 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 11:27:02.462 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 11:27:02.526 -07:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-25 11:33:15.978 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-25 11:58:00.657 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 11:58:01.299 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 11:58:01.320 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 11:58:02.363 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 17580)
+2026-08-25 11:58:02.947 -07:00 [INF] Master server is up on port 5100.
+2026-08-25 12:02:48.780 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 12:02:49.411 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 12:02:49.437 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 12:02:50.450 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 15784)
+2026-08-25 12:02:51.073 -07:00 [INF] Master server is up on port 5100.
+2026-08-25 12:25:59.586 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-25 16:11:54.414 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 16:11:55.604 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 16:11:55.637 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 16:11:56.688 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 21952)
+2026-08-25 16:11:57.286 -07:00 [INF] Master server is up on port 5100.
+2026-08-25 16:41:44.152 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 16:41:44.817 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 16:41:44.840 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 16:41:44.889 -07:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-25 16:49:33.204 -07:00 [INF] === Launcher exiting (clean) ===
+2026-08-25 16:49:46.193 -07:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-25 16:49:46.785 -07:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-25 16:49:46.809 -07:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-25 16:49:47.823 -07:00 [INF] Starting local master server: C:\Users\HostUser\AppData\Local\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 17936)
+2026-08-25 16:49:48.419 -07:00 [INF] Master server is up on port 5100.

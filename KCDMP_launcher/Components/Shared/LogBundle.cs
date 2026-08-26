@@ -64,13 +64,42 @@ namespace KCDMP_launcher.Components.Shared
                 }
             }
 
-            AddIfPresent(FindKcdLog(gameRoot), "kcd.log");
+            string? kcdLog = FindKcdLog(gameRoot);
+            AddIfPresent(kcdLog, "kcd.log");
+
+            // WO-58: the two files this bundle was missing when it mattered.
+            // The 2026-08-25 host freeze was only diagnosable because the
+            // native mirror log and the engine's own kcd.log backup happened
+            // to survive on disk -- neither was in any exported bundle.
+            // kcdmp-native.mirror.log lives in the game root (next to
+            // kcd.log, see native/KCDMP/log.h), and CryEngine rotates the
+            // PREVIOUS run's kcd.log into logbackups\ -- which is the run a
+            // tester is usually reporting about, since they collect logs
+            // after restarting a crashed game.
+            if (kcdLog is not null)
+            {
+                string kcdDir = Path.GetDirectoryName(kcdLog) ?? "";
+                AddIfPresent(Path.Combine(kcdDir, "kcdmp-native.mirror.log"), "kcdmp-native.mirror.log");
+                try
+                {
+                    var backups = new DirectoryInfo(Path.Combine(kcdDir, "logbackups"))
+                        .GetFiles("*.log")
+                        .OrderByDescending(f => f.LastWriteTimeUtc)
+                        .Take(2);
+                    foreach (var b in backups)
+                        AddIfPresent(b.FullName, $"logbackups/{b.Name}");
+                }
+                catch { }
+            }
 
             if (!string.IsNullOrWhiteSpace(agentDirectory))
             {
                 AddIfPresent(Path.Combine(agentDirectory, "agent.log"), "agent.log");
                 AddIfPresent(Path.Combine(agentDirectory, "agent.prev.log"), "agent.prev.log");
                 AddIfPresent(Path.Combine(agentDirectory, "agent.prev2.log"), "agent.prev2.log");
+                // The primary native log sits beside the DLL, which ships in
+                // the same directory as the agent.
+                AddIfPresent(Path.Combine(agentDirectory, "kcdmp-native.log"), "kcdmp-native.log");
             }
 
             // Serilog's rolling file names are app<yyyyMMdd>.log; take the two

@@ -1,0 +1,12 @@
+2026-08-26 01:10:36.119 +02:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-26 01:10:36.821 +02:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-26 01:10:36.846 +02:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-26 01:10:37.907 +02:00 [INF] Starting local master server: X:\KCDMP\MasterServer\KcdMpMasterServer.exe (pid 4736)
+2026-08-26 01:10:38.492 +02:00 [INF] Master server is up on port 5100.
+2026-08-26 01:41:46.076 +02:00 [INF] === Launcher exiting (clean) ===
+2026-08-26 01:41:50.080 +02:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-26 01:41:50.675 +02:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-26 01:41:50.701 +02:00 [DBG] EnsureLocalMasterServerAsync: MasterServerUrl = "http://127.0.0.1:5100"
+2026-08-26 01:41:50.746 +02:00 [DBG] EnsureLocalMasterServerAsync: something is already answering on port 5100.
+2026-08-26 01:41:50.764 +02:00 [INF] Performing ping async for IP: host-dyndns.example
+2026-08-26 01:41:56.562 +02:00 [ERR] Failed to get info for server host-dyndns.example:5273 - The request was canceled due to the configured HttpClient.Timeout of 5 seconds elapsing.

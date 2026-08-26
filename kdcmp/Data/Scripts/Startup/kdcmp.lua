@@ -2857,8 +2857,37 @@ end
 
 -- Store name; if ghost already exists apply with short delay, else applied at spawn (1.5s).
 function KCD2MP_SetGhostName(id, name)
-    KCD2MP.ghostNames[id] = name
+    -- WO-58: the agent re-asserts names on a slow cadence (a mid-connection
+    -- game restart wipes this Lua state while the agent's relay session
+    -- lives on, and nothing else re-delivers the name). Make the repeat
+    -- call free: same name, already backfilled, correctly-keyed face --
+    -- nothing to do, no timer, no log line.
     local ghost = KCD2MP.ghosts[id]
+    if KCD2MP.ghostNames[id] == name and ghost and ghost.identity == name then
+        return
+    end
+    KCD2MP.ghostNames[id] = name
+    -- WO-58: a ghost that spawned before its nick arrived was face-picked
+    -- from the "Player<id>" fallback key -- wrong face, and (hash parity)
+    -- a coin-flip on gender: hash("Player1") is even, so that ghost spawns
+    -- as a woman regardless of who the player is. Live-hit twice in the
+    -- 2026-08-25/26 session (both joiner-side kcd.logs carry the "no Steam
+    -- nick yet" spawn). If the real name resolves to a different look,
+    -- remove the mispicked body; the next position packet respawns it
+    -- through the normal path, which now has the name.
+    if ghost and ghost.entity and ghost.identity == nil then
+        local rightPick = KCD2MP_PickFaceForPlayer(name)
+        local current = ghost.facePick
+        if not current or current.soulName ~= rightPick.soulName
+           or current.className ~= rightPick.className then
+            mp_log(string.format(
+                "SetGhostName: ghost %s wears the '%s' fallback face (%s) but '%s' resolves to %s -- respawning with the right one",
+                tostring(id), tostring(ghost.faceKey), tostring(current and current.soulName),
+                tostring(name), tostring(rightPick.soulName)))
+            KCD2MP_RemoveGhost(id)
+            return
+        end
+    end
     -- WO-27: a ghost that spawned before its nick arrived has identity=nil and
     -- could not be deduped. Backfill it now, and sweep any older ghost that
     -- turns out to belong to this same player, so the leak is closed even in
@@ -2947,6 +2976,31 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     if wantName and wantName ~= "" then
         local world = nil
         pcall(function() world = System.GetEntityByName(wantName) end)
+        -- WO-58: distance guard. The 2026-08-25 host freeze (16:55) is pinned
+        -- to this exact path: kcd.log's final line is MountNPCOnHorse for a
+        -- freshly-adopted world horse, the native sampler's per-frame log
+        -- stops on the same tick, and the game never ran another frame --
+        -- ForceMount hung the main thread. The adopted horse only has to
+        -- EXIST to pass GetEntityByName; in that session the same-named
+        -- horse lived in a different part of the host's world entirely
+        -- (the ghost spawned ~2 km from where the host was playing).
+        -- ForceMounting an NPC onto a far-away, unstreamed, AI-owned horse
+        -- was never live-tested before that moment and froze the engine on
+        -- its first execution. Adopt only a horse that is actually standing
+        -- near the ghost; anything else gets the proven proxy.
+        if world and tostring(world.class or "") == "Horse" then
+            local wpos = nil
+            pcall(function() wpos = world:GetWorldPos() end)
+            local dx = (wpos and wpos.x or 1e9) - x
+            local dy = (wpos and wpos.y or 1e9) - y
+            local distSq = dx * dx + dy * dy
+            if not wpos or distSq > (60 * 60) then
+                mp_log(string.format(
+                    "HorseAdopt: '%s' exists but is %s m away from the ghost -- proxy instead (WO-58 freeze guard) id=%s",
+                    wantName, wpos and string.format("%.0f", math.sqrt(distSq)) or "?", id))
+                world = nil
+            end
+        end
         if world and tostring(world.class or "") == "Horse" then
             KCD2MP.horseGhosts[id] = {
                 entity = world,
@@ -4863,7 +4917,57 @@ function KCD2MP_RemoveAllGhosts()
     for id, _ in pairs(KCD2MP.horseGhosts) do
         KCD2MP_RemoveHorse(id)
     end
+    KCD2MP_SweepStrayGhosts()
     System.LogAlways("[KCD2-MP] Removed " .. count .. " ghosts")
+end
+
+-- WO-58: remove ghost/horse bodies this Lua state does not know about.
+-- Ghosts are real world entities, so KCD2's own save system captures one
+-- standing nearby at save time exactly as it was. Reload that save in a
+-- LATER session (game restarted, or days later on a new mod version) and
+-- the embedded body is a stray: relay ids are per-connection, so the
+-- returning player almost never gets the same id back, which means
+-- SpawnGhost's own same-name preexisting check never fires and
+-- RemoveStaleGhostsForPlayer (which only walks the TRACKED table) never
+-- sees it. The stray stands there forever wearing whatever face the old
+-- session picked -- including an old fallback-keyed female body, which is
+-- exactly what a "player joined as the wrong gender" report looks like
+-- from across the room. Spawn names are "kcd2mp_<relayId>" and relay ids
+-- are single-byte and small in practice, so a bounded name probe finds
+-- every possible stray cheaply. Untracked proxies only: a name the live
+-- tables own is left alone, and adopted world horses are real local
+-- content that is never removed by name.
+function KCD2MP_SweepStrayGhosts()
+    local swept = 0
+    for i = 0, 31 do
+        local sid = tostring(i)
+        local gname = "kcd2mp_" .. sid
+        local tracked = KCD2MP.ghosts[sid] or KCD2MP.ghosts[i]
+        if not tracked then
+            local stray = nil
+            pcall(function() stray = System.GetEntityByName(gname) end)
+            if stray then
+                mp_log("SweepStrayGhosts: untracked " .. gname .. " in the world (save-embedded or leaked) -- removing")
+                mp_remove_entity_verified(stray.id, gname, gname)
+                swept = swept + 1
+            end
+        end
+        local hname = "kcd2mp_horse_" .. sid
+        local htracked = KCD2MP.horseGhosts[sid] or KCD2MP.horseGhosts[i]
+        if not htracked then
+            local strayH = nil
+            pcall(function() strayH = System.GetEntityByName(hname) end)
+            if strayH then
+                mp_log("SweepStrayGhosts: untracked " .. hname .. " in the world -- removing")
+                pcall(function() System.RemoveEntity(strayH.id) end)
+                swept = swept + 1
+            end
+        end
+    end
+    if swept > 0 then
+        mp_log("SweepStrayGhosts: removed " .. swept .. " stray bodies")
+    end
+    return swept
 end
 
 -- ===== Start / Stop =====

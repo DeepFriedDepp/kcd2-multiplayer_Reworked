@@ -1,0 +1,86 @@
+2026-08-22 02:47:21.450 +02:00 [INF] === Start KCD2 MP Launcher ===
+2026-08-22 02:47:23.349 +02:00 [DBG] Initializing root component 0 (KCDMP_launcher.App)
+2026-08-22 02:47:23.353 +02:00 [DBG] Rendering component 0 of type KCDMP_launcher.App
+2026-08-22 02:47:23.357 +02:00 [DBG] Initializing component 1 (Microsoft.AspNetCore.Components.Routing.Router) as child of 0 (KCDMP_launcher.App)
+2026-08-22 02:47:23.365 +02:00 [DBG] Request successfully matched the route with name 'null' and template '/'
+2026-08-22 02:47:23.368 +02:00 [DBG] Navigating to component KCDMP_launcher.Pages.Home in response to path '/' with base URI 'http://localhost/'
+2026-08-22 02:47:23.369 +02:00 [DBG] Rendering component 1 of type Microsoft.AspNetCore.Components.Routing.Router
+2026-08-22 02:47:23.370 +02:00 [DBG] Initializing component 2 (Microsoft.AspNetCore.Components.RouteView) as child of 1 (Microsoft.AspNetCore.Components.Routing.Router)
+2026-08-22 02:47:23.370 +02:00 [DBG] Rendering component 2 of type Microsoft.AspNetCore.Components.RouteView
+2026-08-22 02:47:23.370 +02:00 [DBG] Initializing component 3 (Microsoft.AspNetCore.Components.LayoutView) as child of 2 (Microsoft.AspNetCore.Components.RouteView)
+2026-08-22 02:47:23.370 +02:00 [DBG] Rendering component 3 of type Microsoft.AspNetCore.Components.LayoutView
+2026-08-22 02:47:23.578 +02:00 [DBG] Initializing component 4 (KCDMP_launcher.Pages.Home) as child of 3 (Microsoft.AspNetCore.Components.LayoutView)
+2026-08-22 02:47:23.666 +02:00 [DBG] Rendering component 4 of type KCDMP_launcher.Pages.Home
+2026-08-22 02:47:23.796 +02:00 [DBG] Initializing component 5 (KCDMP_launcher.Components.FilterSidebar) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.797 +02:00 [DBG] Initializing component 6 (KCDMP_launcher.Components.ServerList) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.797 +02:00 [DBG] Initializing component 7 (KCDMP_launcher.Components.StatusBar) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.798 +02:00 [DBG] Initializing component 8 (KCDMP_launcher.Components.Modals.HostInfoModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.798 +02:00 [DBG] Initializing component 9 (KCDMP_launcher.Components.Modals.ExitModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.799 +02:00 [DBG] Initializing component 10 (KCDMP_launcher.Components.Modals.SettingsModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.799 +02:00 [DBG] Initializing component 11 (KCDMP_launcher.Components.Modals.AddServerModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.799 +02:00 [DBG] Initializing component 12 (KCDMP_launcher.Components.Modals.ReportBugModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.799 +02:00 [DBG] Initializing component 13 (KCDMP_launcher.Components.Modals.VersionMismatchModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.800 +02:00 [DBG] Initializing component 14 (KCDMP_launcher.Components.Modals.ErrorModal) as child of 4 (KCDMP_launcher.Pages.Home)
+2026-08-22 02:47:23.800 +02:00 [DBG] Rendering component 5 of type KCDMP_launcher.Components.FilterSidebar
+2026-08-22 02:47:23.801 +02:00 [DBG] Rendering component 6 of type KCDMP_launcher.Components.ServerList
+2026-08-22 02:47:23.802 +02:00 [DBG] Rendering component 7 of type KCDMP_launcher.Components.StatusBar
+2026-08-22 02:47:23.803 +02:00 [DBG] Rendering component 8 of type KCDMP_launcher.Components.Modals.HostInfoModal
+2026-08-22 02:47:23.803 +02:00 [DBG] Rendering component 9 of type KCDMP_launcher.Components.Modals.ExitModal
+2026-08-22 02:47:23.803 +02:00 [DBG] Rendering component 10 of type KCDMP_launcher.Components.Modals.SettingsModal
+2026-08-22 02:47:23.804 +02:00 [DBG] Rendering component 11 of type KCDMP_launcher.Components.Modals.AddServerModal
+2026-08-22 02:47:23.804 +02:00 [DBG] Rendering component 12 of type KCDMP_launcher.Components.Modals.ReportBugModal
+2026-08-22 02:47:23.804 +02:00 [DBG] Rendering component 13 of type KCDMP_launcher.Components.Modals.VersionMismatchModal
+2026-08-22 02:47:23.805 +02:00 [DBG] Rendering component 14 of type KCDMP_launcher.Components.Modals.ErrorModal
+2026-08-22 02:47:27.905 +02:00 [ERR] Could not connect to Master Server!
+System.Net.Http.HttpRequestException: Nemohlo být vytvořeno žádné připojení, protože cílový počítač je aktivně odmítl. (localhost:5000)
+ ---> System.Net.Sockets.SocketException (10061): Nemohlo být vytvořeno žádné připojení, protože cílový počítač je aktivně odmítl.
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource.GetResult(Int16 token)
+   at System.Net.Sockets.Socket.<ConnectAsync>g__WaitForConnectWithCancellation|285_0(AwaitableSocketAsyncEventArgs saea, ValueTask connectTask, CancellationToken cancellationToken)
+   at System.Net.Http.HttpConnectionPool.ConnectToTcpHostAsync(String host, Int32 port, HttpRequestMessage initialRequest, Boolean async, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at System.Net.Http.HttpConnectionPool.ConnectToTcpHostAsync(String host, Int32 port, HttpRequestMessage initialRequest, Boolean async, CancellationToken cancellationToken)
+   at System.Net.Http.HttpConnectionPool.ConnectAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+   at System.Net.Http.HttpConnectionPool.CreateHttp11ConnectionAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+   at System.Net.Http.HttpConnectionPool.AddHttp11ConnectionAsync(QueueItem queueItem)
+   at System.Threading.Tasks.TaskCompletionSourceWithCancellation`1.WaitWithCancellationAsync(CancellationToken cancellationToken)
+   at System.Net.Http.HttpConnectionPool.SendWithVersionDetectionAndRetryAsync(HttpRequestMessage request, Boolean async, Boolean doRequestAuth, CancellationToken cancellationToken)
+   at System.Net.Http.RedirectHandler.SendAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+   at System.Net.Http.HttpClient.<SendAsync>g__Core|83_0(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationTokenSource cts, Boolean disposeCts, CancellationTokenSource pendingRequestsCts, CancellationToken originalCancellationToken)
+   at System.Net.Http.Json.HttpClientJsonExtensions.<FromJsonAsyncCore>g__Core|12_0[TValue,TJsonOptions](HttpClient client, Task`1 responseTask, Boolean usingResponseHeadersRead, CancellationTokenSource linkedCTS, Func`4 deserializeMethod, TJsonOptions jsonOptions, CancellationToken cancellationToken)
+   at KCDMP_launcher.Services.NetService.GetServersFromMasterAsync(String masterUrl) in C:\Users\HostUser\Documents\KCD2_MP\KCDMP_launcher\Models\NetService.cs:line 108
+2026-08-22 02:47:28.108 +02:00 [DBG] Rendering component 14 of type KCDMP_launcher.Components.Modals.ErrorModal
+2026-08-22 02:47:28.108 +02:00 [DBG] Rendering component 4 of type KCDMP_launcher.Pages.Home
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 5 of type KCDMP_launcher.Components.FilterSidebar
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 6 of type KCDMP_launcher.Components.ServerList
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 7 of type KCDMP_launcher.Components.StatusBar
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 8 of type KCDMP_launcher.Components.Modals.HostInfoModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 9 of type KCDMP_launcher.Components.Modals.ExitModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 10 of type KCDMP_launcher.Components.Modals.SettingsModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 11 of type KCDMP_launcher.Components.Modals.AddServerModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 12 of type KCDMP_launcher.Components.Modals.ReportBugModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 13 of type KCDMP_launcher.Components.Modals.VersionMismatchModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 4 of type KCDMP_launcher.Pages.Home
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 5 of type KCDMP_launcher.Components.FilterSidebar
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 6 of type KCDMP_launcher.Components.ServerList
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 7 of type KCDMP_launcher.Components.StatusBar
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 8 of type KCDMP_launcher.Components.Modals.HostInfoModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 9 of type KCDMP_launcher.Components.Modals.ExitModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 10 of type KCDMP_launcher.Components.Modals.SettingsModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 11 of type KCDMP_launcher.Components.Modals.AddServerModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 12 of type KCDMP_launcher.Components.Modals.ReportBugModal
+2026-08-22 02:47:28.109 +02:00 [DBG] Rendering component 13 of type KCDMP_launcher.Components.Modals.VersionMismatchModal
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 4 of type KCDMP_launcher.Pages.Home
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 5 of type KCDMP_launcher.Components.FilterSidebar
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 6 of type KCDMP_launcher.Components.ServerList
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 7 of type KCDMP_launcher.Components.StatusBar
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 8 of type KCDMP_launcher.Components.Modals.HostInfoModal
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 9 of type KCDMP_launcher.Components.Modals.ExitModal
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 10 of type KCDMP_launcher.Components.Modals.SettingsModal
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 11 of type KCDMP_launcher.Components.Modals.AddServerModal
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 12 of type KCDMP_launcher.Components.Modals.ReportBugModal
+2026-08-22 02:47:28.110 +02:00 [DBG] Rendering component 13 of type KCDMP_launcher.Components.Modals.VersionMismatchModal
+2026-08-22 02:47:29.567 +02:00 [DBG] Handling event {"Id":5,"Name":"HandlingEvent"} of type 'MouseEventArgs'
+2026-08-22 02:47:29.569 +02:00 [DBG] Rendering component 14 of type KCDMP_launcher.Components.Modals.ErrorModal
+2026-08-22 02:47:29.782 +02:00 [DBG] Rendering component 14 of type KCDMP_launcher.Components.Modals.ErrorModal
+2026-08-22 02:47:29.784 +02:00 [DBG] Rendering component 14 of type KCDMP_launcher.Components.Modals.ErrorModal

@@ -134,6 +134,16 @@ public partial class GameBridge(ClientConfig config)
     private HashSet<Guid>? _lastSentAppearance;
     private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostAppearance = new();
     private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostKnownItemClasses = new();
+    // WO-58: item classes a ghost has proven it will never equip -- a full
+    // verify-and-retry schedule ran and the final read still lacked them.
+    // Without this, the failed class is dropped from `applied`, the next
+    // appearance heartbeat re-diffs it right back in, and the cycle repeats
+    // forever: the 2026-08-25 session shows the same 9 classes 404-ing
+    // through equip retries every ~30 s on BOTH machines for the entire
+    // session -- constant REST traffic into the game's main thread for
+    // items that will never take. One failed schedule is the retry budget;
+    // the set resets per ghost lifetime (disconnect/reconnect clears it).
+    private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostNeverEquips = new();
 
     // Set by the "appearance_sync" game event (mp_sync_appearance console
     // command) to force the next poll to send unconditionally, bypassing the
@@ -633,6 +643,7 @@ public partial class GameBridge(ClientConfig config)
         _lastSentAppearance = null;
         _ghostAppearance.Clear();
         _ghostKnownItemClasses.Clear();
+        _ghostNeverEquips.Clear();
         // WO-17: ghost ids are reassigned per relay connection; a cached
         // Guid or hold-timer from a previous session would point at nothing.
         // _aggroEnabled itself is a deliberate local user setting and
@@ -691,6 +702,17 @@ public partial class GameBridge(ClientConfig config)
         try { await ExecLuaAsync("if KCD2MP_StartInterp then KCD2MP_StartInterp() end"); }
         catch { /* ignore if mod not loaded yet */ }
 
+        // WO-58: clear any ghost bodies embedded in the loaded save. A save
+        // made with a peer's ghost standing nearby captures that entity like
+        // any other NPC; on a later session the relay hands out different
+        // ids, so nothing in the normal spawn path ever reclaims the old
+        // body -- it just stands there wearing the old session's face
+        // (which is what a "player joined as the wrong gender/face on an
+        // old save" report looks like). Once per connection, before any
+        // ghost of this session spawns.
+        try { await ExecLuaAsync("if KCD2MP_SweepStrayGhosts then KCD2MP_SweepStrayGhosts() end"); }
+        catch { }
+
         // Start voice chat — frames captured on background thread, queued, sent in main loop.
         // Left null when disabled, which also suppresses every _voice?. call below.
         if (config.VoiceChatEnabled)
@@ -720,7 +742,18 @@ public partial class GameBridge(ClientConfig config)
             // session, right before the global animation collapse. A hit that
             // moved no health and no stamina carries no information: drop it
             // here, before the wire.
-            if (health <= 0f && stamina <= 0f) return;
+            //
+            // WO-58: the exact-zero filter was not enough in the field. The
+            // 2026-08-25 session's joiner sent 1,972 hit messages in under
+            // four minutes -- all sub-0.05 hp contact-frame chips from an
+            // NPC-vs-NPC siege battle running in the joiner's own world --
+            // and every one cost the host a synchronous main-thread damage
+            // apply while it was fighting the same battle locally. Real
+            // player hits in that same log are 6.5-100 hp; the DLL hardcodes
+            // stamina to 0 on this path (pipe_server.cpp send_local_hit).
+            // Anything under half a hit point is sensor noise, not combat
+            // state worth a wire message and a peer-side game-thread apply.
+            if (health < 0.5f && stamina < 0.5f) return;
             try
             {
                 // WO-40 Phase 5: per-save guids are unreliable across
@@ -877,6 +910,21 @@ public partial class GameBridge(ClientConfig config)
                         // WO-48: the item-sync tick is a Script.SetTimer chain
                         // like the others and dies with them on a save load.
                         await ExecLuaAsync("if KCD2MP_StartItemSync then KCD2MP_StartItemSync() end");
+                        // WO-58: re-assert every known ghost name. A game
+                        // restart mid-connection wipes the mod's Lua state
+                        // while this agent's relay session lives on, and the
+                        // relay only sends Name packets once -- so every
+                        // ghost respawned into the fresh Lua was nameless
+                        // and face-picked from the "Player<id>" fallback
+                        // (both joiner kcd.logs of the 2026-08-25 session
+                        // carry the "no Steam nick yet" spawn; "Player1"
+                        // hashes to a female body). SetGhostName is a no-op
+                        // in Lua when the name is already applied, so this
+                        // costs a stamp comparison on the same cadence as
+                        // the other re-arms.
+                        foreach (var kv in _ghostNames)
+                            await ExecLuaAsync(
+                                $"if KCD2MP_SetGhostName then KCD2MP_SetGhostName(\"{kv.Key}\", \"{EscapeLua(kv.Value)}\") end");
                     }
                     catch { }
                 }
@@ -1360,10 +1408,12 @@ public partial class GameBridge(ClientConfig config)
 
         List<Guid> toRemove;
         List<Guid> toAdd;
+        var neverEquips = _ghostNeverEquips.GetOrAdd(ghostId, static _ => []);
         lock (applied)
         {
             toRemove = applied.Except(targetSet).ToList();
-            toAdd    = targetSet.Except(applied).ToList();
+            lock (neverEquips)
+                toAdd = targetSet.Except(applied).Where(c => !neverEquips.Contains(c)).ToList();
         }
 
         foreach (var cls in toRemove)
@@ -1444,11 +1494,18 @@ public partial class GameBridge(ClientConfig config)
         // slot the game will never grant, e.g. the Hood-vs-Helmet exclusivity
         // found in Phase 0) from one more round of lag.
         var final = new HashSet<Guid>(await _transport.ReadGhostEquippedItemClassesAsync(soulName, ct));
+        var blacklist = _ghostNeverEquips.GetOrAdd(ghostId, static _ => []);
         foreach (var cls in pending)
         {
             if (final.Contains(cls)) continue;
-            Console.WriteLine($"[appearance] ghost {ghostId}: {cls} never equipped after {AppearanceRetryDelaysMs.Sum()}ms of retrying -- leaving it out of the applied set");
+            // WO-58: one exhausted schedule is the retry budget for this
+            // ghost lifetime. Dropping it from `applied` alone put it right
+            // back into the next heartbeat's diff, which re-ran the whole
+            // 10 s retry cycle forever (observed all session on both
+            // machines, 2026-08-25).
+            Console.WriteLine($"[appearance] ghost {ghostId}: {cls} never equipped after {AppearanceRetryDelaysMs.Sum()}ms of retrying -- blacklisting it for this ghost");
             lock (applied) applied.Remove(cls);
+            lock (blacklist) blacklist.Add(cls);
         }
     }
 
@@ -2336,6 +2393,7 @@ public partial class GameBridge(ClientConfig config)
                     _voice?.RemovePlayer(ghostId);
                     _ghostAppearance.TryRemove(ghostId, out _);
                     _ghostKnownItemClasses.TryRemove(ghostId, out _);
+                    _ghostNeverEquips.TryRemove(ghostId, out _);
                     // WO-17: a respawned ghost gets a fresh Soul.Guid, and a
                     // gone ghost has nothing left to detach.
                     _ghostSoulGuidCache.TryRemove(ghostId, out _);

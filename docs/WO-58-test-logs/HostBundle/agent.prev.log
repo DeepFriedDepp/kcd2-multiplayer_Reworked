@@ -1,0 +1,211 @@
+16:47:39.619 [log] agent output tee -> C:\Users\HostUser\AppData\Local\KCDMP\agent.log
+16:47:39.636 [KcdLog] kcd.log = D:\SteamLibrary\steamapps\common\KCD2Mod\kcd.log
+16:47:39.668 [KcdLog] Found Steam name: HostNick
+16:47:39.668 === KCD2 Multiplayer Client Agent ===
+16:47:39.669 Server   : 127.0.0.1:7778
+16:47:39.669 Name     : HostNick
+16:47:39.669 Game     : http://localhost:1403
+16:47:39.669 Voice    : on
+16:47:39.669 Protocol : v6
+
+16:47:39.690 [discord] Initialize() returned True, IsInitialized=True
+16:47:39.690 [discord] SetPresence details='Connecting...' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:47:39.694 Waiting for game to load a save...
+16:47:39.769 [swingcatalog] loaded D:\SteamLibrary\steamapps\common\KCD2Mod\Data\Tables.pak: 675 melee items, explicit rows for [longsword,halberd,unarmed], 12 group rows
+16:47:40.809 [discord] ready, connected as HostDiscordUser
+16:47:41.836 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:47:41.836 ERR : Object reference not set to an instance of an object.
+16:47:41.841 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:47:43.528 Game ready!
+16:47:43.569 [transport] waiting for the mod's state emitter (kcd.log)...
+16:47:43.622 [transport] kcd-log-tail — 0 round trips per state read
+16:47:43.625 Connecting to relay server 127.0.0.1:7778...
+16:47:43.628 Connected! Assigned id=10 (protocol v6)
+
+16:47:43.628 [discord] SetPresence details='Playing' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:47:43.634 [dice-ipc] Listening on http://localhost:5901/ for the launcher.
+16:47:43.636 [version-ipc] Listening on http://localhost:5902/ for the launcher.
+16:47:43.711 [voice] Started  16kHz mono PCM  frame=640B  range=20m
+16:47:43.713 [combat] connected to KCDMP.dll
+16:47:43.718 [name] ghost 6 = JoinerNick
+16:47:43.718 [version] ghost 6 is on release 0.17.1
+16:47:43.724 [vitals] sent health=100.0 stamina=126.7 flags=0
+16:47:43.730 [pos] 2340.1 2080.8 110.7  rot=-0.82  riding=False  read=0ms
+16:47:43.762 [appearance] sent 7 item class(es)
+16:47:44.054 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:47:44.867 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:47:44.867 ERR : Object reference not set to an instance of an object.
+16:47:44.867 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
+16:47:45.304 [stat] avg read=0ms over 100 ticks
+16:47:45.724 [ping] 1 ms
+16:47:46.883 [stat] avg read=0ms over 200 ticks
+16:47:47.059 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:47:47.725 [ping] 0 ms
+16:47:48.483 [stat] avg read=0ms over 300 ticks
+16:47:49.740 [ping] 0 ms
+16:47:50.066 [stat] avg read=0ms over 400 ticks
+16:47:50.067 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:47:51.629 [stat] avg read=0ms over 500 ticks
+16:47:51.748 [ping] 0 ms
+16:47:53.069 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:47:53.192 [stat] avg read=0ms over 600 ticks
+16:47:53.749 [ping] 0 ms
+16:47:54.768 [stat] avg read=0ms over 700 ticks
+16:47:55.762 [ping] 0 ms
+16:47:56.074 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:47:56.414 [stat] avg read=0ms over 800 ticks
+16:47:57.763 [ping] 0 ms
+16:47:58.008 [stat] avg read=0ms over 900 ticks
+16:47:59.081 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:47:59.592 [stat] avg read=0ms over 1000 ticks
+16:47:59.778 [ping] 0 ms
+16:48:01.181 [stat] avg read=0ms over 1100 ticks
+16:48:01.789 [ping] 0 ms
+16:48:02.098 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:02.754 [stat] avg read=0ms over 1200 ticks
+16:48:03.801 [ping] 0 ms
+16:48:04.344 [stat] avg read=0ms over 1300 ticks
+16:48:05.113 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:05.807 [ping] 0 ms
+16:48:05.917 [stat] avg read=0ms over 1400 ticks
+16:48:07.499 [stat] avg read=0ms over 1500 ticks
+16:48:07.809 [ping] 0 ms
+16:48:08.120 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:09.057 [stat] avg read=0ms over 1600 ticks
+16:48:09.818 [ping] 0 ms
+16:48:10.624 [stat] avg read=0ms over 1700 ticks
+16:48:11.134 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:11.822 [ping] 0 ms
+16:48:12.225 [stat] avg read=0ms over 1800 ticks
+16:48:13.773 [stat] avg read=0ms over 1900 ticks
+16:48:13.835 [ping] 0 ms
+16:48:14.142 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:14.426 [appearance] sent 7 item class(es) (heartbeat)
+16:48:15.342 [stat] avg read=0ms over 2000 ticks
+16:48:15.838 [ping] 0 ms
+16:48:16.907 [stat] avg read=0ms over 2100 ticks
+16:48:17.155 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:17.838 [ping] 0 ms
+16:48:18.470 [stat] avg read=0ms over 2200 ticks
+16:48:19.849 [ping] 0 ms
+16:48:20.066 [stat] avg read=0ms over 2300 ticks
+16:48:20.161 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:21.608 [stat] avg read=0ms over 2400 ticks
+16:48:21.852 [ping] 0 ms
+16:48:23.175 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:23.182 [stat] avg read=0ms over 2500 ticks
+16:48:23.856 [ping] 0 ms
+16:48:24.769 [stat] avg read=0ms over 2600 ticks
+16:48:25.865 [ping] 0 ms
+16:48:26.179 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:26.364 [stat] avg read=0ms over 2700 ticks
+16:48:27.631 [weather] applying profile 'cloudless_sunny_B' blend=30
+16:48:27.879 [ping] 0 ms
+16:48:27.988 [stat] avg read=0ms over 2800 ticks
+16:48:29.194 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:29.535 [stat] avg read=0ms over 2900 ticks
+16:48:29.889 [ping] 0 ms
+16:48:31.107 [stat] avg read=0ms over 3000 ticks
+16:48:31.891 [ping] 0 ms
+16:48:32.198 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:32.695 [stat] avg read=0ms over 3100 ticks
+16:48:33.902 [ping] 0 ms
+16:48:34.276 [stat] avg read=0ms over 3200 ticks
+16:48:35.211 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:35.840 [stat] avg read=0ms over 3300 ticks
+16:48:35.906 [ping] 0 ms
+16:48:37.415 [stat] avg read=0ms over 3400 ticks
+16:48:37.921 [ping] 0 ms
+16:48:38.217 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:38.998 [stat] avg read=0ms over 3500 ticks
+16:48:39.931 [ping] 0 ms
+16:48:40.580 [stat] avg read=0ms over 3600 ticks
+16:48:41.218 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:41.943 [ping] 0 ms
+16:48:42.161 [stat] avg read=0ms over 3700 ticks
+16:48:43.726 [stat] avg read=0ms over 3800 ticks
+16:48:43.945 [ping] 0 ms
+16:48:44.224 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:45.089 [appearance] sent 7 item class(es) (heartbeat)
+16:48:45.301 [stat] avg read=0ms over 3900 ticks
+16:48:45.950 [ping] 0 ms
+16:48:46.918 [stat] avg read=0ms over 4000 ticks
+16:48:47.240 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:47.949 [ping] 0 ms
+16:48:48.497 [stat] avg read=0ms over 4100 ticks
+16:48:49.953 [ping] 0 ms
+16:48:50.078 [stat] avg read=0ms over 4200 ticks
+16:48:50.248 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:51.649 [stat] avg read=0ms over 4300 ticks
+16:48:51.957 [ping] 0 ms
+16:48:53.215 [stat] avg read=0ms over 4400 ticks
+16:48:53.263 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:53.973 [ping] 0 ms
+16:48:54.804 [stat] avg read=0ms over 4500 ticks
+16:48:55.973 [ping] 0 ms
+16:48:56.268 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:56.389 [stat] avg read=0ms over 4600 ticks
+16:48:57.940 [stat] avg read=0ms over 4700 ticks
+16:48:57.987 [ping] 0 ms
+16:48:59.282 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:48:59.544 [stat] avg read=0ms over 4800 ticks
+16:48:59.997 [ping] 0 ms
+16:49:01.128 [stat] avg read=0ms over 4900 ticks
+16:49:02.001 [ping] 0 ms
+16:49:02.296 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:02.725 [stat] avg read=0ms over 5000 ticks
+16:49:04.001 [ping] 0 ms
+16:49:04.295 [stat] avg read=0ms over 5100 ticks
+16:49:05.308 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:05.848 [stat] avg read=0ms over 5200 ticks
+16:49:06.002 [ping] 0 ms
+16:49:07.423 [stat] avg read=0ms over 5300 ticks
+16:49:08.015 [ping] 0 ms
+16:49:08.324 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:08.973 [stat] avg read=0ms over 5400 ticks
+16:49:10.018 [ping] 0 ms
+16:49:10.547 [stat] avg read=0ms over 5500 ticks
+16:49:11.332 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:12.026 [ping] 0 ms
+16:49:12.118 [stat] avg read=0ms over 5600 ticks
+16:49:13.662 [stat] avg read=0ms over 5700 ticks
+16:49:14.032 [ping] 0 ms
+16:49:14.345 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:15.275 [stat] avg read=0ms over 5800 ticks
+16:49:15.801 [appearance] sent 7 item class(es) (heartbeat)
+16:49:16.035 [ping] 0 ms
+16:49:16.842 [stat] avg read=0ms over 5900 ticks
+16:49:17.358 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:18.039 [ping] 0 ms
+16:49:18.420 [stat] avg read=0ms over 6000 ticks
+16:49:19.978 [stat] avg read=0ms over 6100 ticks
+16:49:20.042 [ping] 0 ms
+16:49:20.371 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:21.548 [stat] avg read=0ms over 6200 ticks
+16:49:22.044 [ping] 0 ms
+16:49:23.144 [stat] avg read=0ms over 6300 ticks
+16:49:23.373 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:24.052 [ping] 0 ms
+16:49:24.699 [stat] avg read=0ms over 6400 ticks
+16:49:26.067 [ping] 0 ms
+16:49:26.293 [stat] avg read=0ms over 6500 ticks
+16:49:26.380 [version-ipc] request failed: Could not load file or assembly 'System.IO.Pipelines, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51'. The system cannot find the file specified.
+16:49:27.653 [discord] SetPresence details='Connecting...' state='v0.17.1 · solo' key='kcd_mp_color_2' IsInitialized=True
+16:49:27.653 Removing all ghosts...
+16:49:27.653 Reconnecting in 3 s...
+
+16:49:29.571 ERR : Unhandled Exception while processing event: System.NullReferenceException
+16:49:29.571 ERR : Object reference not set to an instance of an object.
+16:49:29.571 ERR :    at DiscordRPC.Assets.Merge(Assets other)
+   at DiscordRPC.RichPresence.Merge(BaseRichPresence presence)
+   at DiscordRPC.DiscordRpcClient.ProcessMessage(IMessage message)
+   at DiscordRPC.DiscordRpcClient.<.ctor>b__103_0(Object sender, IMessage msg)
+   at DiscordRPC.RPC.RpcConnection.EnqueueMessage(IMessage message)
