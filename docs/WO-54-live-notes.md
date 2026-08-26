@@ -528,4 +528,40 @@ contrast data point, not fully explaining the difference. Session appears
 to have stabilized post-troubleshooting; watching for renewed joint-combat
 opportunity now that both are reconnected.
 
+---
+
+## Correction: the "menu opens the pipe" theory does not survive the 5th restart
+
+**16:55:33.215 — `[combat] pipe reader exited` fired again, but this time
+with no menu open at all** — the surrounding lines are continuous `[ghost
+3]` position updates showing the peer actively riding (`riding=True`,
+smoothly moving 174→194 in x across this exact window), and no `[pause]`/
+`[menu]` line appears anywhere near it. **This falsifies the "opening the
+pause menu" theory as a necessary trigger** — three-for-three was real but
+apparently coincidental; the pipe reader can exit during ordinary active
+play with no menu involved. What is still true across all five restarts
+this session: **every one was preceded by `[combat] pipe reader exited`**,
+even though what precedes *that* varies. Retracting the menu-specific
+framing from the two "Nth restart" sections above; the honest statement is
+narrower: *pipe-reader-exit reliably precedes a restart; what makes the
+pipe reader exit is still unknown.*
+
+Two more details from this window, possibly relevant to what's actually
+destabilizing things: `[appearance] ghost 3: 9 item(s) still not applied,
+retrying` (16:55:34.597) and, moments later, `[appearance] retry equip
+ec7148ad-... on kcd2mp_3 failed: The request was canceled due to the
+configured HttpClient.Timeout of 0.8 seconds elapsing` (16:55:35.403) — the
+appearance-sync HTTP call to the game's local debug API missed an 0.8 s
+deadline right in this same window. **Plausible, unconfirmed candidate**:
+the game's local HTTP debug API (used for appearance sync per the standing
+transport design) became slow/unresponsive under some load, and that same
+slowness is what the native combat pipe reader also tripped over — a
+single shared-resource stall rather than two coincidences. Not verified;
+recorded as the best available lead given what these two logs show in the
+same few hundred milliseconds.
+
+**5th restart:** `KingdomCome.exe` new PID, `CreationDate 16:58:48.387` —
+about 3m15s after the pipe-reader-exit, longer than the ~30-60s gap seen on
+restarts 1-3. Still no BugSplat dump found.
+
 *(entries continue below as observed)*
