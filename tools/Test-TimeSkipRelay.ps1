@@ -213,7 +213,9 @@ function Drain-NpcDamages($stream, [int] $quietMs = 1200) {
 }
 
 # NpcStateUp (0x26): [nameLen:1][name][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
-function Send-NpcState($stream, [string]$npcName, [float]$x = 100, [float]$y = 200, [float]$z = 10) {
+# Default flags = 1 (dead: a drag target is a downed body). WO-60 tests pass
+# 0x24 (drawn + ENGAGED) to arm the relay's engagement hold.
+function Send-NpcState($stream, [string]$npcName, [float]$x = 100, [float]$y = 200, [float]$z = 10, [byte]$flags = 1) {
     $nb = [System.Text.Encoding]::UTF8.GetBytes($npcName)
     $payload = New-Object byte[] (1 + $nb.Length + 21)
     $payload[0] = [byte]$nb.Length
@@ -224,7 +226,7 @@ function Send-NpcState($stream, [string]$npcName, [float]$x = 100, [float]$y = 2
     [Array]::Copy([BitConverter]::GetBytes($z), 0, $payload, $o + 8, 4)
     [Array]::Copy([BitConverter]::GetBytes([float]0), 0, $payload, $o + 12, 4)
     [Array]::Copy([BitConverter]::GetBytes([float]100), 0, $payload, $o + 16, 4)
-    $payload[$o + 20] = 1   # flags: dead (a drag target is a downed body)
+    $payload[$o + 20] = $flags
     Send-Packet $stream $NPCSTATE_UP $payload
 }
 
@@ -245,6 +247,14 @@ function Drain-NpcStates($stream, [int] $quietMs = 1200) {
         }
     }
     ,$found
+}
+
+# Drain-NpcStates filtered to one entity name. Two-step on purpose: piping the
+# comma-wrapped drain result straight into Where-Object hands the whole array
+# to the filter as one item (the T17 lesson) -- assign first, then filter.
+function Drain-NpcStatesFor($stream, [string]$npcName, [int]$quietMs = 1200) {
+    $all = Drain-NpcStates $stream $quietMs
+    ,@($all | Where-Object { $_.Name -eq $npcName })
 }
 
 function Send-TimeSkip($stream, [int]$phase, [int]$kind, [uint32]$worldTime) {
@@ -416,7 +426,56 @@ try {
     $gotB = Drain-NpcDamages $peerB.Stream
     Check "B heard nothing back about its own NPC damage" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
 
-    $peerB.Tcp.Close(); $peerD.Tcp.Close()
+    # ---- WO-60: the engagement hold (anti-flap for claims on fought NPCs) ----
+    # Peers here: B (lowest id = the world authority) and D (non-authority).
+    # E joins as a second non-authority -- the second engaged player.
+    $ENGAGED_FLAGS = [byte]0x24   # drawn (0x04) + ENGAGED (0x20)
+    $peerE = Connect-Peer 'wo60-claim-E'
+    $null = Drain-NpcStates $peerB.Stream 800; $null = Drain-NpcStates $peerD.Stream 800; $null = Drain-NpcStates $peerE.Stream 800
+
+    Write-Host "`n--- T17: two engaged claimants under sustained competing pressure -- the holder never moves ---"
+    Send-NpcState $peerD.Stream 'wo60_npc_1' 100 200 10 $ENGAGED_FLAGS      # D claims first
+    Start-Sleep -Milliseconds 150
+    for ($i = 1; $i -le 8; $i++) {                                          # both keep hammering
+        Send-NpcState $peerE.Stream 'wo60_npc_1' 300 400 10 $ENGAGED_FLAGS
+        Send-NpcState $peerD.Stream 'wo60_npc_1' (100 + $i) 200 10 $ENGAGED_FLAGS
+        Start-Sleep -Milliseconds 120
+    }
+    $gotB = Drain-NpcStatesFor $peerB.Stream 'wo60_npc_1'
+    $gotD = Drain-NpcStatesFor $peerD.Stream 'wo60_npc_1'
+    $null = Drain-NpcStates $peerE.Stream 800   # clear D's broadcast stream out of E's buffer before T18 reads it
+    $srcs = @($gotB | Select-Object -ExpandProperty Source | Sort-Object -Unique)
+    Check "B received D's stream only (9 pkts, single source = D)" ($gotB.Count -eq 9 -and $srcs.Count -eq 1 -and $srcs[0] -eq $peerD.Id) "got $($gotB.Count) pkt(s), sources $($srcs -join ',')"
+    Check "D (the holder) received none of E's competing packets" ($gotD.Count -eq 0) "got $($gotD.Count) pkt(s)"
+
+    Write-Host "`n--- T18: the hold survives holder silence past the plain 5s expiry ---"
+    Write-Host "  (holder D goes quiet; waiting 6s -- past NpcClaimTimeoutSeconds, inside the hold...)"
+    Start-Sleep -Seconds 6
+    Send-NpcState $peerE.Stream 'wo60_npc_1' 300 400 10 $ENGAGED_FLAGS      # rival tries to take it
+    $gotB = Drain-NpcStatesFor $peerB.Stream 'wo60_npc_1'
+    Check "E's takeover attempt during the hold was dropped" ($gotB.Count -eq 0) "got $($gotB.Count) pkt(s)"
+    Send-NpcState $peerB.Stream 'wo60_npc_1'                                # authority tries to resume
+    $gotD = Drain-NpcStatesFor $peerD.Stream 'wo60_npc_1'
+    $gotE = Drain-NpcStatesFor $peerE.Stream 'wo60_npc_1'
+    Check "authority's stream stays muted during the hold" ($gotD.Count -eq 0 -and $gotE.Count -eq 0) "D got $($gotD.Count), E got $($gotE.Count) pkt(s)"
+
+    Write-Host "`n--- T19: the hold decays after NpcClaimEngagedHoldSeconds of genuine quiet ---"
+    Write-Host "  (waiting out the rest of the 15s engagement hold...)"
+    Start-Sleep -Seconds 9
+    Send-NpcState $peerE.Stream 'wo60_npc_1' 300 400 10 $ENGAGED_FLAGS      # now it may move
+    $gotB = Drain-NpcStatesFor $peerB.Stream 'wo60_npc_1'
+    Check "E's claim granted after the hold elapsed (src=E)" ($gotB.Count -eq 1 -and $gotB[0].Source -eq $peerE.Id) "got $($gotB | ConvertTo-Json -Compress)"
+
+    Write-Host "`n--- T20: an un-engaged claim keeps the plain 5s expiry (claimant-to-claimant handoff) ---"
+    Send-NpcState $peerE.Stream 'wo60_npc_2'                                # E claims, never engaged
+    $null = Drain-NpcStates $peerB.Stream 800
+    Write-Host "  (waiting out NpcClaimTimeoutSeconds = 5s...)"
+    Start-Sleep -Seconds 6
+    Send-NpcState $peerD.Stream 'wo60_npc_2'                                # D takes it over at once
+    $gotB = Drain-NpcStatesFor $peerB.Stream 'wo60_npc_2'
+    Check "D's claim granted right after plain expiry (src=D, no 15s hold on an un-engaged claim)" ($gotB.Count -eq 1 -and $gotB[0].Source -eq $peerD.Id) "got $($gotB | ConvertTo-Json -Compress)"
+
+    $peerB.Tcp.Close(); $peerD.Tcp.Close(); $peerE.Tcp.Close()
 }
 finally {
     if ($relay -and -not $relay.HasExited) { Stop-Process -Id $relay.Id -Force }

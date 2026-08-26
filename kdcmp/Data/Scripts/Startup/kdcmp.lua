@@ -1847,11 +1847,10 @@ KCD2MP.npcSync = {
     enabled    = true,    -- mp_npc_sync on|off. ON by default (human's WO-32
                           -- decision: "if it is off by default then nobody is
                           -- ever going to know how to enable it"). Turn OFF
-                          -- with `mp_npc_sync off` in the console -- only
-                          -- meaningful on the session's world authority, since
-                          -- only that client emits. Non-authority clients are
-                          -- unaffected either way: the relay drops NpcStateUp
-                          -- from them regardless.
+                          -- with `mp_npc_sync off` in the console. Since
+                          -- WO-60 a non-authority emits too (proximity
+                          -- claims, see KCD2MP.npcProx), so this master
+                          -- switch gates every role's NPC emission.
     radius     = 30,      -- metres around the local player (WO-32 Phase 0 bound)
     maxTracked = 5,       -- hard cap on synced NPCs (WO-32 Phase 0/2 bound)
     emitMs     = 250,     -- per-NPC emit cadence (4 Hz) -- position lerp on the
@@ -1879,6 +1878,24 @@ KCD2MP._npcPuppetAliveAt = nil
 KCD2MP.dragWatch = {}   -- name -> {x,y,z}   last sampled position of a nearby downed body
 KCD2MP.dragging  = {}   -- name -> os.clock() of the last observed local move (claim window)
 KCD2MP._dragScanAt = 0
+
+-- WO-60: proximity-based NPC authority. With this on, a NON-authority also
+-- runs the rescan/emit loop around its OWN player and claims nearby NPCs
+-- through the relay's existing per-entity table (first claim wins, refresh
+-- by packet, expiry on silence -- the drag sensor's mechanism, generalized).
+-- NPCs someone else is already streaming are puppets here and are excluded
+-- by the rescan, so claims only ever target entities nobody is driving.
+-- This is the fix for WO-51 §1.4's radius-gap and engagement-asymmetry rows:
+-- an NPC fighting the non-authority player, previously invisible to sync
+-- because it was far from the host, is now streamed by the machine actually
+-- next to it -- the one simulating it at full fidelity.
+--
+-- mp_npc_proximity off is the FIELD ROLLBACK: it restores the old host-only
+-- tracking exactly (non-authority emits nothing but drag claims; standing
+-- relay claims expire within seconds and the host's stream resumes).
+KCD2MP.npcProx = {
+    enabled = true,   -- mp_npc_proximity on|off (mp_npc_sync default-on precedent)
+}
 
 -- WO-40 Phase 5: dump every puppet's tug-of-war evidence -- how often the
 -- entity was found away from where we wrote it, and the clustered positions
@@ -1929,6 +1946,31 @@ function KCD2MP_EnableNpcSync(arg)
     return true
 end
 
+-- WO-60: the proximity-authority rollback toggle. Off = the pre-WO-60
+-- host-only tracking model, exactly: a non-authority's tracked set is
+-- dropped on the spot so its claim stream stops within one tick, its relay
+-- claims expire on silence, and the host's default stream resumes. The
+-- authority's own behaviour never depended on this flag, so flipping it
+-- there changes nothing -- no hybrid state exists to get stuck in.
+function KCD2MP_EnableNpcProximity(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.npcProx.enabled = true
+    elseif s:find("off") then
+        KCD2MP.npcProx.enabled = false
+        if not KCD2MP.hitSensorOn then
+            KCD2MP.npcTracked = {}   -- stop the claim stream immediately
+        end
+    else
+        mp_log("mp_npc_proximity: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    mp_log("NPC-PROX " .. (KCD2MP.npcProx.enabled
+        and "ENABLED (non-authority claims NPCs near its own player)"
+        or "disabled (host-only tracking, pre-WO-60 behaviour)"))
+    KCD2MP_ShowInteractionMsg("NPC proximity authority: " .. (KCD2MP.npcProx.enabled and "ON" or "OFF"))
+    return true
+end
+
 -- Is this entity one of ours (a ghost or a ghost's horse)? Checked by
 -- reference against the registries, NOT by name -- KCD2MP_ApplyGhostName
 -- renames ghost entities to the player's nick (WO-26), so a name prefix
@@ -1959,6 +2001,11 @@ end
 -- stops churning as ranks 5 and 6 swap places.
 local NPC_TRACK_EXIT_FACTOR  = 1.5   -- tracked NPCs stay eligible to radius*this
 local NPC_TRACK_STICKY_BONUS = 8.0   -- metres subtracted from a tracked NPC's rank distance
+-- WO-60: an NPC with its weapon out within this range of the local player is
+-- ENGAGED -- the emit carries flag bit 32, which arms the relay's anti-flap
+-- hold on that entity's claim. 12 m covers a melee fight's footwork without
+-- holding claims on every armed guard the player merely walks past.
+local NPC_ENGAGE_RANGE_SQ    = 12.0 * 12.0
 local function mp_npc_rescan()
     if not player then return end
     local pp = nil
@@ -2134,11 +2181,22 @@ function KCD2MP_NpcSyncTick()
     -- Gate at tick time, not start time: mp_npc_sync can flip and authority
     -- can migrate mid-session, and both must take effect without a restart.
     if not KCD2MP.npcSync.enabled then return end
-    if not KCD2MP.hitSensorOn then
-        -- WO-39 Phase 2: a non-authority still watches for bodies its own
-        -- player is dragging -- that is the one NPC state it may emit.
+    local isAuthority = KCD2MP.hitSensorOn
+    if not isAuthority then
+        -- WO-39 Phase 2: a non-authority always watches for bodies its own
+        -- player is dragging, proximity toggle or no.
         pcall(mp_drag_sensor)
-        return
+        -- WO-60: with proximity authority on and a peer actually present,
+        -- fall through and run the SAME rescan/emit loop around this
+        -- player -- emitted as npc_claim, which claims each NPC through the
+        -- relay's per-entity table. NPCs someone else already streams are
+        -- puppets here and never enter the rescan, so this only picks up
+        -- entities nobody is driving (the radius-gap NPCs). Turning
+        -- mp_npc_proximity off restores the pre-WO-60 return right here.
+        if not KCD2MP.npcProx.enabled then return end
+        local anyGhost = false
+        for _ in pairs(KCD2MP.ghosts) do anyGhost = true; break end
+        if not anyGhost then return end
     end
 
     local now = os.clock()
@@ -2168,6 +2226,9 @@ function KCD2MP_NpcSyncTick()
 
     for name, t in pairs(KCD2MP.npcTracked) do
         pcall(function()
+            -- WO-60: the drag sensor already emits (and claims) this body on
+            -- its own channel -- don't double-stream it from here too.
+            if not isAuthority and KCD2MP.dragging[name] then return end
             local e = System.GetEntityByName(name)
             if not e then KCD2MP.npcTracked[name] = nil; return end
             local p = e:GetWorldPos()
@@ -2194,6 +2255,16 @@ function KCD2MP_NpcSyncTick()
                 if sx * sx + sy * sy <= 16.0 then swingCue = true end
             end
 
+            -- WO-60: engagement -- a live NPC with its weapon out right next
+            -- to this player is being fought here. Travels as flag bit 32;
+            -- on a claim it arms the relay's hold so the claim cannot flap
+            -- to another sender through a brief packet gap mid-fight.
+            local engaged = false
+            if drawn and not dead and not ko and ppos then
+                local gx, gy = p.x - ppos.x, p.y - ppos.y
+                engaged = (gx * gx + gy * gy) <= NPC_ENGAGE_RANGE_SQ
+            end
+
             local moved = not t.lastX
                 or math.abs(p.x - t.lastX) > KCD2MP.npcSync.moveEps
                 or math.abs(p.y - t.lastY) > KCD2MP.npcSync.moveEps
@@ -2203,15 +2274,23 @@ function KCD2MP_NpcSyncTick()
 
             local koChanged = (ko ~= (t.sentKo or false))
             local drawnChanged = (drawn ~= (t.sentDrawn or false))
+            local engagedChanged = (engaged ~= (t.sentEngaged or false))
             if moved or hpChanged or heartbeat or koChanged or drawnChanged or swingCue
-               or (dead and not t.sentDead) then
+               or engagedChanged or (dead and not t.sentDead) then
                 local flags = (dead and 1 or 0) + (ko and 2 or 0)
                     + (drawn and 4 or 0) + (swingCue and 8 or 0)
-                KCD2MP_EmitEvent("npc_state", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
+                    + (engaged and 32 or 0)
+                -- npc_state rides the authority's default stream; npc_claim
+                -- (WO-60) is the same payload sent down the asClaim path, so
+                -- the agent's authority gate lets it through and sending it
+                -- IS the claim.
+                KCD2MP_EmitEvent(isAuthority and "npc_state" or "npc_claim",
+                    string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
                     name, p.x, p.y, p.z, rot, hp, flags))
                 t.lastX, t.lastY, t.lastZ, t.lastRot = p.x, p.y, p.z, rot
                 t.lastHp, t.lastSentAt, t.sentDead, t.sentKo = hp, now, dead, ko
                 t.sentDrawn = drawn
+                t.sentEngaged = engaged
             end
         end)
     end
@@ -6936,6 +7015,7 @@ local ok, err = pcall(function()
 
     -- NPC sync (WO-32)
     System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%LINE")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")
+    System.AddCCommand("mp_npc_proximity", 'KCD2MP_EnableNpcProximity("%LINE")', "WO-60: non-authority claims NPCs near its own player (default on). off = pre-WO-60 host-only tracking: mp_npc_proximity on|off")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

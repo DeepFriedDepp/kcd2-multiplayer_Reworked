@@ -213,19 +213,32 @@ public class ClientHandler
 	// is, and the echo loop is closed by this same gate (the authority's
 	// re-sample of a body someone else is driving is dropped here).
 
-	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc)> _npcClaims = [];
+	// WO-60 adds EngagedUtc: the last time the OWNER's packet carried the
+	// ENGAGED flag (its player actively fighting this NPC). While that is
+	// recent (NpcClaimEngagedHoldSeconds), the claim is HELD -- it cannot
+	// expire on silence and cannot be taken by anyone, so a menu pause or
+	// packet gap mid-fight cannot snap the entity to another sender's
+	// diverged stream and back (the flap this hold exists to prevent). A
+	// claim never engaged (a corpse drag) keeps the plain 5 s expiry
+	// unchanged. Disconnect still releases immediately either way.
+	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc, DateTime EngagedUtc)> _npcClaims = [];
 
 	/// <summary>
 	/// Decides whether one NpcStateUp for <paramref name="npcName"/> from
 	/// <paramref name="sender"/> may be broadcast, updating the per-entity
-	/// claim table. See the field comment for the rules.
+	/// claim table. <paramref name="engaged"/> is the packet's
+	/// <see cref="Protocol.NpcStateFlagEngaged"/> bit; it only matters on a
+	/// claimant's own packets. See the field comment for the rules.
 	/// </summary>
-	public bool RouteNpcState(ClientSession sender, string npcName)
+	public bool RouteNpcState(ClientSession sender, string npcName, bool engaged = false)
 	{
 		lock (_lock)
 		{
+			var now = DateTime.UtcNow;
 			bool claimed = _npcClaims.TryGetValue(npcName, out var claim);
-			if (claimed && (DateTime.UtcNow - claim.LastUtc).TotalSeconds > Protocol.NpcClaimTimeoutSeconds)
+			if (claimed
+			    && (now - claim.LastUtc).TotalSeconds > Protocol.NpcClaimTimeoutSeconds
+			    && (now - claim.EngagedUtc).TotalSeconds > Protocol.NpcClaimEngagedHoldSeconds)
 			{
 				_npcClaims.Remove(npcName);
 				claimed = false;
@@ -233,19 +246,19 @@ public class ClientHandler
 
 			if (IsDamageAuthority(sender))
 			{
-				// The default stream. Yields only to someone else's fresh claim.
+				// The default stream. Yields only to someone else's live claim.
 				return !claimed || claim.OwnerId == sender.Id;
 			}
 
 			if (!claimed)
 			{
-				_npcClaims[npcName] = (sender.Id, DateTime.UtcNow);
+				_npcClaims[npcName] = (sender.Id, now, engaged ? now : DateTime.MinValue);
 				return true;   // first claim wins, by relay arrival order
 			}
 			if (claim.OwnerId == sender.Id)
 			{
-				_npcClaims[npcName] = (sender.Id, DateTime.UtcNow);
-				return true;   // refresh
+				_npcClaims[npcName] = (sender.Id, now, engaged ? now : claim.EngagedUtc);
+				return true;   // refresh (and re-arm the hold if still engaged)
 			}
 			return false;      // someone else holds this body
 		}

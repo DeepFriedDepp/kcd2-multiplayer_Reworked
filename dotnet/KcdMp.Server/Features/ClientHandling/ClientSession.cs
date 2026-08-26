@@ -254,7 +254,12 @@ public class ClientSession
                     if (npcNameLen != payloadLen - 1 - Protocol.NpcStateFixedTail)
                         continue;   // nameLen disagrees with the framing: malformed, drop
                     string npcName = System.Text.Encoding.UTF8.GetString(body, 1, npcNameLen);
-                    if (_clientHandler.RouteNpcState(this, npcName))
+                    // WO-60: the flags byte (last byte of the fixed tail) may
+                    // carry the ENGAGED bit -- the sender's player is actively
+                    // fighting this NPC -- which arms the claim's anti-flap
+                    // hold in the routing table.
+                    bool engaged = (body[payloadLen - 1] & Protocol.NpcStateFlagEngaged) != 0;
+                    if (_clientHandler.RouteNpcState(this, npcName, engaged))
                         _broadcastService.BroadcastNpcState(this, body);
                     else if (!_clientHandler.IsDamageAuthority(this))
                         _logger.Debug("[npcclaim] '{Name}' (id={Id}) state for '{Npc}' dropped (claimed by another client).",

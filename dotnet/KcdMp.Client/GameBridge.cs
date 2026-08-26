@@ -3061,12 +3061,16 @@ public partial class GameBridge(ClientConfig config)
 
             case "npc_state":
             case "npc_drag":
+            case "npc_claim":
             {
                 // NPC sync (WO-32): "<name> <x> <y> <z> <rotZ> <health> [flags]"
                 // from KCD2MP_NpcSyncTick. npc_state is the world authority's
                 // ambient 30 m stream; npc_drag (WO-39 Phase 2) is the drag
                 // sensor's manipulated-body stream, allowed from ANY client --
                 // sending it is how a body is claimed; the relay arbitrates.
+                // npc_claim (WO-60) is a non-authority's proximity stream for
+                // NPCs near ITS player: same payload, same claim-by-sending
+                // rule, so it rides the same asClaim send path as npc_drag.
                 var f = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (f.Length < 6
                     || !float.TryParse(f[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float nsx)
@@ -3079,7 +3083,7 @@ public partial class GameBridge(ClientConfig config)
                     break;
                 }
                 byte nsflags = f.Length > 6 && byte.TryParse(f[6], out byte nf) ? nf : (byte)0;
-                var sendNpc = name == "npc_drag" ? _sendNpcDrag : _sendNpcState;
+                var sendNpc = name == "npc_state" ? _sendNpcState : _sendNpcDrag;
                 if (sendNpc is null) break;
                 _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
                 break;

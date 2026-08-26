@@ -350,6 +350,20 @@ namespace KcdMp.Wire;
 /// Receivers need no notion of any of this -- they apply whatever
 /// NpcStateDown arrives, whoever sent it.
 ///
+/// **Proximity claims (WO-60):** a non-authority also runs the same 30 m
+/// rescan/emit loop around its OWN player (mod toggle mp_npc_proximity, on
+/// by default) and claims nearby NPCs through this exact mechanism -- a new
+/// emitter, not a new rule. NPCs already streamed by someone else are
+/// puppets on that machine and are excluded from its rescan, so a claim is
+/// only ever attempted for an entity nobody is actively driving; the relay
+/// stays the arbiter for races. Packets whose flags carry
+/// <see cref="Protocol.NpcStateFlagEngaged"/> additionally arm a per-claim
+/// engagement hold (<see cref="Protocol.NpcClaimEngagedHoldSeconds"/>) so a
+/// claim on an actively-fought NPC cannot flap to another sender through a
+/// brief packet gap. This is what closes WO-51 §1.4's "radius gap" and
+/// "engagement asymmetry" rows: the machine actually near an NPC -- the one
+/// simulating it at full fidelity -- becomes its stream.
+///
 /// A receiver that has no entity by that name loaded (different streaming
 /// state, different world area) ignores the packet -- there is nothing to
 /// drive and nothing to create. This layer moves EXISTING NPCs; it never
@@ -777,6 +791,16 @@ public static class Protocol
     public const byte NpcStateFlagUnconscious = 0x02;
 
     /// <summary>
+    /// NpcState flag: the emitter's own player is actively engaged with this
+    /// NPC (WO-60: the NPC's weapon is drawn, it is neither dead nor KO, and
+    /// it is within melee engagement range of the emitting player). On a
+    /// claimant's packet this arms the relay's engagement hold
+    /// (<see cref="NpcClaimEngagedHoldSeconds"/>); on the global authority's
+    /// packets it is carried but unused. Receivers ignore it.
+    /// </summary>
+    public const byte NpcStateFlagEngaged = 0x20;
+
+    /// <summary>
     /// Per-entity NPC authority (WO-39 Phase 2): how long a non-authority's
     /// claim on one entity survives without a fresh NpcStateUp for it. The
     /// dragger's emitter sends at the ordinary npc emit cadence (250 ms) with
@@ -784,6 +808,25 @@ public static class Protocol
     /// only ever reap a claimant that stopped emitting or crashed.
     /// </summary>
     public const int NpcClaimTimeoutSeconds = 5;
+
+    /// <summary>
+    /// WO-60 engagement hold: after a claimant's last ENGAGED-flagged packet
+    /// for an entity, that claim cannot be lost -- not to silence, not to the
+    /// global authority's stream, not to another claimant -- until this many
+    /// seconds have passed AND the ordinary silence timeout has also elapsed.
+    ///
+    /// This is the anti-flap rule for two players fighting the same NPC: a
+    /// claim refreshed only by packet arrival would move to whichever side's
+    /// packet lands next after any brief gap (a menu pause suspends the mod's
+    /// timers entirely, WO-12/13), snapping the NPC between two diverged
+    /// simulations. Under the hold, a holder that goes quiet mid-fight keeps
+    /// the claim through the gap; receivers release the puppet locally after
+    /// 3 s of stream silence anyway, so the cost of a held-but-silent claim
+    /// is brief local autonomy, never a snap war. Sized to cover menu blips
+    /// and reloads-in-progress but not a genuinely abandoned fight; a
+    /// disconnect still releases immediately.
+    /// </summary>
+    public const int NpcClaimEngagedHoldSeconds = 15;
 
     /// <summary>PlayerState flag: the player is knocked out but not dead.</summary>
     public const byte PlayerStateFlagUnconscious = 0x01;
