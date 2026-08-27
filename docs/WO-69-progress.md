@@ -8,7 +8,7 @@ tags. This file is the state-of-play and the runbook.
 | Item | State |
 |---|---|
 | Report 1 root cause | **Closed.** H1, deterministic. Observed + code-verified. |
-| Report 1 fix | **Shipped in tree**, pak rebuilt. **Not yet observed live.** |
+| Report 1 fix | **Shipped and live-verified** on 0.18.8: syntax OK, picker 15/15 male, spawns 4/4 male, independent world read agrees. Save-load rebuild path still unobserved. |
 | Report 2 diagnosis | **Closed.** D1 confirmed arithmetically; D2 untested; D3 newly found. |
 | Report 2 fix | **Deliberately not landed** — handed to WO-70 with reasons. |
 | Witness A/B (WO-68 ledger) | **Not run** — needs a live game. |
@@ -166,11 +166,16 @@ than bundled into a hotfix.
 
 ## Honest gaps
 
-- The Report 1 fix is **code-verified and pak-verified, not observed**. It
-  removes the mechanism that provably caused the field report, but no ghost has
-  been watched spawning under it.
+- The Report 1 fix is now **live-verified** (see WO-69-findings.md § *Live
+  checks*), with one path outstanding: the **save-load rebuild** spawn. Three
+  of the field bundle's four spawns came from that path, so it is the most
+  field-relevant one still unobserved.
 - The `SPAWN MISMATCH` fallback branch has **never executed** — there is no
   known way to force a roster soul to fail resolving on demand, so that branch
   is unexercised code.
+- The WO-69 NPC-sync instrumentation (chain-leak line, packet cadence,
+  `NPC-FIGHT`) is **shipped but unexercised**: puppets only exist when
+  receiving a peer's stream, and the verification session was single-machine.
+  A two-player session is required both to exercise it and to settle D3.
 - D3 (the chain leak) is **suspected, not established**; the log cannot separate
   it from legitimate restarts after five save loads.

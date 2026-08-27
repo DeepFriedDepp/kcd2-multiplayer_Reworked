@@ -324,7 +324,37 @@ a new discovery, and the plan's own sequencing should not be broken by a hotfix.
   `Player91`=1415, …) — so the arithmetic in the diagnosis above is the
   interpreter's, not a reimplementation that merely agrees.
 
-**Still not observed:** real ghost spawns (the `spawn verify` /
-`SPAWN MISMATCH` path), which need a loaded save; the save-load rebuild path;
-and the WO-68 witness A/B. The picker is the *cause* and is now verified live;
-the spawn-time readback is the *safety net* and is not.
+- (observed) **Real spawns: 4/4 male, zero mismatches.** Three fresh spawns on
+  previously-female keys (`Henry`, `Jonas`, `Player1` — all even-hash) plus one
+  respawn, each logging
+  `spawn verify … requested class=NPC soul=… | resolved class=NPC soul=nil`.
+  No `SPAWN MISMATCH`, no fallback respawn, no loop.
+- (observed) **`resolved soul=nil` is the nil-guard working, not a failure.**
+  The soul is not reachable at spawn+0 — the same thing `ApplyName` has always
+  logged as `before=nil`. The code treats that as *unknown*, so it did not
+  fire a corrective respawn on three healthy ghosts. Had nil been treated as a
+  mismatch, this run would have looped.
+- (observed) **Independent world read agrees.** Querying the three live
+  entities directly afterwards:
+  `world 90 class=NPC`, `world 91 class=NPC`, `world 93 class=NPC` — read off
+  the entities themselves, not echoed from the request. (Their `soul.name`
+  reads back as the *nickname*, because `ApplyName` overwrites it; that is why
+  the verify samples it before ApplyName and treats it as a probe only, never
+  as the gender check.)
+- Test ghosts removed afterwards; `GhostAudit registered=0 live=0`.
+
+**Still not observed:**
+
+- The **save-load rebuild** spawn path. Three of the field bundle's four
+  spawns came from exactly this path, so it is the most field-relevant one
+  left. It needs a ghost alive across a save load.
+- The **`SPAWN MISMATCH` / fallback branch**, which has still never executed —
+  there is no known way to make a roster soul fail to resolve on demand, so it
+  remains unexercised code.
+- The **WO-69 NPC-sync instrumentation** (chain-leak line, packet cadence,
+  `NPC-FIGHT`). None of it fired: puppets only exist when receiving a peer's
+  stream, and this was a single machine with no peer. Shipped but unexercised
+  — it needs a real two-player session, which is also the only place the D3
+  question can be settled.
+- The **WO-68 witness A/B**, which requires committing a theft in-game with
+  only a ghost watching.
