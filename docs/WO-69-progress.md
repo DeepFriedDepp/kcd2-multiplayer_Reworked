@@ -101,6 +101,51 @@ arithmetic and the matching field-log signature are the justification; the
 D1-vs-D2 discriminator (`Test-NpcSyncE2E.ps1` Phase 3 + `AI.SetIgnorant`) has
 still never been run and should decide the lever before anything is tuned.
 
+## The installed relay could not start — found and fixed at 0.18.8
+
+Field symptom: hosting from the launcher failed with **"The relay process
+exited immediately -- check app.log."**
+(`KCDMP_launcher/Pages/Home.razor.cs:895` — `OpenHostModal` starts the relay,
+waits 500 ms, and prints exactly this if the process is already gone.)
+
+Root cause (observed): **a mismatched assembly set in
+`%LocalAppData%\KCDMP`.** `KcdMpServer.exe` binds
+`Microsoft.Extensions.Configuration.Abstractions, Version=10.0.0.0`, but the
+install directory shipped **8.0.23**. The relay threw
+`System.IO.FileNotFoundException` at `Program.Main` and exited with
+`0xE0434352` before binding anything. The directory was a hybrid: the
+DependencyInjection / Hosting.Abstractions / Logging / Options / Primitives
+assemblies were 10.0.25, while the whole Configuration.* family was still
+8.0.x. Same class as WO-46's `System.Text.Json` 10 break — **a partial publish
+over an existing install**, not a code fault.
+
+Two things this hid behind:
+
+- (observed) **A long-lived survivor process masked it.** A relay from before
+  the partial publish was still running and serving 7778, so nothing had
+  needed to *start* a relay in a long time. Killing it (this session did, to
+  swap in a source build for the suites) exposed the broken install
+  immediately. The install has been unable to cold-start since the DLLs were
+  replaced — the files in that directory are dated 2026-08-15 and nothing has
+  written to it since except agent logs.
+- (observed) **A port collision produces the identical error message.** A
+  leftover relay holding 7778 makes the launcher's newly spawned relay fail to
+  bind and exit inside the 500 ms window — same dialog, unrelated cause. Both
+  were live at once here. When triaging this error, check *both*: run the
+  relay in the foreground to see the real exception, and check who owns 7778.
+
+Fix (observed): a full matched publish. The freshly published relay carries
+Configuration.Abstractions **10.0.25** and starts and binds 7778 cleanly.
+Shipped as **0.18.8** (user-chosen — `docs/VERSIONING.md`), via both
+`release\KCDMP-Setup-0.18.8.exe` and the update-only
+`release\KCDMP-DirectInstall-0.18.8.zip`. `Test-ReleaseVersion` 6/0 against
+the fresh relay; launcher, relay, agent and Setup all report 0.18.8.
+
+Unrelated drift noticed, deliberately **not** changed: `kdcmp/mod.manifest`
+carries `<version>0.3</version>`. No build script writes it and it has never
+tracked `VERSION`; it is the game's own mod-manifest field. Left alone rather
+than bundled into a hotfix.
+
 ## Traps hit or re-confirmed this session
 
 - **The game exits.** It was live at session start (REST on :1403 answered, 19/19
