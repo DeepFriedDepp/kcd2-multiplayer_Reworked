@@ -87,41 +87,133 @@ then paste the `[KCD2-MP]` block from `kcd.log`.
 **Status: probe shipped and pak rebuilt/installed; live output NOT yet
 recorded. Phase 1 (the feature) is gated on that log by design.**
 
-### Live probe output
+### Live probe output — OBSERVED 2026-08-27
 
-*(pending — paste here)*
+Driven from the coding shell over `localhost:1403` ExecuteString with the
+game running via Modding Tools, one `test_ghost` up (WO-43's channel).
+
+```
+[KCD2-MP] global Contexts type=nil
+[KCD2-MP] ghost[test_ghost]: soul=table human=table
+[KCD2-MP] ghost[test_ghost].soul.HasScriptContext : function
+[KCD2-MP] ghost[test_ghost].soul.RestrictDialog   : function
+[KCD2-MP] ghost[test_ghost].soul.IsDialogRestricted : function
+[KCD2-MP] ghost[test_ghost].human.InterruptDialogs : function
+[KCD2-MP] ghost[test_ghost] HasScriptContext('<each of the 7>') ok=true -> false
+[KCD2-MP] player: (identical -- all functions, all 7 read false)
+```
+
+Caveat discovered: scriptbind methods live behind a metatable, so the
+`pairs()` candidate-setter enumeration in the probe sees nothing — absence
+of enumerated keys is NOT evidence. Follow-up probes (type() lookups, which
+do traverse `__index`) settled it:
+
+```
+soul.AddScriptContext / RemoveScriptContext / SetScriptContext /
+  AddScriptContextPreset / SetPersistentOption / SetEntityScriptContext /
+  AddContext : all nil
+globals SetEntityScriptContext / ScriptContext / ScriptContexts : nil
+AI / Game / XGenAIModule / System / Script scans for *ontext*/*ersistent*:
+  only AI.SetMovementContext + AI.ClearMovementContext (locomotion, unrelated)
+System.ExecuteCommand('SetEntityScriptContext') -> "Unknown command"
+bogus-name control: HasScriptContext('kcdmp_bogus_context_xyz') ok=true -> false
+  (so false cannot distinguish "not set" from "unknown name"; the seven
+   names are confirmed real by the Tables.pak rows instead)
+```
+
+Meta-role avenue checked and closed: `Libs/Tables/rpg/metarole.xml` roles are
+dialogue/voice-line tags (`COMPANION_KOMENTUJE_CRIME_*`), not context
+appliers.
+
+**VERDICT (observed): our build has NO Lua-reachable script-context setter.**
+`Contexts.SetPersistentOption` is a KCSE-lineage surface we don't have. The
+crime-report half of KCD2Online's isolation block is native-only here — a
+finding, not a failure. The reachable subset is the dialog half:
+
+```
+[WO65] before IsDialogRestricted=false
+[WO65] RestrictDialog(true) ok=true err=nil
+[WO65] after IsDialogRestricted=true          <- REAL WRITE, observed
+[WO65] InterruptDialogs() ok=true err=nil
+```
 
 ---
 
-## Phase 1 — implement (NOT STARTED, gated on the Phase 0 log)
+## Phase 1 — implemented (same day, after the probe log)
 
-Plan, for the record:
+`KCD2MP_ApplyGhostIsolation(id, stage)` + `mp_ghost_isolate on|off`
+(default **on**, `KCD2MP.ghostIsolate`):
 
-- On ghost-ready (`KCD2MP_SpawnGhost`'s existing settle path — the same
-  1500 ms soul-readiness window the name apply uses, plus an immediate
-  attempt at spawn; all spawns funnel through `SpawnGhost`, including
-  save-reload rebuilds and `mp_reconcile` recycling, so re-application on
-  lifecycle edges comes free), when `mp_ghost_isolate` is on (default on):
-  apply whatever setter the probe proves, tag `KCDMPGhost`, then
-  `soul:RestrictDialog(true)`, then `human:InterruptDialogs()`.
-- Every call pcall-wrapped; per-context readback via `HasScriptContext`
-  logged as `applied-and-verified` / `applied-but-not-readable` /
-  `missing-on-this-build`; a missing context never fails the spawn.
-- Toggle semantics: `off` gates application at spawn; persistent options may
-  not be removable at runtime — no fake removal.
+- Called directly in `KCD2MP_SpawnGhost` (spawn path, NOT a timer — menus
+  suspend `Script.SetTimer`, reload kills timers) and re-asserted from the
+  existing 1500 ms name-settle timer in case the soul wasn't ready at
+  spawn+0 (`ghost.isolated` dedupes). All respawn paths funnel through
+  `SpawnGhost`, so save-load re-application comes free.
+- Context half: generic setter hook — if a future patch ships
+  `Contexts.SetPersistentOption` (tag `KCDMPGhost`) it lights up with
+  per-context `HasScriptContext` readback; today every context logs
+  `missing-on-this-build` and the spawn continues.
+- Dialog half: `RestrictDialog(true)` with `IsDialogRestricted` readback,
+  then `InterruptDialogs()`. Everything pcall-wrapped.
+- Toggle: `off` gates future spawns AND takes the clean removal that exists
+  (`RestrictDialog(false)`, readback verified); no fake removal of context
+  options is pretended.
 
-## Phase 2 — live verification (NOT STARTED)
+## Phase 2 — live verification
 
-1. `mp_probe_contexts` before and after isolation.
-2. WO-34 repro: punch the ghost in a guard's line of sight — expect no crime
-   report, no fine, no guard reaction. Record either way.
-3. Ghost no longer triggers pickpocket/near-miss/perception reactions; no
-   dialog can be initiated with it.
-4. `mp_ghost_isolate off` + respawn → vanilla (broken) behaviour returns.
+Run via ExecuteString against the running game, 2026-08-27:
+
+| check | result |
+|---|---|
+| Full apply pass on a live ghost | **OBSERVED** — 7× `missing-on-this-build`, `RestrictDialog(true): ok=true readback=true (applied-and-verified)`, `InterruptDialogs(): ok=true` |
+| `mp_ghost_isolate off` clean removal | **OBSERVED** — `RestrictDialog(false): readback=false`, `ghostIsolate=false (touched 1 live ghosts)` |
+| `mp_ghost_isolate on` re-apply | **OBSERVED** — full pass re-ran, readback=true |
+| Whole edited kdcmp.lua compiles | **OBSERVED** — in-game `loadfile` compile-only check, `compiled=true` (WO-13's trick) |
+| Spawn-path integration (Isolate lines firing from a real `SpawnGhost` call) | **OBSERVED** — after the 0.18.4 pak install + restart, `mp_spawn_test` produced the full Isolate block unprompted, `ghostIsolate default=true`, RestrictDialog applied-and-verified at spawn+0 (soul was ready immediately), settle pass correctly deduped (no duplicate block) |
+| `mp_probe_contexts` before AND after isolation | **OBSERVED** — identical: `Contexts` nil both times; all seven contexts read `false` after isolation too, consistent with nothing having set them |
+| "No dialog can be initiated with the ghost" (human at keyboard) | **OBSERVED** — the user walked up and tried to talk: no dialog can be started with the isolated ghost. The dialog half works in the real UI, not just in readback |
+| WO-34 crime repro (punch ghost before a guard) | **OBSERVED, STILL BROKEN as predicted** — the user punched the test ghost with witnesses around: the ghost aggroed (WO-26's always-on reactive combat, expected), everyone nearby noticed, the user was outlawed and killed. The crime-victim defect stands until the native follow-up; no regression from isolation |
+| Pickpocket/near-miss/perception secondary checks | **NOT RUN — cannot pass**: those reactions are exactly the contexts that cannot be set on this build |
+
+Injection-environment note (not a shipped-code bug): `mp_log` is a
+file-local in the pak, so the hand-injected section needed a global shim;
+and the injected run needed `KCD2MP.ghostIsolate=true` set by hand because
+the running pak predated the default. Neither applies to the built pak,
+where the section compiles inside the same file.
+
+## What would actually fix the crime problem — native follow-up (proposed)
+
+`RPGModule.dll` carries `SetEntityScriptContext` / `StaticDataScriptContext`
+/ `E_ScriptContextSideEffect` internals. A KCDMP.dll call into that layer
+(WO-42/44-style disassembly to pin the function, then apply the seven
+contexts on ghost-ready) is the real port of KCD2Online's block. Out of
+WO-65's Lua-only scope by design — flagged per instruction 5, not touched.
 
 ---
+
+## Suites
+
+Run 2026-08-27 against a real relay: **Sessions 22/22, Combat 14/14,
+Dice 14/14 — green.** `Test-Pipe` NOT run this session: it requires
+KCDMP.dll injected (launcher flow); the game was launched bare via Modding
+Tools for the probe work, and WO-65 touches no pipe path.
 
 ## Version
 
 `main` labelled **0.18.4** this session (user-chosen, no release/installer
 published — `docs/VERSIONING.md`).
+
+## Definition-of-done ledger
+
+- `mp_probe_contexts` shipped, live output recorded above — DONE
+- isolation on ghost-ready behind `mp_ghost_isolate` (default on), all
+  pcall-wrapped, per-context verification logging — DONE (dialog half is
+  what this build allows; contexts log `missing-on-this-build`)
+- WO-34 repro executed, observed result recorded honestly — DONE (still
+  broken, as the missing setter predicts)
+- no engine/protocol/relay/session-framework changes — HELD
+- suites — 3 of 4 green, Test-Pipe not run (reason above)
+- next session starts cold from this doc + the WO-65 prompt; the open
+  thread is the **native follow-up**: pin RPGModule's
+  `SetEntityScriptContext`/context-applier and call it from KCDMP.dll on
+  ghost-ready — that is the actual crime fix

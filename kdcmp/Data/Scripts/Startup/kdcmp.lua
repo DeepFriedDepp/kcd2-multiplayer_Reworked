@@ -61,6 +61,11 @@ KCD2MP.horseAdoptEnabled = true -- WO-40 Phase 0: mp_horse_adopt on|off -- field
 -- player while its owner sat in a menu. mp_ghost_ignorant off restores the
 -- old behaviour.
 KCD2MP.ghostsIgnorant = true
+-- WO-65: ghost civic isolation (default on). What it actually does on THIS
+-- build is the dialog half only -- RestrictDialog + InterruptDialogs, both
+-- live-verified 2026-08-27. The script-context half (the real crime fix) has
+-- no Lua-reachable setter here; see KCD2MP_ApplyGhostIsolation.
+KCD2MP.ghostIsolate = true
 KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
 KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
@@ -2947,12 +2952,21 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
             .. " ok=" .. tostring(igOk) .. (igOk and "" or (" err=" .. tostring(igErr))))
     end
 
+    -- WO-65: civic isolation, applied in the spawn path itself (not a timer --
+    -- menus suspend timers and reload kills them). If the soul is not ready
+    -- yet this logs and the settle pass below retries.
+    KCD2MP_ApplyGhostIsolation(id, "spawn")
+
     -- Schedule name apply after entity fully inits (soul may not be ready at spawn time).
     -- Uses Steam nick if already received via 0x03, else fallback "Player<id>".
     local captId = id
     Script.SetTimer(1500, function()
         local displayName = KCD2MP.ghostNames[captId] or ("Player" .. captId)
         KCD2MP_ApplyGhostName(captId, displayName)
+        -- WO-65: opportunistic re-assert on the existing settle timer, for the
+        -- case where the soul was not reachable at spawn+0. No-ops if the
+        -- spawn pass landed (ghost.isolated) or the toggle is off.
+        KCD2MP_ApplyGhostIsolation(captId, "settle")
     end)
 
     -- Auto-start interp loop as soon as we have a ghost to move
@@ -5917,6 +5931,110 @@ function KCD2MP_ProbeContexts()
     L("=== END CONTEXTS PROBE ===")
 end
 
+-- ===== WO-65 — ghost civic isolation (Phase 1) =====
+--
+-- What the live probe settled (2026-08-27, all observed in-game):
+--   - Contexts global is nil; no script-context setter exists under any
+--     plausible name on soul/entity/AI/Game/XGenAIModule/System/Script;
+--     SetEntityScriptContext is not a console command ("Unknown command").
+--     The seven isolation contexts CANNOT be set from Lua on this build --
+--     the crime-report half of KCD2Online's block is native-only here.
+--   - soul:RestrictDialog(true) is a REAL write: IsDialogRestricted flipped
+--     false->true on a live ghost. human:InterruptDialogs() runs clean.
+-- So this applies what the build offers (the dialog half), logs
+-- missing-on-this-build for each context, and keeps a generic setter hook so
+-- a future patch that ships Contexts.SetPersistentOption lights up the rest
+-- without a code change.
+--
+-- Lifecycle: called directly in KCD2MP_SpawnGhost (spawn path, not a timer --
+-- menus suspend Script.SetTimer and reload kills timers), and re-asserted
+-- opportunistically from the existing 1500ms name-settle timer in case the
+-- soul was not ready at spawn+0. All respawn paths funnel through SpawnGhost
+-- (UpdateGhost respawns missing bodies, ReconcileGhosts recycles into the
+-- next packet's spawn), so save-load re-application comes free.
+--
+-- Toggle semantics: mp_ghost_isolate off gates application at spawn. The
+-- dialog half has a clean removal (RestrictDialog(false), verified readable)
+-- and off takes it on live ghosts. Persistent context options would NOT be
+-- cleanly removable -- moot while no setter exists; if one appears, off must
+-- not pretend to strip them.
+function KCD2MP_ApplyGhostIsolation(id, stage)
+    if not KCD2MP.ghostIsolate then return end
+    local ghost = KCD2MP.ghosts[id]
+    if not ghost or not ghost.entity then return end
+    if stage == "settle" and ghost.isolated then return end  -- spawn pass already landed
+    local e = ghost.entity
+    if type(e.soul) ~= "table" then
+        mp_log("Isolate[" .. tostring(id) .. "] " .. tostring(stage)
+            .. ": soul not ready -- settle pass will retry")
+        return
+    end
+
+    -- Context half. setCtx stays nil on this build (probe: no setter).
+    local setCtx = nil
+    if type(Contexts) == "table" and type(Contexts.SetPersistentOption) == "function" then
+        setCtx = function(ctx)
+            local okSet = pcall(function() Contexts.SetPersistentOption(e, ctx, "KCDMPGhost") end)
+            if not okSet then return "call-failed" end
+            local has = nil
+            pcall(function() has = e.soul:HasScriptContext(ctx) end)
+            if has == true then return "applied-and-verified" end
+            return "applied-but-not-readable"
+        end
+    end
+    for _, ctx in ipairs(KCD2MP.isolationContexts) do
+        local verdict = setCtx and setCtx(ctx) or "missing-on-this-build"
+        mp_log("Isolate[" .. tostring(id) .. "] " .. ctx .. ": " .. verdict)
+    end
+
+    -- Dialog half (live-verified writes).
+    local okR = pcall(function() e.soul:RestrictDialog(true) end)
+    local isR = nil
+    pcall(function() isR = e.soul:IsDialogRestricted() end)
+    mp_log("Isolate[" .. tostring(id) .. "] RestrictDialog(true): ok=" .. tostring(okR)
+        .. " readback=" .. tostring(isR)
+        .. (isR == true and " (applied-and-verified)" or " (applied-but-not-readable)"))
+    if type(e.human) == "table" then
+        local okI = pcall(function() e.human:InterruptDialogs() end)
+        mp_log("Isolate[" .. tostring(id) .. "] InterruptDialogs(): ok=" .. tostring(okI)
+            .. " (no readback exists -- one-shot)")
+    end
+    ghost.isolated = true
+end
+
+-- mp_ghost_isolate on|off. on: applies to every live ghost immediately and
+-- future spawns. off: future spawns skip isolation, and the dialog half is
+-- cleanly removed from live ghosts (RestrictDialog(false) + readback).
+function KCD2MP_SetGhostIsolate(arg)
+    local s = tostring(arg or ""):lower()
+    local on
+    if s:find("on") then on = true
+    elseif s:find("off") then on = false
+    else
+        System.LogAlways("[KCD2-MP] mp_ghost_isolate: expected on|off (currently "
+            .. (KCD2MP.ghostIsolate and "on" or "off") .. ")")
+        return
+    end
+    KCD2MP.ghostIsolate = on
+    local n = 0
+    for id, ghost in pairs(KCD2MP.ghosts) do
+        if ghost and ghost.entity then
+            if on then
+                ghost.isolated = nil
+                KCD2MP_ApplyGhostIsolation(id, "toggle")
+            else
+                ghost.isolated = nil
+                pcall(function() ghost.entity.soul:RestrictDialog(false) end)
+                local isR = nil
+                pcall(function() isR = ghost.entity.soul:IsDialogRestricted() end)
+                mp_log("Isolate[" .. tostring(id) .. "] RestrictDialog(false): readback=" .. tostring(isR))
+            end
+            n = n + 1
+        end
+    end
+    System.LogAlways("[KCD2-MP] ghostIsolate=" .. tostring(on) .. " (touched " .. n .. " live ghosts)")
+end
+
 -- ===== Spawn NPC with custom armor =====
 
 -- Preset table (name -> {items, preset})
@@ -7100,6 +7218,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_terrain",      "KCD2MP_TerrainCheck()",  "Check player/ghost vs terrain height")
     System.AddCCommand("mp_probe_stance", "KCD2MP_ProbeStance()",   "Log player stance value (for crouch detection calibration)")
     System.AddCCommand("mp_probe_contexts", "KCD2MP_ProbeContexts()", "WO-65: dump script-context isolation surface (Contexts global, soul/human methods, per-context HasScriptContext on ghost + player) -- read-only")
+    System.AddCCommand("mp_ghost_isolate", 'KCD2MP_SetGhostIsolate("%LINE")', "WO-65: ghost civic isolation (default on). On this build: RestrictDialog+InterruptDialogs only -- the script-context crime fix has no Lua setter here: mp_ghost_isolate on|off")
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
     System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     -- mp_spawn_armor <guid1,guid2,...>  -- inventory only (no visual unless preset given as 2nd arg)
