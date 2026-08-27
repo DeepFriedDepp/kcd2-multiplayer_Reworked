@@ -817,6 +817,8 @@ bool read_vec3(const Api& api, Type t, const void* obj, const char* prop,
 // All of this must run on the game's main thread; callers post it there.
 // ---------------------------------------------------------------------------
 
+void* player_soul() { return g_walked ? g_player : nullptr; }
+
 void* find_soul_by_guid(const unsigned char guid[16]) {
     if (!g_walked || !g_souls) return nullptr;
     Api api{};

@@ -7,6 +7,7 @@
 #include "log.h"
 #include "main_thread.h"
 #include "pipe_server.h"
+#include "script_context.h"
 
 #include <windows.h>
 
@@ -118,6 +119,10 @@ DWORD WINAPI plugin_main(LPVOID) {
         // idempotent GetOrCreateCombatActor call in mode=create); constructs
         // and queues nothing.
         kcdmp::rttr::probe_combat_construct();
+        // WO-68 Phase 1: no-op unless kcdmp-contexts.txt exists beside the
+        // DLL -- same opt-in convention. Read-only unless its line 2 says
+        // "write", and even then it undoes its own write.
+        kcdmp::sctx::probe_contexts();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");
@@ -142,6 +147,9 @@ DWORD WINAPI plugin_main(LPVOID) {
     // needed to pin down a live discrepancy found while re-testing WO-44's
     // ghost class-dispatch finding against a validated ghost.
     kcdmp::main_thread::post_repeating(&kcdmp::rttr::probe_play_anim_watch);
+    // WO-68: same live-reload treatment, so a soul guid can be dropped into
+    // kcdmp-contexts.txt after a ghost is already standing in the world.
+    kcdmp::main_thread::post_repeating(&kcdmp::sctx::probe_contexts_watch);
 
     kcdmp::pipe::start();
     return 0;

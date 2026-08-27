@@ -387,6 +387,12 @@ void note_remote_damage(const unsigned char guid[16], float health_delta);
 /// streamed in.
 void* find_soul_by_guid(const unsigned char guid[16]);
 
+/// The player's C_Soul*, as cached by walk_to_soul(). Null before the walk has
+/// run (or if it failed). WO-68 uses it as the one soul that needs no lookup
+/// machinery, which makes it the natural control target for the script-context
+/// probe.
+void* player_soul();
+
 /// Apply damage attributed to no one. Returns false if the soul is not loaded.
 bool apply_damage(const unsigned char guid[16], float stamina, float health,
                   bool suppress_hit_reaction);

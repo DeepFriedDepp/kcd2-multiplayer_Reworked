@@ -4,6 +4,7 @@
     rttr_abi.cpp
     combat_playanim.cpp
     combat_construct.cpp
+    script_context.cpp
     main_thread.cpp
     pipe_server.cpp
     dice_hook.cpp
