@@ -54,6 +54,38 @@ constexpr const char* kGetGameIfaceName =
 // The isolation block. Order is WO-64/WO-65's, and every name is a real row in
 // Tables.pak :: Libs/Tables/ai/ScriptContext.xml with Class="Entity" -- the
 // same seven KCD2MP.isolationContexts lists on the Lua side.
+// WO-68 Phase 3: the first seven are KCD2Online's block, which this session
+// applied and verified live -- and which then FAILED the WO-34 repro: the
+// player was still outlawed for punching a fully-isolated ghost.
+//
+// The reason is in the game's own AI data. Scripts.pak ::
+// AI/npc/basic/switch/handleAwareness_hitVolume.xml, the observer-side tree
+// that turns a witnessed hit into a crime, checks
+//
+//   <EntityContextCheck context="crime_ignoredNPCHitVolume"
+//                       target="$volumeData.target">  -> $ignore = true
+//
+// i.e. the context that makes a witness ignore the hit lives on the VICTIM,
+// and it is not crime_disableReport. crime_disableReport governs whether the
+// entity itself reports crimes it sees; nothing in those trees checks it
+// against a victim at all.
+//
+// The four appended below are the victim-side members of that same family,
+// each one taken from a real EntityContextCheck whose target is the victim /
+// body / corpse / pickpocket pivot rather than the observer:
+//
+//   crime_ignoredNPCHitVolume     handleAwareness_hitVolume.xml   $volumeData.target
+//   crime_ignoredUnconsciousBody  handleAwareness_unconsciousBody.xml / _bodyHolder / _enemy   $body / $enemy
+//   crime_ignoredCorpse           handleAwareness_corpse.xml / _bodyCarrier   $corpse / $body
+//   crime_ignoredPickpocket       handleAwareness_pickpocket.xml  $stimulus.pivot
+//
+// All four are Class="Entity" rows in Tables.pak :: Libs/Tables/ai/ScriptContext.xml.
+// Deliberately NOT included: crime_ignoredCombat (a real table row, but no
+// tree in any shipped pak checks it -- no evidence it does anything),
+// crime_ignoredHorseTheft_NPC and crime_ignoreNPCHitVolumes (observer-side,
+// target="$this.id" -- they would have to go on every witness, not the ghost),
+// and crime_ignoreNPCHitVolume (a Relation context, needing slot [4] and a
+// per-observer pair rather than one call).
 constexpr const char* kIsolationContexts[] = {
     "switch_disabledInformationReaction",
     "switch_disabledHearingReaction",
@@ -62,7 +94,16 @@ constexpr const char* kIsolationContexts[] = {
     "switch_disabledNearMissReaction",
     "switch_disabledHitBehavioralReaction",
     "crime_disableReport",
+    "crime_ignoredNPCHitVolume",
+    "crime_ignoredUnconsciousBody",
+    "crime_ignoredCorpse",
+    "crime_ignoredPickpocket",
 };
+
+// Upper bounds for the file override below. Generous: the cost is stack, and
+// the whole point is not needing a rebuild to try a different list.
+constexpr int kMaxContexts    = 32;
+constexpr int kMaxContextChars = 96;
 constexpr int kIsolationContextCount =
     static_cast<int>(sizeof(kIsolationContexts) / sizeof(kIsolationContexts[0]));
 
@@ -477,6 +518,65 @@ bool read_config(Config* cfg) {
     return true;
 }
 
+// The list actually applied: kcdmp-isolation.txt if it exists (one context
+// name per line, "#" comments and blanks ignored), otherwise the built-in list
+// above. Same two-location search as the probe config -- game working
+// directory first, then beside the DLL.
+//
+// Existing purely so that "which contexts stop a crime" can be answered by
+// editing a text file and respawning a ghost, instead of a rebuild + reinstall
+// + game restart per attempt. WO-68's live testing needed three such rounds
+// before the answer was in hand.
+int load_context_list(char names[kMaxContexts][kMaxContextChars]) {
+    char path[MAX_PATH]{};
+    bool found = false;
+    char cwd[MAX_PATH]{};
+    if (GetCurrentDirectoryA(MAX_PATH, cwd) && cwd[0]) {
+        _snprintf_s(path, sizeof(path), _TRUNCATE, "%s%skcdmp-isolation.txt",
+                    cwd, (cwd[std::strlen(cwd) - 1] == '\\') ? "" : "\\");
+        found = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    }
+    if (!found) {
+        HMODULE self = nullptr;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(&load_context_list), &self);
+        if (GetModuleFileNameA(self, path, MAX_PATH)) {
+            char* slash = std::strrchr(path, '\\');
+            if (slash) {
+                std::strcpy(slash + 1, "kcdmp-isolation.txt");
+                found = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+            }
+        }
+    }
+
+    if (found) {
+        FILE* f = nullptr;
+        if (fopen_s(&f, path, "r") == 0 && f) {
+            int n = 0;
+            char line[kMaxContextChars * 2];
+            while (n < kMaxContexts && std::fgets(line, sizeof(line), f)) {
+                size_t k = std::strlen(line);
+                while (k && (line[k - 1] == '\n' || line[k - 1] == '\r' ||
+                             line[k - 1] == ' '  || line[k - 1] == '\t')) line[--k] = 0;
+                if (!line[0] || line[0] == '#') continue;
+                strncpy_s(names[n], kMaxContextChars, line, _TRUNCATE);
+                ++n;
+            }
+            std::fclose(f);
+            if (n > 0) {
+                logf("SCTX: context list overridden by %s (%d entries)", path, n);
+                return n;
+            }
+            logf("SCTX: %s held no usable names -- falling back to the built-in list", path);
+        }
+    }
+
+    for (int i = 0; i < kIsolationContextCount; ++i)
+        strncpy_s(names[i], kMaxContextChars, kIsolationContexts[i], _TRUNCATE);
+    return kIsolationContextCount;
+}
+
 // One HasEntityContext read, logged.
 void log_has(void* mgr, uint64_t wuid, const void* node, const char* name, const char* stage) {
     bool has = false;
@@ -632,9 +732,12 @@ bool apply_isolation(const unsigned char guid[16], bool on) {
         return false;
     }
 
+    static char names[kMaxContexts][kMaxContextChars];
+    const int total = load_context_list(names);
+
     int inState = 0, changed = 0, unresolved = 0, mismatched = 0;
-    for (int i = 0; i < kIsolationContextCount; ++i) {
-        const char* name = kIsolationContexts[i];
+    for (int i = 0; i < total; ++i) {
+        const char* name = names[i];
         const void* node = lookup_node(c, name, /*verbose=*/false);
         if (!node) {
             logf("SCTX: isolate %s: context unresolved on this build -- skipped", name);
@@ -675,8 +778,8 @@ bool apply_isolation(const unsigned char guid[16], bool on) {
     logf("SCTX: isolate(%s) wuid=0x%016llX -- %d/%d in state (%d changed, %d already, "
          "%d unresolved, %d did not take)",
          on ? "on" : "off", static_cast<unsigned long long>(wuid),
-         good, kIsolationContextCount, changed, inState, unresolved, mismatched);
-    return good == kIsolationContextCount;
+         good, total, changed, inState, unresolved, mismatched);
+    return good == total;
 }
 
 void probe_contexts_watch() {

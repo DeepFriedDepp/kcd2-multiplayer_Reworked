@@ -5847,6 +5847,15 @@ end
 --     Tools module DLL, not in retail WHGame.dll, not in any pak's Lua.
 --     KCD2Online itself only runtime-probes for it and skips if absent.
 -- So this probe is authoritative for the setter; everything is read-only.
+-- WO-68 Phase 3: the first seven (KCD2Online's block) were applied and
+-- verified live -- and the WO-34 repro still outlawed the player. The game's
+-- own AI data says why: the observer-side tree that turns a witnessed hit into
+-- a crime (Scripts.pak :: AI/npc/basic/switch/handleAwareness_hitVolume.xml)
+-- checks crime_ignoredNPCHitVolume on the VICTIM, and never checks
+-- crime_disableReport against a victim at all. The last four are that family's
+-- victim-side members, each from a real EntityContextCheck. Keep this list in
+-- step with kIsolationContexts in native/KCDMP/script_context.cpp -- the
+-- native side applies them, this list is what the readback reports.
 KCD2MP.isolationContexts = {
     "switch_disabledInformationReaction",
     "switch_disabledHearingReaction",
@@ -5855,6 +5864,10 @@ KCD2MP.isolationContexts = {
     "switch_disabledNearMissReaction",
     "switch_disabledHitBehavioralReaction",
     "crime_disableReport",
+    "crime_ignoredNPCHitVolume",
+    "crime_ignoredUnconsciousBody",
+    "crime_ignoredCorpse",
+    "crime_ignoredPickpocket",
 }
 
 function KCD2MP_ProbeContexts()

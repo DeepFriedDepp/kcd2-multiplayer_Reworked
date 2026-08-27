@@ -5,8 +5,10 @@
     tools\Test-Pipe.ps1.
 
 .DESCRIPTION
-    Applies (default) or removes the seven civic-isolation script contexts on a
-    locally-spawned ghost, and reports the DLL's own verdict. The per-context
+    Applies (default) or removes the civic-isolation script contexts on a
+    locally-spawned ghost, and reports the DLL's own verdict. The list is the
+    DLL's (11 as of WO-68 Phase 3, overridable with kcdmp-isolation.txt), not
+    this script's -- nothing here needs changing when it grows. The per-context
     readback lines land in kcdmp-native.log (mirrored into the game root as
     kcdmp-native.mirror.log) as "SCTX: isolate <name>: ..." -- read those, not
     just the boolean here: a false result can mean "the soul is not spawned
@@ -91,6 +93,6 @@ $pipe.Dispose()
 
 if ($head[0] -ne 0x81) { throw ("unexpected reply type 0x{0:X2}" -f $head[0]) }
 $ok = $body[0] -ne 0
-Write-Host ("result : {0} (seq {1})" -f ($(if ($ok) { 'all seven in state' } else { 'NOT fully applied' })), $body[1])
+Write-Host ("result : {0} (seq {1})" -f ($(if ($ok) { 'every context in state' } else { 'NOT fully applied' })), $body[1])
 Write-Host "Read the SCTX lines in kcdmp-native.log for the per-context readback."
 if (-not $ok) { exit 1 }

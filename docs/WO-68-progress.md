@@ -79,17 +79,88 @@ Dice 14/14, NpcClaimValidation 23/23, TimeSkipRelay 35/35, ItemSyncRelay
 11/11 — all green.** `Test-Pipe` still outstanding: it needs the game injected,
 which is the same thing Phase 1 needs.
 
+### Phase 1 — RAN, every hypothesis held
+
+Player soul and a real ghost soul, both directions. Chain, vptr, both slot
+RVAs, both prologues, node name + `class=1`, bogus-name control, the
+`UnconsciousHolsterInsteadDropWeapons` control read (`true`), and a
+false -> set -> true -> unset -> false round trip with no fault. Lua's
+`HasScriptContext` agreed with the native reader on both the true and the false
+case. Full quotes in the findings doc §9.
+
+### Phase 2 — wired
+
+- `apply_isolation(guid, on)` in `script_context.cpp`: fail-closed integrity
+  gate, `SoulsByGuid` -> `soul+0x40` WUID, per-context read-before-write (the
+  store is refcounted, so re-applying would strand a context at count 2),
+  per-context readback logged, first fault disarms the feature for the process.
+- Pipe `0x07 GhostIsolate [guid:16][on:1]`, mirroring `0x04`'s identity and
+  marshalling.
+- Agent fires it on the `ghostid` event (the ghost-ready edge, so respawn and
+  post-reload rebuilds are covered), resolving the soul guid fresh each time.
+- Lua `mp_ghost_isolate` emits an `isolate` event so one switch still gates both
+  halves.
+- `tools/Probe-GhostIsolate.ps1` drives 0x07 with no agent attached.
+
+### Phase 3 — the seven FAILED the repro; eleven PASS
+
+Round one: seven contexts applied, verified natively and in Lua, still set at
+the moment of the test — **and the player was still outlawed for punching the
+ghost in front of a guard.** Verified write, unchanged defect.
+
+Cause, from the game's own AI data
+(`Scripts.pak :: AI/npc/basic/switch/handleAwareness_hitVolume.xml`): the
+observer-side tree checks **`crime_ignoredNPCHitVolume` on the victim**, and no
+shipped tree checks `crime_disableReport` against a victim at all. WO-34 and
+KCD2Online's block both conflated "reports crimes it sees" with "crimes against
+it count". Swept every awareness tree for the family and added the four
+victim-side rows (`crime_ignoredNPCHitVolume`, `crime_ignoredUnconsciousBody`,
+`crime_ignoredCorpse`, `crime_ignoredPickpocket`); excluded
+`crime_ignoredCombat` (no tree checks it) and the observer-side/Relation
+variants (wrong entity for a one-call-per-ghost fix).
+
+Round two, eleven contexts, same save and same action: **"a guard noticed me
+punching but did not arrest me for it."** No report, no fine, no outlaw. Two-point
+A/B, so WO-34 §1 is fixed.
+
+Also observed: the ghost **does not fight back** (so
+`switch_disabledHitBehavioralReaction` does suppress WO-26's reactive combat —
+an open unknown closed); `off` really removes all eleven and `on` re-applies;
+a ghost spawned while the toggle was off got **zero** isolate calls; `on` after a
+respawn applied to the new WUID, not a cached one. Inconclusive: a guard walking
+*through* a ghost, seen once and not reproducible. Not run: pickpocket/near-miss
+in-game attempts.
+
+The context list is now overridable by `kcdmp-isolation.txt` (game root or
+beside the DLL, one name per line), added after three rebuild+reinstall+restart
+cycles proved the list is the part that needs iterating.
+
+### Suites
+
+Final-tree run, all green: **Sessions 22/22, Combat 14/14, Dice 14/14,
+NpcClaimValidation 23/23, TimeSkipRelay 35/35, ItemSyncRelay 11/11**, and
+**`Test-Pipe`: PASS** (`health 100 -> 96`) — run with the agent detached, which
+is the skip this WO was told not to repeat again.
+
+One environmental trap found while doing it, worth knowing before someone reads
+a red result as a regression: **`Test-Dice`'s two seed-determinism cases only
+pass against a freshly started relay.** Run against a relay process that has
+already served matches they fail with different scores each time
+(`same seed -> same final scores -- A=750/0 B=1050/300`), because the expected
+values assume the relay's RNG state at process start. A clean relay on the same
+tree gave 14/14 immediately. Also: `--port` moves only the relay's TCP port;
+its HTTP endpoint comes from `appsettings.json` (`Urls`, 5273) and needs
+`--Urls` to move, which is what makes a second relay collide with a running one.
+
 ### Next actions (cold start from here)
 
-1. Human launches the game through the launcher (injected), loads a save.
-2. Drop `kcdmp-contexts.txt` (`player` / `read`) beside the DLL, read the
-   `SCTX:` block out of `kcdmp-native.log` (or the mirror in the game root).
-   The control read is the go/no-go.
-3. Flip line 2 to `write`, confirm `after-set` true + Lua
-   `player.soul:HasScriptContext('crime_disableReport')` true, `after-unset`
-   false.
-4. Only then Phase 2: pipe `0x07 GhostIsolate [guid:16][on:1]`, seven contexts,
-   `native_context_isolation_enabled` disable-on-first-fault, agent call at
-   ghost-ready, `mp_ghost_isolate` gating both halves.
-5. Phase 3: WO-34 repro (punch an isolated ghost in front of a guard) and
-   `Test-Pipe`.
+1. The four secondary in-game checks nobody has made: pickpocket an isolated
+   ghost, near-miss it, and see whether a witness reacts to its corpse or its
+   unconscious body — those are exactly the three contexts added in round two
+   whose effect is applied-and-verified but not behaviourally observed.
+2. Settle the pathing question: does isolation take a ghost out of NPC
+   avoidance? Compare an isolated and an un-isolated ghost with the same NPC
+   walking the same line.
+3. `crime_disableReport`'s value for a ghost is unevidenced — worth one probe
+   with it removed from the list (now a text-file edit) to see if anything
+   changes.

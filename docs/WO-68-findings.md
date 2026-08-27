@@ -239,15 +239,163 @@ cleared on the first SEH fault for the rest of the process. WO-65's Lua
 the agent knows the `mp_ghost_isolate` state. No protocol, relay or
 session-framework change.
 
-## 9. Open unknowns (recorded, not rounded up)
+## 9. Phase 1 — OBSERVED, live (2026-08-27)
 
-- Whether the crime system consults `HasEntitySideEffect(crimeDisableReport)`
-  **per report** (a runtime write then works) or caches it when a soul/brain
-  initialises (a runtime write would not take). Every non-test caller reaches
-  the manager through the vtable from another module, so static callers are not
-  enumerable from WHGame alone. **The WO-34 live repro is the arbiter.**
-- Whether the six `switch_disabled*Reaction` contexts are read by the brain per
-  stimulus or latched at brain init — same question, different system.
+Driven from the coding shell against the injected game, config in the game root.
+Every line below is quoted from `kcdmp-native.log`.
+
+Chain and integrity, identical across every run:
+
+```
+SCTX: ScriptContext DB = XGenAIModule.dll+0x2E43900
+SCTX: manager vptr = WHGame.DLL+0x32AAD0 == C_ScriptContextManager::vftable OK
+SCTX: slot[2] SetEntityContext = WHGame.DLL+0x6BE80 expected WHGame+0x6BE80 MATCH
+SCTX: slot[7] HasEntityContext = WHGame.DLL+0x6C4A0 expected WHGame+0x6C4A0 MATCH
+SCTX: both prologues match -- addresses verified for this build
+```
+
+Every Phase 0 hypothesis held. Note the database object itself lives in
+**XGenAIModule**, reached through `gameIface+0x168` — consistent with
+`S_EntityScriptContext` being an xgenaimodule type.
+
+| check | result |
+|---|---|
+| node lookup, name + class | **OBSERVED** — `crime_disableReport -> node=... name="crime_disableReport" class=1 (name matches)` |
+| bogus-name control | **OBSERVED** — `kcdmp_wo68_not_a_context -> node=null (database has no such row)` |
+| player WUID at `soul+0x40` | **OBSERVED** — `0x0500000000000251` |
+| **control read** (`UnconsciousHolsterInsteadDropWeapons`, player) | **OBSERVED true** — the single line that validates the manager instance and the WUID offset together |
+| target read before any write | **OBSERVED false** |
+| Stage B write, player | **OBSERVED** — `after-set ... = true`, then `after-unset ... = false`, no fault |
+| ghost soul via `SoulsByGuid` | **OBSERVED** — soul resolved, WUID `0x05000000000005EB`, distinct from the player's |
+| Stage B write, real ghost | **OBSERVED** — same false -> true -> false round trip |
+| Lua vs. native agreement | **OBSERVED** — `player:UnconsciousHolsterInsteadDropWeapons = true  ghost:false`, `crime_disableReport = false` on both, matching the native reader on both the true and the false case |
+
+The one thing Phase 1 could **not** observe: the Lua readback flipping *because
+of our write*. The probe sets and unsets inside one main-thread callback, so no
+window exists for an external reader. Deferred to Phase 3 rather than papered
+over.
+
+## 10. Phase 3 — the WO-34 repro FAILED with the seven, and why
+
+Live, human at the keyboard. Round one applied KCD2Online's seven contexts to a
+ghost; all seven verified set natively **and** read `true` from Lua
+(`mp_probe_contexts`), while the player read `false` for all seven — so the
+write was real, targeted, and still in force at the moment of the test
+(re-checked after the punch: still 7/7 true).
+
+**Result: the player punched the isolated ghost in front of a guard, was seen,
+and was outlawed.** Same outcome as WO-65's un-isolated run. A verified write
+that changes nothing about the defect.
+
+The game's own AI data says why. `Scripts.pak ::
+AI/npc/basic/switch/handleAwareness_hitVolume.xml` — the observer-side tree that
+turns a witnessed hit into a crime — contains:
+
+```xml
+<EntityContextCheck context="crime_ignoredNPCHitVolume" target="$volumeData.target">
+  <Then><Expression expressions="$ignore = true" /></Then>
+</EntityContextCheck>
+<RelationContextCheck context="crime_ignoreNPCHitVolume" from="$this.id" to="$volumeData.target">
+<EntityContextCheck context="crime_ignoreNPCHitVolumes" target="$this.id">
+```
+
+`$volumeData.target` is the **victim**. The context that makes a witness ignore
+a hit sits on the thing that was hit — and **no shipped tree checks
+`crime_disableReport` against a victim at all**. `crime_disableReport` governs
+whether an entity reports crimes *it* witnesses; a ghost being punched is not
+the reporter. WO-34's "a ghost is a full crime victim" and KCD2Online's block
+both conflate the two roles, and this WO inherited that conflation from WO-64.
+
+Sweeping every `<EntityContextCheck>`/`<RelationContextCheck>` in the shipped
+awareness trees gives the whole family and, for each, which entity it is checked
+on:
+
+| context | tree | checked on |
+|---|---|---|
+| `crime_ignoredNPCHitVolume` | `handleAwareness_hitVolume` | `$volumeData.target` (victim) |
+| `crime_ignoredUnconsciousBody` | `handleAwareness_unconsciousBody`, `_bodyHolder`, `_bodyCarrier`, `_enemy` | `$body` / `$enemy` |
+| `crime_ignoredCorpse` | `handleAwareness_corpse`, `_bodyCarrier`, `_animal_corpse` | `$corpse` / `$body` |
+| `crime_ignoredPickpocket` | `handleAwareness_pickpocket` | `$stimulus.pivot` |
+| `crime_ignoredAnimalHitVolume` | `handleAwareness_animal_hitVolume` | `$volumeData.target` (animals) |
+| `crime_ignoredHorseTheft_Horse` | `handleAwareness_playerMount`, `_playerMountedVolume` | `$mount` |
+| `crime_ignoredHorseTheft_NPC` | same | `$this.id` (**observer**) |
+| `crime_ignoreNPCHitVolumes` | `handleAwareness_hitVolume` | `$this.id` (**observer**) |
+
+So the applied set became **eleven**: the original seven plus the four
+victim-side rows that apply to a human ghost. Excluded deliberately:
+`crime_ignoredCombat` (a real `Class="Entity"` table row, but **no shipped tree
+checks it** — no evidence it does anything), the two observer-side entries
+(they would have to be applied to every witness, not the ghost), and the
+Relation-class `crime_ignoreNPCHitVolume` (slot [4], one call per
+observer/victim pair).
+
+### Round two — OBSERVED PASS
+
+```
+SCTX: isolate crime_ignoredNPCHitVolume: set -> readback=true (applied-and-verified)
+... (11 lines)
+SCTX: isolate(on) wuid=0x05000000000005DD -- 11/11 in state (11 changed, 0 already, 0 unresolved, 0 did not take)
+PIPE: GhostIsolate on=true -> all contexts in state
+```
+
+Human report, same save, same action, same guard: **"a guard noticed me punching
+but did not arrest me for it."** No crime report, no fine, no outlaw state.
+
+That is a two-point A/B rather than a single observation: seven contexts →
+outlawed; eleven contexts → no crime. **WO-34 §1's crime-victim defect is
+fixed.**
+
+### Everything else observed in Phase 3
+
+| observation | result |
+|---|---|
+| Lua readback after a native apply — the WO's stated success signal, and WO-65's gap | **OBSERVED** — all seven (later all eleven) read `true` on the ghost via `mp_probe_contexts`, `false` on the player |
+| `mp_ghost_isolate off` | **OBSERVED** — `11/11 in state (11 changed)` clearing, and all read `false` from Lua. Real removal, not WO-65's placeholder |
+| `mp_ghost_isolate on` again | **OBSERVED** — re-applied, all read `true` again |
+| Toggle gating the spawn path | **OBSERVED** — a ghost spawned while the toggle was off produced **zero** isolate lines (agent skipped, Lua skipped) |
+| Toggle re-resolving identity | **OBSERVED** — `on` after a respawn applied to WUID `0x…0622`, not the previous ghost's `0x…05DD`, so nothing stale is cached |
+| Ghost fighting back | **OBSERVED — it does not.** `switch_disabledHitBehavioralReaction` suppresses WO-26's always-on reactive combat. WO-65's run had the ghost aggro; this one did not. That closes an open unknown from the session prompt |
+| Guard notices an **un-isolated** ghost | **OBSERVED** (screenshot) — the control behaves normally |
+| Guard walking *through* a ghost | **INCONCLUSIVE** — seen once, then not reproducible on demand. WO-32 §Collision already records ghosts having no collision as inherent to the `SetWorldPos` position stream, so this is very likely pre-existing rather than an isolation side effect, but this session did not establish it either way |
+| Pickpocket / near-miss / perception secondaries | **NOT RUN** — the contexts are applied and read back, but no in-game attempt was made |
+| Broken-then-vanishing ghost body | **OBSERVED once, pre-existing defect** — reproduced while spawning a ghost at the player's *exact* position (overlapping their capsule) rather than the usual 3 m offset. This is WO-16's "the ghost's visual model disappeared, nametag stayed floating", tracked separately. Recorded here only because the exact-position spawn is a possible deterministic trigger — one sample, not a diagnosis |
+
+### `Test-Pipe` — run, PASS
+
+Run with the agent detached (the DLL's pipe takes one client), which is also
+why it had been skipped for two WOs:
+
+```
+target : ttkc_man_32  guid=20dd03e3-...  health=100
+ping   : pong
+result : applied
+health : 100 -> 96   IsDead=false
+PASS - a remote peer's damage reached the game
+```
+
+`tools\Probe-GhostIsolate.ps1` exercised pipe 0x07 in both directions with no
+agent in the loop: `11/11 in state` off, then `11/11 in state` on.
+
+## 11. Open unknowns (recorded, not rounded up)
+
+- ~~Whether the crime system consults the side effect per report or caches it at
+  init~~ — **settled by Phase 3**: contexts written at runtime take effect
+  immediately, with no respawn or reload. The eleven-context ghost was isolated
+  seconds before the punch and the crime path already honoured it.
+- ~~Whether `switch_disabled*Reaction` is read per stimulus or latched at brain
+  init~~ — **settled**: `switch_disabledHitBehavioralReaction` suppressed
+  reactive combat on an already-spawned, already-brained ghost.
+- Whether `crime_disableReport` does anything useful for a ghost at all. It is
+  applied and verified, but nothing observed depends on it, and no shipped tree
+  checks it against a victim. Kept because it is harmless and is the row whose
+  `SideEffect="crimeDisableReport"` the manager's own
+  `HasEntitySideEffect` path consumes — but its value here is **unevidenced**.
+- Whether the observer-side rows (`crime_ignoreNPCHitVolumes`,
+  `crime_ignoredHorseTheft_NPC`) or the Relation-class
+  `crime_ignoreNPCHitVolume` would add anything. Untried: they need application
+  to every witness, or per-pair, rather than once per ghost.
+- Whether isolation removes a ghost from NPC pathing/avoidance (the
+  walk-through observation above). Inconclusive.
 - Whether the manager's per-entity store survives a save load (if not, the
   ghost respawn path re-applies anyway).
 - `soul+0x40` is code-verified as *the value the readback uses*, not as "the
