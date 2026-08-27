@@ -36,8 +36,10 @@
 
 namespace kcdmp::sctx {
 
-// Phase 1 probe. Opt-in: no-op unless `kcdmp-contexts.txt` sits beside the DLL
-// (the kcdmp-combat.txt / kcdmp-playanim.txt convention).
+// Phase 1 probe. Opt-in: no-op unless `kcdmp-contexts.txt` exists, either in
+// the game process's working directory (preferred -- the coding shell can
+// write there, unlike %LocalAppData%) or beside the DLL (the
+// kcdmp-combat.txt / kcdmp-playanim.txt convention).
 //
 //   line 1: "player", or "guid:<32 hex chars>" (a soul Guid, resolved through
 //           rttr's SoulsByGuid -- the same identity pipe 0x04 already uses)

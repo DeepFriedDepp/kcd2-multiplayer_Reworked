@@ -371,7 +371,28 @@ struct Config {
     char     context[96]{};
 };
 
+// Two candidate locations, in this order:
+//   1. the game process's working directory (the game root, where log.h
+//      already writes its mirror log) -- reachable from the coding shell,
+//      which %LocalAppData% is NOT: WO-43 §7's sandbox redirection makes
+//      writes there land somewhere the game never reads. Iterating on the
+//      probe's inputs needs a path both sides can see.
+//   2. beside the DLL, the kcdmp-combat.txt convention, for a human who would
+//      rather keep everything in one folder.
+// The first one that exists wins; falls back to (2)'s path so callers always
+// have something to report.
 bool config_path(char* path, size_t n) {
+    char cwd[MAX_PATH]{};
+    if (GetCurrentDirectoryA(MAX_PATH, cwd) && cwd[0]) {
+        char candidate[MAX_PATH]{};
+        _snprintf_s(candidate, sizeof(candidate), _TRUNCATE, "%s%skcdmp-contexts.txt",
+                    cwd, (cwd[std::strlen(cwd) - 1] == '\\') ? "" : "\\");
+        if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES) {
+            strncpy_s(path, n, candidate, _TRUNCATE);
+            return true;
+        }
+    }
+
     HMODULE self = nullptr;
     GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -455,6 +476,8 @@ void probe_contexts() {
         logf("SCTX: no usable kcdmp-contexts.txt -- skipping");
         return;
     }
+    char cfgPath[MAX_PATH]{};
+    if (config_path(cfgPath, sizeof(cfgPath))) logf("SCTX: config = %s", cfgPath);
     logf("SCTX: === WO-68 Phase 1 probe: target=%s mode=%s context=\"%s\" ===",
          cfg.usePlayer ? "player" : "guid", cfg.doWrite ? "write(set+verify+unset)" : "read-only",
          cfg.context);
