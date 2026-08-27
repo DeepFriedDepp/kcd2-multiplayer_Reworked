@@ -6,7 +6,7 @@
 <p align="center"><em>An unofficial co-op mod for Kingdom Come: Deliverance II.</em></p>
 
 <p align="center">
-  <a href="docs/releases/RELEASE-NOTES-0.18.2.md"><img alt="main" src="https://img.shields.io/badge/main-0.18.2-b8860b?style=flat-square"></a>
+  <a href="docs/releases/RELEASE-NOTES-0.18.4.md"><img alt="main" src="https://img.shields.io/badge/main-0.18.4-b8860b?style=flat-square"></a>
   <a href="https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/DeepFriedDepp/kcd2-multiplayer_Reworked?label=latest%20release&color=8a3324&style=flat-square"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2c3e50?style=flat-square"></a>
   <a href="docs/LAUNCHING.md"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows-555555?style=flat-square"></a>

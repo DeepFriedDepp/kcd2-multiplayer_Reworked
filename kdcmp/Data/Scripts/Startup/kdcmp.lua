@@ -5807,6 +5807,116 @@ function KCD2MP_ProbeStance()
     System.LogAlways("[KCD2-MP] === END ===")
 end
 
+-- ===== WO-65 — ghost civic isolation: Phase 0 probe =====
+--
+-- WO-34 proved a ghost is a full crime victim (real fines, jail, settlement
+-- rep loss) and the Civilians faction override is inert. KCD2Online's answer
+-- (WO-64 Phase 1, source-read @5777c15, never live-observed) is script
+-- contexts: seven switch_disabled*/crime_disableReport contexts set via
+-- Contexts.SetPersistentOption, then soul:RestrictDialog(true) +
+-- human:InterruptDialogs(), verified with soul:HasScriptContext.
+--
+-- Static evidence on OUR build (checked 2026-08-27):
+--   - all seven context names are real rows in Tables.pak
+--     Libs/Tables/ai/ScriptContext.xml (crime_disableReport even carries
+--     SideEffect="crimeDisableReport")
+--   - HasScriptContext / RestrictDialog / InterruptDialogs: in Warhorse's
+--     shipped scriptbind docs AND as strings in our module DLLs
+--     (RPGModule/DialogModule/EntityModule); HasScriptContext is called by
+--     shipped game Lua (BasicActor.lua, TriggerBase.lua)
+--   - Contexts.SetPersistentOption: found NOWHERE -- not in any Modding
+--     Tools module DLL, not in retail WHGame.dll, not in any pak's Lua.
+--     KCD2Online itself only runtime-probes for it and skips if absent.
+-- So this probe is authoritative for the setter; everything is read-only.
+KCD2MP.isolationContexts = {
+    "switch_disabledInformationReaction",
+    "switch_disabledHearingReaction",
+    "switch_disabledPerceptionReaction",
+    "switch_disabledPickpocketReaction",
+    "switch_disabledNearMissReaction",
+    "switch_disabledHitBehavioralReaction",
+    "crime_disableReport",
+}
+
+function KCD2MP_ProbeContexts()
+    local function L(s) System.LogAlways("[KCD2-MP] " .. s) end
+    L("=== CONTEXTS PROBE (WO-65) ===")
+
+    -- 1. The Contexts global. Never found statically; type() here decides.
+    L("global Contexts type=" .. type(Contexts))
+    if type(Contexts) == "table" then
+        pcall(function()
+            L("Contexts.SetPersistentOption type=" .. type(Contexts.SetPersistentOption))
+            local n = 0
+            for k, v in pairs(Contexts) do
+                L("  Contexts." .. tostring(k) .. " : " .. type(v))
+                n = n + 1
+                if n >= 40 then L("  ...truncated at 40 keys"); break end
+            end
+        end)
+    end
+
+    -- 2. Any global whose name mentions Context (catches a renamed table).
+    pcall(function()
+        if type(_G) ~= "table" then L("_G not iterable in this sandbox"); return end
+        local n = 0
+        for k, v in pairs(_G) do
+            if type(k) == "string" and string.find(k, "ontext") then
+                L("_G." .. k .. " : " .. type(v))
+                n = n + 1
+                if n >= 20 then L("...truncated at 20 globals"); break end
+            end
+        end
+        if n == 0 then L("no *ontext* globals found") end
+    end)
+
+    -- 3. Method surface + pre-write context state, on a live ghost if one
+    --    exists, and on the player as a known-good control (shipped game Lua
+    --    calls player.soul:HasScriptContext, so the player half must work).
+    local function probeBody(tag, e)
+        if not e then L(tag .. ": no entity"); return end
+        L(tag .. ": soul=" .. type(e.soul) .. " human=" .. type(e.human))
+        pcall(function()
+            if type(e.soul) == "table" then
+                L(tag .. ".soul.HasScriptContext : " .. type(e.soul.HasScriptContext))
+                L(tag .. ".soul.RestrictDialog   : " .. type(e.soul.RestrictDialog))
+                L(tag .. ".soul.IsDialogRestricted : " .. type(e.soul.IsDialogRestricted))
+                -- Candidate setters: enumerate, never guess. Any key whose
+                -- name mentions Context/Option/Restrict is worth seeing.
+                for k, v in pairs(e.soul) do
+                    if type(k) == "string" and (string.find(k, "ontext") or string.find(k, "ption") or string.find(k, "estrict")) then
+                        L(tag .. ".soul." .. k .. " : " .. type(v))
+                    end
+                end
+            end
+            if type(e.human) == "table" then
+                L(tag .. ".human.InterruptDialogs : " .. type(e.human.InterruptDialogs))
+                for k, v in pairs(e.human) do
+                    if type(k) == "string" and (string.find(k, "ontext") or string.find(k, "ialog")) then
+                        L(tag .. ".human." .. k .. " : " .. type(v))
+                    end
+                end
+            end
+        end)
+        for _, ctx in ipairs(KCD2MP.isolationContexts) do
+            local res = nil
+            local ok, err = pcall(function() res = e.soul:HasScriptContext(ctx) end)
+            L(tag .. " HasScriptContext('" .. ctx .. "') ok=" .. tostring(ok)
+                .. " -> " .. tostring(res) .. (ok and "" or (" err=" .. tostring(err))))
+        end
+    end
+
+    local gid, ghost = next(KCD2MP.ghosts)
+    if ghost and ghost.entity then
+        probeBody("ghost[" .. tostring(gid) .. "]", ghost.entity)
+    else
+        L("no live ghost -- spawn one (mp_spawn_test) and rerun for the ghost half")
+    end
+    probeBody("player", player)
+
+    L("=== END CONTEXTS PROBE ===")
+end
+
 -- ===== Spawn NPC with custom armor =====
 
 -- Preset table (name -> {items, preset})
@@ -6989,6 +7099,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_test_run",     "KCD2MP_TestRunAnim()",   "Test 3d_relaxed_run_turn_strafe on ghost")
     System.AddCCommand("mp_terrain",      "KCD2MP_TerrainCheck()",  "Check player/ghost vs terrain height")
     System.AddCCommand("mp_probe_stance", "KCD2MP_ProbeStance()",   "Log player stance value (for crouch detection calibration)")
+    System.AddCCommand("mp_probe_contexts", "KCD2MP_ProbeContexts()", "WO-65: dump script-context isolation surface (Contexts global, soul/human methods, per-context HasScriptContext on ghost + player) -- read-only")
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
     System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     -- mp_spawn_armor <guid1,guid2,...>  -- inventory only (no visual unless preset given as 2nd arg)
