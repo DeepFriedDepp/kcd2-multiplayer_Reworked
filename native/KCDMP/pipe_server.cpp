@@ -3,6 +3,7 @@
 #include "rttr_abi.h"
 #include "combat_swing.h"
 #include "lua_closure.h"
+#include "script_context.h"
 #include "log.h"
 
 #include <windows.h>
@@ -253,6 +254,26 @@ void serve(HANDLE h) {
                     ok = rttr::ghost_swing(entityId, spec);
                 });
                 if (!ran) logf("PIPE: GhostSwing timed out waiting for a frame");
+                send_result(h, ran && ok, seq);
+                break;
+            }
+
+            case kGhostIsolate: {
+                if (len != kGhostIsolateLen) {
+                    logf("PIPE: GhostIsolate wrong length %u", len);
+                    send_result(h, false, seq);
+                    break;
+                }
+                unsigned char guid[16];
+                std::memcpy(guid, body, 16);
+                const bool on = body[16] != 0;
+                bool ok = false;
+                const bool ran = main_thread::run_sync([&] {
+                    ok = sctx::apply_isolation(guid, on);
+                });
+                if (!ran) logf("PIPE: GhostIsolate timed out waiting for a frame");
+                logf("PIPE: GhostIsolate on=%s -> %s", on ? "true" : "false",
+                     ok ? "all contexts in state" : "not fully applied (see SCTX lines)");
                 send_result(h, ran && ok, seq);
                 break;
             }

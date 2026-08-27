@@ -25,6 +25,7 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte Ping              = 0x03;
     private const byte SetFactionHostile = 0x04;
     private const byte GhostSwing        = 0x06;
+    private const byte GhostIsolate      = 0x07;
     private const byte Result            = 0x81;
     private const byte Pong              = 0x83;
 
@@ -149,6 +150,27 @@ public sealed class CombatPipe : IAsyncDisposable
         BinaryPrimitives.WriteUInt32LittleEndian(payload, entityId);
         spec.CopyTo(payload.AsSpan(4));
         return SendAsync(GhostSwing, payload, ct);
+    }
+
+    /// <summary>
+    /// WO-68: apply (<paramref name="on"/>) or remove the seven civic-isolation
+    /// script contexts on a locally-spawned ghost, natively -- the crime half
+    /// WO-65 proved has no Lua setter on this build.
+    ///
+    /// <paramref name="ghostSoulGuid"/> is the ghost's own Soul.Guid, the same
+    /// identity (and for the same reason) as
+    /// <see cref="SetFactionHostileAsync"/>.
+    ///
+    /// A false return is routine rather than fatal: the ghost's soul may not be
+    /// resolvable yet, or the DLL may have disarmed the feature after a fault.
+    /// The caller logs it and carries on -- a ghost is never blocked on this.
+    /// </summary>
+    public Task<bool> GhostIsolateAsync(Guid ghostSoulGuid, bool on, CancellationToken ct = default)
+    {
+        var payload = new byte[GuidLen + 1];
+        WriteSoulGuid(ghostSoulGuid, payload);
+        payload[16] = on ? (byte)0x01 : (byte)0x00;
+        return SendAsync(GhostIsolate, payload, ct);
     }
 
     /// <summary>Round-trip check that the DLL is alive and pumping frames.</summary>

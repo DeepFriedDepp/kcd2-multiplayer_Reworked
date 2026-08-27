@@ -27,6 +27,17 @@
 //                        entity id comes from the Lua spawn report, not a
 //                        guid -- entity ids are the address the combat
 //                        machinery natively resolves.
+//     0x07 GhostIsolate [guid:16][on:1]                            (17)
+//                        WO-68: apply (on=1) or remove (on=0) the seven civic
+//                        isolation script contexts on this ghost natively --
+//                        the crime half WO-65 proved has no Lua setter on this
+//                        build (script_context.h). The guid is the GHOST's own
+//                        Soul::Guid, exactly as SetFactionHostile, and for the
+//                        same reason. Idempotent (the engine's store is
+//                        refcounted, so a context already in the wanted state
+//                        is left alone) and fail-closed (the first fault
+//                        disarms the feature for the rest of the process; a
+//                        ghost spawn is never blocked by it).
 //
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
@@ -64,6 +75,7 @@ constexpr uint8_t kPing               = 0x03;
 constexpr uint8_t kSetFactionHostile  = 0x04;
 constexpr uint8_t kResolveLuaClosure  = 0x05;
 constexpr uint8_t kGhostSwing         = 0x06;
+constexpr uint8_t kGhostIsolate       = 0x07;
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;
@@ -76,6 +88,7 @@ constexpr int kSetFactionHostileLen     = kGuidLen + 1;
 constexpr int kResolveLuaClosureLen     = 8;
 constexpr int kGhostSwingMinLen         = 4 + 1;      // entityId + at least one spec byte
 constexpr int kGhostSwingMaxLen         = 4 + 191;    // spec cap matches combat_swing.h
+constexpr int kGhostIsolateLen          = kGuidLen + 1;
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not

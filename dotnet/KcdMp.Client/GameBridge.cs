@@ -176,6 +176,13 @@ public partial class GameBridge(ClientConfig config)
     // their own client.
     private bool _aggroEnabled;
 
+    // WO-68: mirrors the mod's KCD2MP.ghostIsolate, which defaults to ON, so
+    // this defaults to ON too -- a client that never sees an "isolate" event
+    // (mod older than this build, or the toggle simply never touched) still
+    // isolates, which is the shipped default on both sides. The Lua half owns
+    // the switch; this is only the native half's copy of it.
+    private bool _ghostIsolate = true;
+
     // A ghost's own Soul.Guid, read once via the debug REST API and cached
     // for its lifetime -- it does not change, and re-reading it on every
     // damage event would add a round trip to the hot path. Invalidated on
@@ -2969,11 +2976,43 @@ public partial class GameBridge(ClientConfig config)
             {
                 _ghostEntityIds[giParts[0]] = (uint)rawId;
                 Console.WriteLine($"[combatviz] ghost {giParts[0]} entity id 0x{rawId:X} cached for native swings");
+
+                // WO-68: this event is the ghost-ready edge -- it fires from
+                // KCD2MP_SpawnGhost, so it also fires on every respawn and
+                // after a save load rebuilds the bodies, which is exactly when
+                // the native contexts need (re-)applying. Fire-and-forget: a
+                // ghost is never blocked on its civic isolation.
+                if (_ghostIsolate)
+                    _ = IsolateGhostAsync(giParts[0], on: true, CancellationToken.None);
             }
             else
             {
                 Console.WriteLine($"[combatviz] malformed ghostid '{arg}'");
             }
+            return;
+        }
+
+        if (name == "isolate")
+        {
+            // WO-68: "on"|"off" from KCD2MP_SetGhostIsolate. mp_ghost_isolate is
+            // one switch for the whole feature, and its Lua half cannot reach
+            // the contexts on this build -- so the toggle has to cross over to
+            // the native half, and this event is that crossing. Consumed
+            // regardless of interaction-session state, like ghostid above.
+            var want = arg.Equals("on", StringComparison.OrdinalIgnoreCase);
+            if (want == _ghostIsolate)
+            {
+                Console.WriteLine($"[isolate] already {(want ? "on" : "off")}; nothing to do");
+                return;
+            }
+            _ghostIsolate = want;
+            Console.WriteLine($"[isolate] native context isolation {(want ? "enabled" : "disabled")}");
+            // Both directions act on the ghosts standing right now: on -> apply,
+            // off -> remove. The engine's store is refcounted and the DLL only
+            // writes a context that is not already in the wanted state, so
+            // repeated toggling cannot strand a context set with count > 1.
+            foreach (var ghostId in _ghostEntityIds.Keys.ToArray())
+                _ = IsolateGhostAsync(ghostId, on: want, CancellationToken.None);
             return;
         }
 
@@ -3355,6 +3394,44 @@ public partial class GameBridge(ClientConfig config)
         bool ok = await _combat.SetFactionHostileAsync(guid.Value, hostile: true, ct);
         Console.WriteLine($"[aggro] ghost {ghostId} attached to hostile faction: {ok}");
         if (!ok) _ghostHostileUntilUtc.TryRemove(ghostId, out _); // failed -- nothing to detach later
+    }
+
+    /// <summary>
+    /// WO-68: apply or remove the seven civic-isolation script contexts on one
+    /// ghost, through the DLL (pipe 0x07). The soul Guid is read fresh every
+    /// time rather than cached: a ghost's own Soul.Guid is minted per spawn
+    /// (WO-39/WO-40 -- per-save Guids are field-confirmed unstable), and this
+    /// runs once per spawn or per toggle, not on any hot path.
+    ///
+    /// Ghost ids are strings here, not the byte ids <see cref="_ghostSoulGuidCache"/>
+    /// uses, so the locally-spawned test ghost ("test_ghost") is covered too.
+    ///
+    /// Never throws into its caller: every failure is a log line. A ghost that
+    /// cannot be isolated is still a ghost.
+    /// </summary>
+    private async Task IsolateGhostAsync(string ghostId, bool on, CancellationToken ct)
+    {
+        try
+        {
+            Guid? guid = null;
+            try { guid = await _transport.ReadGhostSoulGuidAsync($"kcd2mp_{ghostId}", ct); }
+            catch (Exception ex) { Console.WriteLine($"[isolate] ghost {ghostId} guid read failed: {ex.Message}"); }
+
+            if (guid is null)
+            {
+                Console.WriteLine($"[isolate] ghost {ghostId}: no soul guid yet -- contexts not "
+                                + (on ? "applied" : "removed") + " (next spawn retries)");
+                return;
+            }
+
+            bool ok = await _combat.GhostIsolateAsync(guid.Value, on, ct);
+            Console.WriteLine($"[isolate] ghost {ghostId} contexts {(on ? "applied" : "removed")}: {ok}"
+                            + (ok ? "" : " -- see the SCTX lines in kcdmp-native.log"));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[isolate] ghost {ghostId} failed: {ex.Message}");
+        }
     }
 
     /// <summary>Detaches one ghost back to its pre-attach orphan state.</summary>

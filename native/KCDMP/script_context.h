@@ -55,4 +55,33 @@ void probe_contexts();
 // changes, so a soul guid can be dropped in while the game is running.
 void probe_contexts_watch();
 
+// --- Phase 2: the shipped feature ------------------------------------------
+//
+// Apply (`on`) or remove (`!on`) the seven civic-isolation contexts on the soul
+// with this Guid -- the ghost's own Soul::Guid, the same identity pipe 0x04
+// (SetFactionHostile) already uses, resolved through rttr's SoulsByGuid.
+//
+// Idempotent by design: a context that already reads set is left alone rather
+// than set again. The engine's store is REFCOUNTED per (entity, context)
+// (docs/WO-68-findings.md §3), so a second apply would push the count to 2 and
+// a single removal would then leave the context still in force.
+//
+// Crash-averse: every native call is SEH-guarded, and the first fault (or an
+// integrity mismatch against the disassembled build) disarms the whole feature
+// for the rest of the process -- see isolation_enabled(). A ghost spawn must
+// survive every failure mode here, so the caller treats false as "not
+// isolated", never as an error to propagate.
+//
+// MUST run on the game's main thread.
+//
+// Returns true only if every one of the seven ended up in the requested state,
+// verified by reading it back.
+bool apply_isolation(const unsigned char guid[16], bool on);
+
+// False once the feature has disarmed itself for this process.
+bool isolation_enabled();
+
+// How many contexts the block applies (for log/report symmetry with the agent).
+int isolation_context_count();
+
 } // namespace kcdmp::sctx

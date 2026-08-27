@@ -52,7 +52,20 @@ constexpr const char* kGetGameIfaceName =
     "?GetGameIface@wh@@YAPEBVC_GameInterface@shared@1@XZ";
 
 // The isolation block. Order is WO-64/WO-65's, and every name is a real row in
-// Tables.pak :: Libs/Tables/ai/ScriptContext.xml with Class="Entity".
+// Tables.pak :: Libs/Tables/ai/ScriptContext.xml with Class="Entity" -- the
+// same seven KCD2MP.isolationContexts lists on the Lua side.
+constexpr const char* kIsolationContexts[] = {
+    "switch_disabledInformationReaction",
+    "switch_disabledHearingReaction",
+    "switch_disabledPerceptionReaction",
+    "switch_disabledPickpocketReaction",
+    "switch_disabledNearMissReaction",
+    "switch_disabledHitBehavioralReaction",
+    "crime_disableReport",
+};
+constexpr int kIsolationContextCount =
+    static_cast<int>(sizeof(kIsolationContexts) / sizeof(kIsolationContexts[0]));
+
 constexpr const char* kDefaultProbeContext = "crime_disableReport";
 
 // A context the shipped Storm rule contexts_playerHolsterWeaponInsteadDropOnUnconsciousness
@@ -236,8 +249,14 @@ void* resolve_get_game_iface() {
 // C_ScriptContextManager (vptr) and that its two slots really point at the two
 // functions this file was written against (RVA + prologue). Fails closed and
 // says which check failed.
-bool resolve_chain(Chain* out) {
+//
+// `permanent` (optional) distinguishes the two kinds of failure: "not ready
+// yet" (a module or pointer that may exist later -- retry is legitimate) from
+// "this build is not the one we disassembled" (retrying can only mis-call, so
+// the feature must disarm). Only the latter sets it.
+bool resolve_chain(Chain* out, bool* permanent = nullptr) {
     char d[256]{};
+    if (permanent) *permanent = false;
 
     out->whgame = GetModuleHandleA("WHGame.dll");
     if (!out->whgame) { logf("SCTX: WHGame.dll not loaded"); return false; }
@@ -285,6 +304,7 @@ bool resolve_chain(Chain* out) {
         logf("SCTX: manager vptr = %p (%s) but C_ScriptContextManager::vftable is "
              "WHGame+0x%llX -- WRONG OBJECT, refusing to call",
              vptr, d, static_cast<unsigned long long>(kRvaManagerVftable));
+        if (permanent) *permanent = true;
         return false;
     }
     logf("SCTX: manager vptr = %p (%s) == C_ScriptContextManager::vftable OK", vptr, d);
@@ -307,11 +327,13 @@ bool resolve_chain(Chain* out) {
          hasFn == expectHas ? "MATCH" : "MISMATCH");
     if (setFn != expectSet || hasFn != expectHas) {
         logf("SCTX: vtable layout differs from the disassembled build -- refusing to call");
+        if (permanent) *permanent = true;
         return false;
     }
     if (!prologue_matches(setFn, kPrologueSet, sizeof(kPrologueSet)) ||
         !prologue_matches(hasFn, kPrologueHas, sizeof(kPrologueHas))) {
         logf("SCTX: prologue mismatch on Set/HasEntityContext -- refusing to call");
+        if (permanent) *permanent = true;
         return false;
     }
     logf("SCTX: both prologues match -- addresses verified for this build");
@@ -468,6 +490,24 @@ void log_has(void* mgr, uint64_t wuid, const void* node, const char* name, const
 char g_lastSeen[512]{};
 bool g_haveLast = false;
 
+// --- Phase 2 feature state -------------------------------------------------
+
+// Armed until something goes wrong once. Deliberately per-process and one-way:
+// a fault here means our model of the engine is wrong, and the honest response
+// is to stop touching it rather than retry on the next ghost and risk the same
+// fault inside the game's own update.
+bool g_isolationArmed = true;
+
+void disarm(const char* why) {
+    if (!g_isolationArmed) return;
+    g_isolationArmed = false;
+    logf("SCTX: *********************************************************");
+    logf("SCTX: native context isolation DISARMED for this process: %s", why);
+    logf("SCTX: ghosts keep spawning and keep the dialog half; the crime half");
+    logf("SCTX: is off until the game restarts. This is the fail-closed path.");
+    logf("SCTX: *********************************************************");
+}
+
 } // namespace
 
 void probe_contexts() {
@@ -550,6 +590,93 @@ void probe_contexts() {
     }
     log_has(c.mgr, wuid, node, cfg.context, "after-unset");
     logf("SCTX: === probe done, target left as it was found ===");
+}
+
+bool isolation_enabled() { return g_isolationArmed; }
+
+int isolation_context_count() { return kIsolationContextCount; }
+
+bool apply_isolation(const unsigned char guid[16], bool on) {
+    if (!g_isolationArmed) {
+        logf("SCTX: isolate(%s) skipped -- feature disarmed earlier this process",
+             on ? "on" : "off");
+        return false;
+    }
+
+    Chain c{};
+    bool permanent = false;
+    if (!resolve_chain(&c, &permanent)) {
+        if (permanent) disarm("chain integrity check failed");
+        else logf("SCTX: isolate(%s) -- chain not resolvable yet, will retry on the next spawn",
+                  on ? "on" : "off");
+        return false;
+    }
+
+    // Not being able to find the soul is a legitimate, transient outcome: the
+    // ghost may not have finished spawning, or may not be streamed in here.
+    void* soul = rttr::find_soul_by_guid(guid);
+    if (!soul) {
+        logf("SCTX: isolate(%s) -- no soul in SoulsByGuid for that guid (not spawned yet?)",
+             on ? "on" : "off");
+        return false;
+    }
+
+    uint64_t wuid = 0;
+    if (!read_u64(soul, kOffSoulWuid, &wuid)) {
+        disarm("read of soul+0x40 (WUID) faulted");
+        return false;
+    }
+    if (wuid == 0) {
+        logf("SCTX: isolate(%s) -- soul %p has a zero WUID; refusing to key the manager on it",
+             on ? "on" : "off", soul);
+        return false;
+    }
+
+    int inState = 0, changed = 0, unresolved = 0, mismatched = 0;
+    for (int i = 0; i < kIsolationContextCount; ++i) {
+        const char* name = kIsolationContexts[i];
+        const void* node = lookup_node(c, name, /*verbose=*/false);
+        if (!node) {
+            logf("SCTX: isolate %s: context unresolved on this build -- skipped", name);
+            ++unresolved;
+            continue;
+        }
+
+        // Read first. The store is refcounted, so setting something already
+        // set would make one later removal insufficient.
+        bool has = false;
+        if (!call_has_entity_context(c.mgr, wuid, node, &has)) {
+            disarm("HasEntityContext faulted");
+            return false;
+        }
+        if (has == on) {
+            logf("SCTX: isolate %s: already %s -- left alone (refcount untouched)",
+                 name, on ? "set" : "clear");
+            ++inState;
+            continue;
+        }
+
+        if (!call_set_entity_context(c.mgr, on, wuid, node)) {
+            disarm("SetEntityContext faulted");
+            return false;
+        }
+        bool after = false;
+        if (!call_has_entity_context(c.mgr, wuid, node, &after)) {
+            disarm("HasEntityContext faulted after a write");
+            return false;
+        }
+        logf("SCTX: isolate %s: %s -> readback=%s %s", name, on ? "set" : "clear",
+             after ? "true" : "false",
+             after == on ? "(applied-and-verified)" : "(WROTE BUT DID NOT TAKE)");
+        if (after == on) ++changed; else ++mismatched;
+    }
+
+    const int good = inState + changed;
+    logf("SCTX: isolate(%s) wuid=0x%016llX -- %d/%d in state (%d changed, %d already, "
+         "%d unresolved, %d did not take)",
+         on ? "on" : "off", static_cast<unsigned long long>(wuid),
+         good, kIsolationContextCount, changed, inState, unresolved, mismatched);
+    return good == kIsolationContextCount;
 }
 
 void probe_contexts_watch() {

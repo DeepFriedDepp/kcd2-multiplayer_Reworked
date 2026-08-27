@@ -5987,8 +5987,15 @@ function KCD2MP_ApplyGhostIsolation(id, stage)
             return "applied-but-not-readable"
         end
     end
+    -- WO-68: the contexts are applied NATIVELY now. KCDMP.dll owns that half
+    -- (script_context.cpp, driven by the agent off this ghost's spawn-time
+    -- "ghostid" event over pipe 0x07), because WO-68 Phase 0 found the applier
+    -- is C_ScriptContextManager in WHGame.dll with no Lua binding anywhere.
+    -- The per-context readback lives in the native log; from here the honest
+    -- statement is which side owns it. The generic setter hook below still
+    -- lights up if a future patch ever ships Contexts.SetPersistentOption.
     for _, ctx in ipairs(KCD2MP.isolationContexts) do
-        local verdict = setCtx and setCtx(ctx) or "missing-on-this-build"
+        local verdict = setCtx and setCtx(ctx) or "native (KCDMP.dll, see SCTX lines)"
         mp_log("Isolate[" .. tostring(id) .. "] " .. ctx .. ": " .. verdict)
     end
 
@@ -6021,6 +6028,10 @@ function KCD2MP_SetGhostIsolate(arg)
         return
     end
     KCD2MP.ghostIsolate = on
+    -- WO-68: one switch, two halves. The context half is native (no Lua setter
+    -- exists on this build), so the toggle has to reach the agent, which drives
+    -- KCDMP.dll's applier over pipe 0x07 for every ghost standing right now.
+    KCD2MP_EmitEvent("isolate", on and "on" or "off")
     local n = 0
     for id, ghost in pairs(KCD2MP.ghosts) do
         if ghost and ghost.entity then
