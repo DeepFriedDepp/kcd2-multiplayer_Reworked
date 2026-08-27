@@ -301,5 +301,30 @@ a new discovery, and the plan's own sequencing should not be broken by a hotfix.
 - **`Test-Pipe` not run**: it requires the native DLL injected and a live game.
   The game process exited partway through this session, so the pipe did not
   exist. Nothing in this work order touches the native side.
-- **Live ghost-spawn acceptance not run** — see WO-69-progress.md. The fix is
-  code-verified and pak-verified, **not** yet observed spawning.
+### Live checks, run against a running 0.18.8 build
+
+- (observed) **Lua 5.1 syntax: OK.** `loadfile` against the edited source,
+  evaluated by the game's own interpreter, returned a function — and the pak
+  build printed `[KCD2-MP] === MOD INIT ===`, which a parse failure would have
+  prevented outright. This closes the one gap the earlier commits had to ship
+  with (there is no `lua`/`luac` on this machine and the build gates only on
+  BOM).
+- (observed) **Picker is male-only: 15/15 name keys, non-male = 0.** Nine of
+  the fifteen hash **even** — i.e. every one of them resolved to a female body
+  before this change — and all fifteen now return `class=NPC`.
+  `KCD2MP.faceRoster.female` reads `nil`, `#male` is 19, and
+  `KCD2MP.faceFallback` resolves to `ttkc_man_3`.
+- (observed) **Existing male players keep their exact faces.** All six
+  odd-hash keys tested resolve to the same soul the old code gave them —
+  `Host`→`ttac_man_9`, `Player0`→`tsla_man_2`, `Player2`→`ttac_man_8`,
+  `Player4`→`ttac_man_9`, `Player11`→`tsem_man_22`, `Player91`→`tsem_man_21`.
+  This was argued from `#list` already being 19; it is now measured.
+- (observed) The engine's own hash matches the offline computation used
+  throughout this document, key for key (`Henry`=7308, `Player1`=51656,
+  `Player91`=1415, …) — so the arithmetic in the diagnosis above is the
+  interpreter's, not a reimplementation that merely agrees.
+
+**Still not observed:** real ghost spawns (the `spawn verify` /
+`SPAWN MISMATCH` path), which need a loaded save; the save-load rebuild path;
+and the WO-68 witness A/B. The picker is the *cause* and is now verified live;
+the spawn-time readback is the *safety net* and is not.
