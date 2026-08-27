@@ -259,11 +259,56 @@ public class ClientSession
                     // fighting this NPC -- which arms the claim's anti-flap
                     // hold in the routing table.
                     bool engaged = (body[payloadLen - 1] & Protocol.NpcStateFlagEngaged) != 0;
-                    if (_clientHandler.RouteNpcState(this, npcName, engaged))
-                        _broadcastService.BroadcastNpcState(this, body);
-                    else if (!_clientHandler.IsDamageAuthority(this))
-                        _logger.Debug("[npcclaim] '{Name}' (id={Id}) state for '{Npc}' dropped (claimed by another client).",
+
+                    // WO-66 gates. Finite checks first, any sender: a NaN/Inf
+                    // never legitimately leaves the game, and a NaN position
+                    // would sail through the speed compare (NaN > cap is
+                    // false). Our rotation is a scalar yaw, not a quaternion,
+                    // so "non-normalizable" degrades to non-finite -- any
+                    // finite angle is broadcast as-is (receivers wrap).
+                    // Rejection drops the packet and counts it; it never
+                    // releases a claim, disconnects a peer, or mutates state.
+                    float npcX    = BitConverter.ToSingle(body, 1 + npcNameLen);
+                    float npcY    = BitConverter.ToSingle(body, 1 + npcNameLen + 4);
+                    float npcZ    = BitConverter.ToSingle(body, 1 + npcNameLen + 8);
+                    float npcRotZ = BitConverter.ToSingle(body, 1 + npcNameLen + 12);
+                    if (!float.IsFinite(npcX) || !float.IsFinite(npcY) || !float.IsFinite(npcZ))
+                    {
+                        _clientHandler.CountNpcRejectSpeed();
+                        _logger.Information("[WO66-REJECT] speed '{Name}' (id={Id}) npc '{Npc}': non-finite position.",
                             Name, Id, npcName);
+                        continue;
+                    }
+                    if (!float.IsFinite(npcRotZ))
+                    {
+                        _clientHandler.CountNpcRejectRotation();
+                        _logger.Information("[WO66-REJECT] rotation '{Name}' (id={Id}) npc '{Npc}': non-finite rotZ.",
+                            Name, Id, npcName);
+                        continue;
+                    }
+
+                    switch (_clientHandler.RouteNpcState(this, npcName, engaged, npcX, npcY, npcZ))
+                    {
+                        case ClientHandler.NpcRoute.Broadcast:
+                            _broadcastService.BroadcastNpcState(this, body);
+                            break;
+                        case ClientHandler.NpcRoute.MutedEcho:
+                            // WO-39 echo-loop mute, normal operation.
+                            _logger.Debug("[npcclaim] authority re-sample of '{Npc}' muted (claimed).", npcName);
+                            break;
+                        case ClientHandler.NpcRoute.RejectSpeed:
+                            _logger.Information("[WO66-REJECT] speed '{Name}' (id={Id}) npc '{Npc}': implausible movement.",
+                                Name, Id, npcName);
+                            break;
+                        case ClientHandler.NpcRoute.RejectReservedName:
+                            _logger.Information("[WO66-REJECT] reserved-name '{Name}' (id={Id}) npc '{Npc}': claim refused for mod-spawned entity name.",
+                                Name, Id, npcName);
+                            break;
+                        case ClientHandler.NpcRoute.RejectStaleOwner:
+                            _logger.Information("[WO66-REJECT] stale-owner '{Name}' (id={Id}) npc '{Npc}': claimed by another client.",
+                                Name, Id, npcName);
+                            break;
+                    }
                     continue;
                 }
 

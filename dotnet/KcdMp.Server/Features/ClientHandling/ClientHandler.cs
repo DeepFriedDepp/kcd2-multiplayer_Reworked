@@ -12,6 +12,26 @@ public class ClientHandler
 	private readonly List<ClientSession> _clients = [];
 	private readonly object _lock = new();
 
+	// ---- WO-66 claim-update validation tunables ----
+	//
+	// Config-backed like Tcp:Port / Echo, with the shipped defaults inline.
+	// MaxSpeedMps: plausibility cap on how fast a claimed NPC may move between
+	// two ACCEPTED updates from its claim holder. The fastest legitimate mover
+	// on this channel is a world horse (the rescan tracks Horse-class
+	// entities); 40 m/s is roughly 3x a KCD2 horse gallop -- teleport-class
+	// garbage is orders of magnitude past it, so the headroom costs nothing.
+	// SlackMeters absorbs jitter when elapsed time between packets is tiny.
+	// Semantics ported from KCD2Online's npc_registry.cpp:240-248 (WO-64
+	// Phase 3): reject if distance > MaxSpeedMps * elapsed + SlackMeters.
+	private readonly double _maxNpcSpeedMps;
+	private readonly double _npcSpeedSlackMeters;
+
+	public ClientHandler(IConfiguration configuration)
+	{
+		_maxNpcSpeedMps      = configuration.GetValue("NpcClaimValidation:MaxSpeedMps", 40.0);
+		_npcSpeedSlackMeters = configuration.GetValue("NpcClaimValidation:SlackMeters", 2.0);
+	}
+
 	/// <summary>
 	/// Add a client.
 	///
@@ -221,16 +241,74 @@ public class ClientHandler
 	// diverged stream and back (the flap this hold exists to prevent). A
 	// claim never engaged (a corpse drag) keeps the plain 5 s expiry
 	// unchanged. Disconnect still releases immediately either way.
-	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc, DateTime EngagedUtc)> _npcClaims = [];
+	//
+	// WO-66 adds X/Y/Z: the position of the last ACCEPTED update, the speed
+	// gate's baseline. It lives inside the claim entry ON PURPOSE: claim
+	// expiry, disconnect clear, and reclaim all destroy it with the entry, so
+	// a new claimant's first packet is never speed-checked against a previous
+	// owner's data -- it seeds a fresh baseline instead.
+	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc, DateTime EngagedUtc, float X, float Y, float Z)> _npcClaims = [];
+
+	/// <summary>How <see cref="RouteNpcState"/> disposed of one NpcStateUp.</summary>
+	public enum NpcRoute
+	{
+		/// <summary>Accepted: fan it out.</summary>
+		Broadcast,
+		/// <summary>The authority's re-sample of an entity someone else is
+		/// driving -- the WO-39 echo-loop mute. Normal operation, not a
+		/// validation rejection: dropped quietly, not counted.</summary>
+		MutedEcho,
+		/// <summary>WO-66: claimed-NPC update implying implausible movement.</summary>
+		RejectSpeed,
+		/// <summary>WO-66: NPC claim for one of the mod's own spawn names.</summary>
+		RejectReservedName,
+		/// <summary>WO-66: update for a claimed NPC from a sender who is not
+		/// the current claim holder (a rival, or a former owner's late
+		/// packet after release-and-reclaim).</summary>
+		RejectStaleOwner,
+	}
+
+	// ---- WO-66 rejection counters ----
+	//
+	// One per reason tag; Interlocked because the rotation/finite counter is
+	// bumped from ClientSession outside _lock. Read at runtime through the
+	// relay's existing diagnostics surface, GET api/information/npc-validation
+	// (InformationController), alongside the [WO66-REJECT] log lines.
+	private long _rejectSpeed, _rejectRotation, _rejectReservedName, _rejectStaleOwner;
+
+	/// <summary>WO-66: count one rejected packet whose rotation (or position)
+	/// failed the finite check in ClientSession's framing layer.</summary>
+	public void CountNpcRejectRotation() => Interlocked.Increment(ref _rejectRotation);
+
+	/// <summary>WO-66: count one non-finite-position rejection (tagged under
+	/// the speed reason: it is the position-plausibility class).</summary>
+	public void CountNpcRejectSpeed() => Interlocked.Increment(ref _rejectSpeed);
+
+	/// <summary>Snapshot of the WO-66 rejection counters.</summary>
+	public NpcValidationCounters GetNpcValidationCounters() => new(
+		Interlocked.Read(ref _rejectSpeed),
+		Interlocked.Read(ref _rejectRotation),
+		Interlocked.Read(ref _rejectReservedName),
+		Interlocked.Read(ref _rejectStaleOwner));
 
 	/// <summary>
 	/// Decides whether one NpcStateUp for <paramref name="npcName"/> from
 	/// <paramref name="sender"/> may be broadcast, updating the per-entity
 	/// claim table. <paramref name="engaged"/> is the packet's
 	/// <see cref="Protocol.NpcStateFlagEngaged"/> bit; it only matters on a
-	/// claimant's own packets. See the field comment for the rules.
+	/// claimant's own packets. <paramref name="x"/>/<paramref name="y"/>/
+	/// <paramref name="z"/> are the packet's position, for the WO-66 speed
+	/// gate. See the field comment for the claim rules.
+	///
+	/// WO-66 invariant: a rejected packet mutates NOTHING -- not the claim,
+	/// not its timestamps (so garbage cannot refresh a claim or re-arm the
+	/// engaged hold), not the baseline. It is bad data, not evidence the
+	/// owner is gone; a claim fed only garbage simply expires on the
+	/// ordinary silence path and the next claim re-seeds the baseline --
+	/// which is also how a genuine legitimate teleport (claimant reload)
+	/// self-heals within one expiry window.
 	/// </summary>
-	public bool RouteNpcState(ClientSession sender, string npcName, bool engaged = false)
+	public NpcRoute RouteNpcState(ClientSession sender, string npcName, bool engaged, float x, float y, float z)
 	{
 		lock (_lock)
 		{
@@ -247,20 +325,49 @@ public class ClientHandler
 			if (IsDamageAuthority(sender))
 			{
 				// The default stream. Yields only to someone else's live claim.
-				return !claimed || claim.OwnerId == sender.Id;
+				return !claimed || claim.OwnerId == sender.Id
+					? NpcRoute.Broadcast : NpcRoute.MutedEcho;
+			}
+
+			if (claimed && claim.OwnerId != sender.Id)
+			{
+				// Someone else holds this body. Sender identity is the TCP
+				// session itself, so this also covers the stale-owner case: a
+				// former owner's late packet after release-and-reclaim arrives
+				// as a non-owner and lands here. Never releases anything.
+				Interlocked.Increment(ref _rejectStaleOwner);
+				return NpcRoute.RejectStaleOwner;
 			}
 
 			if (!claimed)
 			{
-				_npcClaims[npcName] = (sender.Id, now, engaged ? now : DateTime.MinValue);
-				return true;   // first claim wins, by relay arrival order
+				// A new claim. Never for one of our own spawns: see
+				// Protocol.NpcReservedNamePrefix.
+				if (npcName.StartsWith(Protocol.NpcReservedNamePrefix, StringComparison.OrdinalIgnoreCase))
+				{
+					Interlocked.Increment(ref _rejectReservedName);
+					return NpcRoute.RejectReservedName;
+				}
+				// First claim wins, by relay arrival order. This packet seeds
+				// the speed-gate baseline; it is deliberately not speed-checked
+				// (there is nothing of THIS owner's to check it against).
+				_npcClaims[npcName] = (sender.Id, now, engaged ? now : DateTime.MinValue, x, y, z);
+				return NpcRoute.Broadcast;
 			}
-			if (claim.OwnerId == sender.Id)
+
+			// Owner refresh. Speed gate BEFORE the state write, so a rejected
+			// packet cannot refresh the claim or re-arm the engaged hold.
+			double elapsed = (now - claim.LastUtc).TotalSeconds;
+			double allowed = _maxNpcSpeedMps * elapsed + _npcSpeedSlackMeters;
+			double dx = x - claim.X, dy = y - claim.Y, dz = z - claim.Z;
+			if (dx * dx + dy * dy + dz * dz > allowed * allowed)
 			{
-				_npcClaims[npcName] = (sender.Id, now, engaged ? now : claim.EngagedUtc);
-				return true;   // refresh (and re-arm the hold if still engaged)
+				Interlocked.Increment(ref _rejectSpeed);
+				return NpcRoute.RejectSpeed;
 			}
-			return false;      // someone else holds this body
+
+			_npcClaims[npcName] = (sender.Id, now, engaged ? now : claim.EngagedUtc, x, y, z);
+			return NpcRoute.Broadcast;   // refresh (and re-arm the hold if still engaged)
 		}
 	}
 

@@ -34,7 +34,16 @@ public class InformationController : ControllerBase
 	public IActionResult GetInfo()
 	{
 		_serverInfo.Players = _clientHandler.ClientCount;
-		
+
 		return Ok(_serverInfo);
 	}
+
+	/// <summary>
+	/// WO-66: running NPC claim-update rejection counters, one per
+	/// [WO66-REJECT] reason tag. All zero on a healthy wire.
+	/// </summary>
+	[HttpGet("npc-validation")]
+	[ProducesResponseType(StatusCodes.Status200OK)]
+	public IActionResult GetNpcValidation() =>
+		Ok(_clientHandler.GetNpcValidationCounters());
 }

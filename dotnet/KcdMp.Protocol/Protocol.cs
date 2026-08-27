@@ -772,6 +772,22 @@ public static class Protocol
     public const int MaxNpcNameLen = 64;
 
     /// <summary>
+    /// WO-66: entity-name prefix reserved by the mod's own spawns. Every
+    /// entity kdcmp.lua creates is named under this prefix -- "kcd2mp_&lt;id&gt;"
+    /// ghosts, "kcd2mp_horse_&lt;id&gt;" ghost horses, "kcd2mp_npc_&lt;n&gt;" test
+    /// spawns, "kcd2mp_ianchor_*" item anchors. The relay REFUSES an NPC
+    /// claim for any name under it (ClientHandler.RouteNpcState): a claim
+    /// for one of our own spawns is the recursive-puppet-discovery bug (a
+    /// rescan picking up a ghost and streaming it back), never a legitimate
+    /// world NPC. Defense in depth behind the Lua-side registry guard
+    /// (mp_is_mod_entity in kdcmp.lua), which additionally covers ghosts
+    /// after their WO-26 rename to player nicks -- a rename this name gate
+    /// cannot see. IF THE LUA SPAWN-NAME SCHEME EVER CHANGES, CHANGE BOTH:
+    /// this constant and the "kcd2mp_" spawn names in kdcmp.lua.
+    /// </summary>
+    public const string NpcReservedNamePrefix = "kcd2mp_";
+
+    /// <summary>
     /// NpcStateUp (0x26) payload bytes after the variable-length name:
     /// x, y, z, rotZ, health (4f each) + flags. Full payload length is
     /// 1 (nameLen) + name + this.

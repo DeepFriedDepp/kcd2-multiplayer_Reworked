@@ -2741,6 +2741,11 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     end
 
     local pos = {x=x, y=y, z=z}
+    -- WO-66: the "kcd2mp_" prefix here (and in every other spawn name this
+    -- file mints: kcd2mp_horse_, kcd2mp_npc_, kcd2mp_ianchor_) is RESERVED at
+    -- the relay -- Protocol.NpcReservedNamePrefix in dotnet/KcdMp.Protocol/
+    -- Protocol.cs makes the relay refuse NPC claims for names under it.
+    -- If this naming scheme ever changes, change that constant too.
     local name = "kcd2mp_" .. id
 
     System.LogAlways(string.format("[KCD2-MP] Spawning ghost '%s' at %.1f,%.1f,%.1f", id, x, y, z))
