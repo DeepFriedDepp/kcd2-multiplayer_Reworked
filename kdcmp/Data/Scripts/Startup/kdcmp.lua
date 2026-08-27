@@ -2831,6 +2831,65 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         return nil
     end
 
+    -- WO-69: verify-after-spawn. The face-pick line above records what was
+    -- ASKED FOR; on its own it is not evidence of what the engine built. A
+    -- discarded SharedSoulGuid produces a soulless default body with no error
+    -- of any kind (WO-22), and a roster soul absent from the loaded save is
+    -- the same silent no-op (WO-33) -- both would have been invisible in
+    -- every field log the project has ever collected. This line ships
+    -- permanently, and stays even now that the roster is male-only, so a
+    -- silent fallback can never again hide behind a correct-looking request.
+    --
+    -- entity.class is the authoritative gender read: gender comes from the
+    -- CLASS ("NPC" vs "NPC_Female"), not from the soul, and it is proven
+    -- readable on a real ghost. entity.soul.name is read as a soul-binding
+    -- probe only, BEFORE KCD2MP_ApplyName overwrites it with the nickname.
+    --
+    -- Nil is "unknown", never "mismatch". ApplyName's own field logs show
+    -- `before=nil` on live ghosts, so the soul is not reliably reachable at
+    -- spawn+0; treating an empty read as a negative would respawn healthy
+    -- ghosts forever. Only a DEFINITE, non-nil disagreement acts.
+    local resolvedClass, resolvedSoul = nil, nil
+    pcall(function() resolvedClass = entity.class end)
+    pcall(function() resolvedSoul  = entity.soul and entity.soul.name end)
+    System.LogAlways(string.format(
+        "[KCD2-MP] spawn verify ghost '%s': requested class=%s soul=%s guid=%s | resolved class=%s soul=%s",
+        tostring(id), facePick.className, facePick.soulName, facePick.guid,
+        tostring(resolvedClass), tostring(resolvedSoul)))
+
+    if resolvedClass ~= nil and tostring(resolvedClass) ~= facePick.className then
+        -- Loud: this is the failure mode that produced the field report and
+        -- then hid from four sessions of logs.
+        System.LogAlways(string.format(
+            "[KCD2-MP] SPAWN MISMATCH ghost '%s': asked for class=%s, engine built class=%s"
+            .. " -- respawning once on the deterministic fallback soul %s",
+            tostring(id), facePick.className, tostring(resolvedClass),
+            KCD2MP.faceFallback.soulName))
+        mp_remove_entity_verified(entity.id, name, "mismatched ghost " .. tostring(id))
+        entity = nil
+        -- Exactly one re-attempt, never a loop, and never the engine default:
+        -- a named male commoner whose guid is checked into this file.
+        facePick = KCD2MP.faceFallback
+        pcall(function()
+            XGenAIModule.SpawnEntity{
+                Name           = name,
+                ClassName      = facePick.className,
+                Pos            = {x, y, z},
+                SharedSoulGuid = facePick.guid,
+            }
+            entity = System.GetEntityByName(name)
+        end)
+        if not entity then
+            System.LogAlways("[KCD2-MP] fallback respawn failed for ghost id=" .. tostring(id))
+            return nil
+        end
+        local reClass = nil
+        pcall(function() reClass = entity.class end)
+        System.LogAlways(string.format(
+            "[KCD2-MP] spawn verify (fallback) ghost '%s': resolved class=%s soul=%s",
+            tostring(id), tostring(reClass), facePick.soulName))
+    end
+
     -- Set faction via AI system (XGenAIModule ignores Properties.esFaction at spawn time)
     pcall(function()
         entity.Properties.esFaction = "Civilians"
@@ -6123,7 +6182,16 @@ KCD2MP.armorPresets = {
 -- (NATIVE-PLUGIN-findings.md), so these values hold regardless of which save
 -- or session picks them.
 --
--- WO-34: it was 48 (24 male, 24 female) and it is now 43 (19 male, 24
+-- WO-69: it is now 19, all male. The 24-entry female table is gone -- see
+-- KCD2MP_PickFaceForPlayer below for why (every player character in KCD2 is
+-- Henry, so a female ghost was always wrong, and WO-23 established that zero
+-- female combat armour exists in Warhorse's catalog, so gear sync could not
+-- render on one either). All 19 male SharedSoulGuids below were read back
+-- live from a running build during WO-69 and matched 19/19 -- observed, so
+-- H2 (an unresolvable roster soul falling back to a default body) is ruled
+-- out for the shipped roster, not merely assumed.
+--
+-- WO-34: it was 48 (24 male, 24 female) and it then became 43 (19 male, 24
 -- female). Five of the male entries were NOT commoners -- tbuk_man_5,
 -- tkop_man_1, tkop_man_2, tzda_man_6 and tzda_man_9 were bandits, and are
 -- gone. Read off the shipped tables, not inferred:
@@ -6173,32 +6241,6 @@ KCD2MP.faceRoster = {
         {"tzel_man_10",  "8158f557-018e-4016-95a4-024bb060bd18"},
         {"tzel_man_7",   "271ac033-a516-4928-b1f7-825bc57c46e3"},
     },
-    female = {
-        {"prepadeni_woman_1", "f9eeaaef-b0f7-437d-b5cc-043121267e87"},
-        {"tpod_woman_3",      "cbea36af-a25c-4aa0-8ae4-d6b5a2fcc3f3"},
-        {"tsem_woman_12",     "46ec6bf1-3bac-85d6-8ee7-f90b1b25a4a8"},
-        {"tsem_woman_8",      "456dc2bd-1ede-2372-7ee7-fed064e80ea8"},
-        {"tsem_woman_9",      "4187a4bf-c27a-dd4b-c348-7bec934968ad"},
-        {"tsla_woman_1",      "4e9bdbd4-885f-b50b-3940-d9ff9a000382"},
-        {"ttac_woman_3",      "48de9403-4fa6-32c3-7dd7-007ef5dc1489"},
-        {"ttac_woman_4",      "49daaf6f-5119-420a-b7c6-33825b912bb3"},
-        {"ttac_woman_7",      "ddf4ac93-d15d-4728-8083-16cf46f68444"},
-        {"ttkc_woman_17",     "f9a94c81-d804-44ab-9d0e-9c4decefbcd0"},
-        {"ttkc_woman_6",      "4763a986-8361-a712-61d9-bf6dd706ddb6"},
-        {"ttkc_woman_9",      "7ac037fe-60ca-4212-a39f-0093cff270ba"},
-        {"ttro_woman_10",     "ab87afbe-498c-42c3-ab3e-bef003b273be"},
-        {"ttro_woman_11",     "1b21ebf4-0ccd-450e-b182-8703a01c6ff8"},
-        {"ttro_woman_12",     "7759e6b2-6a88-4f30-a28f-bee35104370b"},
-        {"tvez_woman_2",      "488e80ea-f98d-d0e1-8dc7-4359d4701b8d"},
-        {"tvez_woman_3",      "00ec8c08-21d3-4f65-8c84-cf28958f0cde"},
-        {"tvez_woman_5",      "9349eb0d-91e3-4f48-94bd-6ef73370036e"},
-        {"tvid_woman_1",      "4bb85c62-b0f9-c430-27e5-2ecfd254df90"},
-        {"tzda_woman_1",      "450fc04c-4a9d-a6c9-0af0-dc60678c39a9"},
-        {"tzda_woman_4",      "e9cca65b-2a67-4b12-b892-673ffbcb61dc"},
-        {"tzel_woman_1",      "4b80b89a-45f3-8861-ecc7-b67cc7c6f185"},
-        {"tzel_woman_2",      "45032153-51cb-db4a-9ea0-69431518519a"},
-        {"tzel_woman_3",      "499b3100-8025-ece1-c741-ef13d59db783"},
-    },
 }
 
 -- djb2-style string hash. Pure +/*/% arithmetic, deliberately no bitwise
@@ -6222,16 +6264,43 @@ function KCD2MP_HashString(s)
 end
 
 -- Deterministic per-player face pick: same name key -> same soul, every
--- time, in this or any future session. Gender and the individual soul are
--- both derived from the same hash so one name always resolves to one look.
+-- time, in this or any future session.
+--
+-- WO-69: gender is no longer derived from the hash. It used to be
+-- `isFemale = (h % 2) == 0`, which made half of all name keys resolve to a
+-- female body -- and every KCD2 player character is Henry, so that half was
+-- wrong by construction, not by accident. The field report ("the host's
+-- ghost often spawns as a female NPC") is this line, working exactly as
+-- written: the tester's host nick hashes to 46000, which is even, so his
+-- ghost was female on all four spawns of the reported session -- observed,
+-- not inferred (docs/WO-69-findings.md). WO-58 had already fixed a *second*,
+-- independent path to the same symptom (the "Player<id>" fallback key, whose
+-- hash is also even for odd ids); that fix is intact and did not cover this.
+--
+-- Deliberately NOT changed: the hash, the `math.floor(h / 2)` term, and the
+-- male table's contents and order. `#list` was already 19 here (the gender
+-- branch chose the list BEFORE the modulus), so every player whose hash is
+-- odd -- everyone who was already rendering correctly -- keeps the exact
+-- same face across this upgrade. Only the ~50% who were rendering as women
+-- change, and they change from a wrong body to a right one. Reordering or
+-- "tidying" the male table would re-roll all 19 and break that property.
 function KCD2MP_PickFaceForPlayer(nameKey)
     local h = KCD2MP_HashString(tostring(nameKey or ""))
-    local isFemale = (h % 2) == 0
-    local list = isFemale and KCD2MP.faceRoster.female or KCD2MP.faceRoster.male
+    local list = KCD2MP.faceRoster.male
     local idx = (math.floor(h / 2) % #list) + 1
     local pick = list[idx]
-    return { className = isFemale and "NPC_Female" or "NPC", soulName = pick[1], guid = pick[2] }
+    return { className = "NPC", soulName = pick[1], guid = pick[2] }
 end
+
+-- WO-69: the deterministic fallback for a spawn that resolves to something
+-- other than what was asked for. One specific, always-loaded male commoner --
+-- never the engine's own default body, which is what a discarded
+-- SharedSoulGuid silently produces (WO-22). Kuttenberg is the largest
+-- always-streamed settlement in the game, and this soul's SharedSoulGuid was
+-- read back live from a running build during WO-69 (19/19 male roster souls
+-- resolved; this is roster slot 11).
+KCD2MP.faceFallback = { className = "NPC", soulName = "ttkc_man_3",
+                        guid = "4b4c6520-21a6-6125-d814-564837f165a2" }
 
 -- Split "a,b,c" -> {"a","b","c"}, trims whitespace
 local function splitCSV(s)
