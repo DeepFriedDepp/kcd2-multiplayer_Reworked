@@ -1870,6 +1870,44 @@ KCD2MP._npcSyncAliveAt = nil
 KCD2MP.npcTracked      = {}   -- name -> {lastX,lastY,lastZ,lastRot,lastHp,lastSentAt}
 KCD2MP._npcScanAt      = 0
 
+-- WO-69: chain identity for the two NPC-sync Script.SetTimer chains.
+--
+-- `tickAlive` calls a chain dead when its heartbeat is older than 1.0 s, and a
+-- menu SUSPENDS Script.SetTimer (WO-12/13) -- so a menu open longer than a
+-- second makes a live-but-frozen chain look dead, Start* launches a second
+-- one, and when the menu closes BOTH resume. Nothing in the code could ever
+-- notice: a chain had no identity, so a stale one was indistinguishable from
+-- the real one. The field bundle shows 114 `puppet tick started` against 39
+-- `stopped`, in runs of up to nine consecutive starts.
+--
+-- N concurrent chains apply the position lerp N times per 50 ms, which turns
+-- the intended decay into a near-instant snap followed by a wait for the next
+-- 4 Hz packet -- i.e. this AMPLIFIES the WO-69 D1 jitter rather than competing
+-- with it.
+--
+-- Deliberately observe-only by default: WO-69's own rule is that the leak is
+-- SUSPECTED until a log line shows two chains alive at once. `mp_npc_chainfix
+-- on` flips the stale chain from "log and keep running" to "log and exit", so
+-- the same build both proves the leak and fixes it without a second deploy.
+-- The EMIT chain is deliberately left un-instrumented here. The field bundle
+-- shows the same duplication shape on the send side (22,019 npc_claim lines in
+-- 368 bursts, ~15x, with byte-identical coordinates repeated inside one frame),
+-- but this is a one-machine session: a send-side change could not be observed,
+-- only asserted. It goes to WO-70 with the evidence rather than shipping
+-- unverified. Same mechanism, same fix shape, different burden of proof.
+KCD2MP.npcPuppetGen   = 0
+KCD2MP.npcChainFix    = false  -- mp_npc_chainfix on|off
+KCD2MP._chainLeakSeen = {}     -- "puppet" -> true, so the line logs once per chain kind
+
+-- WO-69: measured inbound packet cadence. Before this there was NO per-packet
+-- record anywhere in the mod, so every cadence number in the WO-69 diagnosis
+-- except the emitter's own `emitMs = 250` was a proxy inferred from
+-- animation-tag transitions. WO-70 cannot tune a dead-reckoning layer against
+-- a cadence nobody has measured. Summarised on a 5 s cadence rather than
+-- logged per packet -- a per-packet line at 4 Hz x N puppets is exactly the
+-- log volume that changed what it was measuring in WO-39.
+KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, dumpAt = 0 }
+
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
 KCD2MP.npcPuppetRunning  = false
@@ -2344,7 +2382,23 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     p.drawn = (math.floor(f / 4) % 2) == 1      -- bit 2 (WO-40 Phase 6: weapon out in the authority's world)
     local swingCue = (math.floor(f / 8) % 2) == 1  -- bit 3 (WO-40 Phase 6: it just landed a hit there)
     p.carried = (math.floor(f / 16) % 2) == 1   -- bit 4 (WO-40 Phase 7: a player is carrying this body)
-    p.lastPacketAt = os.clock()
+    -- WO-69: measure the real inbound cadence (see KCD2MP.npcPacketStats).
+    -- Read the PREVIOUS stamp before overwriting it. Intervals above 5 s are
+    -- dropped rather than averaged in: they are a puppet resuming after a
+    -- release, a save load or a menu, not a stream cadence, and a handful of
+    -- them would drag the mean far off the thing being measured.
+    local nowPkt = os.clock()
+    if p.lastPacketAt then
+        local dtMs = (nowPkt - p.lastPacketAt) * 1000
+        if dtMs > 0 and dtMs < 5000 then
+            local s = KCD2MP.npcPacketStats
+            s.n   = s.n + 1
+            s.sum = s.sum + dtMs
+            if dtMs < s.min then s.min = dtMs end
+            if dtMs > s.max then s.max = dtMs end
+        end
+    end
+    p.lastPacketAt = nowPkt
     if swingCue and not p.dead and not p.ko then
         p.swingCuePending = true
     end
@@ -2380,19 +2434,46 @@ local function mp_npc_draw(name, e)
     if not drew then pcall(function() e.human:DrawWeapon() end) end
 end
 
-function KCD2MP_NpcPuppetTick(arg)
+function KCD2MP_NpcPuppetTick(arg, gen)
     if not KCD2MP.npcPuppetRunning then return end
+    -- WO-69: chain identity. `gen` is nil for the external menu pump (which
+    -- never reschedules and so cannot be a leaked chain) and for any legacy
+    -- bare reschedule; only a generation-stamped chain is checked.
+    if gen ~= nil and gen ~= KCD2MP.npcPuppetGen then
+        if not KCD2MP._chainLeakSeen.puppet then
+            KCD2MP._chainLeakSeen.puppet = true
+            mp_log(string.format(
+                "NPC-SYNC CHAIN LEAK CONFIRMED: puppet chain gen=%s is still running while gen=%s"
+                .. " is current -- two chains were writing the same puppets%s",
+                tostring(gen), tostring(KCD2MP.npcPuppetGen),
+                KCD2MP.npcChainFix and " (stale chain exiting now)"
+                                    or " (observe-only; `mp_npc_chainfix on` to stop it)"))
+        end
+        -- The fix, gated: a stale chain stops rescheduling and dies here.
+        if KCD2MP.npcChainFix then return end
+    end
     -- WO-40 Phase 2: same pump pattern as KCD2MP_InterpTick. A menu suspends
     -- Script.SetTimer (WO-12/13), which froze every NPC puppet for the paused
     -- player -- the WO-13 ghost fix was never applied to this second tick.
     -- The agent's menu pump now calls this with arg="ext": no reschedule, no
     -- alive-stamp (a pumped call must not make a dead chain look healthy).
     if arg ~= "ext" then
-        Script.SetTimer(50, KCD2MP_NpcPuppetTick)  -- reschedule FIRST
+        Script.SetTimer(50, function() KCD2MP_NpcPuppetTick(nil, gen) end)  -- reschedule FIRST
         KCD2MP._npcPuppetAliveAt = os.clock()
     end
 
     local now = os.clock()
+
+    -- WO-69: dump the measured inbound cadence every 5 s. This is the number
+    -- WO-70 needs and the one nothing has ever recorded.
+    local st = KCD2MP.npcPacketStats
+    if st.n > 0 and (now - (st.dumpAt or 0)) >= 5.0 then
+        st.dumpAt = now
+        mp_log(string.format(
+            "NPC-SYNC packet cadence: n=%d mean=%.0fms min=%.0fms max=%.0fms (emitter is %dms; apply tick is 50ms)",
+            st.n, st.sum / st.n, st.min, st.max, KCD2MP.npcSync.emitMs or 250))
+        st.n, st.sum, st.min, st.max = 0, 0, 1e9, 0
+    end
     local any = false
     for name, p in pairs(KCD2MP.npcPuppets) do
         pcall(function()
@@ -2514,8 +2595,23 @@ function KCD2MP_NpcPuppetTick(arg)
                 pcall(function() ap = e:GetWorldPos() end)
                 if ap then
                     local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
-                    if (fx*fx + fy*fy) > 0.5625 then
+                    -- WO-69: the threshold was 0.5625 m^2 = 0.75 m of drift in
+                    -- one 50 ms tick = 15 m/s. Nothing short of a teleport
+                    -- moves that fast, so this counter was blind to every
+                    -- realistic brain contention and its lifetime count of
+                    -- zero meant nothing. 0.0025 m^2 = 5 cm/tick = 1 m/s,
+                    -- which is walking pace and the scale D2 would actually
+                    -- act at. It also LOGS now, throttled: the count alone
+                    -- only ever printed from the manual mp_npc_fight command,
+                    -- which no field session has ever run.
+                    if (fx*fx + fy*fy) > 0.0025 then
                         p.fightN = (p.fightN or 0) + 1
+                        if (now - (p.fightLogAt or 0)) >= 5.0 then
+                            p.fightLogAt = now
+                            mp_log(string.format(
+                                "NPC-FIGHT %s displaced %.2fm from our last write in one tick (n=%d) -- something else is moving it",
+                                name, math.sqrt(fx*fx + fy*fy), p.fightN))
+                        end
                         p.attr = p.attr or {}
                         local matched = false
                         for _, a in ipairs(p.attr) do
@@ -2538,7 +2634,22 @@ function KCD2MP_NpcPuppetTick(arg)
                 p.cx = p.cx + dx * 0.5
                 p.cy = p.cy + dy * 0.5
                 p.cz = p.tz or p.cz
-                p.cr = p.tr or p.cr
+                -- WO-69: yaw was a HARD SNAP (`p.cr = p.tr or p.cr`) while
+                -- position was lerped -- so a puppet's body slid smoothly
+                -- while its facing jumped 4x/sec to whatever the last packet
+                -- said. That is a jitter source entirely independent of the
+                -- position stream, and no amount of position smoothing would
+                -- have fixed it. lerpAngle is the ghost path's own
+                -- shortest-path helper (file-top local, in scope here --
+                -- unlike getFloorZ, which is declared AFTER this tick and
+                -- would bind to a nil global).
+                --
+                -- Position smoothing is deliberately NOT changed in this work
+                -- order: it is WO-70's, behind the WO-63 ordering gate
+                -- (live-verify WO-60 first). Yaw is safe to land now because
+                -- it smooths ROTATION, so it cannot mask the position
+                -- snap-between-attractors that WO-60's footage has to show.
+                if p.tr then p.cr = lerpAngle(p.cr or p.tr, p.tr, 0.5) end
             end
 
             e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
@@ -2605,8 +2716,28 @@ function KCD2MP_StartNpcPuppet()
     if tickAlive(KCD2MP.npcPuppetRunning, KCD2MP._npcPuppetAliveAt) then return end
     KCD2MP.npcPuppetRunning = true
     KCD2MP._npcPuppetAliveAt = os.clock()
-    mp_log("NPC-SYNC puppet tick started (50ms)")
-    Script.SetTimer(50, KCD2MP_NpcPuppetTick)
+    -- WO-69: every start claims a new generation. Any chain still running
+    -- under an older one is, by definition, a leaked chain -- and now says so.
+    KCD2MP.npcPuppetGen = (KCD2MP.npcPuppetGen or 0) + 1
+    local myGen = KCD2MP.npcPuppetGen
+    mp_log("NPC-SYNC puppet tick started (50ms) gen=" .. tostring(myGen))
+    Script.SetTimer(50, function() KCD2MP_NpcPuppetTick(nil, myGen) end)
+end
+
+-- WO-69: `mp_npc_chainfix on|off`. Off (default) = a leaked chain is logged
+-- and left running, so the leak can be OBSERVED before it is fixed. On = the
+-- stale chain exits. Deliberately a toggle rather than a hardcoded fix: it
+-- makes the before/after a live A/B on one build instead of two deploys, and
+-- leaves a rollback if stopping a chain turns out to stop the wrong one.
+function KCD2MP_SetNpcChainFix(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "on" or s == "1" or s == "true" then
+        KCD2MP.npcChainFix = true
+    elseif s == "off" or s == "0" or s == "false" then
+        KCD2MP.npcChainFix = false
+    end
+    mp_log("mp_npc_chainfix = " .. tostring(KCD2MP.npcChainFix)
+           .. " (leak seen so far: puppet=" .. tostring(KCD2MP._chainLeakSeen.puppet and true or false) .. ")")
 end
 
 -- WO-27: verified entity removal.
@@ -7348,6 +7479,7 @@ local ok, err = pcall(function()
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
+    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69: off (default) logs a leaked puppet-tick chain and leaves it running; on makes the stale chain exit: mp_npc_chainfix on|off")
 
     -- Shared player combat (WO-28)
     System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")
