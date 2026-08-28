@@ -161,12 +161,29 @@ is simply not a working load path in KCD2, which is exactly what
 loads a save; there is no level to boot into". Recorded prominently because the
 mis-attribution was one control run away from going in as fact.
 
-**Concrete next lever for the world-tick measurement:** the console command
-`test_load` — "Loads named test from test database" — is TestModule's harness
-entry, and WO-72 already established TestModule is Warhorse's in-game test
-command module. A named test that stands up a world is the most promising way
-to get a save-backed world loaded without the UI. Failing that, driving the
-main menu's load flow through `UIAction` is the fallback. Neither was tried.
+### §1b — four load routes tried, all dead ends (observed)
+
+| route | result |
+|---|---|
+| `Game.QuickLoad()` | returns true, does nothing — `[Warning] No quicksave.` |
+| console `map trosecko` | opens the level paks then **hangs — on GPU too** (§1a) |
+| `test_load bp_save_loading` | loads the *test database* only: `[Test] Loaded 1093 tests`. World clock still 0. |
+| `test_start` | **terminates the process.** Consistent with `test_saveMeta`'s help ("Terminates the game") — the harness owns the process lifecycle. |
+
+Test names come from `%USERPROFILE%\Saved Games\kingdomcome2\testresults\`:
+`bp_boot`, `bp_level_switching`, `bp_save_loading`, `bp_settings_change`.
+
+`UIAction` exposes 34 methods (`CallFunction`, `StartAction`, `SetVariable`,
+`ShowElement`, …) but the main menu's element and action *names* are unknown,
+so driving the load flow through it is a name-discovery task, not a one-liner.
+`DumpVars` shows no startup-load cvar; `sv_map` exists but is the dedicated
+path, and `map` is what hangs.
+
+**Still the open item.** The remaining candidates, in order of likely cost:
+recover the menu's `UIAction` element/action names (the mod already uses
+`UIAction` for toasts, WO-38, so the convention is discoverable); or find the
+native save-load entry (`wh::game::C_Game::OnLoadGame` exists as a
+`__FUNCTION__` string in `WHGame.dll`) and call it directly.
 
 ---
 
