@@ -17,6 +17,14 @@
       INSTALLED %LocalAppData%\KCDMP   what the player's machine is running
                 <ModdingTools>\Mods\kdcmp\Data\kdcmp.pak
 
+    WO-74 added two layers below those, both driven by the install manifest
+    Setup now ships inside the install directory: the installer's own verdict
+    (install-verify.txt), and an independent sha256 re-check of every
+    component plus a hunt for files that no release ships. A foreign assembly
+    sitting in the install directory is not a cosmetic problem -- .NET loads
+    by filename out of that folder, and one is enough to stop the relay
+    cold-starting.
+
     Feature presence is probed by string literal, not by version number. A
     .NET assembly keeps the same AssemblyVersion across builds, so "is it the
     new one" cannot be answered from metadata -- but the Lua entry points the
@@ -86,7 +94,19 @@ $PakMarkers = @(
 
 function Test-Assembly($dir, $label) {
     Write-Host "`n[$label] $dir" -ForegroundColor Cyan
-    if (-not (Test-Path $dir)) { Write-Host "  MISSING DIRECTORY" -ForegroundColor Red; $script:fail++; return }
+    if (-not (Test-Path $dir)) {
+        # release\KCDMP is a build output, not part of an install. On a tester's
+        # machine -- or any tree where nobody has run Publish-Release.ps1 since
+        # the last clean-up -- its absence says nothing about the install, and
+        # failing on it would make this script useless everywhere it matters
+        # most. The manifest re-check below answers the same question without
+        # needing a build tree at all.
+        if ($label -like 'BUILT*') {
+            Write-Host "  not present -- skipped (run tools\Publish-Release.ps1 to compare against a build)" -ForegroundColor Yellow
+            return
+        }
+        Write-Host "  MISSING DIRECTORY" -ForegroundColor Red; $script:fail++; return
+    }
     foreach ($m in $AsmMarkers) {
         $p = Join-Path $dir $m.File
         if (-not (Test-Path $p)) {
@@ -146,6 +166,76 @@ Test-Assembly $rel     'BUILT     app'
 Test-Assembly $AppDir  'INSTALLED app'
 Test-Pak (Join-Path $root 'kdcmp\Data\kdcmp.pak') 'BUILT     pak'
 Test-Pak (Join-Path $ModDir 'Data\kdcmp.pak')     'INSTALLED pak'
+
+# WO-74. The installer now proves itself and leaves the verdict behind, so the
+# first question here is no longer "do these two folders look alike" but "what
+# did Setup say when it finished". A stale PASS cannot survive an aborted run
+# any more: install-verify.txt is stamped FAIL before the first file is copied
+# and only becomes PASS at the end.
+Write-Host "`n[INSTALLED] the installer's own verdict" -ForegroundColor Cyan
+$verifyPath = Join-Path $AppDir 'install-verify.txt'
+if (-not (Test-Path $verifyPath)) {
+    Write-Host "  install-verify.txt MISSING -- this install predates WO-74, or Setup never finished" -ForegroundColor Red
+    $fail++
+} else {
+    $verdict = Get-Content $verifyPath
+    $green = $verdict[0] -like 'PASS*'
+    if (-not $green) { $fail++ }
+    $verdict | ForEach-Object { Write-Host ("  {0}" -f $_) -ForegroundColor $(if ($green) { 'Green' } else { 'Red' }) }
+}
+
+# Re-check the shipped manifest independently of Setup: same three questions
+# (is every component there, is it the right content, is anything there that no
+# release ships), asked by a different program. The installer computes this at
+# install time; a machine can be damaged afterwards.
+Write-Host "`n[INSTALLED] manifest re-check (sha256)" -ForegroundColor Cyan
+$manifestPath = Join-Path $AppDir 'install-manifest.txt'
+if (-not (Test-Path $manifestPath)) {
+    Write-Host "  install-manifest.txt MISSING" -ForegroundColor Red
+    $fail++
+} else {
+    $appRel = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $bad = 0; $checked = 0
+    foreach ($line in Get-Content $manifestPath) {
+        $line = $line.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        $f = $line -split '\|'
+        if ($f.Count -lt 4) { continue }
+        $base = if ($f[0] -eq 'MOD') { $ModDir } else { $AppDir }
+        if ($f[0] -eq 'APP') { [void]$appRel.Add($f[1]) }
+        $full = Join-Path $base $f[1]
+        $checked++
+        if (-not (Test-Path $full)) {
+            Write-Host ("  {0,-6} {1,-46} MISSING" -f $f[0], $f[1]) -ForegroundColor Red; $bad++; continue
+        }
+        $item = Get-Item $full
+        if ($item.Length -ne [int64]$f[2]) {
+            Write-Host ("  {0,-6} {1,-46} {2:N0} bytes, expected {3:N0}" -f $f[0], $f[1], $item.Length, [int64]$f[2]) -ForegroundColor Red
+            $bad++; continue
+        }
+        if ((Get-FileHash $full -Algorithm SHA256).Hash -ne $f[3]) {
+            Write-Host ("  {0,-6} {1,-46} WRONG CONTENT (sha256 differs)" -f $f[0], $f[1]) -ForegroundColor Red
+            $bad++
+        }
+    }
+    # The closed-set half. A file no release ships is exactly how a relay ends
+    # up unable to cold-start (WO-69): .NET loads by filename out of this
+    # directory, so a foreign assembly here wins over nothing at all.
+    $strays = @()
+    if (Test-Path $AppDir) {
+        $appFull = (Get-Item $AppDir).FullName
+        $strays = Get-ChildItem $appFull -Recurse -File |
+            Where-Object { $_.Name -notlike 'unins*' -and
+                           ($_.Extension -in '.dll', '.exe', '.pdb' -or
+                            $_.Name -like '*.deps.json' -or $_.Name -like '*.runtimeconfig.json') } |
+            ForEach-Object { $_.FullName.Substring($appFull.Length + 1) } |
+            Where-Object { -not $appRel.Contains($_) }
+    }
+    foreach ($s in $strays) { Write-Host ("  STRAY  {0,-46} not in the manifest -- no release ships it" -f $s) -ForegroundColor Red }
+    $bad += $strays.Count
+    if ($bad -eq 0) { Write-Host ("  {0} components verified, no strays" -f $checked) -ForegroundColor Green }
+    else { $fail++ }
+}
 
 # A file that is byte-identical in both places is the only proof the install
 # actually landed -- timestamps are preserved by Inno and lie about this.

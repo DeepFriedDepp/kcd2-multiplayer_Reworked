@@ -13,8 +13,26 @@ Written 2026-07-30 (WO-8), against Setup 0.8.0 built on Windows 11 Pro
 
 ## Tier 1 — automated, executed
 
-Both suites were run this session and passed. Re-run them after any change to
-`installer\*.iss`, `tools\Publish-Release.ps1` or `tools\Build-Installer.ps1`.
+Three suites now. Re-run all of them after any change to `installer\*.iss`,
+`tools\Publish-Release.ps1`, `tools\Build-Installer.ps1`,
+`tools\Build-DirectInstall.ps1` or `tools\New-InstallManifest.ps1`.
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\Test-InstallerUpgrade.ps1
+```
+
+33/33 (WO-74) — **what happens when the directory Setup is upgrading is not
+clean.** Six independent installs into throwaway directories, detection pointed
+at a fixture tree the script builds, so the real game folder is never touched:
+virgin, clean previous release, the same version re-run over itself, a
+deliberately half-applied install, a damaged mod folder, and a negative control
+where a file genuinely cannot be written. The first five must end `PASS`; the
+sixth must end anything but — an installer that can finish silently over a
+half-state is the bug class WO-74 exists to close. Every cell compares the
+whole install directory against a clean install by path, size and sha256.
+
+The damaged cell is the one that matters. See `docs\WO-74-findings.md` for what
+it is reproducing and why the recipe has each ingredient in it.
 
 ```bash
 powershell -ExecutionPolicy Bypass -File tools\Test-InstallerDetect.ps1
@@ -53,8 +71,18 @@ Programs entry and its version, that an upgrade preserves a hand-edited
 uninstall removes the install directory, both shortcuts, `HKCU\Software\KCDMP`
 and the Add/Remove entry while leaving the mod alone.
 
-It does deploy the mod into the real game folder and removes it again
-afterwards. It refuses to run if a KCDMP install is already registered.
+It refuses to run if a KCDMP install is already registered.
+
+By default it deploys the mod into the real game folder and removes it again
+afterwards. **Pass `-SteamRoot <fixture>` and it touches nothing outside the
+fixture** — build one the way `tools\Test-InstallerUpgrade.ps1` does, or reuse
+that script's. Prefer the fixture: there is no reason for a lifecycle test to
+go near the real game.
+
+WO-74 added one assertion to every install and upgrade in it: the installer's
+own verdict, `install-verify.txt`, must read `PASS`. Exit code 0 was never
+enough — a Setup that aborted part way through used to leave the *previous*
+run's PASS sitting there as the record of what happened.
 
 **What tier 1 cannot see:** `/VERYSILENT` skips every wizard page. The
 Modding-Tools gate page, the Steam deep-link button, Browse..., the WebView2
@@ -116,6 +144,18 @@ builds one at `%TEMP%\kcdmp-detect-fixtures`; run it once first, then:
 
 - [ ] Separately, `/STEAMROOT="C:\definitely\not\here"` → the *Steam not
       found* page, not the *Modding Tools missing* page.
+
+**The half-apply dialog (WO-74) — still unticked, and the reason tier 2 exists:**
+
+- [ ] Make one file in the install directory unwritable in a way
+      `overwritereadonly` cannot clear — put a *directory* where a payload file
+      has to go — and run Setup interactively. It must present
+      Abort/Retry/Ignore and, whichever is chosen, must never reach a green
+      Finish page over a half-state: `install-verify.txt` must not read `PASS`.
+- [ ] Choose **Ignore** specifically. The post-install verification is
+      *reasoned* to catch that and has never been watched doing it.
+- [ ] Confirm the failure box says "THIS INSTALL IS NOT COMPLETE" and names
+      the affected components.
 
 **Replacing a foreign mod folder:**
 

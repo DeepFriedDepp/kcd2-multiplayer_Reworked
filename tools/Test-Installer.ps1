@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Install / upgrade / uninstall lifecycle test for KCDMP-Setup-<version>.exe.
 
@@ -15,14 +15,25 @@
     replace-an-existing-mod prompt are not exercised here. See
     docs/INSTALLER-TESTING.md.
 
-    This one does touch the real game folder: it deploys the mod to whatever
-    the installer detects, and restores the previous state afterwards.
+    By default this one does touch the real game folder: it deploys the mod to
+    whatever the installer detects, and restores the previous state afterwards.
+    Pass -SteamRoot to point detection at a fixture tree instead and leave the
+    real game completely alone -- tools\Test-InstallerUpgrade.ps1 builds a
+    suitable fixture, and docs\INSTALLER-TESTING.md explains why the override
+    exists (faking "not installed" by renaming a real appmanifest costs an
+    8.8 GB redownload).
+
+.PARAMETER SteamRoot
+    A fixture Steam directory to detect against, passed through as Setup's
+    /STEAMROOT. When given, the real-game backup/restore is skipped because
+    nothing outside the fixture is touched.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\Test-Installer.ps1
 #>
 param(
     [string]$SetupExe,
+    [string]$SteamRoot,
     [string]$WorkDir = (Join-Path $env:TEMP "kcdmp-installer-test")
 )
 
@@ -50,8 +61,24 @@ function Assert-That($name, $condition, $detail) {
 }
 
 function Invoke-Setup($arguments) {
+    if ($SteamRoot) { $arguments += "/STEAMROOT=$SteamRoot" }
     $p = Start-Process -FilePath $SetupExe -ArgumentList $arguments -Wait -PassThru
     return $p.ExitCode
+}
+
+# WO-74: exit code 0 was never enough. Setup writes its own verdict into
+# install-verify.txt -- stamped FAIL before the first file is copied, and only
+# rewritten to PASS once every component has been checked by sha256. A suite
+# that asserts the exit code and not this one would have passed over the
+# 0.18.8 install that finished holding a previous run's stale PASS.
+function Assert-Verdict($appDir, $label) {
+    $p = Join-Path $appDir 'install-verify.txt'
+    if (-not (Test-Path $p)) {
+        Assert-That "$label -- install-verify.txt written" $false $appDir
+        return
+    }
+    $verdict = Get-Content $p
+    Assert-That "$label -- installer's own verdict is PASS" ($verdict[0] -like 'PASS*') ($verdict -join ' / ')
 }
 
 $appDir = Join-Path $WorkDir "app"
@@ -75,8 +102,12 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 # cleanup can put it back instead of just deleting.
 $modBackup = $null
 $preModsPath = $null
-foreach ($lib in @("D:\SteamLibrary\steamapps\common\KCD2Mod", "C:\Program Files (x86)\Steam\steamapps\common\KCD2Mod")) {
-    if (Test-Path (Join-Path $lib "Mods\kdcmp")) { $preModsPath = Join-Path $lib "Mods\kdcmp"; break }
+# With -SteamRoot the mod lands in the fixture, so there is no real deployment
+# to protect and nothing to restore -- and nothing should go looking for one.
+if (-not $SteamRoot) {
+    foreach ($lib in @("D:\SteamLibrary\steamapps\common\KCD2Mod", "C:\Program Files (x86)\Steam\steamapps\common\KCD2Mod")) {
+        if (Test-Path (Join-Path $lib "Mods\kdcmp")) { $preModsPath = Join-Path $lib "Mods\kdcmp"; break }
+    }
 }
 if ($preModsPath) {
     $modBackup = Join-Path $WorkDir "mod-backup"
@@ -92,6 +123,7 @@ Write-Host ""
 Write-Host "Fresh install"
 $code = Invoke-Setup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$appDir", "/LOG=$logDir\install.log")
 Assert-That "installer exit code 0" ($code -eq 0) "exit $code -- see $logDir\install.log"
+Assert-Verdict $appDir "fresh install"
 
 foreach ($f in @("KCDMP_launcher.exe", "KcdMpClient.exe", "KcdMpServer.exe", "KCDMP.dll",
                  "KCDMP_LauncherInjector.exe", "unins000.exe")) {
@@ -179,6 +211,7 @@ Set-Content -Path $sentinel -Value "not ours" -Encoding utf8
 
 $code = Invoke-Setup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$appDir", "/LOG=$logDir\upgrade.log")
 Assert-That "upgrade exit code 0" ($code -eq 0) "exit $code -- see $logDir\upgrade.log"
+Assert-Verdict $appDir "upgrade"
 
 $after = Get-Content $settingsPath -Raw | ConvertFrom-Json
 Assert-That "upgrade preserved a customised HostPort" ($after.HostPort -eq 9999) $after.HostPort

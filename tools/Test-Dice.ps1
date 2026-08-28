@@ -10,7 +10,11 @@
     DiceError/DiceEnd packets and the relay's own Farkle engine behind them.
 
     The debug seed override (Invite's dice config, byte 6-9) only works
-    against a Debug relay build -- a Release build never reads those bytes.
+    against a Debug relay build -- a Release build never reads those bytes
+    (SessionManager.CreateDiceGame wraps it in #if DEBUG). Pass -ReleaseRelay
+    when testing a published or installed relay: the two seeded-determinism
+    checks are then reported as skipped instead of failing on a relay that
+    was never going to honour the seed. Every other check applies to both.
     Start the relay first, e.g.
         dotnet run --project dotnet\KcdMp.Server -- --port 7778
 
@@ -24,7 +28,8 @@
 [CmdletBinding()]
 param(
     [string] $RelayHost = 'localhost',
-    [int]    $Port = 7778
+    [int]    $Port = 7778,
+    [switch] $ReleaseRelay
 )
 
 $ErrorActionPreference = 'Stop'
@@ -263,9 +268,22 @@ $sid2 = Start-DiceSession $a2 $b2 500 424242
 $endB = Invoke-DiceMatch $a2 $b2 $sid2
 Write-Host "   run B: outcome=$($endB.Outcome) scores=$($endB.ScoreInitiator)/$($endB.ScoreAcceptor)"
 
-Check "same seed -> same outcome" ($endA.Outcome -eq $endB.Outcome) "A=$($endA.Outcome) B=$($endB.Outcome)"
-Check "same seed -> same final scores" ($endA.ScoreInitiator -eq $endB.ScoreInitiator -and $endA.ScoreAcceptor -eq $endB.ScoreAcceptor) `
-    "A=$($endA.ScoreInitiator)/$($endA.ScoreAcceptor) B=$($endB.ScoreInitiator)/$($endB.ScoreAcceptor)"
+# WO-74. SessionManager.CreateDiceGame reads the seed inside #if DEBUG and
+# hands a Release build CryptoDiceRng instead, so these two assertions are
+# structurally unpassable against any relay a player actually runs. Asserting
+# them anyway made the first-ever run of this suite against an INSTALLED relay
+# look like a dice regression; it is a suite that only fits a Debug build.
+# -ReleaseRelay is explicit for the same reason -IncludeTimeout is in
+# Test-Sessions: a Debug run must stay strict, or a real determinism
+# regression would be skipped in silence.
+if ($ReleaseRelay) {
+    Write-Host "  SKIP  same seed -> same outcome        (Release relay: the seed override is #if DEBUG)" -ForegroundColor Yellow
+    Write-Host "  SKIP  same seed -> same final scores   (Release relay: the seed override is #if DEBUG)" -ForegroundColor Yellow
+} else {
+    Check "same seed -> same outcome" ($endA.Outcome -eq $endB.Outcome) "A=$($endA.Outcome) B=$($endB.Outcome)"
+    Check "same seed -> same final scores" ($endA.ScoreInitiator -eq $endB.ScoreInitiator -and $endA.ScoreAcceptor -eq $endB.ScoreAcceptor) `
+        "A=$($endA.ScoreInitiator)/$($endA.ScoreAcceptor) B=$($endB.ScoreInitiator)/$($endB.ScoreAcceptor)"
+}
 Check "the winner reached the 500 target" (($endA.Outcome -eq 0 -and $endA.ScoreInitiator -ge 500) -or ($endA.Outcome -eq 1 -and $endA.ScoreAcceptor -ge 500))
 
 foreach ($cl in @($a1, $b1, $a2, $b2)) { try { $cl.Tcp.Close() } catch { } }
@@ -285,9 +303,23 @@ Check "reason is NotYourTurn" ($err -and $err.Payload[2] -eq 1) "reason=$($DICE_
 
 # --- 3. an out-of-range keep mask is rejected --------------------------------
 Write-Host "`n3. an out-of-range keep mask is rejected"
-$actor = if ($st.CurrentRole -eq 0) { $c } else { $d }
-Send-DiceIntent $actor.Stream $sid $INTENT_ROLL $null
-$null = Read-Relevant $actor.Stream   # DiceState after the roll (AwaitingKeep)
+# WO-74: roll until somebody is actually holding dice to keep, taking the
+# current player from the state each time rather than assuming the turn
+# never moved. A roll that busts hands the turn straight over, and against
+# a Release relay -- CSPRNG, no seed (#if DEBUG) -- that happens at random,
+# so the Keep below landed out of turn and the relay answered NotYourTurn
+# instead of KeepIndexOutOfRange. Observed against an installed 0.19.0
+# relay. This is what the test always meant; the seed was doing the work.
+$state = $st
+$actor = $null
+for ($attempt = 0; $attempt -lt 25; $attempt++) {
+    $actor = if ($state.CurrentRole -eq 0) { $c } else { $d }
+    Send-DiceIntent $actor.Stream $sid $INTENT_ROLL $null
+    $state = Parse-DiceState (Read-Relevant $actor.Stream).Payload
+    if ($state.Phase -eq 1) { break }      # 1 = DicePhase.AwaitingKeep
+}
+Check "a roll reached AwaitingKeep within 25 attempts" ($state.Phase -eq 1) "phase=$($state.Phase)"
+$actor = if ($state.CurrentRole -eq 0) { $c } else { $d }
 
 Send-DiceIntent $actor.Stream $sid $INTENT_KEEP ([byte[]]@(0x40))   # bit 6: never a valid die index (max 6 dice)
 $err = Read-Relevant $actor.Stream
@@ -336,7 +368,14 @@ $null = Read-Relevant $i.Stream   # SessionStart
 $null = Read-Relevant $j.Stream   # SessionStart
 $endI = Invoke-DiceMatch $i $j $sidW
 Check "winner's DiceEnd carries the agreed wager" ($endI.WagerAmount -eq 250) "got $($endI.WagerAmount)"
-Check "Ivan (initiator) won, as the seed predicts" ($endI.Outcome -eq 0) "outcome=$($endI.Outcome)"
+if ($ReleaseRelay) {
+    # Which side wins is seed-dependent, and a Release relay ignores the
+    # seed (#if DEBUG). The wager assertions either side of this one do
+    # not depend on the outcome and stay strict.
+    Write-Host "  SKIP  Ivan (initiator) won, as the seed predicts   (Release relay: the seed override is #if DEBUG)" -ForegroundColor Yellow
+} else {
+    Check "Ivan (initiator) won, as the seed predicts" ($endI.Outcome -eq 0) "outcome=$($endI.Outcome)"
+}
 
 $i.Tcp.Close(); $j.Tcp.Close()
 

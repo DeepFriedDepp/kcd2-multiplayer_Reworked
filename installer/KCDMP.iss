@@ -79,7 +79,18 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; injector, and the self-contained .NET runtime beside them. The launcher
 ; resolves relative DllPath/AgentPath/RelayPath against its own directory,
 ; so this flat layout is the one AppSettings' defaults already expect.
-Source: "..\release\KCDMP\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+;
+; overwritereadonly (WO-74) is not decoration. Without it, ONE read-only file
+; anywhere in the install directory stops the entire install dead: Inno raises
+; "The existing file could not be replaced because it is marked read-only" as
+; an Abort/Retry/Ignore box, /SUPPRESSMSGBOXES answers Abort, and Setup exits
+; 5 -- the same code as a user pressing Cancel. Reproduced on 2026-08-28
+; against Setup 0.18.8: the abort landed on appsettings.json, the third file
+; alphabetically, so every file after it kept its old build, and the mod
+; folder had already been emptied by PrepareToInstall. A read-only attribute
+; is not exotic: restores from backup, copies off read-only media, and some
+; antivirus quarantine-restores all set it.
+Source: "..\release\KCDMP\*"; DestDir: "{app}"; Flags: ignoreversion overwritereadonly recursesubdirs createallsubdirs
 
 ; The game mod, and ONLY these two files. Do not turn this back into a
 ; wildcard over kdcmp\.
@@ -96,8 +107,8 @@ Source: "..\release\KCDMP\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 ; uninstaller silently deletes these files out of the player's game folder,
 ; which is not ours to do unasked. Removal is handled by the explicit
 ; question in CurUninstallStepChanged instead.
-Source: "..\kdcmp\mod.manifest"; DestDir: "{code:GetKdcmpTargetDir}"; Flags: ignoreversion uninsneveruninstall
-Source: "..\kdcmp\Data\kdcmp.pak"; DestDir: "{code:GetKdcmpTargetDir}\Data"; Flags: ignoreversion uninsneveruninstall
+Source: "..\kdcmp\mod.manifest"; DestDir: "{code:GetKdcmpTargetDir}"; Flags: ignoreversion overwritereadonly uninsneveruninstall
+Source: "..\kdcmp\Data\kdcmp.pak"; DestDir: "{code:GetKdcmpTargetDir}\Data"; Flags: ignoreversion overwritereadonly uninsneveruninstall
 
 [Icons]
 ; WorkingDir matters and is not decoration: settings.json is a bare relative
@@ -142,6 +153,37 @@ var
   DetectedGameRoot: String;
   SteamFound: Boolean;
   ModdingToolsRegistered: Boolean;
+
+  // WO-74 -- post-install verification state. See VerifyInstalledFiles.
+  // (Line comments, not brace ones: an Inno constant in braces inside a brace
+  // comment closes the comment early -- Pascal comments do not nest.)
+  ManApp: TArrayOfString;      // 'rel|size|sha256' per file in the install dir
+  ManMod: TArrayOfString;      // same, for the two files in the game folder
+  AppIndex: String;            // '|rel|rel|...|', lowercased -- the sweep's lookup
+  VerifyFailed: Boolean;
+
+{ The only way to hand a caller a non-zero exit code from a Setup that
+  otherwise "succeeded". Inno finishes normally after ssPostInstall and has no
+  API for this, and the alternative -- raising an exception in ssPostInstall --
+  triggers a rollback that uninstalls the files we just verified as good.
+  Cost of doing it this way: Setup's own temp folder is not cleaned up on
+  this path. That is a leaked temp folder on an install that already failed, in
+  exchange for automation being able to see that it failed at all. }
+procedure ExitProcess(uExitCode: UINT); external 'ExitProcess@kernel32.dll stdcall';
+
+{ Pascal Script has no attribute API of its own. Clearing read-only before a
+  delete is the same defence overwritereadonly gives the file copy -- see the
+  Files-section comment for what one read-only file did to a whole install. }
+const
+  FILE_ATTR_NORMAL = $00000080;
+
+function SetFileAttributesW(lpFileName: String; dwFileAttributes: LongInt): Boolean;
+  external 'SetFileAttributesW@kernel32.dll stdcall';
+
+procedure ClearReadOnly(const Path: String);
+begin
+  SetFileAttributesW(Path, FILE_ATTR_NORMAL);
+end;
 
 { -------------------------------------------------------------- WebView2 }
 
@@ -267,6 +309,90 @@ begin
   Exec(ExpandConstant('{cmd}'), '/c rd /s /q "' + Target + '"', '', SW_HIDE,
        ewWaitUntilTerminated, ResultCode);
   Result := not DirExists(Target);
+end;
+
+{ WO-74. What RemoveModFolder used to be called for on every upgrade, and why
+  it is not any more.
+
+  PrepareToInstall deleted the whole mod folder before the file copy ran.
+  When that copy then aborted -- one read-only file in the install dir was enough, see
+  the Files-section comment -- the player was left with NO mod in their game
+  at all, from an installer that reported nothing but a cancel. Observed on
+  2026-08-28 against Setup 0.18.8. (A line here may not start with a square
+  bracket, even inside a comment: ISCC reads it as a section tag.)
+
+  So for our own upgrades: prune instead of delete. Everything that is not
+  one of the two files we own goes (that is what the delete was really for --
+  clearing loose pak *sources*, a stray Data\Libs\Tables being the failure
+  that started it), and the two we own are left in place for [Files] to
+  overwrite. An install that dies half way now leaves the previous version's
+  mod working rather than no mod at all.
+
+  A foreign kdcmp still gets the full RemoveModFolder after the explicit ask:
+  keeping half of somebody else's mod would be worse than replacing it. }
+procedure PruneDirTo(const Dir: String; const KeepFile: String);
+var
+  FindRec: TFindRec;
+  Full: String;
+begin
+  if not DirExists(Dir) then Exit;
+  if FindFirst(Dir + '\*', FindRec) then
+  try
+    repeat
+      if (FindRec.Name = '.') or (FindRec.Name = '..') then Continue;
+      Full := Dir + '\' + FindRec.Name;
+      if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        DelTree(Full, True, True, True)
+      else if CompareText(FindRec.Name, KeepFile) <> 0 then
+      begin
+        { Clear read-only first, for the same reason [Files] carries
+          overwritereadonly: a flagged file must not stop the install. }
+        ClearReadOnly(Full);
+        DeleteFile(Full);
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+{ True when the folder now holds nothing but (at most) our own two files. }
+function PruneModFolder(const Target: String): Boolean;
+var
+  FindRec: TFindRec;
+  Full: String;
+begin
+  Result := True;
+  if not DirExists(Target) then Exit;
+
+  if FindFirst(Target + '\*', FindRec) then
+  try
+    repeat
+      if (FindRec.Name = '.') or (FindRec.Name = '..') then Continue;
+      Full := Target + '\' + FindRec.Name;
+      if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      begin
+        if CompareText(FindRec.Name, 'Data') = 0 then
+          PruneDirTo(Full, 'kdcmp.pak')
+        else
+          DelTree(Full, True, True, True);
+      end
+      else if CompareText(FindRec.Name, 'mod.manifest') <> 0 then
+      begin
+        ClearReadOnly(Full);
+        DeleteFile(Full);
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+
+  { The two we own are about to be overwritten by [Files]; clear read-only on
+    them too so that overwrite cannot be the thing that fails. }
+  if FileExists(Target + '\mod.manifest') then
+    ClearReadOnly(Target + '\mod.manifest');
+  if FileExists(Target + '\Data\kdcmp.pak') then
+    ClearReadOnly(Target + '\Data\kdcmp.pak');
 end;
 
 { -------------------------------------------------------------- the gate }
@@ -512,12 +638,18 @@ end;
 procedure KillOursQuietly();
 var
   I, ResultCode: Integer;
-  Names: array[0..2] of String;
+  Names: array[0..3] of String;
 begin
   Names[0] := 'KCDMP_launcher.exe';
   Names[1] := 'KcdMpClient.exe';
   Names[2] := 'KcdMpServer.exe';
-  for I := 0 to 2 do
+  { WO-74: the launcher starts this one itself (WO-35), it runs out of
+    the MasterServer subfolder of the install dir, and it was in none of the three process lists. Inno's
+    RestartManager does close it in practice -- observed on 2026-08-28 -- but
+    RM is a courtesy, not a guarantee: it cannot reach a process in another
+    session, and a process is free to ignore the shutdown request. }
+  Names[3] := 'KcdMpMasterServer.exe';
+  for I := 0 to 3 do
     Exec(ExpandConstant('{cmd}'), '/c taskkill /f /im "' + Names[I] + '"',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
@@ -537,15 +669,16 @@ end;
 function FirstInstallBlocker(): String;
 var
   I, ResultCode: Integer;
-  Names: array[0..3] of String;
+  Names: array[0..4] of String;
 begin
   Result := '';
   Names[0] := 'KCDMP_launcher.exe';
   Names[1] := 'KcdMpClient.exe';
   Names[2] := 'KcdMpServer.exe';
-  Names[3] := 'KingdomCome.exe';
+  Names[3] := 'KcdMpMasterServer.exe';   { WO-74 -- see KillOursQuietly }
+  Names[4] := 'KingdomCome.exe';
 
-  for I := 0 to 3 do
+  for I := 0 to 4 do
     if Exec(ExpandConstant('{cmd}'),
             '/c tasklist /fi "imagename eq ' + Names[I] + '" /nh | find /i "' + Names[I] + '"',
             '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
@@ -635,14 +768,17 @@ begin
           Result := 'Setup was cancelled so the existing mod folder could be kept.';
           Exit;
         end;
-    end;
 
-    if not RemoveModFolder(Target) then
-    begin
-      Result := 'The existing mod folder could not be removed:' + #13#10 + Target + #13#10#13#10 +
-                'Close the game (and any Explorer window showing that folder) and try again.';
-      Exit;
-    end;
+      if not RemoveModFolder(Target) then
+      begin
+        Result := 'The existing mod folder could not be removed:' + #13#10 + Target + #13#10#13#10 +
+                  'Close the game (and any Explorer window showing that folder) and try again.';
+        Exit;
+      end;
+    end
+    else
+      { Ours: prune, do not delete -- see PruneModFolder. }
+      PruneModFolder(Target);
   end;
 
   if not ForceDirectories(ModsDir()) then
@@ -680,92 +816,337 @@ begin
   SaveStringsToUTF8FileWithoutBOM(Path, Lines, False);
 end;
 
-{ WO-32 follow-up -- the install proves itself before declaring success.
+{ ================================================ verify, sweep and repair }
 
-  Build-Installer.ps1 writes install-manifest.txt (<relative path>|<size>)
-  into the payload after publish, so it ships inside the install directory
-  and describes exactly what this Setup carried. Comparing sizes on disk
-  against it catches the silent skip that produced the half-applied 0.11.8
-  install: a file that could not be overwritten keeps its old size and shows
-  up here, instead of Setup finishing green over a mix of two versions.
+{ WO-32 follow-up, rebuilt in WO-74 -- the install proves itself before
+  declaring success, and repairs what it can before judging.
 
-  The verdict is always written to install-verify.txt beside the launcher
-  (the automated suites and tools\Verify-Install.ps1 can read it);
-  interactive failures also get a message box. Size, not hash: no streaming hash here,
-  and every stale-vs-built pair observed differed in size. }
-procedure VerifyInstalledFiles();
+  Build-Installer.ps1 writes install-manifest.txt into the payload after
+  publish (APP|<rel>|<size>|<sha256> for the install dir, MOD|... for the two files in
+  the game folder), so it ships inside the install directory and describes
+  exactly what this Setup carried.
+
+  Three things changed in WO-74, each closing a way the old check could
+  report PASS over a broken install:
+
+    * sha256, not just size. A stale file that happened to match on length
+      passed. "Every stale-vs-built pair observed differed in size" was luck.
+    * the mod half is verified too. It lands outside the install dir and was checked by
+      nothing at all -- a run that left the game with an EMPTY mod folder
+      still wrote PASS (observed 2026-08-28, Setup 0.18.8).
+    * the install dir is a CLOSED set. The manifest used to be a whitelist, so any file
+      that no release ships -- a hand `dotnet publish` into the install
+      directory, an assembly from an older layout -- sat there forever,
+      invisible to the check and perfectly able to break assembly loading.
+      That is the shape of the relay that could not cold-start in WO-69.
+      Managed extensions (.dll .exe .pdb .deps.json .runtimeconfig.json) that
+      are not in the manifest are now deleted and named in the report.
+
+  Deliberately NOT swept: everything else. settings.json, favorites.json,
+  custom_servers.json, the logs, and anything a user dropped in there are
+  none of Setup's business, and an installer that eats user files to tidy up
+  is a worse bug than the one being fixed. }
+
+function PipeField(const S: String; Index: Integer): String;
 var
-  Manifest, Failures: TArrayOfString;
-  Verdict: TArrayOfString;
-  I, FailCount: Integer;
-  Line, RelPath, FullPath: String;
-  Bar: Integer;
-  WantSize, GotSize: Int64;
+  I, Start, Count: Integer;
 begin
-  if not LoadStringsFromFile(ExpandConstant('{app}\install-manifest.txt'), Manifest) then
+  Result := '';
+  Start := 1;
+  Count := 0;
+  for I := 1 to Length(S) + 1 do
+    if (I > Length(S)) or (S[I] = '|') then
+    begin
+      if Count = Index then
+      begin
+        Result := Copy(S, Start, I - Start);
+        Exit;
+      end;
+      Count := Count + 1;
+      Start := I + 1;
+    end;
+end;
+
+{ '' on success, or why the manifest could not be read. }
+function LoadManifest(): String;
+var
+  Lines: TArrayOfString;
+  I, NA, NM: Integer;
+  Line, Kind, Rel: String;
+begin
+  Result := '';
+  SetArrayLength(ManApp, 0);
+  SetArrayLength(ManMod, 0);
+  AppIndex := '|';
+  NA := 0;
+  NM := 0;
+
+  if not LoadStringsFromFile(ExpandConstant('{app}\install-manifest.txt'), Lines) then
   begin
-    Log('verify: install-manifest.txt missing -- nothing to check against');
+    Result := 'install-manifest.txt is missing from the install folder';
     Exit;
   end;
 
-  FailCount := 0;
-  SetArrayLength(Failures, 0);
-  for I := 0 to GetArrayLength(Manifest) - 1 do
+  for I := 0 to GetArrayLength(Lines) - 1 do
   begin
-    Line := Trim(Manifest[I]);
+    Line := Trim(Lines[I]);
     if Line = '' then Continue;
-    Bar := Pos('|', Line);
-    if Bar = 0 then Continue;
-    RelPath := Copy(Line, 1, Bar - 1);
-    WantSize := StrToInt64Def(Copy(Line, Bar + 1, MaxInt), -1);
-    if WantSize < 0 then Continue;
-
-    FullPath := ExpandConstant('{app}\') + RelPath;
-    GotSize := -1;
-    if not FileSize64(FullPath, GotSize) then GotSize := -1;
-    if GotSize <> WantSize then
+    if Line[1] = '#' then Continue;
+    Kind := PipeField(Line, 0);
+    Rel := PipeField(Line, 1);
+    if Rel = '' then Continue;
+    if CompareText(Kind, 'APP') = 0 then
     begin
-      FailCount := FailCount + 1;
-      SetArrayLength(Failures, FailCount);
-      if GotSize < 0 then
-        Failures[FailCount - 1] := RelPath + '  (missing)'
-      else
-        Failures[FailCount - 1] := RelPath + '  (' + IntToStr(GotSize) + ' bytes, expected ' + IntToStr(WantSize) + ')';
-      Log('verify FAIL: ' + Failures[FailCount - 1]);
+      NA := NA + 1;
+      SetArrayLength(ManApp, NA);
+      ManApp[NA - 1] := Rel + '|' + PipeField(Line, 2) + '|' + PipeField(Line, 3);
+      AppIndex := AppIndex + Lowercase(Rel) + '|';
+    end
+    else if CompareText(Kind, 'MOD') = 0 then
+    begin
+      NM := NM + 1;
+      SetArrayLength(ManMod, NM);
+      ManMod[NM - 1] := Rel + '|' + PipeField(Line, 2) + '|' + PipeField(Line, 3);
     end;
   end;
 
-  if FailCount = 0 then
+  if NA = 0 then
+    Result := 'install-manifest.txt lists no files -- it is not a v2 manifest';
+end;
+
+function EndsWithText(const S, Suffix: String): Boolean;
+begin
+  Result := (Length(S) > Length(Suffix)) and
+            (CompareText(Copy(S, Length(S) - Length(Suffix) + 1, Length(Suffix)), Suffix) = 0);
+end;
+
+{ Files whose presence can change what the .NET runtime loads. Nothing else
+  is ever a sweep candidate. unins* is Inno's own and is not in the manifest
+  by definition. }
+function IsSweepCandidate(const Name: String): Boolean;
+begin
+  Result := False;
+  if CompareText(Copy(Name, 1, 5), 'unins') = 0 then Exit;
+  Result := EndsWithText(Name, '.dll') or
+            EndsWithText(Name, '.exe') or
+            EndsWithText(Name, '.pdb') or
+            EndsWithText(Name, '.deps.json') or
+            EndsWithText(Name, '.runtimeconfig.json');
+end;
+
+procedure SweepDir(const Base, Rel: String; var Removed: TArrayOfString; var Count: Integer);
+var
+  FindRec: TFindRec;
+  Dir, RelName, Full: String;
+begin
+  if Rel = '' then Dir := Base else Dir := Base + '\' + Rel;
+  if not FindFirst(Dir + '\*', FindRec) then Exit;
+  try
+    repeat
+      if (FindRec.Name = '.') or (FindRec.Name = '..') then Continue;
+      if Rel = '' then RelName := FindRec.Name else RelName := Rel + '\' + FindRec.Name;
+      Full := Base + '\' + RelName;
+
+      if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        SweepDir(Base, RelName, Removed, Count)
+      else if IsSweepCandidate(FindRec.Name) then
+        if Pos('|' + Lowercase(RelName) + '|', AppIndex) = 0 then
+        begin
+          ClearReadOnly(Full);
+          if DeleteFile(Full) then
+          begin
+            Count := Count + 1;
+            SetArrayLength(Removed, Count);
+            Removed[Count - 1] := RelName;
+            Log('repair: removed stale ' + RelName);
+          end
+          else
+            Log('repair: could NOT remove stale ' + RelName);
+        end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+{ True when the file matches; Detail describes the mismatch when it does not. }
+function VerifyEntry(const Base, Entry: String; var Detail: String): Boolean;
+var
+  Rel, Full, WantHash, GotHash: String;
+  WantSize, GotSize: Int64;
+begin
+  Result := False;
+  Rel := PipeField(Entry, 0);
+  WantSize := StrToInt64Def(PipeField(Entry, 1), -1);
+  WantHash := Lowercase(PipeField(Entry, 2));
+  Full := Base + '\' + Rel;
+
+  if not FileExists(Full) then
   begin
-    SetArrayLength(Verdict, 1);
-    Verdict[0] := 'PASS  all files match the install manifest';
-    SaveStringsToFile(ExpandConstant('{app}\install-verify.txt'), Verdict, False);
-    Log('verify: PASS (' + IntToStr(GetArrayLength(Manifest)) + ' files)');
+    Detail := Rel + '  (missing)';
     Exit;
   end;
 
-  SetArrayLength(Verdict, FailCount + 1);
-  Verdict[0] := 'FAIL  ' + IntToStr(FailCount) + ' file(s) did not install correctly:';
+  GotSize := -1;
+  if not FileSize64(Full, GotSize) then GotSize := -1;
+  if GotSize <> WantSize then
+  begin
+    Detail := Rel + '  (' + IntToStr(GotSize) + ' bytes, expected ' + IntToStr(WantSize) + ')';
+    Exit;
+  end;
+
+  { A file held open by something else throws here rather than returning a
+    hash, and that is a failure worth naming, not one worth crashing on. }
+  try
+    GotHash := Lowercase(GetSHA256OfFile(Full));
+  except
+    Detail := Rel + '  (could not be read -- something is using it)';
+    Exit;
+  end;
+
+  if GotHash <> WantHash then
+  begin
+    Detail := Rel + '  (wrong content -- sha256 ' + Copy(GotHash, 1, 12) +
+              ', expected ' + Copy(WantHash, 1, 12) + ')';
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+{ Written before a single file is copied, so that a Setup which dies half way
+  can never leave the PREVIOUS run's PASS sitting there as the record of what
+  happened. Observed doing exactly that on 2026-08-28: an aborted 0.18.8
+  upgrade left install-verify.txt reading PASS over an install it had just
+  half-replaced and a game folder it had just emptied. }
+procedure StampVerifyInProgress();
+var
+  Verdict: TArrayOfString;
+begin
+  ForceDirectories(ExpandConstant('{app}'));
+  SetArrayLength(Verdict, 2);
+  Verdict[0] := 'FAIL  install in progress -- Setup {#AppVersion} has not finished';
+  Verdict[1] := '  If this line is still here, Setup stopped before it could verify anything.';
+  SaveStringsToFile(ExpandConstant('{app}\install-verify.txt'), Verdict, False);
+end;
+
+procedure VerifyInstalledFiles();
+var
+  Failures, Removed, Verdict: TArrayOfString;
+  I, FailCount, RemovedCount, Line: Integer;
+  Detail, LoadError, ModDir: String;
+begin
+  VerifyFailed := False;
+  FailCount := 0;
+  RemovedCount := 0;
+  SetArrayLength(Failures, 0);
+  SetArrayLength(Removed, 0);
+
+  LoadError := LoadManifest();
+  if LoadError <> '' then
+  begin
+    { Every release since WO-74 ships one. Its absence IS a broken install. }
+    FailCount := 1;
+    SetArrayLength(Failures, 1);
+    Failures[0] := LoadError;
+    Log('verify FAIL: ' + LoadError);
+  end
+  else
+  begin
+    { Repair first, judge second -- a stale assembly that the sweep removes is
+      not a failure, it is a fixed install. }
+    SweepDir(ExpandConstant('{app}'), '', Removed, RemovedCount);
+
+    for I := 0 to GetArrayLength(ManApp) - 1 do
+      if not VerifyEntry(ExpandConstant('{app}'), ManApp[I], Detail) then
+      begin
+        FailCount := FailCount + 1;
+        SetArrayLength(Failures, FailCount);
+        Failures[FailCount - 1] := Detail;
+        Log('verify FAIL: ' + Detail);
+      end;
+
+    ModDir := GetKdcmpTargetDir('');
+    for I := 0 to GetArrayLength(ManMod) - 1 do
+      if not VerifyEntry(ModDir, ManMod[I], Detail) then
+      begin
+        FailCount := FailCount + 1;
+        SetArrayLength(Failures, FailCount);
+        Failures[FailCount - 1] := 'game mod: ' + Detail;
+        Log('verify FAIL: game mod: ' + Detail);
+      end;
+  end;
+
+  { The verdict file is the record every tool reads: tools\Verify-Install.ps1,
+    tools\Test-InstallerUpgrade.ps1, and anyone triaging a tester's machine. }
+  SetArrayLength(Verdict, FailCount + RemovedCount + 2);
+  Line := 0;
+  if FailCount = 0 then
+    Verdict[0] := 'PASS  ' + IntToStr(GetArrayLength(ManApp) + GetArrayLength(ManMod)) +
+                  ' component(s) verified by sha256 against the install manifest'
+  else
+    Verdict[0] := 'FAIL  ' + IntToStr(FailCount) + ' component(s) did not install correctly:';
+  Line := 1;
   for I := 0 to FailCount - 1 do
-    Verdict[I + 1] := '  ' + Failures[I];
+  begin
+    Verdict[Line] := '  ' + Failures[I];
+    Line := Line + 1;
+  end;
+  Verdict[Line] := 'version {#AppVersion}   repaired ' + IntToStr(RemovedCount) +
+                   ' stale file(s) that no release ships';
+  Line := Line + 1;
+  for I := 0 to RemovedCount - 1 do
+  begin
+    Verdict[Line] := '  removed ' + Removed[I];
+    Line := Line + 1;
+  end;
   SaveStringsToFile(ExpandConstant('{app}\install-verify.txt'), Verdict, False);
 
+  if FailCount = 0 then
+  begin
+    Log('verify: PASS (' + IntToStr(GetArrayLength(ManApp) + GetArrayLength(ManMod)) +
+        ' components, ' + IntToStr(RemovedCount) + ' stale removed)');
+    Exit;
+  end;
+
+  { Loud, named, and non-zero. An installer that can end in a silent
+    half-state is the bug class this work order exists to close, so a failure
+    here is never allowed to look like success. }
+  VerifyFailed := True;
   if not WizardSilent then
-    MsgBox('Setup finished, but ' + IntToStr(FailCount) + ' file(s) did not install correctly -- ' +
-           'most likely something was still using them.' + #13#10#13#10 +
-           'First affected file: ' + Failures[0] + #13#10#13#10 +
-           'Close the launcher, the agent, the relay and the game, then run this installer again.' + #13#10 +
+  begin
+    Detail := '';
+    for I := 0 to FailCount - 1 do
+      if I < 8 then Detail := Detail + #13#10 + '    ' + Failures[I];
+    if FailCount > 8 then
+      Detail := Detail + #13#10 + '    ... and ' + IntToStr(FailCount - 8) + ' more';
+
+    MsgBox('THIS INSTALL IS NOT COMPLETE.' + #13#10#13#10 +
+           IntToStr(FailCount) + ' component(s) did not install correctly:' + Detail + #13#10#13#10 +
+           'Almost always this means something was still using those files. Close the launcher, ' +
+           'the agent, the relay, the master server and the game, then run this installer again -- ' +
+           'it repairs an install in this state.' + #13#10#13#10 +
            'The full list is in install-verify.txt in the install folder.',
-           mbError, MB_OK);
+           mbCriticalError, MB_OK);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssInstall then
+    StampVerifyInProgress()
+  else if CurStep = ssPostInstall then
   begin
     VerifyInstalledFiles();
     SeedSettings();
   end;
+end;
+
+{ Runs after the wizard is finished either way. See the ExitProcess comment. }
+procedure DeinitializeSetup();
+begin
+  if VerifyFailed then
+    ExitProcess(101);
 end;
 
 { ----------------------------------------------------------- uninstalling }
@@ -782,14 +1163,15 @@ end;
 function AnyOfOursRunning(): Boolean;
 var
   I, ResultCode: Integer;
-  Names: array[0..2] of String;
+  Names: array[0..3] of String;
 begin
   Result := False;
   Names[0] := 'KCDMP_launcher.exe';
   Names[1] := 'KcdMpClient.exe';
   Names[2] := 'KcdMpServer.exe';
+  Names[3] := 'KcdMpMasterServer.exe';   { WO-74 -- see KillOursQuietly }
 
-  for I := 0 to 2 do
+  for I := 0 to 3 do
     if Exec(ExpandConstant('{cmd}'),
             '/c tasklist /fi "imagename eq ' + Names[I] + '" /nh | find /i "' + Names[I] + '"',
             '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then

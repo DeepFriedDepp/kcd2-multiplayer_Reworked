@@ -71,8 +71,16 @@ $payload = Join-Path $root "release\KCDMP"
 # happens to be tracked in git, so without a rebuild the zip can ship a pak
 # that does not match the Lua and XML next to it in the repo. -NoInstall: this
 # only rebuilds, it does not touch any game folder.
-& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Build-And-Install-Mod.ps1") -NoInstall
-if ($LASTEXITCODE -ne 0) { throw "Build-And-Install-Mod.ps1 failed (is the game running?)" }
+#
+# WO-74: NOT under -SkipPublish. That switch means "package what
+# Build-Installer.ps1 just built", and kdcmp.pak is not byte-deterministic --
+# rebuilding it here gives the zip a different pak from the one embedded in
+# the Setup.exe built moments earlier, under the same version number. The two
+# artifacts stay byte-identical only if this step is skipped with the publish.
+if (-not $SkipPublish) {
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Build-And-Install-Mod.ps1") -NoInstall
+    if ($LASTEXITCODE -ne 0) { throw "Build-And-Install-Mod.ps1 failed (is the game running?)" }
+}
 
 if (-not $SkipPublish) {
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
@@ -103,9 +111,51 @@ foreach ($pair in @(
     Copy-Item $src (Join-Path $staging $pair.To) -Force
 }
 
+# Generated from what was actually staged, not copied from the payload. The
+# payload's own manifest describes the pak that Build-Installer.ps1 embedded;
+# a standalone run of this script republishes (which wipes release\KCDMP,
+# manifest included) and may rebuild the pak to different bytes. Regenerating
+# here makes the zip self-consistent however it was reached.
+& (Join-Path $PSScriptRoot "New-InstallManifest.ps1") `
+    -AppDir (Join-Path $staging "App") `
+    -ModFiles @{ "mod.manifest"   = (Join-Path $staging "Mod\mod.manifest")
+                 "Data\kdcmp.pak" = (Join-Path $staging "Mod\Data\kdcmp.pak") } `
+    -OutFile (Join-Path $staging "App\install-manifest.txt")
+
+# WO-74: the zip now carries its own applier. "Unpack it over the top" is the
+# instruction that produces a half-applied install -- Explorer merges folders,
+# silently skips whatever is in use, and reports success. Apply.ps1 does what
+# Setup does instead: gate on running processes, copy, remove files no release
+# ships, verify every component by sha256, and exit non-zero if anything is
+# wrong. Setup.exe grew that in WO-32 and WO-74; this route had none of it.
+Write-Host "Staging Apply.ps1 ..."
+Copy-Item (Join-Path $PSScriptRoot "Apply-DirectInstall.ps1") (Join-Path $staging "Apply.ps1") -Force
+Set-Content -Path (Join-Path $staging "README.txt") -Encoding ASCII -Value @"
+KCD2 Multiplayer $Version -- update-only package
+
+Close the launcher, the agent, the relay, the master server and the game
+first. Then, from this folder:
+
+    powershell -ExecutionPolicy Bypass -File Apply.ps1
+
+Apply.ps1 copies both halves into place, removes files that this release does
+not ship, checks every component by sha256, and tells you -- loudly, and with
+a non-zero exit code -- if anything did not land. It writes its verdict to
+install-verify.txt in the install folder.
+
+Copying App\ and Mod\ over the top by hand still works, but nothing checks it
+and a file that was in use is skipped in silence. That is how an install ends
+up half applied. Use Apply.ps1, or the full Setup.exe.
+
+  App\  -> the install folder (%LocalAppData%\KCDMP by default)
+  Mod\  -> <KCD2 Modding Tools>\Mods\kdcmp
+"@
+
 $zip = Join-Path $root "release\KCDMP-DirectInstall-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path (Join-Path $staging "App"), (Join-Path $staging "Mod") -DestinationPath $zip -CompressionLevel Optimal
+Compress-Archive -Path (Join-Path $staging "App"), (Join-Path $staging "Mod"),
+                       (Join-Path $staging "Apply.ps1"), (Join-Path $staging "README.txt") `
+                 -DestinationPath $zip -CompressionLevel Optimal
 
 Remove-Item $staging -Recurse -Force
 

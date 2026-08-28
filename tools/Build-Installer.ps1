@@ -70,22 +70,42 @@ if (-not (Test-Path (Join-Path $payload "KCDMP_launcher.exe"))) {
     throw "release payload incomplete: $payload\KCDMP_launcher.exe not found (run without -SkipPublish)"
 }
 
-# WO-32 follow-up: write a size manifest of the payload so the installer can
-# verify, after installing, that every file actually landed. Motivated by a
-# real half-applied install: Setup 0.11.8 ran while agent/relay processes were
-# alive, silently left KcdMpClient.dll and KcdMpServer.dll on an old build,
-# and the newly-shipped NPC sync was inert with no error anywhere. The
-# manifest is written AFTER publish so it describes exactly what ships, and
-# it ships inside the payload itself so the post-install check needs no
-# second source of truth. Format: <relative path>|<size>, one per line.
-$manifestPath = Join-Path $payload "install-manifest.txt"
-Remove-Item $manifestPath -ErrorAction SilentlyContinue   # never list a stale self
-$payloadFull = (Get-Item $payload).FullName
-$lines = Get-ChildItem $payloadFull -Recurse -File | ForEach-Object {
-    "{0}|{1}" -f $_.FullName.Substring($payloadFull.Length + 1), $_.Length
-}
-Set-Content -Path $manifestPath -Value $lines -Encoding ASCII
-Write-Host "Install manifest: $($lines.Count) files"
+# WO-32 follow-up, rewritten in WO-74: write a manifest of everything this
+# Setup carries so the installer can prove, after installing, that every file
+# actually landed -- and that nothing ELSE is sitting in the install directory
+# pretending to belong there.
+#
+# Motivated by two real incidents:
+#   * Setup 0.11.8 ran while agent/relay processes were alive, silently left
+#     KcdMpClient.dll and KcdMpServer.dll on an old build, and the
+#     newly-shipped NPC sync was inert with no error anywhere (WO-32).
+#   * A relay that could not cold-start because the install directory held a
+#     Microsoft.Extensions.Configuration.* assembly from a foreign publish
+#     -- a file no release ever shipped, so no overwrite could ever fix it
+#     and the size-only whitelist could not see it (WO-69, WO-74).
+#
+# Format (v2, WO-74) -- <kind>|<relative path>|<size>|<sha256>:
+#   APP  a file in the install directory, relative to it
+#   MOD  a file in <ModdingTools>\Mods\kdcmp, relative to that folder
+#
+# APP is a CLOSED set: the installer deletes any .dll/.exe/.pdb/.deps.json/
+# .runtimeconfig.json in the install directory that is not listed here. MOD
+# entries exist because the mod half lands in the game folder, outside the
+# install directory, and was previously verified by nothing at all -- an
+# install that deployed no pak still reported PASS.
+#
+# tools\New-InstallManifest.ps1 owns the format; both delivery routes call it.
+# It runs AFTER the pak rebuild and AFTER publish, and BEFORE ISCC, so it
+# describes exactly the bytes this Setup is about to embed. That order is
+# load-bearing: kdcmp.pak is NOT byte-deterministic (same size, different
+# sha256 on a rebuild from identical sources -- observed 2026-08-28), so a
+# manifest written before a later rebuild describes a pak that no longer
+# exists and fails verification on a perfectly good artifact.
+& (Join-Path $PSScriptRoot "New-InstallManifest.ps1") `
+    -AppDir $payload `
+    -ModFiles @{ "mod.manifest"    = (Join-Path $root "kdcmp\mod.manifest")
+                 "Data\kdcmp.pak"  = (Join-Path $root "kdcmp\Data\kdcmp.pak") } `
+    -OutFile (Join-Path $payload "install-manifest.txt")
 
 $iss = Join-Path $root "installer\KCDMP.iss"
 Write-Host "Compiling $iss (version $Version) ..."
