@@ -167,6 +167,7 @@ entry, and WO-72 already established TestModule is Warhorse's in-game test
 command module. A named test that stands up a world is the most promising way
 to get a save-backed world loaded without the UI. Failing that, driving the
 main menu's load flow through `UIAction` is the fallback. Neither was tried.
+
 ---
 
 ## 2. The other route — no renderer at all (`-dedicated`)
