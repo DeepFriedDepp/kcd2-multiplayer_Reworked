@@ -14,3 +14,12 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_subdirectory(KCDMP)
 add_subdirectory(KCDMP_LauncherInjector)
+
+# --- WO-72 experiment (NOT product) -------------------------------------
+# A throwaway probe DLL used to measure which IRenderer methods a headless boot
+# actually calls (docs/WO-72-*). Nothing installs or ships it; turn it off with
+# -DKCDMP_BUILD_EXPERIMENTS=OFF if it ever gets in the way.
+option(KCDMP_BUILD_EXPERIMENTS "Build native/experiments/* probe targets" ON)
+if(KCDMP_BUILD_EXPERIMENTS)
+    add_subdirectory(experiments/wo72_nullrenderer)
+endif()
