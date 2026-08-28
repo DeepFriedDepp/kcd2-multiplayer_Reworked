@@ -238,3 +238,47 @@ buffer cannot fake a constructed object, and no amount of stub geometry will.
   `EF_CreateInputShaderResource` (vtable slot 178, `+0x590`).
 - Nothing here is product code, nothing is installed, and no file in the game
   install was modified in any run.
+
+---
+
+## Continued — the CPU-only route, and a real renderer without a device
+
+See `docs/WO-72-findings.md` for the verdict. Summary of what was added here:
+
+- **`MODE=warp`** — IAT-patches `CryRenderD3D12`'s statically-imported
+  `CreateDXGIFactory1` (IAT RVA `0x4B0FB8`) and swaps
+  `IDXGIFactory1::EnumAdapters1` (vtable slot 12) so the renderer can only see
+  the WARP adapter. Built to prove the CPU-only route on a box that *has* a
+  GPU. In the end it was not needed: the shipped cvars do the job.
+- **`KCDMP_WO72_EARLY_CVARS="name=value,..."`** — generalised from the
+  `sv_AISystem` fix. Sets cvars the moment they are registered, which is the
+  only way to beat renderer init; `+cvar` on the command line is applied too
+  late (see findings §1).
+- **`KCDMP_WO72_REAL_RENDERER=1` / `KCDMP_WO72_NEUTER="<slots>"`** — installs
+  the real static `CD3D9Renderer` from `CryRenderD3D12.dll` (confirmed
+  CONSTRUCTED by static init) as `gEnv->pRenderer`, with a *copy* of its vtable
+  so chosen slots can be replaced by logging thunks. Slot 4 (`Init`) is always
+  neutered, since that is what creates the window and device.
+
+### Fault-to-slot workflow that made iteration fast
+
+1. VEH logs the fault as `module +RVA`, the registers, and a raw-stack scan.
+2. For a fault inside `CryRenderD3D12`, look the RVA up in the vtable dump —
+   the largest slot entry at or below it names the method (`+0x2F079D` →
+   `TryFlush`). Only valid when the faulting function *is* a vtable target;
+   otherwise name it in Ghidra (`+0x283E7` → `CBaseResource::GetResource`).
+3. Add the slot to `KCDMP_WO72_NEUTER`, rerun.
+
+### Further traps
+
+- `+cvar` command-line arguments are applied after renderer init. WO-53 read
+  this as a property of `r_Driver`; it is general.
+- `r_HeadlessStartup` and `r_overrideDXGIAdapter` are `DUMPTODISK`. Hard-kill
+  before clean shutdown and verify the install afterwards, or a persisted
+  adapter override will force software rendering for normal play. Every run in
+  this WO was killed and verified; `system.cfg` is untouched and no `user.cfg`
+  exists.
+- The VEH logs first-chance exceptions, including benign C++ throws
+  (`0xE06D7363`) raised inside `D3D12Core.dll` during normal WARP device setup.
+  A logged exception is not necessarily fatal — check whether the process is
+  still alive before chasing it.

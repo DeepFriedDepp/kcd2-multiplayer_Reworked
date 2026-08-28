@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <share.h>
+#include <dxgi.h>
 
 namespace {
 
@@ -79,6 +80,10 @@ constexpr uintptr_t kGEnvRva = 0x637260;
 // Byte offsets inside SSystemGlobalEnvironment that WO-71 pinned by use site.
 constexpr uintptr_t kEnvDedicated = 0x3d4;  // gEnv->bDedicated
 constexpr uintptr_t kEnvEditor    = 0x3d2;  // gEnv->bEditor
+// gEnv->pConsole. Pinned in WO-71 by use site: CrySystem reads gEnv+0xa8 and
+// calls GetCVar at vtbl+0xb8 on it, the same object CSystem reaches through
+// its own m_env copy at CSystem+0xe8.
+constexpr uintptr_t kEnvConsole   = 0xa8;
 
 // How far to walk gEnv when scanning. The flag block sits at +0x3d0, so the
 // struct is at least that big; 0x600 covers it with margin.
@@ -397,6 +402,185 @@ DWORD WINAPI census_thread(LPVOID) {
     return 0;
 }
 
+// ------------------------------------------------------- WARP (CPU only)
+
+// The point of a headless host is to run on a server VM with no GPU. There are
+// two ways to get there:
+//
+//   1. No renderer at all (the -dedicated branch). Needs a null IRenderer, and
+//      blocker 4 shows how big that job really is.
+//   2. A REAL renderer on a SOFTWARE device. D3D12's WARP adapter is a CPU
+//      rasteriser; it reports feature level 12_1, which is what KCD2's own GPU
+//      gate demands ("A GPU with support for D3D FeatureLevel 12.0 is
+//      required"), and r_HeadlessStartup covers having no display attached.
+//
+// Route 2 needs no reverse engineering *on the target*: a GPU-less VM
+// enumerates only the Microsoft Basic Render Driver (WARP), so the shipped
+// adapter-picking code should select it unaided. This hook exists purely to
+// prove that here, on a box that does have a GPU, before anyone provisions a
+// VM: CryRenderD3D12 statically imports CreateDXGIFactory1 (IAT RVA 0x4B0FB8),
+// so redirecting that one pointer lets us hand the renderer a factory whose
+// adapter enumeration yields WARP and nothing else.
+constexpr uintptr_t kCreateDXGIFactory1IatRva = 0x4B0FB8;
+
+using PFN_CreateDXGIFactory1 = HRESULT(WINAPI*)(REFIID, void**);
+using PFN_EnumAdapters1      = HRESULT(STDMETHODCALLTYPE*)(void*, UINT, void**);
+
+PFN_CreateDXGIFactory1 g_realCreateFactory  = nullptr;
+PFN_EnumAdapters1      g_realEnumAdapters1  = nullptr;
+
+// IDXGIFactory1::EnumAdapters1 is vtable index 12
+// (3 IUnknown + 4 IDXGIObject + 5 IDXGIFactory).
+constexpr int kEnumAdapters1Slot = 12;
+// IDXGIFactory4::EnumWarpAdapter is vtable index 27.
+constexpr int kEnumWarpAdapterSlot = 27;
+
+const GUID kIID_IDXGIFactory4 =
+    { 0x1bc6ea02, 0xef36, 0x464f, { 0xbf, 0x0c, 0x21, 0xca, 0x39, 0xe5, 0x16, 0x8a } };
+const GUID kIID_IDXGIAdapter1 =
+    { 0x29038f61, 0x3839, 0x4626, { 0x91, 0xfd, 0x08, 0x68, 0x79, 0x01, 0x1a, 0x05 } };
+
+bool patch_pointer(void* slot, void* value, void** previous) {
+    DWORD old = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old)) return false;
+    if (previous) *previous = *reinterpret_cast<void**>(slot);
+    *reinterpret_cast<void**>(slot) = value;
+    VirtualProtect(slot, sizeof(void*), old, &old);
+    return true;
+}
+
+// Hand back the WARP adapter as adapter 0 and nothing else, so the renderer's
+// "pick the first suitable adapter" loop can only choose the CPU rasteriser.
+HRESULT STDMETHODCALLTYPE warp_EnumAdapters1(void* self, UINT index, void** ppAdapter) {
+    if (index != 0) return DXGI_ERROR_NOT_FOUND;
+    void* factory4 = nullptr;
+    void** vt = *reinterpret_cast<void***>(self);
+    using QIFn = HRESULT(STDMETHODCALLTYPE*)(void*, const GUID&, void**);
+    const HRESULT hr = reinterpret_cast<QIFn>(vt[0])(self, kIID_IDXGIFactory4, &factory4);
+    if (FAILED(hr) || !factory4) {
+        logf("WARP: QueryInterface(IDXGIFactory4) failed hr=0x%08lX", hr);
+        return DXGI_ERROR_NOT_FOUND;
+    }
+    void** vt4 = *reinterpret_cast<void***>(factory4);
+    using EnumWarpFn = HRESULT(STDMETHODCALLTYPE*)(void*, const GUID&, void**);
+    const HRESULT hr2 = reinterpret_cast<EnumWarpFn>(vt4[kEnumWarpAdapterSlot])(
+        factory4, kIID_IDXGIAdapter1, ppAdapter);
+    using ReleaseFn = ULONG(STDMETHODCALLTYPE*)(void*);
+    reinterpret_cast<ReleaseFn>(vt4[2])(factory4);
+    static bool logged = false;
+    if (!logged) { logged = true; logf("WARP: EnumWarpAdapter -> hr=0x%08lX, adapter=%p",
+                                       hr2, ppAdapter ? *ppAdapter : nullptr); }
+    return hr2;
+}
+
+HRESULT WINAPI hooked_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
+    const HRESULT hr = g_realCreateFactory ? g_realCreateFactory(riid, ppFactory) : E_FAIL;
+    if (SUCCEEDED(hr) && ppFactory && *ppFactory) {
+        void** vt = *reinterpret_cast<void***>(*ppFactory);
+        if (!g_realEnumAdapters1) {
+            void* prev = nullptr;
+            if (patch_pointer(&vt[kEnumAdapters1Slot],
+                              reinterpret_cast<void*>(&warp_EnumAdapters1), &prev)) {
+                g_realEnumAdapters1 = reinterpret_cast<PFN_EnumAdapters1>(prev);
+                logf("WARP: patched IDXGIFactory1::EnumAdapters1 (was %p)", prev);
+            } else {
+                logf("WARP: could not patch the factory vtable");
+            }
+        }
+    }
+    return hr;
+}
+
+void install_warp_hook() {
+    HMODULE ren = LoadLibraryA("CryRenderD3D12.dll");
+    if (!ren) { logf("WARP: CryRenderD3D12.dll would not load"); return; }
+    HMODULE dxgi = LoadLibraryA("dxgi.dll");
+    g_realCreateFactory = reinterpret_cast<PFN_CreateDXGIFactory1>(
+        GetProcAddress(dxgi, "CreateDXGIFactory1"));
+    if (!g_realCreateFactory) { logf("WARP: no real CreateDXGIFactory1"); return; }
+
+    void* slot = reinterpret_cast<void*>(
+        reinterpret_cast<uintptr_t>(ren) + kCreateDXGIFactory1IatRva);
+    void* prev = nullptr;
+    if (patch_pointer(slot, reinterpret_cast<void*>(&hooked_CreateDXGIFactory1), &prev)) {
+        logf("WARP: IAT patched at %p (was %p, real %p) -- renderer will get a "
+             "software adapter", slot, prev, (void*)g_realCreateFactory);
+    } else {
+        logf("WARP: IAT patch failed");
+    }
+}
+
+// ------------------------------------------- real (uninitialised) renderer
+
+// Blocker 4 showed a stub cannot work: Cry3DEngine takes the result of
+// EF_CreateInputShaderResource and CryString-assigns into it, which needs a
+// *constructed* C++ object, not a zeroed buffer.
+//
+// But we do not have to fake one. `CD3D9Renderer` is a STATIC object inside
+// CryRenderD3D12.dll -- the MODE=scan run found gEnv->pRenderer pointing at
+// image+0x76B200, inside the DLL's own data, not the heap. Loading the DLL runs
+// its static constructors, so the object and all its C++ members exist. What we
+// must never do is call Init() (vtable slot 4), which is what creates the
+// window and the D3D12 device.
+//
+// So: LoadLibrary the renderer, point gEnv->pRenderer at the real object, and
+// selectively replace only the vtable slots that touch the device with logging
+// thunks. That is a real renderer minus the hardware.
+constexpr uintptr_t kRendererObjectRva = 0x76B200;
+constexpr uintptr_t kRendererVtableRva = 0x50F5D0;
+
+// A copy of the real vtable, so neutering a slot does not modify the DLL's
+// read-only data (and does not affect any other instance).
+void* g_realVtblCopy[kStubSlots];
+
+uintptr_t install_real_renderer(uintptr_t env, uintptr_t rendererOffset, const char* neuterList) {
+    HMODULE ren = LoadLibraryA("CryRenderD3D12.dll");
+    if (!ren) { logf("real renderer: LoadLibraryA failed, err=%lu", GetLastError()); return 0; }
+    const uintptr_t base = reinterpret_cast<uintptr_t>(ren);
+    logf("real renderer: CryRenderD3D12.dll loaded at %p", (void*)base);
+
+    const uintptr_t obj = base + kRendererObjectRva;
+    const uintptr_t expectVtbl = base + kRendererVtableRva;
+    if (!readable(reinterpret_cast<void*>(obj), 8)) {
+        logf("real renderer: object address %p not readable", (void*)obj);
+        return 0;
+    }
+    const uintptr_t vtbl = *reinterpret_cast<uintptr_t*>(obj);
+    logf("real renderer: static object %p, its vptr=%p, expected %p -> %s",
+         (void*)obj, (void*)vtbl, (void*)expectVtbl,
+         vtbl == expectVtbl ? "CONSTRUCTED" : "NOT constructed by static init");
+    if (vtbl != expectVtbl) return 0;
+
+    // Copy the real vtable, then neuter the requested slots.
+    for (int i = 0; i < kStubSlots; ++i) {
+        const uintptr_t p = expectVtbl + static_cast<uintptr_t>(i) * 8;
+        g_realVtblCopy[i] = readable(reinterpret_cast<void*>(p), 8)
+                          ? *reinterpret_cast<void**>(p) : g_stubVtbl[i];
+    }
+    int neutered = 0;
+    for (const char* tok = neuterList; tok && *tok;) {
+        char* end = nullptr;
+        const long v = strtol(tok, &end, 0);
+        if (end == tok) break;
+        if (v >= 0 && v < kStubSlots) {
+            g_realVtblCopy[v] = g_stubVtbl[v];
+            logf("real renderer: neutered slot %ld (vtbl +0x%lX)", v, v * 8);
+            ++neutered;
+        }
+        tok = (*end == ',') ? end + 1 : end;
+        while (*tok == ' ' || *tok == ',') ++tok;
+    }
+    // Init (slot 4) creates the window and device -- never let it run.
+    g_realVtblCopy[4] = g_stubVtbl[4];
+    logf("real renderer: slot 4 (Init) always neutered; %d extra neutered", neutered);
+
+    *reinterpret_cast<uintptr_t*>(obj) = reinterpret_cast<uintptr_t>(g_realVtblCopy);
+    *reinterpret_cast<uintptr_t*>(env + rendererOffset) = obj;
+    logf("real renderer: installed at gEnv+0x%llX -> %p (vtable copy %p)",
+         (unsigned long long)rendererOffset, (void*)obj, (void*)g_realVtblCopy);
+    return obj;
+}
+
 // ------------------------------------------------- sv_AISystem enable
 
 // WO-71 §5 noted that CSystem::Init's AI-system condition gains a
@@ -420,39 +604,63 @@ using GetCVarFn = void*(__fastcall*)(void*, const char*);  // identical redeclar
 using GetIValFn = int(__fastcall*)(void*);
 using SetIntFn  = void(__fastcall*)(void*, int);
 
-DWORD WINAPI ai_enable_thread(LPVOID param) {
+// Setting cvars from here rather than with `+name value` on the command line is
+// not a stylistic choice: CryEngine applies command-line cvars LATE in
+// CSystem::Init, after renderer init has already read them. That is why WO-53's
+// `+r_Driver NULL` stored the value but booted D3D12 anyway, and why
+// `+r_HeadlessStartup 1` shows `[DUMPTODISK, REQUIRE_APP_RESTART]` and changes
+// nothing that run. Poking the cvar as soon as it is registered lands the value
+// before the reader runs -- and, unlike a config-file edit, leaves the install
+// untouched.
+//
+// KCDMP_WO72_EARLY_CVARS="sv_AISystem=1,r_HeadlessStartup=1,..."
+DWORD WINAPI early_cvar_thread(LPVOID param) {
     const uintptr_t env = reinterpret_cast<uintptr_t>(param);
+    char spec[512]{};
+    GetEnvironmentVariableA("KCDMP_WO72_EARLY_CVARS", spec, sizeof(spec));
+    if (!spec[0]) strncpy_s(spec, "sv_AISystem=1", _TRUNCATE);
+
     void* console = nullptr;
     for (int i = 0; i < 60000; ++i) {
-        console = *reinterpret_cast<void**>(env + 0xa8);
+        console = *reinterpret_cast<void**>(env + kEnvConsole);
         if (console) break;
         Sleep(1);
     }
-    if (!console) { logf("sv_AISystem: pConsole never appeared"); return 0; }
+    if (!console) { logf("early cvars: pConsole never appeared"); return 0; }
     void** cvt = *reinterpret_cast<void***>(console);
     auto getCVar = reinterpret_cast<GetCVarFn>(cvt[0xb8 / 8]);
-    for (int i = 0; i < 20000; ++i) {
-        void* c = getCVar(console, "sv_AISystem");
-        if (c) {
-            void** vt = *reinterpret_cast<void***>(c);
-            const int before = reinterpret_cast<GetIValFn>(vt[0x10 / 8])(c);
-            reinterpret_cast<SetIntFn>(vt[0x38 / 8])(c, 1);
-            const int after = reinterpret_cast<GetIValFn>(vt[0x10 / 8])(c);
-            logf("sv_AISystem: found at %p, was %d, now %d", c, before, after);
-            return 0;
+
+    for (char* tok = spec; *tok;) {
+        char* eq = strchr(tok, '=');
+        char* comma = strchr(tok, ',');
+        if (comma) *comma = '\0';
+        if (!eq) { tok = comma ? comma + 1 : tok + strlen(tok); continue; }
+        *eq = '\0';
+        const char* name = tok;
+        const int value = atoi(eq + 1);
+        bool done = false;
+        for (int i = 0; i < 20000 && !done; ++i) {
+            void* c = getCVar(console, name);
+            if (c) {
+                void** vt = *reinterpret_cast<void***>(c);
+                const int before = reinterpret_cast<GetIValFn>(vt[0x10 / 8])(c);
+                reinterpret_cast<SetIntFn>(vt[0x38 / 8])(c, value);
+                const int after = reinterpret_cast<GetIValFn>(vt[0x10 / 8])(c);
+                logf("early cvar %s: was %d, set %d, now %d%s", name, before, value, after,
+                     after == value ? "" : "   <-- DID NOT TAKE");
+                done = true;
+            } else {
+                Sleep(1);
+            }
         }
-        Sleep(1);
+        if (!done) logf("early cvar %s: never registered within 20s", name);
+        tok = comma ? comma + 1 : tok + strlen(tok);
+        while (*tok == ' ') ++tok;
     }
-    logf("sv_AISystem: cvar never registered within 20s");
     return 0;
 }
 
 // ------------------------------------------------------- missing cvars
-
-// gEnv->pConsole. Pinned in WO-71 by use site: CrySystem reads gEnv+0xa8 and
-// calls GetCVar at vtbl+0xb8 on it, the same object CSystem reaches through
-// its own m_env copy at CSystem+0xe8.
-constexpr uintptr_t kEnvConsole = 0xa8;
 
 // IConsole vtable slots, read off CSystem::CreateSystemVars (@0x180208980):
 //   +0x10 RegisterString(name, value, flags, help, onChange)
@@ -589,7 +797,7 @@ void mode_stub(HMODULE crySystem, uintptr_t rendererOffset) {
 
     // Must run as early as possible: the AI-init decision is made before
     // CryAnimation loads, which is where this DLL installs the stub.
-    CreateThread(nullptr, 0, ai_enable_thread, reinterpret_cast<LPVOID>(env), 0, nullptr);
+    CreateThread(nullptr, 0, early_cvar_thread, reinterpret_cast<LPVOID>(env), 0, nullptr);
 
     // Do this before the window opens: CrySystem primes its cached ICVar*
     // pointers once, and a null cached there is permanent.
@@ -604,6 +812,19 @@ void mode_stub(HMODULE crySystem, uintptr_t rendererOffset) {
         return;
     }
     logf("CryAnimation.dll loaded; window open");
+
+    char realFlag[16]{};
+    GetEnvironmentVariableA("KCDMP_WO72_REAL_RENDERER", realFlag, sizeof(realFlag));
+    if (realFlag[0] == '1') {
+        char neuter[512]{};
+        GetEnvironmentVariableA("KCDMP_WO72_NEUTER", neuter, sizeof(neuter));
+        if (install_real_renderer(env, rendererOffset, neuter)) {
+            g_censusEnv = env;
+            CreateThread(nullptr, 0, census_thread, nullptr, 0, nullptr);
+            return;
+        }
+        logf("real renderer unavailable; falling back to the synthetic stub");
+    }
 
     uintptr_t* pRenderer = reinterpret_cast<uintptr_t*>(env + rendererOffset);
     if (!readable(pRenderer, 8)) { logf("gEnv+0x%llX not readable -- aborting",
@@ -662,6 +883,16 @@ DWORD WINAPI worker(LPVOID) {
     char offs[32]{};
     GetEnvironmentVariableA("KCDMP_WO72_RENDERER_OFFSET", offs, sizeof(offs));
 
+    if (_stricmp(mode, "warp") == 0) {
+        // CPU-only route: normal boot, real renderer, software adapter.
+        AddVectoredExceptionHandler(1, on_exception);
+        install_warp_hook();
+        uintptr_t* slot = gEnv_slot(crySystem);
+        for (int i = 0; i < 60000 && *slot == 0; ++i) Sleep(1);
+        if (*slot) CreateThread(nullptr, 0, early_cvar_thread,
+                                reinterpret_cast<LPVOID>(*slot), 0, nullptr);
+        return 0;
+    }
     if (_stricmp(mode, "stub") == 0) {
         if (!offs[0]) {
             logf("KCDMP_WO72_RENDERER_OFFSET not set -- run MODE=scan first. Aborting.");
