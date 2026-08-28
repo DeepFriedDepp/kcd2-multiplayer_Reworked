@@ -1,0 +1,506 @@
+# WO-71 — does a headless-capable init path survive in our renderer init?
+
+Session 2026-08-27. Static reversing only; **Phase 2 was not run** (it is gated
+on human approval of a specific flip, and this document is the branch map that
+gate needs).
+
+Evidence classes, as WO-42/WO-53:
+
+- **observed** — bytes on disk in our install, or a live run.
+- **code-verified** — read out of the decompiler/disassembler on *our* Modding
+  Tools binaries, with address.
+- **read-but-unrendered** — read somewhere authoritative but not exercised here.
+- **inferred** — flagged as such every time.
+
+Target of record: the Modding Tools build,
+`...\steamapps\common\KCD2Mod\Bin\Win64ReleaseSteamLTO_DLL\` (45 DLLs + two
+EXEs). Retail is a different binary and **no offset here transfers to it**
+(WO-67). Code addresses are virtual, image base `0x180000000` for the DLLs
+(subtract it for the RVA); string offsets marked "@file" are raw file byte
+offsets, the same convention WO-53 used.
+
+---
+
+## 1. The WO-53 delta — what was settled, and what this WO tested
+
+WO-53 §2 asked *"does a headless/no-renderer **mode** ship?"* and answered no.
+Everything it established still stands and is not re-litigated here:
+
+- No `CryRenderNULL.dll` (or any null-renderer module) ships in retail or in
+  the Modding Tools build; the MT build ships exactly one renderer module,
+  `CryRenderD3D12.dll`. **Re-confirmed observed** (§2 below).
+- The renderer *selector* has no NULL branch: its accept set is
+  `DX11/DX12/VK/GNM/AGC`. **Re-confirmed code-verified** (§4).
+- `+r_Driver NULL` boots D3D12 anyway (deferred `REQUIRE_APP_RESTART` cvar).
+- The one `headless` string in retail is DXGI display-headless, not a null
+  renderer.
+
+WO-53 never asked the question this WO asks: **is there a surviving *branch* —
+a boolean the shipped code still reads — that skips renderer creation?** That
+is a different claim, and the answer is different.
+
+**Both claims are now settled, and they point opposite ways:** no shipped
+headless *surface* (WO-53, stands) — but a **fully intact, reachable headless
+*branch*** (this WO).
+
+---
+
+## 2. Renderer-surface inventory (observed)
+
+| item | finding |
+|---|---|
+| renderer modules in `Bin\Win64ReleaseSteamLTO_DLL\` | **`CryRenderD3D12.dll` only** (6.4 MB). No D3D11/Vulkan/NULL module ships. |
+| device + window owner | `CryRenderD3D12.dll`, `CD3D9Renderer::Init` @ `0x180246590` — exported as `?Init@CD3D9Renderer@@UEAAPEAXHHHHIHHAEBUSSystemInitParams@@_N@Z`; its strings include `"Creating window called '%s' (%dx%d)"`, `"Creating rendering device..."`, `"Rendering device creation failed!"`. **code-verified** |
+| init / module-selection owner | `CrySystem.dll` (6.8 MB) — `CSystem::Init`, `CSystem::InitRenderer`, `CSystem::OpenRenderLibrary`. **code-verified** |
+| `system.cfg` (install root, 6038 bytes) | no `r_Driver`, no `r_HeadlessStartup`, no dedicated-related line. The only "dedicated" hit is a comment about the *render thread*. **observed** |
+| `user.cfg` | **does not exist**. **observed** |
+| `Saved Games\kingdomcome2\` | no `r_driver` / `headless` line anywhere. **observed** |
+| Steam app id (MT build) | `2429020` (`steam_appid.txt` in the install root). Retail is `1771300`. **observed** |
+
+---
+
+## 3. String sweep — the branch-stump vocabulary (anchors, not conclusions)
+
+`CrySystem.dll` (file offsets):
+
+| @file | string | what it turned out to be |
+|---|---|---|
+| 5411936 | `simple_console` | live `CSystem::Init` cmdline arg (§5) |
+| 5411952 | `daemon` | live `CSystem::Init` cmdline arg |
+| 5411960 | `dedicatedarbitrator` | **live `CSystem::Init` cmdline arg** |
+| 5411984 | `dedicated` | **live `CSystem::Init` cmdline arg** (VA `0x18052a890`) |
+| 5411840 | `CryEngine - Dedicated Server - Version ` | live console title, `SetConsoleTitleA` |
+| 5411880 | `CryEngine - Dedicated Server Arbitrator - Version ` | live, same site |
+| 5310040 / 5310072 | `CNULLRenderAuxGeom::EndFrame` / `::BeginFrame` | null aux-geom compiled into CrySystem |
+| 6372056 | `.?AVCNULLConsole@@` (RTTI) | vftable at `0x1805376f0`, **constructed by `CSystem::Init`** |
+| 6347216 | `.?AVCNullInput@@` (RTTI) | vftable at `0x18051d8d0`, **constructed by `CSystem::Init`** |
+| 6347480 | `.?AVCNULLAudioSystem@@` (RTTI) | vftable at `0x180533e78`, **constructed by `CSystem::Init`** |
+| 5255776 | `r_HeadlessStartup` | a **live cvar** — but display-headless, see §8 |
+| 5368248 | `CryRenderNULL.dll` | as WO-53 said: memory-profiler module list only, no load path |
+| 5363400 / 5363424 / 5363912 | `sv_DedicatedCPUPercent` / `MaxRate` / `CPUVariance` | live cvars; their consumer **is constructed** under the dedicated flag (§5) |
+
+`CryRenderD3D12.dll`: `r_HeadlessStartup` @file 5239312, `"Selected device has
+no connected outputs. Running in headless mode."` @file 5239488,
+`?IsShaderCacheGenMode@CRenderer@@QEBA_NXZ` @file 6008024 (exported, function
+at `0x180018310`).
+
+`KingdomCome.exe`: launcher args `-enslave`, `-no_splash`, `-noCrashHandler`,
+`-unattended`, `-verbose_stdout`, `-disable_stdout`,
+`-create_full_dump_on_crash`, `-multi_inst`, `-notrace`, `-tracenoserver`,
+`-noprompt`, `-norandom`, `-crashOnAssert`, `-ignoreAssert`. **No `-dedicated`
+here** — it is parsed inside CrySystem, not the launcher.
+
+---
+
+## 4. The call path, init → device creation (code-verified)
+
+```
+KingdomCome.exe RunGame @0x140003640
+  |- LoadLibraryA("...\WHGame.dll")  ->  GetProcAddress("CreateGameStartup")
+  |- builds SSystemInitParams as a stack local (cmdline copied to +0x58)
+  \- IGameStartup::Init(startupParams)                       [vtbl +0x10]
+       \- WHGame  wh::game::C_GameStartup::Init      @0x180169b70
+            \- ...::InitInternal                     @0x180169e10
+                 \- CrySystem  CSystem::Init         @0x1801f91c0
+                      |- cmdline "dedicated" parse   @0x1801f98c1  <- FLAG WRITE
+                      |- [initParams+0x1257 == 0] --------------------  guard G1
+                      |    SystemInit.cpp:0xd5f  "Renderer initialization"
+                      |    \- CSystem::InitRenderer  @0x1801f3f40
+                      |         |- [gEnv+0x3d4 == 0] ------------------  guard G2
+                      |         |    r_Driver string -> DX11/DX12/VK/GNM/AGC
+                      |         |    \- CSystem::OpenRenderLibrary @0x1801f3790
+                      |         |         |- [gEnv+0x3d4 != 0] -> true    guard G3
+                      |         |         \- LoadDLL("CryRenderD3D12")
+                      |         |              + "EngineModule_CryRenderer"
+                      |         \- [m_env.pRenderer != 0] ---------------  guard G4
+                      |              \- pRenderer->Init(...)  [vtbl +0x20]
+                      |                   = CryRenderD3D12 CD3D9Renderer::Init
+                      |                     @0x180246590
+                      |                     -> window creation
+                      |                     -> device creation (DeviceInfo.inl)
+                      |                        [r_HeadlessStartup] -------  guard G6
+                      |- font / input / audio / network / AI ...  (§5)
+                      \- ...
+```
+
+---
+
+## 5. The branch map
+
+`gEnv` is the global pointer `DAT_180637260` in `CrySystem.dll`
+(RVA `0x637260`); it is a distinct global in every module (recovered
+per-module by the scanner, §6). Three adjacent flag bytes matter:
+
+| offset | identity | how established |
+|---|---|---|
+| `gEnv+0x3d0` | `bDedicatedArbitrator` | written **only** together with `+0x3d4` on the `dedicatedarbitrator` arg; selects the "Arbitrator" console title. **code-verified** |
+| `gEnv+0x3d2` | `bEditor` | `sys_float_exceptions == 3 && gEnv+0x3d2` disables float exceptions (`SystemInit.cpp:0xff8`) — the stock `IsEditor()` special case; also drives the 32x32 stub window in `InitRenderer`. **code-verified** |
+| `gEnv+0x3d4` | **`bDedicated`** (`IsDedicated()`) | written on the `-dedicated` arg immediately after `m_bDedicatedServer`; read by both `OpenRenderLibrary` overloads. **code-verified** |
+
+### G2 / G3 — `gEnv->bDedicated` at renderer selection — **LIVE BRANCH**
+
+`CSystem::OpenRenderLibrary(ERenderType, ...)` @ `0x1801f3790`, first thing
+after the profiler section:
+
+```
+1801f3843  MOV  RAX, qword ptr [0x180637260]      ; gEnv
+1801f384a  CMP  byte ptr [RAX + 0x3d4], DIL       ; DIL == 0
+1801f3851  JZ   0x1801f385a                       ; not dedicated -> normal path
+1801f3853  MOV  BL, 0x1                           ; dedicated -> return TRUE
+1801f3855  JMP  0x1801f3c8a                       ; ...loading nothing
+```
+
+Decompile of the same site:
+
+```c
+if (*(char *)(DAT_180637260 + 0x3d4) != '\0') { uVar9 = 1; goto LAB_1801f3c8a; }
+```
+
+`CSystem::InitRenderer` @ `0x1801f3f40` carries the same test around the whole
+`r_Driver` selection block (the `char*` overload of `OpenRenderLibrary` is
+inlined here):
+
+```
+1801f40a9  MOV  RAX, qword ptr [0x180637260]      ; gEnv
+1801f40ba  CMP  byte ptr [RAX + 0x3d4], 0x0
+1801f40c1  JZ   0x1801f40e0                       ; not dedicated -> stricmp chain
+```
+
+```c
+if (*(char *)(DAT_180637260 + 0x3d4) == '\0') {
+    /* _stricmp(r_Driver,"DX11"|"DX12"|"VK"|"GNM"|"AGC") -> OpenRenderLibrary
+       ... else CryWarning("Unknown renderer type: %s") ; return false        */
+} else {
+LAB_1801f41c3:
+    if (*(longlong *)(param_1 + 0x148) != 0) {  /* m_env.pRenderer - guard G4 */
+        /* ... pRenderer->Init(...)  = window + device ... */
+    }
+    return 1;                                   /* success with no renderer   */
+}
+```
+
+**Grade: live branch.** Neither side is degenerate. The dedicated side does not
+error, does not exit, and does not fall through to a stub — it returns success
+with `m_env.pRenderer == NULL`, and `CSystem::Init` carries on. This is the
+stock CryEngine dedicated-server early-out, intact, except that Warhorse
+replaced stock's *"load `CryRenderNULL.dll`"* with *"load nothing"* — which is
+strictly better for this purpose: **no null-renderer module is needed.** That
+is the precise thing WO-53 concluded was missing; it is missing because it is
+no longer required, not because the branch was removed.
+
+### The writer — the launch argument was **not** compiled away
+
+`CSystem::Init` @ `0x1801f91c0` (`RSI` = `CSystem*`, `+0xa31` =
+`m_bDedicatedServer`):
+
+```
+... iterate m_pCmdLine args of type eCLAT_Pre, _stricmp against "dedicated" ...
+1801f98c1  MOV   RAX, qword ptr [0x180637260]
+1801f98c8  MOV   byte ptr [RSI + 0xa31], 0x1      ; CSystem::m_bDedicatedServer
+1801f98cf  MOV   byte ptr [RAX + 0x3d4], 0x1      ; gEnv->bDedicated
+... same again for "dedicatedarbitrator" ...
+1801f993f  MOV   byte ptr [RAX + 0x3d4], 0x1
+1801f9946  MOV   byte ptr [RAX + 0x3d0], 0x1      ; gEnv->bDedicatedArbitrator
+```
+
+Those two stores are the **only** writes to `gEnv+0x3d4` anywhere in
+`CrySystem.dll` (full-module instruction scan, §6) — nothing ever clears it,
+and there is no cvar surface for it. So the flip mechanism is a command-line
+argument: **`-dedicated`**, classified `eCLAT_Pre` because it starts with `-`,
+parsed long before `InitRenderer`.
+
+Corroborating live code immediately around it, all in `CSystem::Init`:
+
+- `-daemon` / `-simple_console` select between the text-mode console
+  (`operator new(0x210)` -> `0x18026d910`) and **`CNULLConsole`**
+  (`operator new(0x40)`, vftable `0x1805376f0`, three sub-object vftables
+  written) — the dedicated-server console pair.
+- The console title is built in place as
+  `"CryEngine - Dedicated Server - Version ..."`, or
+  `"...Dedicated Server Arbitrator - Version..."` when `gEnv+0x3d0` is set,
+  then `SetConsoleTitleA`.
+
+### G1 — `initParams.bSkipRenderer` (`SSystemInitParams+0x1257`) — **LIVE BRANCH, NO SHIPPED WRITER**
+
+`CSystem::Init` gates the whole renderer step on it:
+
+```c
+if (*(char *)((longlong)param_2 + 0x1257) == '\0') {
+    CryLogAlways(/* "SystemInit.cpp", 0xd5f, */ "Renderer initialization");
+    cVar8 = FUN_1801f3f40(param_1);          /* CSystem::InitRenderer */
+    if (cVar8 == '\0') goto /* init failed */;
+    /* ... */
+}
+```
+
+and reads the same byte at six further sites — `r_Driver` `"Auto"` resolution,
+`"Init 3D Engine"` (`:0xee3`), `"Script System Initialization"` (`:0xf27`), the
+second `"Initializing Renderer..."` banner, and `sys_affinity`. So
+`bSkipRenderer` is a *wider* switch than `bDedicated`: it also skips the 3D
+engine and the script system, which would take the game with it.
+
+**Writer: none found in the shipped binaries.** `KingdomCome.exe` builds the
+struct as a stack local and sets only `bUnattendedMode` (`+0x1269`, from
+`-unattended`) and the no-random flag (`+0x1267`, from `-norandom`);
+`wh::game::C_GameStartup::Init`/`InitInternal` (`0x180169b70` / `0x180169e10`)
+write only the two trailing *pointer* fields (`+0x1270`, `+0x1278`) and read
+`+0x1254` — **they never touch `+0x1253` (`bDedicatedServer`) or `+0x1257`.**
+So G1 is reachable only by patching, which is why G2/G3 is the preferred lever.
+
+### Partial `SSystemInitParams` field map (code-verified, from use sites)
+
+| offset | evidence | reading |
+|---|---|---|
+| `+0x0058` | `strcpy_s(..., 0x1000, cmdline)` in the launcher | `szSystemCmdLine[4096]` |
+| `+0x124a` | -> `CSystem+0xa21`, gates the `r_Width/r_Height/r_ColorBits` block | `bEditor` |
+| `+0x124c` | -> `CSystem+0xa19`, gates Scaleform / network / 3D engine / script | minimal-or-tool mode (**inferred**) |
+| `+0x1251` | -> `CSystem+0xa2f`, gates `"Network initialization"` | `bSkipNetwork` |
+| `+0x1253` | -> `CSystem+0xa31` = `m_bDedicatedServer` | `bDedicatedServer` |
+| `+0x1256` | gates `"Font initialization"` | `bSkipFont` |
+| `+0x1257` | gates `"Renderer initialization"`, 3D engine, script system | **`bSkipRenderer`** |
+| `+0x1261` | -> `CSystem+0xa24`, used as the **default value of `r_HeadlessStartup`** | headless-startup default |
+| `+0x1267` | set by launcher `-norandom` | `bNoRandomSeed` (**inferred from arg**) |
+| `+0x1269` | set by launcher `-unattended` | `bUnattendedMode` (**inferred from arg**) |
+| `+0x1270`, `+0x1278` | written by `C_GameStartup` | interface pointers |
+
+Note `+0x1253` (`bDedicatedServer`) and `gEnv+0x3d4` (`bDedicated`) are **not**
+the same switch: the init-param sets `m_bDedicatedServer` only (which is what
+gates the audio system -> `CNULLAudioSystem`), and the `-dedicated` parse is
+skipped when it is already set — so an init-param-only dedicated launch would
+leave `gEnv->bDedicated` **false** and the renderer would still load. The
+command-line argument is the one that sets both.
+
+### What else the dedicated flag changes in `CSystem::Init` (the dependency preview)
+
+All code-verified inside `0x1801f91c0`:
+
+| subsystem | behaviour when `gEnv->bDedicated` |
+|---|---|
+| console | `CNULLConsole` / text-mode console instead of the graphical console |
+| renderer | not loaded at all (G2/G3) |
+| font | `"default"` font creation skipped entirely |
+| input | `"Input initialization"` skipped; **`CNullInput`** instantiated (`operator new(0x28)`, vftable `0x18051d8d0`) |
+| audio | `CNULLAudioSystem` + `CNULLAudioProxy` (this one keys off `m_bDedicatedServer`, `CSystem+0xa31`) |
+| network | after `CryNetwork` loads, an extra `operator new(0x30)` object built from `(CSystem*, cpuCount)` — the `sv_DedicatedCPUPercent` throttle (**inferred** from the cvar set and the constructor shape) |
+| AI | the AI-system init condition gains a `gEnv->bDedicated` term |
+| `HotUpdate` | not registered |
+
+`Cry3DEngine` and the script system are **not** gated on `bDedicated` — only on
+`bSkipRenderer`. So a `-dedicated` boot still stands the 3D engine and Lua up,
+with `gEnv->pRenderer == NULL`.
+
+---
+
+## 6. Breadth of readers — this is not a stump
+
+Two independent measurements.
+
+**(a) Ghidra, per module** — `DumpWo71GenvFlag.java` finds every instruction
+whose memory operand is `[reg + 0x3d4]`, walks back for the `MOV reg,[global]`
+that loaded the base, and tallies globals so `gEnv` self-identifies. Counting
+only hits whose base provably came from that module's `gEnv`:
+
+| module | distinct functions reading `gEnv->bDedicated` |
+|---|---|
+| `Cry3DEngine.dll` | 37 |
+| `CryAction.dll` | 33 |
+| `CrySystem.dll` | 24 (+ the 2 writes) |
+| `CryAnimation.dll` | 8 |
+| `CryNetwork.dll` | 5 |
+| `WHGame.dll` | 5 |
+| `CryEntitySystem.dll` | 4 |
+| `GUIModule.dll` / `Framework.dll` / `CryScriptSystem.dll` / `CryMovie.dll` / `CryAISystem.dll` / `CryPhysics.dll` | 2 each |
+| `CryInput.dll` / `CryFont.dll` | 1 each |
+| `TestModule.dll` | 0 |
+
+Named readers in `CrySystem.dll` include `CSystem::Update`,
+`CSystem::RenderBegin`, `CFrameProfileSystem::Render`, the streaming-engine
+setup, the `e_*` 3D-engine cvar sink, the `CXConsole` constructor, and the
+SSE-support check. `CryFont.dll`'s single reader is
+`CreateCryFontInterface` @ `0x180008da0` — the module entry point itself.
+
+**(b) Byte-pattern census over all 45 shipped modules** — counting only the
+exact `CMP byte ptr [reg+0x3d4], 0` encodings (`80 /7 D4 03 00 00 00`), i.e. an
+undercount, since `MOVZX`/`TEST` forms are not counted:
+
+```
+Cry3DEngine 28  CryAction 27  CrySystem 22  EntityModule 12  CryRenderD3D12 11
+EditorDll 8  CryAnimation 7  XGenAIModule 6  WHGame 4  PlayerModule 4
+RPGModule 4  CombatModule 3  CryNetwork 3  CryEntitySystem 3  EditorCommon 3
+CryAISystem 2  CryScriptSystem 2  DialogModule 2  EnvironmentModule 2
+Framework 2  GUIModule 2  QuestModule 2  ... 1 each in AnimationModule,
+ConceptModule, CryFont, CryInput, CryMovie, CryPhysics, MusicModule,
+SoundModule, UtilsModule
+```
+
+34 of the 45 modules test it, **including Warhorse's own game modules**, not
+just inherited engine code. The single most telling one:
+
+> `wh::game::C_GameStartup::Run` @ `0x18016afc0`, `WHGame.dll` — Warhorse's own
+> game-loop entry, immediately before the `"Entering game loop"` trace:
+>
+> ```c
+> if (gEnv && gEnv->pSystem && *(char*)(gEnv+0x3d2) == '\0'    /* !IsEditor   */
+>          && *(char*)(gEnv+0x3d4) == '\0' && ...) { /* renderer-side calls */ }
+> ```
+>
+> the `+0x3d4` test at `0x18016b2c3`. Warhorse maintained a dedicated branch in
+> their own top-level game loop.
+
+**Method caveat, stated because it bites:** the generic scanner also reports
+stack-frame accesses at the same displacement. `CryPhysics.dll` shows ten hits
+of which only two are `gEnv`-based; the other eight are `MOVSS [RBP+0x3d4]`
+float spills. Every number in table (a) is filtered on a recovered global.
+
+---
+
+## 7. Compiled-in unit tests (WO-68's lead) — nothing here
+
+`TestModule.dll` is Warhorse's **in-game** test-command module
+(`wh::tests::ai::perception::WaitUntilAwarenessChanges`,
+`wh::tests::WaitUntilCheckPoint`, ..., source under
+`code\game\modules\testmodule\Commands\`). It contains **no** occurrence of
+`SSystemInitParams`, renderer selection, or dedicated-mode vocabulary, and zero
+`gEnv->bDedicated` reads. There is no free init-param field map to be had from
+it. **Clean negative.**
+
+---
+
+## 8. `r_HeadlessStartup` — a real but *different* capability
+
+- Registered in `CSystem::CreateSystemVars` @ `0x180208980`, cvar creation at
+  `0x180208d24`, help text **"Allow creating the render device without any
+  connected monitors."**, flags `0x2100`, **default value taken from
+  `SSystemInitParams+0x1261`**. **code-verified**
+- Consumed in the DXGI adapter probe (`AutoDetectSpec.cpp`) @ `0x18008e1b0`,
+  read at `0x18008e2db`, next to *"No display connected to DXGI adapter
+  override %d. Adapter cannot be used for rendering."*
+- Also present in `CryRenderD3D12.dll` (@file 5239312), beside *"Selected
+  device has no connected outputs. Running in headless mode."*
+
+This is Warhorse-authored and live, but it is **display**-headless: a full
+D3D12 device is still created, on a GPU with no monitor attached. It is not a
+renderer-less path and must not be conflated with one. Recorded because it
+shows Warhorse actively maintained monitor-less startup — and because it is
+the *other* thing a future decision session might want (a GPU-backed but
+screenless host).
+
+`CRenderer::IsShaderCacheGenMode` (exported, `0x180018310`, bit 3 of
+`CRenderer+0x134`) exists but has **no launch surface** found — no
+`-shadercachegen`-class string in `CrySystem.dll` or the launcher. Not pursued.
+
+---
+
+## 9. Retail, for completeness only — *does not transfer*
+
+`WHGame.dll` in the retail monolith also carries `dedicatedarbitrator`
+(@file 64779616), `CNullInput` (@file 77881468), `CNULLAudioSystem`,
+`r_HeadlessStartup` (@file 61078216) and `"CryEngine - Dedicated Server"`
+(@file 67793304). `simple_console` and `CNULLConsole` did **not** hit there.
+These are **observed strings only** — no xref work was done on the retail
+binary and, per WO-67, none of the Modding Tools addresses apply to it. Treat
+this paragraph as "the vocabulary is present in retail too", nothing more.
+
+---
+
+## 10. What this does **not** establish
+
+- **That it boots.** Nothing was run. Every claim above is static.
+- **What breaks first.** The static map says renderer, font, input, audio and
+  console all have dedicated-side alternatives, but `Cry3DEngine`, the script
+  system, `GUIModule`, `RPGModule`, `PlayerModule` and the rest of the Warhorse
+  stack still initialise with `gEnv->pRenderer == NULL`. Those modules *do*
+  test `IsDedicated()` (§6), which is encouraging, but "tests the flag
+  somewhere" is not "handles a null renderer everywhere". The first
+  unconditional `gEnv->pRenderer->...` on the boot path is the likely stop, and
+  its address is unknown until it is run.
+- **Whether Steam permits it.** WO-53 §2.2 observed that a direct
+  `KingdomCome.exe` launch quits with *"Steam Service Quit - not started
+  through Steam"* before renderer init, so any attempt has to go through
+  `steam -applaunch 2429020 -dedicated`. Whether the argument survives that
+  route is untested here (WO-53 did prove `+r_Driver NULL` survives it, which
+  is suggestive but is a `+` cvar, not a `-` pre-arg).
+- **Whether a dedicated boot reaches a world.** Stock CryEngine dedicated
+  servers need `sv_map`/`sv_gamerules`; both cvar names exist in
+  `CrySystem.dll` (@file 5296924 / 5383544) but nothing was traced from them to
+  KCD2's own level-loading path.
+- **That `-dedicated` is safe to leave set.** It is a command-line argument,
+  not a persisted cvar, so unlike WO-53's `r_Driver=NULL` warning there is no
+  mechanism for it to stick in a config file. That is a property of the
+  mechanism, not something observed.
+
+---
+
+## 11. Verdict
+
+> **A headless-capable branch exists and is fully live: `gEnv->bDedicated`
+> (`gEnv+0x3d4`), written by the `-dedicated` command-line argument at
+> `0x1801f98cf`, read at `0x1801f384a` and `0x1801f40ba` to skip renderer
+> module loading and device creation entirely. Both sides of the branch carry
+> real code; 34 of the 45 shipped modules read the flag, Warhorse's own
+> `C_GameStartup::Run` among them. Neither the flag nor its launch argument was
+> compiled away. Boot status: untested — Phase 2 was not run.**
+
+Against the WO's four grades: **not** "stump only" and **not** "absent". It is
+"exists"; whether it is "exists and boots" or "exists but blocked at X" is
+exactly what a Phase 2 run would decide, and cannot be decided statically.
+
+This reverses the *implication* people had been drawing from WO-53 without
+contradicting WO-53 itself. WO-53's own words — "Warhorse's fork stripped the
+NULL branch from renderer selection" — are accurate about the `CryRenderNULL`
+*module* and are what made a surviving branch look unlikely. The branch they
+stripped is the one that *loads a null renderer*; the branch that *skips the
+renderer* is untouched.
+
+## 12. If a decision session reopens the dedicated-instance idea, what it would weigh
+
+*(Listing considerations, not making a recommendation — the topology decision
+is explicitly out of this WO's scope.)* A future session would need: the Phase 2
+result itself (does it boot, and if not, the first blocking subsystem and its
+address); whether a `-dedicated` process actually ticks a world — game time
+advancing and an NPC moving, readable over the existing REST surface — because
+a process that boots but does not simulate is worth nothing here; its idle CPU
+and RAM against running a second full client, which is the status quo this
+would replace; whether `sv_map`-class level loading reaches a KCD2 level at all
+or whether the host would still need a normal client to own the world; what the
+`CNullInput` / `CNULLAudioSystem` / no-font configuration does to the Lua and
+UIAction surfaces the whole mod is built on (WO-38's toasts, WO-6's dice UI,
+WO-65's dialog isolation all assume a rendering client); how a renderer-less
+host interacts with WO-51's finding that AI is proximity-gated and WO-60's
+proximity claim/hold design, which currently assume every participant is a
+player-shaped client; and the distribution question — a dedicated host that
+needs the **Modding Tools** build rather than retail is a different install
+requirement for users than anything shipped so far.
+
+---
+
+## 13. Proposed Phase 2, if the human approves it
+
+Not run. Recorded so the approval decision is concrete.
+
+1. **Flip mechanism** — preference (a) from the WO: an existing launch surface.
+   `steam.exe -applaunch 2429020 -dedicated`. No file is edited, nothing
+   persists, and the revert is "launch without the argument". Options (b) an
+   early write from `KCDMP.dll` and (c) a scratch loader are **not needed** and
+   should not be reached for unless (a) is shown not to reach the parse.
+2. **Renderer-expectant middleware to disable first** — the FIKA landmine. In
+   this install the upscaler stack lives in retail's `Win64Shared` (DLSS /
+   XeSS / FidelityFX); the Modding Tools `Bin` directory does not carry them,
+   so there may be nothing to disable. To be checked, and whatever is disabled
+   recorded, before the boot.
+3. **Instruments already available** — `kcd.log` in the install root, the
+   native mirror log `kcdmp-native.mirror.log`, and `tools\KcdApi.ps1` against
+   the REST surface. A tier-1 result needs the log to reach
+   `"Entering game loop"` with no `"Creating rendering device..."` line.
+4. **Grading** — the WO's four tiers: boots with no device/window; boots then
+   crashes at a named subsystem + address; no observable difference; will not
+   boot, with the stop point recorded. Every tier is a result.
+
+---
+
+## Appendix — reproducing this
+
+Ghidra 12.1.3 headless, Temurin JDK 21, one project per concurrent job,
+forward-slash import paths. Scripts added by this WO (read-only, static):
+`native/ghidra_scripts/DumpWo71GenvFlag.java`, `DumpWo71FnStrings.java`,
+`DumpWo71Range.java`. See `native/ghidra_scripts/README.md`.

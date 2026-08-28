@@ -88,3 +88,36 @@ pattern matching — a function containing the literal
   resolved targets. Beware: `.pdata`/EH regions are packed 32-bit RVA triples
   and will decode as nonsense here — if the "pointers" look like two small
   values glued together, it is not a vtable.
+
+---
+
+# WO-71 additions (2026-08-27)
+
+Three read-only scripts written while reversing renderer initialization
+(`docs/WO-71-findings.md`). Ghidra **12.1.3**.
+
+- **`DumpWo71GenvFlag.java <outFile> <hexOffset>...`** — the workhorse for
+  "who reads this `gEnv` flag". Finds every instruction with a memory operand
+  at one of the given displacements, walks backwards for the
+  `MOV base,[global]` that loaded the base register, and reports
+  address / offset / read-or-write / base / global / containing function, plus
+  a tally of globals so `gEnv` self-identifies as the most-hit one.
+  **Read the `global=` column** — stack frames hit the same displacements
+  (`CryPhysics.dll`'s `MOVSS [RBP+0x3d4]` spills are not `gEnv`).
+- **`DumpWo71FnStrings.java <outFile> <addr>...`** — names a function cheaply:
+  for each address, the containing function plus every string literal it
+  references. With `__FUNCTION__` and source paths compiled in (WO-42) this
+  identifies a function without decompiling it.
+- **`DumpWo71Range.java <outFile> <start> <end> [<start> <end>...]`** — raw
+  disassembly of an address window with string/symbol comments resolved. Use
+  for flag reads/writes where the decompiler's `undefined1 *` casts obscure
+  which byte is actually touched.
+
+Operational notes learned the hard way:
+
+- Import paths must use **forward slashes** from a POSIX shell. A
+  backslash-joined path collapses into one malformed argument and
+  `analyzeHeadless.bat` then blocks on `Press any key to continue`, so a
+  backgrounded batch dies with no useful error.
+- A Ghidra **project** is locked for the duration of a headless job. Parallel
+  imports need one project directory per concurrent job.
