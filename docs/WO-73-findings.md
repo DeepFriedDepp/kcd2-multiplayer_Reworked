@@ -198,7 +198,8 @@ sys_MaxFPSThrotteled  The FPS limit that applies when sys_MaxFPS is set to 0
 So the GPU column's tiny CPU figure is **not** "the cost of simulating this
 world" — it is an instance comfortably meeting a low FPS cap. The honest
 comparison is: *both* configurations are asked for the same throttled frame
-rate; the GPU meets it, WARP misses it by ~55× while spending 7.6 cores trying.
+rate; the GPU meets it, WARP misses it by 15–55× while spending 6.4–7.8 cores
+trying.
 A headless host is always unfocused, so this throttle is permanently in play —
 a deployment advantage WARP still cannot exploit.
 
@@ -215,8 +216,9 @@ Load wall-times are the sum of the engine's own `SetGlobalState` transitions in
 
 **Booting on WARP is not expensive** — near-identical wall time, ~1.7× the CPU.
 WO-72's "~7× the CPU to boot" did not reproduce; see `WO-73-progress.md`.
-**Loading is ~3.5× slower on WARP**, and shrinking the render target barely
-helps it (251.7 → 223.7 s).
+**Loading is ~2.3–3.5× slower on WARP.** Shrinking the render target barely
+helps it (251.7 → 202–224 s); switching the render passes off before the load
+does more (169.8 s).
 
 ### Steady state — a loaded world, idle (observed)
 
@@ -254,10 +256,9 @@ nowhere near sufficient.
 
 ### The features-off probe (exploratory, added because the row above under-delivered)
 
-Six render features switched off at runtime on the **same loaded world**
-(`e_Shadows 0`, `e_Vegetation 0`, `e_Particles 0`, `e_Clouds 0`,
-`e_WaterOcean 0`, `r_PostProcessEffects 0`), all confirmed applied by console
-echo:
+Six render features switched off — `e_Shadows 0`, `e_Vegetation 0`,
+`e_Particles 0`, `e_Clouds 0`, `e_WaterOcean 0`, `r_PostProcessEffects 0` — each
+confirmed applied by console echo:
 
 * **GPU: 0.17 → 0.13 cores**, sim rate unchanged at ~1.0×. Those passes are
   ~24% of an already frame-throttled instance.
