@@ -1,8 +1,8 @@
 # WO-71 — does a headless-capable init path survive in our renderer init?
 
-Session 2026-08-27. Static reversing only; **Phase 2 was not run** (it is gated
-on human approval of a specific flip, and this document is the branch map that
-gate needs).
+Session 2026-08-27 (Phase 0–1, static) and 2026-08-28 (**Phase 2, run and
+live-observed** after the human approved the flip). §1–§10 are the branch map
+the approval gate needed; §11 is the verdict; §13 is the boot result.
 
 Evidence classes, as WO-42/WO-53:
 
@@ -41,7 +41,11 @@ is a different claim, and the answer is different.
 
 **Both claims are now settled, and they point opposite ways:** no shipped
 headless *surface* (WO-53, stands) — but a **fully intact, reachable headless
-*branch*** (this WO).
+*branch*** (this WO), which **fires correctly and then dies one subsystem
+later** (§13). WO-53's §2.3 aside — that a real headless path would need a
+from-scratch null-renderer implementation — turns out to be the exact and only
+thing standing in the way, and is now empirically confirmed rather than
+speculated.
 
 ---
 
@@ -56,6 +60,7 @@ headless *surface* (WO-53, stands) — but a **fully intact, reachable headless
 | `user.cfg` | **does not exist**. **observed** |
 | `Saved Games\kingdomcome2\` | no `r_driver` / `headless` line anywhere. **observed** |
 | Steam app id (MT build) | `2429020` (`steam_appid.txt` in the install root). Retail is `1771300`. **observed** |
+| upscaler middleware | `Bin\Win64Shared\` **does** ship `nvngx_dlss.dll`, `libxess.dll`, `amd_fidelityfx_loader_dx12.dll`, `amd_fidelityfx_upscaler_dx12.dll` (plus AnselSDK64, Aftermath, bink2w64, fmod, dxcompiler). **observed** — this corrects a guess made in an earlier draft of §13 that the MT build might not carry them. They are loaded *by the renderer*, so a boot that never loads `CryRenderD3D12.dll` never reaches them; §13 confirms that empirically. |
 
 ---
 
@@ -403,47 +408,77 @@ this paragraph as "the vocabulary is present in retail too", nothing more.
 
 ---
 
-## 10. What this does **not** establish
+## 10. What the static work did **not** establish
 
-- **That it boots.** Nothing was run. Every claim above is static.
-- **What breaks first.** The static map says renderer, font, input, audio and
-  console all have dedicated-side alternatives, but `Cry3DEngine`, the script
-  system, `GUIModule`, `RPGModule`, `PlayerModule` and the rest of the Warhorse
-  stack still initialise with `gEnv->pRenderer == NULL`. Those modules *do*
-  test `IsDedicated()` (§6), which is encouraging, but "tests the flag
-  somewhere" is not "handles a null renderer everywhere". The first
-  unconditional `gEnv->pRenderer->...` on the boot path is the likely stop, and
-  its address is unknown until it is run.
-- **Whether Steam permits it.** WO-53 §2.2 observed that a direct
-  `KingdomCome.exe` launch quits with *"Steam Service Quit - not started
-  through Steam"* before renderer init, so any attempt has to go through
-  `steam -applaunch 2429020 -dedicated`. Whether the argument survives that
-  route is untested here (WO-53 did prove `+r_Driver NULL` survives it, which
-  is suggestive but is a `+` cvar, not a `-` pre-arg).
-- **Whether a dedicated boot reaches a world.** Stock CryEngine dedicated
-  servers need `sv_map`/`sv_gamerules`; both cvar names exist in
+Written before Phase 2 ran, kept as written, annotated with what §13 then
+settled.
+
+- ~~**That it boots.**~~ → answered, §13: it boots ten-plus subsystems deep and
+  then fatals. Tier 2.
+- ~~**What breaks first.**~~ → answered, §13: `CryAnimation`'s character-manager
+  init, `CryAnimation.dll` RVA `0xAF900`. The prediction that "the first
+  unconditional `gEnv->pRenderer->...` on the boot path is the likely stop" was
+  correct in kind.
+- ~~**Whether Steam permits it.**~~ → answered, §13, and the framing was wrong:
+  `steam -applaunch 2429020 <args>` does **not** launch the game at all, it
+  launches the Modding Tools `WorkspaceSetup.exe` wizard. The MT
+  `KingdomCome.exe` is started **directly** with the game root as working
+  directory — which is what this project's own launcher already does
+  (`KCDMP_launcher/Pages/Home.razor.cs:521`) — and Steam raised no objection.
+  WO-53 §2.2's "not started through Steam" quit applies to the **retail** exe,
+  not the Modding Tools one.
+- **Still open — whether a dedicated boot reaches a world.** Stock CryEngine
+  dedicated servers need `sv_map`/`sv_gamerules`; both cvar names exist in
   `CrySystem.dll` (@file 5296924 / 5383544) but nothing was traced from them to
-  KCD2's own level-loading path.
-- **That `-dedicated` is safe to leave set.** It is a command-line argument,
-  not a persisted cvar, so unlike WO-53's `r_Driver=NULL` warning there is no
-  mechanism for it to stick in a config file. That is a property of the
-  mechanism, not something observed.
+  KCD2's own level-loading path, and the boot never got far enough to try.
+- **Still open — what is behind the first blocker.** `CryAnimation` is the
+  *first* consumer to fatal, not necessarily the only one. Everything after it
+  in `CSystem::Init`, and the whole of `C_GameStartup::InitInternal`, is still
+  unexercised with a null renderer.
+- **`-dedicated` is safe to leave set** — it is a command-line argument, not a
+  persisted cvar, so unlike WO-53's `r_Driver=NULL` warning there is no
+  mechanism for it to stick in a config file. Confirmed in practice: the run
+  left no config change behind (§13).
 
 ---
 
 ## 11. Verdict
 
-> **A headless-capable branch exists and is fully live: `gEnv->bDedicated`
-> (`gEnv+0x3d4`), written by the `-dedicated` command-line argument at
-> `0x1801f98cf`, read at `0x1801f384a` and `0x1801f40ba` to skip renderer
-> module loading and device creation entirely. Both sides of the branch carry
-> real code; 34 of the 45 shipped modules read the flag, Warhorse's own
-> `C_GameStartup::Run` among them. Neither the flag nor its launch argument was
-> compiled away. Boot status: untested — Phase 2 was not run.**
+> **Headless-capable branch exists, is reachable from a shipped launch
+> argument, and fires — but is blocked at `CryAnimation`.**
+>
+> `gEnv->bDedicated` (`gEnv+0x3d4`) is written by the `-dedicated`
+> command-line argument at `CrySystem.dll` `0x1801f98cf` and read at
+> `0x1801f384a` / `0x1801f40ba` to skip renderer module loading and device
+> creation entirely. Both sides of the branch carry real code; 34 of the 45
+> shipped modules read the flag, Warhorse's own `C_GameStartup::Run` among
+> them. Neither the flag nor its launch argument was compiled away.
+>
+> **Live-verified (§13):** with `-dedicated`, `CryRenderD3D12.dll` is never
+> loaded, no rendering device and no game window are created, and
+> `CSystem::Init` proceeds through console, audio (`NULL AudioSystem`), font,
+> network, movie, time, animation-module and 3D-engine initialisation. It then
+> takes a fatal error in `CryAnimation`'s character-manager init —
+> `CryAnimation.dll` RVA `0xAF900`, fatal call at `0x1800af94e`:
+> an **unconditional** `if (!pSystem->GetIRenderer()) CryFatalError(200,
+> "CryAnimation: failed to initialize pIRenderer")`, with no `IsDedicated()`
+> guard. Stock CryEngine never needed one, because a stock dedicated server has
+> a *non-null* `IRenderer` — `CryRenderNULL.dll`. Warhorse's fork replaced
+> "load `CryRenderNULL.dll`" with "load nothing", so the pointer is genuinely
+> NULL and stock's null-check bites.
 
-Against the WO's four grades: **not** "stump only" and **not** "absent". It is
-"exists"; whether it is "exists and boots" or "exists but blocked at X" is
-exactly what a Phase 2 run would decide, and cannot be decided statically.
+Against the WO's four grades: **tier 2 — "exists but blocked at
+`CryAnimation` (character-manager init, `CryAnimation.dll` +0xAF900)"**. Not
+"stump only", not "absent", not "boots".
+
+The practical shape of the result: the *branch* is not the missing piece — a
+no-op `IRenderer` object is. That is precisely what WO-53 §2.3 said a headless
+path would take ("a from-scratch null-renderer implementation project, not a
+found capability"), and it is now confirmed by a boot rather than reasoned
+about. What changed versus WO-53 is the size of the gap: it is no longer
+"the engine has no headless concept", it is "the engine has a complete headless
+init path and is missing one interface implementation" — with the caveat in
+§10 that `CryAnimation` is only the *first* consumer to fatal.
 
 This reverses the *implication* people had been drawing from WO-53 without
 contradicting WO-53 itself. WO-53's own words — "Warhorse's fork stripped the
@@ -455,13 +490,20 @@ renderer* is untouched.
 ## 12. If a decision session reopens the dedicated-instance idea, what it would weigh
 
 *(Listing considerations, not making a recommendation — the topology decision
-is explicitly out of this WO's scope.)* A future session would need: the Phase 2
-result itself (does it boot, and if not, the first blocking subsystem and its
-address); whether a `-dedicated` process actually ticks a world — game time
-advancing and an NPC moving, readable over the existing REST surface — because
-a process that boots but does not simulate is worth nothing here; its idle CPU
-and RAM against running a second full client, which is the status quo this
-would replace; whether `sv_map`-class level loading reaches a KCD2 level at all
+is explicitly out of this WO's scope.)* Phase 2 answered the first of these and
+reshaped the rest. A future session would need: **the cost and risk of a
+stub `IRenderer`** — the one thing now known to be missing, an interface with
+a large vtable that must satisfy every consumer, of which `CryAnimation` is
+only the first found (WO-53 §2.3 called this "a from-scratch null-renderer
+implementation project", which is exactly what it is, though the surrounding
+init path turns out to be free); **how many more blockers sit behind it** —
+unknowable without either building the stub or auditing every
+`gEnv->pRenderer->` on the init path; whether a `-dedicated` process would then
+actually tick a world — game time advancing and an NPC moving, readable over
+the existing REST surface — because a process that boots but does not simulate
+is worth nothing here; its idle CPU and RAM against running a second full
+client, which is the status quo this would replace; whether `sv_map`-class
+level loading reaches a KCD2 level at all
 or whether the host would still need a normal client to own the world; what the
 `CNullInput` / `CNULLAudioSystem` / no-font configuration does to the Lua and
 UIAction surfaces the whole mod is built on (WO-38's toasts, WO-6's dice UI,
@@ -474,27 +516,127 @@ requirement for users than anything shipped so far.
 
 ---
 
-## 13. Proposed Phase 2, if the human approves it
+## 13. Phase 2 — the boot, run 2026-08-28 with human approval (observed)
 
-Not run. Recorded so the approval decision is concrete.
+### Setup
 
-1. **Flip mechanism** — preference (a) from the WO: an existing launch surface.
-   `steam.exe -applaunch 2429020 -dedicated`. No file is edited, nothing
-   persists, and the revert is "launch without the argument". Options (b) an
-   early write from `KCDMP.dll` and (c) a scratch loader are **not needed** and
-   should not be reached for unless (a) is shown not to reach the parse.
-2. **Renderer-expectant middleware to disable first** — the FIKA landmine. In
-   this install the upscaler stack lives in retail's `Win64Shared` (DLSS /
-   XeSS / FidelityFX); the Modding Tools `Bin` directory does not carry them,
-   so there may be nothing to disable. To be checked, and whatever is disabled
-   recorded, before the boot.
-3. **Instruments already available** — `kcd.log` in the install root, the
-   native mirror log `kcdmp-native.mirror.log`, and `tools\KcdApi.ps1` against
-   the REST surface. A tier-1 result needs the log to reach
-   `"Entering game loop"` with no `"Creating rendering device..."` line.
-4. **Grading** — the WO's four tiers: boots with no device/window; boots then
-   crashes at a named subsystem + address; no observable difference; will not
-   boot, with the stop point recorded. Every tier is a result.
+- **Flip mechanism**: preference (a) from the WO — an existing launch surface,
+  no patch, no injection, no file edit. Argument set chosen by the human:
+  `-dedicated -devmode -simple_console`, plus `+r_SuperResolution_Mode 0` as
+  the middleware disable.
+- **Middleware disabled**: `r_SuperResolution_Mode 0` on the command line — a
+  cvar, not a file change. The upscaler DLLs themselves (`nvngx_dlss.dll`,
+  `libxess.dll`, the two FidelityFX DX12 DLLs) were **left in place**: they are
+  loaded by the renderer module, which this branch never loads. Nothing was
+  renamed, moved, or edited anywhere in the install.
+- **Baseline recorded before launch**: no game/mod/relay process running;
+  `kcd.log` 5 768 017 bytes; one file in `logbackups`.
+
+### First attempt — wrong launch route (recorded so nobody repeats it)
+
+`steam.exe -applaunch 2429020 -dedicated …` **does not start the game.** It
+starts the Modding Tools `WorkspaceSetup.exe` wizard (observed as a live
+process); no `KingdomCome.exe` ever appeared and `kcd.log` did not move in 60 s.
+App 2429020's Steam launch action is the workspace-copy tool, not the engine.
+
+The working route is the one this project's own launcher already uses
+(`KCDMP_launcher/Pages/Home.razor.cs:521`): start
+`Bin\Win64ReleaseSteamLTO_DLL\KingdomCome.exe` **directly**, with the **game
+root** as the working directory so `steam_appid.txt` is found. Steam running in
+the background is enough; the retail-only "Steam Service Quit" objection from
+WO-53 §2.2 did not appear.
+
+### Result — **tier 2: boots partially, fatals at an identified subsystem**
+
+`kcd.log` (fresh, `Log Started at 2026-08-28 07:30:11`) confirms the argument
+reached the parser:
+
+```
+Cmdline: '"…\Win64ReleaseSteamLTO_DLL\KingdomCome.exe" -dedicated -devmode
+          -simple_console +r_SuperResolution_Mode 0 '
+```
+
+**The branch fired, exactly as §5 predicted.** In the whole log there is:
+
+- `Renderer initialization` — the `bSkipRenderer` gate (G1) passed, so
+  `CSystem::InitRenderer` *was* entered;
+- **no** `Initializing module CryRenderD3D12`, **no** `Creating rendering
+  device...`, **no** `Creating window called '…'` — G2/G3 took the dedicated
+  early-out and the renderer module was never loaded;
+- `<Audio>: Running with NULL AudioSystem.` — the dedicated audio substitution
+  fired;
+- and init then continued normally through `Font initialization`,
+  `Network initialization`, `Lobby initialization`,
+  `MovieSystem initialization`, `Console initialization`,
+  `Time initialization`, `Initializing Animation System`
+  (`Initializing module CryAnimation done, MemUsage=38708Kb`), and
+  `Init 3D Engine` (`Initializing module Cry3DEngine done, MemUsage=12220Kb`,
+  including `Sky light: Optical lookup tables loaded off disc`).
+
+`Cry3DEngine` — the module most likely to be renderer-coupled — **initialised
+cleanly with a null renderer.** The process died immediately after:
+
+```
+=============================================================================
+*ERROR
+=============================================================================
+CryAnimation: failed to initialize pIRenderer
+```
+
+followed by the BugSplat crash reporter. The report was **not sent**.
+
+### The blocker, pinned
+
+`CryAnimation.dll` `FUN_1800af900` — RVA `0xAF900`, fatal call at
+`0x1800af94e`. Decompiled:
+
+```c
+if (DAT_1802dfc00 == NULL)                      /* g_pISystem  */
+    CryFatalError(200, "CryAnimation: ISystem not initialized");
+DAT_1802de4d8 = pSystem->GetIRenderer();        /* ISystem vtbl +0x2d0 */
+if (DAT_1802de4d8 == 0)
+    CryFatalError(200, "CryAnimation: failed to initialize pIRenderer");
+DAT_1802de4e0 = pSystem->GetIPhysicalWorld();   /* vtbl +0x258 */
+if (DAT_1802de4e0 == 0)
+    CryFatalError(200, "CryAnimation: failed to initialize pIPhysicalWorld");
+DAT_1802dfc10 = pSystem->Get3DEngine();         /* vtbl +0x268 */
+if (DAT_1802dfc10 == 0)
+    CryFatalError(200, "CryAnimation: failed to initialize pI3DEngine");
+… then registers "CharacterManager" with the module manager
+```
+
+This is stock CryEngine's character-manager init null-check chain, verbatim and
+unmodified — the string order (`ISystem not initialized` / `pIRenderer` /
+`pIPhysicalWorld` / `pI3DEngine`, @file 2513720 / 2513672 / 2513808 / 2513760)
+matches the stock sequence. `FUN_180011e20(200, …)` is the same severity-200
+fatal helper `CrySystem` uses for `"Error creating Render System!"`.
+
+**Crucially it is an unconditional null-check, not an `IsDedicated()` check.**
+There is nothing to flip here. Stock never needed a guard because a stock
+dedicated server *has* an `IRenderer` — the no-op one from `CryRenderNULL.dll`.
+Warhorse's substitution of "load nothing" for "load `CryRenderNULL.dll`" is
+what turns this into a fatal. (That stock dedicated servers load
+`CryRenderNULL` is **read-but-unrendered** lineage knowledge, consistent with
+WO-53 §2.1's `c1-headless` precedent; it was not verified against Warhorse
+source.)
+
+Note the log ordering: CryAnimation's *engine module* initialised fine — the
+fatal is in the later character-manager step, which runs after `Cry3DEngine`
+comes up. **observed**
+
+### Steps 4 of the WO's Phase 2 — not applicable
+
+No idle CPU/RAM measurement and no world-tick check were possible: the process
+never reached a running state. Tier 2 stops there by definition.
+
+### Cleanup / state left behind
+
+Nothing. No file in the install was edited, renamed, or moved; `-dedicated` is
+an argument, not a persisted cvar, so nothing can carry into the next launch.
+The process is gone and no BugSplat process remains. `kcd.log` was rotated by
+the engine itself in the normal way (the previous log went to `logbackups`, and
+the run's own log is the current `kcd.log`). Crash artefacts were written by
+BugSplat to the user's `%TEMP%` and were left alone.
 
 ---
 

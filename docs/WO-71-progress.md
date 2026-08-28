@@ -57,3 +57,43 @@ Not run. Phase 2 is gated on the human approving a specific flip after seeing
 the branch map; the branch map is `docs/WO-71-findings.md` §3–§4. See the
 findings doc's verdict and the "what a decision session would weigh"
 paragraph.
+
+---
+
+## Phase 2 — run 2026-08-28, human approved
+
+Gate satisfied: the branch map (findings §3–§6) was presented, the human
+approved the flip and chose the argument set. Result and full evidence in
+`docs/WO-71-findings.md` §13.
+
+- **Approved flip**: `-dedicated -devmode -simple_console`, plus
+  `+r_SuperResolution_Mode 0` as the middleware disable. No patch, no
+  injection, no file edited anywhere in the install.
+- **Outcome: tier 2** — boots partially, fatals at an identified subsystem.
+  The branch itself worked: no renderer module loaded, no device, no window,
+  and init continued through console / NULL audio / font / network / movie /
+  time / animation module / 3D engine before
+  `CryAnimation: failed to initialize pIRenderer`
+  (`CryAnimation.dll` RVA `0xAF900`, fatal at `0x1800af94e`).
+- **Not applicable**: idle CPU/RAM and world-tick measurement — the process
+  never reached a running state.
+- **State left behind**: none. Crash report **not sent**.
+
+### Traps hit in Phase 2
+
+- **`steam.exe -applaunch 2429020 <args>` does not launch the game.** It starts
+  the Modding Tools `WorkspaceSetup.exe` wizard. This burned the first attempt
+  and was caught by the human, not by me. The MT `KingdomCome.exe` must be
+  started **directly**, with the **game root** as working directory so
+  `steam_appid.txt` resolves — which is what
+  `KCDMP_launcher/Pages/Home.razor.cs:521` already does. WO-53 §2.2's
+  "Steam Service Quit — not started through Steam" is a **retail** behaviour
+  and does not apply to the Modding Tools build.
+- Two corrections to statements made earlier in this WO, recorded because both
+  were asserted before being checked: `-simple_console` selects `CNULLConsole`
+  (plain stdout), **not** the text-mode console — the text-mode console is what
+  you get with *neither* `-daemon` nor `-simple_console`; and the Modding Tools
+  build **does** ship the DLSS/XeSS/FidelityFX upscaler DLLs in
+  `Bin\Win64Shared\`, which an earlier draft guessed it might not.
+- `kcd.log` and the crash dump carry the machine's hostname, LAN IP and Windows
+  user name. Nothing from those lines is reproduced in either doc.
