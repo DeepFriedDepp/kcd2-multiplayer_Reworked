@@ -151,8 +151,8 @@ This matters for reading the table honestly. The GPU control column's
 **0.17 cores** is not "the cost of simulating this world" — it is a
 frame-throttled instance comfortably hitting a low FPS cap. The right comparison
 is not "WARP costs 45× the GPU"; it is that **both are asked for the same
-throttled frame rate, the GPU meets it at 0.17 cores, and WARP misses it by ~55×
-while spending 7.6 cores trying.** A headless host is always unfocused, so this
+throttled frame rate, the GPU meets it at 0.17 cores, and WARP misses it by 15–55×
+while spending 6.4–7.8 cores trying.** A headless host is always unfocused, so
 throttle is always in play — it is a deployment advantage that WARP still cannot
 exploit.
 
@@ -171,7 +171,7 @@ exploit.
 
 ## Runs performed
 
-Five live runs, every one hard-killed, every one verified after:
+Six live runs, every one hard-killed, every one verified after:
 
 | # | config | outcome |
 |---|---|---|
@@ -221,4 +221,7 @@ correct names the six returned real coordinates and were genuinely unchanged ove
 - `system.cfg` MD5 `11583718DD1B14712A7AFE5B304C3DDA` verified unchanged after
   each run; no `user.cfg` created. **Observed clean after every run.**
 - One unintended write occurred and is accounted for above
-  (`playline3/autosave004.whs`, a new file; no existing save was modified).
+  (`playline3/autosave004.whs`, a new file; no existing save was modified). It
+  was deleted at the user's request, and the profile was then verified
+  byte-identical to its pre-session state — 200 files, unchanged MD5s — and
+  re-verified after every subsequent run.
