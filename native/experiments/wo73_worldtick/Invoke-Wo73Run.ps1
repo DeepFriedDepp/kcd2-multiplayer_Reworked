@@ -64,7 +64,25 @@ param(
     # nothing (7.8 -> 7.62 cores for a 21x pixel reduction) -- back-buffer size
     # is not where a software rasteriser's time goes. Shadow maps, GI voxels,
     # vegetation and particles all have their own budgets independent of it.
-    [string[]] $RenderOffCvars = @()
+    #
+    # PREFER -PreLoadCvars. Toggling e_Vegetation / e_Shadows on a loaded world
+    # forces asset and render-resource churn, and a sample taken right after
+    # measures that churn rather than steady state -- which is exactly how this
+    # run produced one inconclusive row.
+    [string[]] $RenderOffCvars = @(),
+
+    # Console commands issued at the MENU, before wh_sys_LoadGame. This is the
+    # honest way to measure a reduced render configuration: the world loads with
+    # the features already off, so the cost sample is steady state.
+    [string[]] $PreLoadCvars = @(),
+
+    # NPCs sampled for the simulation-evidence check. These are per-save: names
+    # must come from the loaded world's own log (ForceIdleState / SchedulerSubsystem
+    # lines), not from another save -- a wrong name silently reads back nil and
+    # looks like "nothing moved". Dogs and animals are included deliberately:
+    # they wander, so they move on a short window.
+    [string[]] $NpcNames = @('ttkc_woman_11','ttkc_man_15','ttkc_jezek',
+                             'ttkc_dog_3','ttkc_dog_4','ttkc_scribe')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,6 +130,16 @@ Invoke-KcdConsole -Command 'wh_ui_PauseGameOnFocusLoss 0' | Out-Null
 $cal0 = Read-KcdCalendar -Tag 'menu'
 Say "menu: $($cal0.Raw)"
 
+if ($PreLoadCvars.Count) {
+    Say "pre-load cvars: $($PreLoadCvars -join ' ')"
+    foreach ($c in $PreLoadCvars) { Invoke-KcdConsole -Command $c | Out-Null }
+    # Echo each back so the record shows what the engine actually holds, not
+    # what was sent. A void console call is not evidence it took.
+    foreach ($c in $PreLoadCvars) { Invoke-KcdConsole -Command ($c -split ' ')[0] | Out-Null }
+    Start-Sleep -Seconds 2
+    Say "pre-load cvar echo: $((Get-KcdLogTail -Pattern '^\s+(e_|r_|sys_|wh_)\S+ = ' -Last 12) -join ' | ')"
+}
+
 # --------------------------------------------------------------------- load
 Say "issuing: wh_sys_LoadGame $Playline $SaveName"
 $t0 = Get-Date
@@ -148,8 +176,10 @@ Start-Sleep -Seconds 1
 Say "sanity: souls=$souls  $(Get-KcdLogTail -Pattern '\[WO73\]\[SAN\]' -Last 1)"
 
 # ---------------------------------------------------------------- tick proof
-$a = Read-KcdCalendar -Tag 'tickA'
+$a    = Read-KcdCalendar -Tag 'tickA'
+$posA = Read-KcdNpcPositions -Tag 'posA' -Names $NpcNames
 Say "TICK-A: $($a.Raw)"
+Say "POS-A : $($posA.Raw)"
 
 $cost = Measure-KcdCost -Seconds $SampleSeconds -Label "$Config-loaded-idle"
 Say ("COST: {0} cores, {1} GB WS (peak {2}), {3} threads  [{4} CPU-s / {5} s wall]" -f `
@@ -157,8 +187,26 @@ Say ("COST: {0} cores, {1} GB WS (peak {2}), {3} threads  [{4} CPU-s / {5} s wal
 
 $remaining = $TickGapSeconds - $SampleSeconds
 if ($remaining -gt 0) { Start-Sleep -Seconds $remaining }
-$b = Read-KcdCalendar -Tag 'tickB'
+$b    = Read-KcdCalendar -Tag 'tickB'
+$posB = Read-KcdNpcPositions -Tag 'posB' -Names $NpcNames
 Say "TICK-B: $($b.Raw)"
+Say "POS-B : $($posB.Raw)"
+
+# Simulation evidence, not just clock evidence: did any NPC actually move?
+if ($posA -and $posB) {
+    $moved = @()
+    foreach ($n in $posA.PSObject.Properties.Name | Where-Object { $_ -notin 'Raw','At' }) {
+        if ($posA.$n -and $posB.$n -and $posA.$n -ne $posB.$n) {
+            $p1 = $posA.$n -split ','; $p2 = $posB.$n -split ','
+            $d  = [math]::Sqrt([math]::Pow([double]$p2[0]-[double]$p1[0],2) +
+                               [math]::Pow([double]$p2[1]-[double]$p1[1],2) +
+                               [math]::Pow([double]$p2[2]-[double]$p1[2],2))
+            $moved += ("{0} moved {1} m" -f $n, [math]::Round($d,2))
+        }
+    }
+    Say ("SIM EVIDENCE: {0}" -f $(if ($moved.Count) { $moved -join '; ' }
+                                 else { 'no NPC of the sampled set changed position' }))
+}
 
 # Guard the arithmetic: a missing reading is "no data", never "DEAD". An
 # earlier version subtracted $null and reported a live instance as dead.

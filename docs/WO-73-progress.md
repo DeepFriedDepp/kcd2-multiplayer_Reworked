@@ -179,10 +179,39 @@ Five live runs, every one hard-killed, every one verified after:
 | 2 | WARP, 1704×959 | World loaded and ticked. Script died mid-run to a self-inflicted file lock; the instance was unaffected and driven manually. 0.018× real time, 7.8 cores. |
 | 3 | WARP, 320×240 | Cost captured (7.62 cores) but the tick rate was lost to the log-tail and short-wait bugs. Rate discarded, re-run as #5. |
 | 4 | GPU, control + features-off | Clean control column: 1.003× real time, 0.17 cores. |
-| 5 | WARP, 320×240, + features-off | Clean: 0.061× real time, 6.88 cores. |
+| 5 | WARP, 320×240, + features-off *after* load | Clean: 0.061× real time, 6.88 cores. The features-off half was invalid — see below. |
+| 6 | WARP, 320×240, features-off *before* load, + NPC motion | Clean: 0.067× real time, 6.4 cores. Closed both remaining gaps. |
 
 Runs 3 and 5 disagree slightly on cores (7.62 vs 6.88) for nominally identical
 configurations — a ~10% run-to-run spread on this machine. Both are reported.
+
+### Why run 6 was needed
+
+Run 5 was declared finished, and it was not. Two things were wrong with it:
+
+1. **The features-off measurement was taken the wrong way round.** Six render
+   cvars were toggled on an *already-loaded* world and sampled for 90 s
+   immediately after. Toggling `e_Vegetation`/`e_Shadows` at runtime forces asset
+   and render-resource churn, so the sample measured the disruption, not the
+   configuration — and it spanned 2 whole game-seconds, ±25% quantisation on its
+   own. It read as "features-off made it 3× slower", which is false. Run 6 sets
+   the same six cvars **at the menu, echoed back as `= 0` before
+   `wh_sys_LoadGame`**, so the world loads with them off: **6.88 → 6.40 cores,
+   0.061 → 0.067×, load 202–224 s → 169.8 s.** Marginal, real, and in the
+   opposite direction to the artifact. **Runtime cvar toggling is not a valid way
+   to measure a render configuration on this engine.**
+2. **Simulation evidence had only ever been collected on the GPU.** The WO asks
+   for an NPC position change *or* an AI log line, and the GPU run had both
+   (`tvez_man_22`, 18 m in 25 s). WARP had neither — only the clock. Run 6 added
+   a positional probe and captured the AI-log alternative.
+
+The positional probe also carried a trap worth recording: the NPC names were
+initially copied from the *tutorial* save, and those entities do not exist in
+this one. `System.GetEntityByName` returns nil for an absent name, which the
+probe would have rendered as "did not move" — a false negative indistinguishable
+from a frozen world. Names must come from the loaded save's own log lines. With
+correct names the six returned real coordinates and were genuinely unchanged over
+~14 game-seconds, which is an underpowered window, not a finding.
 
 ## Safety discipline actually run
 

@@ -121,6 +121,39 @@ function Read-KcdCalendar {
     [pscustomobject]$o
 }
 
+# Simulation evidence beyond the clock: an NPC that actually moves. The clock
+# advancing proves the world is being stepped; a changed position proves the AI
+# is being stepped with it. Names come from the loaded world's own log lines
+# (ForceIdleState / SchedulerSubsystem chatter), so they are known to exist.
+function Read-KcdNpcPositions {
+    param(
+        [string[]] $Names = @('tvez_vasko', 'tvez_concubine', 'tvez_man_22'),
+        [string]   $Tag   = 'pos',
+        [int]      $WaitSec = 180
+    )
+    $list = ($Names | ForEach-Object { '"' + $_ + '"' }) -join ','
+    $lua = 'local n={' + $list + '}; local s=""; for i,v in ipairs(n) do' +
+           ' local e=System.GetEntityByName(v);' +
+           ' if e then local p=e:GetWorldPos(); s=s..v.."="..string.format("%.3f,%.3f,%.3f",p.x,p.y,p.z).." "' +
+           ' else s=s..v.."=nil " end end;' +
+           ' System.LogAlways("[WO73][' + $Tag + '] "..s)'
+    Invoke-KcdLua -Lua $lua -TimeoutSec $WaitSec | Out-Null
+    $line = $null
+    $deadline = (Get-Date).AddSeconds($WaitSec)
+    while ((Get-Date) -lt $deadline) {
+        $line = Get-KcdLogTail -Pattern "\[WO73\]\[$Tag\] " -Last 1
+        if ($line) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $line) { return $null }
+    $o = [ordered]@{ Raw = $line; At = (Get-Date) }
+    foreach ($n in $Names) {
+        if ($line -match [regex]::Escape($n) + '=([-0-9.]+,[-0-9.]+,[-0-9.]+)') { $o[$n] = $Matches[1] }
+        else { $o[$n] = $null }
+    }
+    [pscustomobject]$o
+}
+
 # kcd.log is held open by the game; read it share-mode or the read fails.
 #
 # Seek to the last $TailBytes rather than reading the file: on a struggling WARP

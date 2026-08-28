@@ -1,0 +1,22 @@
+﻿[11:56:07] === WO-73 run: config=warp-small playline=1 save=exit
+[11:56:07] early cvars: r_HeadlessStartup=1,r_overrideDXGIAdapter=1,r_Width=320,r_Height=240
+[11:56:07] pid 4644, probe injected=True after 0.05s
+[11:56:42] BOOT: api up after 34.9s wall, 24.9 CPU-s, 2.71 GB, 98 threads
+[11:56:42] menu: [WO73][menu] gameTime=0 worldTime=0 day=0 hour=0 ratio=15 paused=true
+[11:56:42] pre-load cvars: e_Shadows 0 e_Vegetation 0 e_Particles 0 e_Clouds 0 e_WaterOcean 0 r_PostProcessEffects 0
+[11:56:45] pre-load cvar echo:     e_Shadows = 0 [] |     e_Vegetation = 0 [] |     e_Particles = 0 [] |     e_Clouds = 0 [] |     e_WaterOcean = 0 [] |     r_PostProcessEffects = 0 [] |     e_Shadows = 0 [] |     e_Vegetation = 0 [] |     e_Particles = 0 [] |     e_Clouds = 0 [] |     e_WaterOcean = 0 [] |     r_PostProcessEffects = 0 []
+[11:56:45] issuing: wh_sys_LoadGame 1 exit
+[11:59:35] LOAD: world up after 169.8s wall; cumulative 1724 CPU-s (1699.1 CPU-s for the load itself)
+[11:59:39] save lock applied=True
+[11:59:43] sanity: souls=1500  [WO73][SAN] entities=22204
+[11:59:46] TICK-A: [WO73][tickA] gameTime=14859 worldTime=568884 day=6 hour=14.0235 ratio=15 paused=true
+[11:59:46] POS-A : [WO73][posA] ttkc_woman_11=2449.319,2015.113,112.554 ttkc_man_15=2353.351,2047.287,109.594 ttkc_jezek=2246.915,1995.237,102.940 ttkc_dog_3=2412.954,2040.010,111.744 ttkc_dog_4=2460.778,2020.840,112.620 ttkc_scribe=2310.641,2058.819,110.691 
+[12:01:16] COST: 6.4 cores, 8.83 GB WS (peak 8.83), 145 threads  [575.7 CPU-s / 90 s wall]
+[12:03:39] TICK-B: [WO73][tickB] gameTime=14873 worldTime=568952 day=6 hour=14.0423 ratio=15 paused=false
+[12:03:39] POS-B : [WO73][posB] ttkc_woman_11=2449.319,2015.113,112.554 ttkc_man_15=2353.351,2047.287,109.594 ttkc_jezek=2246.915,1995.237,102.940 ttkc_dog_3=2412.954,2040.010,111.744 ttkc_dog_4=2460.778,2020.840,112.620 ttkc_scribe=2310.641,2058.819,110.691 
+[12:03:40] SIM EVIDENCE: no NPC of the sampled set changed position
+[12:03:40] TICK VERDICT: worldTime +68 over 210.1 real-s; gameTime +14 (0.067x real time); paused=false -> WORLD CLOCK ADVANCING
+[12:03:40] HARD KILL (DUMPTODISK discipline)
+[12:03:43] install clean=True (system.cfg match=True, user.cfg present=False)
+[12:03:44] saves untouched=True
+[12:03:44] report: C:\Users\Jonasty\Documents\KCD2_MP\native\experiments\wo73_worldtick\runs\warp-small-20260828-115607.txt

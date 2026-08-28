@@ -20,18 +20,20 @@ with it.
 > advances at the configured 15× ratio with `IsWorldTimePaused()` false,
 > observed repeatedly over ten minutes. **The WO's acceptance criterion is met.**
 >
-> **But the world runs 16–55× slower than real time.** At the default render
-> target the WARP instance managed **0.018× real time while burning 7.8 CPU
-> cores**; at 320×240 it managed **0.061× on 6.9 cores**. The GPU control holds
-> **1.003× on 0.17 cores**. The simulation is correct and internally consistent
-> throughout — the frame loop is simply gated on a software rasteriser that
-> cannot close a frame fast enough (2126–2959 `WaitForFence(CPU) TIMED OUT`).
+> **But the world runs 15–55× slower than real time.** Untuned, the WARP
+> instance managed **0.018× real time while burning 7.8 CPU cores**. Tuned as far
+> as this WO could take it — render target at 320×240 and six render passes
+> switched off before the load — it reached **0.067× on 6.4 cores**. The GPU
+> control holds **1.003× on 0.17 cores**. The simulation is correct and
+> internally consistent throughout: world time tracks its declared 15× ratio, NPC
+> state machines transition, dialogue is scheduled. The frame loop is simply
+> gated on a software rasteriser that cannot close a frame fast enough
+> (2126–2959 `WaitForFence(CPU) TIMED OUT`).
 >
 > So the world-load question WO-72 left open is **closed, and it was cheap**.
 > The question it did not know to ask — can a CPU-only host run a world at
-> wall-clock speed — is **answered no**, by a margin of more than an order of
-> magnitude, and the render-target reduction expected to rescue it delivers a
-> 3.4× speed-up that leaves it still 16× short.
+> wall-clock speed — is **answered no**, by an order of magnitude, with both
+> available render levers measured rather than assumed.
 
 ---
 
@@ -129,6 +131,34 @@ gameTime=15068  worldTime=572283  day=6 hour=14.9676  ratio=15  paused=false
 matching the declared ratio. Simulation evidence beyond the clock: NPC positions
 changing between reads, 1494 souls, 22619 entities.
 
+**Simulation, not just clock** (observed). The WO asks for evidence the world is
+*being simulated* — "an NPC position changing between two REST reads, or an AI
+log line firing".
+
+*On GPU*, both: `tvez_man_22` moved **18 m in 25 s**, alongside continuous
+`ForceIdleState` transitions and dialogue playback.
+
+*On WARP*, the AI log lines, captured strictly between the two position reads of
+the final run:
+
+```
+ForceIdleState sets 'sitting' tags in global state of tzda_man_10
+ForceIdleState clears 'sitting' tags in global state of ttkc_inkeeper
+[ATL] (...dialog/open_world/minihry/jbea_kost_kostky...) issue eACMRT_REPORT_STARTED_FILE
+```
+
+NPC state machines are transitioning and dialogue is being scheduled — the AI
+system is stepping on the software renderer, not merely the clock.
+
+**The positional check on WARP returned null, and that is an underpowered test,
+not a negative result.** Six named NPCs (drawn from this save's own log, so the
+names resolve — they returned real coordinates, not `nil`) held bit-identical
+positions across the 210 s window. At 0.067× that window is only **~14
+game-seconds**, and all six were stationary characters. A positional test with
+the same statistical power as the GPU one needs roughly **50 minutes of wall
+clock** on WARP; it was not run. Nothing here says WARP locomotion is broken,
+and nothing here proves it works.
+
 **WARP, default render target** (observed), 46 reads over 604 s:
 
 ```
@@ -196,7 +226,7 @@ helps it (251.7 → 223.7 s).
 | GPU, render features off | **0.13** | 7.08 GB | 87 | 0.997× | 0 |
 | **WARP**, 1704×959 | **7.8** | 9.37 GB | 197 | **0.018×** | 2959 |
 | **WARP**, 320×240 | **6.88** | 9.06 GB | 142 | **0.061×** | 2126 |
-| WARP, 320×240, features off | 6.79 | 9.35 GB | 179 | *(inconclusive — see below)* | — |
+| **WARP**, 320×240, features off | **6.40** | 8.83 GB | 145 | **0.067×** | — |
 
 "sim rate" is `GetGameTime()` advance ÷ wall-clock advance; 1.0 means the world
 keeps up with real time. **It, not cores, is the number that decides whether a
@@ -231,14 +261,22 @@ echo:
 
 * **GPU: 0.17 → 0.13 cores**, sim rate unchanged at ~1.0×. Those passes are
   ~24% of an already frame-throttled instance.
-* **WARP: 6.88 → 6.79 cores; measured rate 0.018×.** **Do not read that as
-  "turning features off made it slower."** The window was 114 s immediately
-  after the cvar change, and toggling `e_Vegetation`/`e_Shadows` at runtime
-  forces asset and render-resource churn — the sample is measuring that
-  disruption, and it spans only **2 whole game-seconds**, so its quantisation
-  error alone is ±25%. **This row is inconclusive.** Testing it properly means
-  setting the features off *before* the world loads and measuring steady state;
-  that was not done.
+* **WARP, set at the menu before the load** (all six echoed back as `= 0`
+  before `wh_sys_LoadGame`, so the world loads with them already off and the
+  sample is steady state): **6.88 → 6.40 cores (−7%), 0.061 → 0.067× (+10%),
+  and the load itself 202–224 s → 169.8 s (−20%).**
+
+Real, consistent, and nowhere near enough. Disabling six whole render passes
+moves the CPU-only instance from 16× too slow to 15× too slow.
+
+> **A correction against the first attempt.** Toggling the same six cvars on an
+> already-loaded world measured 6.79 cores at **0.018×**, which reads as
+> "turning features off made it three times slower". It did not. That sample ran
+> for 114 s immediately after the toggle, while `e_Vegetation`/`e_Shadows`
+> forced asset and render-resource churn, and it spanned **2 whole
+> game-seconds** — ±25% quantisation on its own. The pre-load measurement above
+> supersedes it. **Runtime cvar toggling is not a valid way to measure a render
+> configuration on this engine.**
 
 ---
 
@@ -288,9 +326,12 @@ tens of seconds to appear produced a "DEAD" verdict on a live instance.
   rasterisation, simulation, and the fence stalls themselves — so "the sim is
   inherently too slow on CPU" is **not** established. What is established is
   that *this* configuration is.
-- **The features-off lever was not tested properly** (see §4). Setting render
-  features off before the load and measuring steady state is untried, and is the
-  obvious next thing.
+- **NPC locomotion on WARP is unconfirmed either way** (see §3). The AI system
+  demonstrably steps; whether characters actually walk was not measurable in the
+  window available, and the run that would settle it (~50 min of wall clock) was
+  not done.
+- **Six render passes were tested, not all of them.** `e_Terrain`, `e_Objects`,
+  the `e_svoTI_*` GI family and the shadow-resolution cvars were left alone.
 - Nothing here says anything about topology. That fence, from WO-71/72, stands.
 
 ---
@@ -307,13 +348,19 @@ tens of seconds to appear produced a "DEAD" verdict on a live instance.
 > ratio, 1500 souls and ~22000 entities live, on a software rasteriser.
 >
 > **A CPU-only host is nevertheless not viable as built.** It runs the world at
-> 0.018–0.061× real time on ~7 cores, against 1.003× on 0.17 cores with a GPU.
-> That is not a tuning gap. The one reduction this WO was asked to measure —
-> render-target size — helps throughput 3.4× and cost 12%, leaving it still 16×
-> short of real time. Whether disabling render *passes* (rather than shrinking
-> the target) closes a 16× gap is untested and is the single highest-value
-> follow-up; the GPU column suggests those passes are only ~24% of the work,
-> which would not be enough, but that is an inference from the wrong machine.
+> 0.018–0.067× real time on 6.4–7.8 cores, against 1.003× on 0.17 cores with a
+> GPU. That is not a tuning gap, and both available levers were measured rather
+> than assumed: shrinking the render target 21× in pixels buys 3.4× throughput,
+> and switching six render passes off before the load buys a further 10%. Applied
+> together they take the instance from ~55× too slow to **~15× too slow**. The
+> remaining gap is an order of magnitude, and nothing measured here suggests a
+> render-side setting closes it.
+>
+> What that leaves untested is the *shape* of the remaining cost. Every number
+> here was taken with the frame loop fence-timing out, so this WO cannot say how
+> much of the 15× is rasterisation the engine could be made to skip entirely
+> versus simulation that would cost the same on any renderer. That decomposition
+> — not more cvar tuning — is the question worth the next session.
 
 ## 9. Inputs for the decision session
 
@@ -322,20 +369,24 @@ stands.)*
 
 Per-instance, one loaded world, `trosecko` at ~1500 souls, on a 12-thread
 Ryzen 5 5600: **with a GPU**, 0.17 cores and 7.0 GB at 1.003× real time, ~107 s
-from launch to a live world. **Without a GPU (WARP)**, 6.9–7.8 cores and
-9.0–9.4 GB at 0.018–0.061× real time, ~240–290 s from launch to a live world;
-boot itself is cheap (~35 s, ~1.7× the GPU's CPU, not WO-72's 7×), and the load
-is ~3× slower. Memory is essentially render-independent — the world dominates —
-so ~9.5 GB is the figure to size against for a CPU-only instance and ~7 GB with
-a GPU. The debug/REST control surface is content-identical on both, but on a
-loaded WARP instance a single call took **50.4 s** to return, because REST is
-serviced on the game thread and that thread is the one running slow — any design
-driving a host over `:1403` inherits its frame rate as a latency floor. Two
-constraints that are properties of the build, not of this experiment: the cvars
-that enable CPU-only rendering must be set *before* renderer init, which on an
-unmodified install means injected code or a `system.cfg` edit; and world time is
-paused for the duration of tutorial-mission saves regardless of focus, cvars, or
+from launch to a live world. **Without a GPU (WARP)**, best measured
+configuration is 320×240 with six render passes off: **6.4 cores, 8.8 GB, and
+0.067× real time** — about **15× slower than the world it is simulating** —
+reached ~205 s after launch. Untuned WARP is 7.8 cores at 0.018×. Boot itself is
+cheap on either (~35 s; WARP ~1.7× the GPU's CPU, not WO-72's 7×); the load is
+~2.3–3.5× slower. Memory is essentially render-independent — the world dominates
+— so ~9 GB is the figure to size a CPU-only instance against, ~7 GB with a GPU.
+The debug/REST control surface is content-identical on both, but on a loaded
+WARP instance a single call took **50.4 s** to return, because REST is serviced
+on the game thread and that thread is the one running slow — any design driving a
+host over `:1403` inherits its frame rate as a latency floor. Three constraints
+are properties of the build, not of this experiment: the cvars enabling CPU-only
+rendering must be set *before* renderer init, which on an unmodified install
+means injected code or a `system.cfg` edit; world time is paused for the whole of
+a tutorial-mission save regardless of focus, cvars, or
 `Calendar.SetWorldTimePaused(false)`, so a host's starting save is not a free
-choice. Unmeasured and material: any location other than this one, more than one
-loaded world per host, and whether disabling render passes rather than shrinking
-the render target changes the CPU-only picture.
+choice; and render settings must be applied before the world loads, because
+toggling them afterwards measures asset churn rather than steady state.
+Unmeasured and material: any location other than this one, more than one loaded
+world per host, whether NPC locomotion keeps up on WARP, and how the residual 15×
+divides between rasterisation and simulation.
