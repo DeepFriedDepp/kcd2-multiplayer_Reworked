@@ -231,9 +231,12 @@ the cause. Both-sides-applying: 5 overlap events all session.
 Stated in WO-70-facing terms, because **the fix is deliberately not landed
 here** — see the scope note below:
 
-1. **"Port the four ghost presentation pieces onto the puppet path"** —
-   packet-velocity estimate, dead reckoning, direction-damped correction, and
-   `lerpAngle` on yaw. Each has a live-verified ghost-side donor.
+1. **"Port the remaining three ghost presentation pieces onto the puppet
+   path"** — packet-velocity estimate, dead reckoning, and direction-damped
+   correction. Each has a live-verified ghost-side donor. **The fourth,
+   `lerpAngle` on yaw, WAS landed in WO-69** (it smooths rotation, so it cannot
+   mask the position snap-between-attractors that WO-60's footage needs) — do
+   not port it twice.
 2. **"Copy the math; do not extract a shared helper."** The ghost block carries
    baked-in WO-38/WO-40 field fixes and is the live-verified one; sharing it
    risks a ghost regression for no gain.
@@ -247,12 +250,24 @@ here** — see the scope note below:
    `local function` declared *after* the puppet tick — a reference to it from
    there binds to a nil global and fails silently inside the surrounding
    `pcall`, stopping that tick's write with no error.
-6. **Fix D3 first, and instrument.** Per-chain generation tokens on both the
-   puppet and emit chains; a per-packet counter in `KCD2MP_ApplyNpcState`
-   (none exists today); `p.fightN` rethresholded from 0.5625 to ~0.0025 and
-   made to *log*. Until these exist, every cadence number except `emitMs = 250`
-   is a proxy, and a DR layer tuned to a 50 ms tick would be tuned to a period
-   that does not exist in the field.
+6. **Confirm D3, then fix it — the instrument is already shipped.** WO-69
+   landed the *puppet*-chain generation token, the per-packet cadence counter
+   in `KCD2MP_ApplyNpcState`, and the `p.fightN` rethreshold (0.5625 → 0.0025)
+   with logging. **None of it has ever fired**: puppets exist only while
+   receiving a peer's stream, and WO-69's verification was single-machine. So
+   D3 remains *suspected*, exactly as WO-69 left it.
+   - First two-player session: watch for `NPC-SYNC CHAIN LEAK CONFIRMED`. It
+     is **observe-only by default** — the stale chain keeps running so the leak
+     can be seen before it is changed. `mp_npc_chainfix on` flips it to exit,
+     making the before/after a live A/B on one build.
+   - Record the `NPC-SYNC packet cadence` line. Until that number exists, every
+     cadence figure except `emitMs = 250` is a proxy, and a DR layer tuned to a
+     50 ms tick is tuned to a period that may not exist in the field.
+   - **The emit chain was deliberately left un-instrumented.** The same ~15x
+     duplication shape appears on the send side (22,019 `npc_claim` lines in
+     368 bursts, byte-identical coordinates repeated within one frame), but a
+     one-machine session could assert a send-side fix, not observe it. Same
+     mechanism, same fix shape — it is WO-70's to land with evidence.
 7. **Run the D1-vs-D2 discriminator before tuning anything.**
    `tools/Test-NpcSyncE2E.ps1` Phase 3 already streams 32 packets at 4 Hz and
    reads engine positions back. Drive two NPCs, one with `AI.SetIgnorant(id,1)`
