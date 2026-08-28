@@ -133,6 +133,12 @@ the expensive part; steady state is cheap.
 - **No world was loaded, and this remains the decisive open question.** The
   measurements above are the main loop with no save. Whether simulation keeps
   up on WARP, and what a loaded world costs, is still unmeasured — see §1a.
+- `r_HeadlessStartup` and `r_overrideDXGIAdapter` are `DUMPTODISK`. Every run
+  here was hard-killed before clean shutdown and the install verified
+  afterwards: `system.cfg` untouched, no `user.cfg`, nothing under
+  `Saved Games\kingdomcome2`. **Do not let a run with `r_overrideDXGIAdapter`
+  set exit cleanly on a machine you also game on** — a persisted adapter
+  override would force the software renderer for normal play.
 
 ### §1a — the world-load attempt, and a hang that was *not* WARP's fault
 
@@ -161,13 +167,6 @@ entry, and WO-72 already established TestModule is Warhorse's in-game test
 command module. A named test that stands up a world is the most promising way
 to get a save-backed world loaded without the UI. Failing that, driving the
 main menu's load flow through `UIAction` is the fallback. Neither was tried.
-- `r_HeadlessStartup` and `r_overrideDXGIAdapter` are `DUMPTODISK`. Every run
-  here was hard-killed before clean shutdown and the install verified
-  afterwards: `system.cfg` untouched, no `user.cfg`, nothing under
-  `Saved Games\kingdomcome2`. **Do not let a run with
-  `r_overrideDXGIAdapter` set exit cleanly on a machine you also game on** — a
-  persisted adapter override would force the software renderer for normal play.
-
 ---
 
 ## 2. The other route — no renderer at all (`-dedicated`)
