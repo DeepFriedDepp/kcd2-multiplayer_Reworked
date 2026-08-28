@@ -143,3 +143,98 @@ So the null is internal to the Warhorse game-module stack. Naming it needs
   callers. They are false positives — read the chain, not the innermost line.
 - `-noCrashHandler` suppresses the BugSplat dialog, which makes iteration much
   faster. No crash report from any of these runs was sent.
+
+---
+
+## Continued 2026-08-28 — blocker 3 cleared, blocker 4 named, stubbing exhausted
+
+### Blocker 3 — the AI system — CLEARED, and by a *shipped* switch
+
+The `XGenAIModule` fault decoded from the raw PE bytes (faster than waiting for
+a 51 MB Ghidra pass):
+
+```
+call qword ptr [rip+0xD8361F]   ; Shared.dll!wh::GetGameIface()
+mov  rcx, [rax+0x1A0]           ; RCX = gameIface->field_0x1A0   <-- NULL
+mov  rax, [rcx]                 ; FAULT (XGenAIModule +0x13CB030)
+call qword ptr [rax+0x128]
+```
+
+A census of `wh::GetGameIface()` in both configurations, phase-matched, names
+the field: **`GI+0x1A0` is `IAISystem`** (vtable in `CryAISystem.dll`).
+
+WO-71 §5 had already recorded that `CSystem::Init`'s AI condition gains a
+`gEnv->bDedicated` term. The rest of that condition is the escape hatch — it
+also passes when the shipped cvar **`sv_AISystem`** is non-zero. So KCD2's
+engine *does* have a supported way to run the AI system on a dedicated server.
+
+`+sv_AISystem 1` on the command line is **too late**: AI init is
+`SystemInit.cpp:0xec8`, which runs before `CryAnimation` loads. Setting it from
+the probe as soon as `gEnv->pConsole` exists works — log shows
+`sv_AISystem: was 0, now 1`, and `AI initialization` then appears in `kcd.log`.
+
+### Depth now reached (observed)
+
+With blockers 1–3 cleared, and still **no renderer, no device, no window**:
+
+- every engine subsystem, `Cry3DEngine` included;
+- **all 18 game modules** created — `TestModule`, `UtilsModule`,
+  `DatabaseModule`, `AnimationModule`, `EntityModule`, `CombatModule`,
+  `DialogModule`, `SoundModule`, `MusicModule`, `EnvironmentModule`,
+  `RPGModule`, `PlayerModule`, `ShopModule`, `QuestModule`, `GUIModule`,
+  `XBehaviorModule`, `XGenAIModule`, `ConceptModule`;
+- `AI initialization`;
+- and on into **Lua entity-script registration**
+  (`Scripts/Entities/...` — hundreds of files).
+
+`kcd.log` goes from ~440 lines at WO-71's CryAnimation death to **~1800 lines**.
+
+Worth noting for the mod specifically: `GUIModule` loads and logs
+`UISetting uses undefined CVar: r_VSync / r_MotionBlur / r_HDROutput / ...` —
+errors, not fatals. The UI layer survives a renderer-less boot, complaining.
+
+### Blocker 4 — OPEN, and it is where stubbing stops working
+
+`Cry3DEngine.dll FUN_1801317a0` (the default-material path, the function
+holding `"%ENGINE%/EngineAssets/TextureMsg/ReplaceMe.tif"`):
+
+```c
+plVar2 = pRenderer->vtbl[+0x590](pRenderer, 0);   // EF_CreateInputShaderResource
+if (plVar2 != NULL) { plVar2->AddRef(); }         // null-checked...
+*(float*)(plVar2 + 0x240) = 1.0f;                 // ...but this is NOT
+...
+FUN_180026910(plVar2 + 0x250, "%ENGINE%/.../ReplaceMe.tif", 0x2e);  // CryString assign
+```
+
+Two distinct faults, both from the same cause:
+
+- returning **null** → `WRITE` to address `0x240` (`Cry3DEngine +0x131872`);
+- returning a **zero-filled stub** → `READ` of `0xFFFFFFFFFFFFFFF4`
+  (`Cry3DEngine +0x26937`, `FUN_180026910`): that is a `CryString` assign
+  reading its destination's `{refcount,len,capacity}` header at `ptr-12`, and
+  the destination `CryString` inside our block is zeroed rather than
+  constructed.
+
+This is the wall. Tried and did not move it: returning a valid object from
+**every** one of the 1024 slots; enlarging the stub object to 64 KB so field
+writes are absorbed; handing out a **distinct** 4 KB zeroed block per call from
+a 32 MB arena (so unrelated objects stop aliasing). All three land on the same
+fault.
+
+The reason is structural, not a missing offset: `EF_CreateInputShaderResource`
+must return a **properly constructed** `SInputShaderResources` — C++ members,
+including `CryString`s pointing at the empty-string singleton. A zero-filled
+buffer cannot fake a constructed object, and no amount of stub geometry will.
+
+### Where that leaves it
+
+- The **engine** half of a headless boot is done and needs nothing new: the
+  branch works, and the three things blocking it were one null check, seven
+  cvars and one shipped cvar.
+- The **renderer-substitute** half now begins in earnest, and is exactly the
+  project WO-53 §2.3 described. It is no longer open-ended, though: init needs
+  ten named `IRenderer` methods (progress table above), and the first one
+  needing *real* behaviour rather than a stub is
+  `EF_CreateInputShaderResource` (vtable slot 178, `+0x590`).
+- Nothing here is product code, nothing is installed, and no file in the game
+  install was modified in any run.

@@ -144,7 +144,32 @@ bool readable(const void* p, size_t n) {
 constexpr int kStubSlots = 1024;
 
 void*         g_stubVtbl[kStubSlots];
-void*         g_stubObject[4] = { g_stubVtbl, nullptr, nullptr, nullptr };
+// Engine code does `obj = pRenderer->CreateThing(); obj->field_0x240 = 1.0f;`
+// with no null check on the write (Cry3DEngine FUN_1801317a0 does exactly that).
+// So the object handed back has to be big enough to absorb field writes at
+// arbitrary offsets. 64 KB of zeroes with the vtable pointer at +0 costs
+// nothing and stops a returned stub from corrupting the heap.
+constexpr size_t kStubObjectBytes = 64 * 1024;
+void*         g_stubObject[kStubObjectBytes / sizeof(void*)] = { g_stubVtbl };
+
+// Returning ONE shared buffer for every getter makes unrelated "objects" alias
+// each other, and the engine then corrupts its own state through us. Hand out a
+// distinct zeroed block per call instead, bump-allocated from a fixed arena,
+// each with the stub vtable at +0 and 16 bytes of slack below it so a
+// CryString-style read at ptr-12 lands inside the arena rather than at -12.
+constexpr size_t kArenaBytes = 32 * 1024 * 1024;
+constexpr size_t kArenaBlock = 4096;
+char*         g_arena = nullptr;
+volatile LONG g_arenaNext = 0;
+
+void* fresh_stub_object() {
+    if (!g_arena) return g_stubObject;
+    const LONG i = InterlockedIncrement(&g_arenaNext) - 1;
+    if (static_cast<size_t>(i + 1) * kArenaBlock + 64 >= kArenaBytes) return g_stubObject;
+    char* base = g_arena + static_cast<size_t>(i) * kArenaBlock + 32;
+    *reinterpret_cast<void**>(base) = g_stubVtbl;
+    return base;
+}
 volatile LONG g_slotCalls[kStubSlots];
 volatile LONG g_callOrder = 0;
 
@@ -178,7 +203,7 @@ void* stub_thunk(void* /*self*/, void* a1, void* a2, void* a3) {
              Slot, Slot * 8, pos + 1, a1, a2, a3,
              g_returnSelf[Slot] ? "  -> returning stub self" : "");
     }
-    return g_returnSelf[Slot] ? reinterpret_cast<void*>(g_stubObject) : nullptr;
+    return g_returnSelf[Slot] ? fresh_stub_object() : nullptr;
 }
 
 LONG CALLBACK on_exception(EXCEPTION_POINTERS* ep) {
@@ -311,10 +336,114 @@ void dump_env_slots(uintptr_t env, const char* tag) {
     logf("--- end census (%s): %d null slots ---", tag, nulls);
 }
 
+// gEnv points at CSystem::m_env, which sits at CSystem+0x40: CrySystem reads
+// pConsole as gEnv+0xa8 and as CSystem+0xe8 for the same object, so the member
+// is 0x40 into the object. Validated at runtime by checking that CSystem+0x148
+// (m_env.pRenderer, the field OpenRenderLibrary null-checks) holds the stub we
+// just installed.
+constexpr uintptr_t kEnvOffsetInCSystem = 0x40;
+
+// The gEnv census misses anything the dedicated path skips that lives on
+// CSystem rather than in gEnv -- the default font (CSystem+0xE70) being the
+// obvious one, since CSystem::Init only creates it when !bDedicated. Same diff
+// trick, wider window.
+void dump_csystem_slots(uintptr_t env, const char* tag) {
+    const uintptr_t sys = env - kEnvOffsetInCSystem;
+    logf("--- CSystem slot census (%s), CSystem=%p ---", tag, (void*)sys);
+    for (uintptr_t off = 0; off < 0x1200; off += 8) {
+        if (!readable(reinterpret_cast<void*>(sys + off), 8)) continue;
+        const uintptr_t v = *reinterpret_cast<uintptr_t*>(sys + off);
+        if (v == 0) { logf("  CS+0x%04llX  NULL", (unsigned long long)off); continue; }
+        if (v < 0x10000) continue;
+        if (!readable(reinterpret_cast<void*>(v), 8)) continue;
+        char owner[MAX_PATH]{};
+        const uintptr_t vptr = *reinterpret_cast<uintptr_t*>(v);
+        if (!owning_module(vptr, owner, sizeof(owner))) continue;  // objects only
+        logf("  CS+0x%04llX  %p  vtable in %s", (unsigned long long)off, (void*)v, owner);
+    }
+    logf("--- end CSystem census (%s) ---", tag);
+}
+
+// The fault is `mov rcx,[rax+0x1A0]; mov rax,[rcx]` where RAX came from
+// wh::GetGameIface(). So the null lives in Warhorse's own game-interface
+// aggregate, not in gEnv. Same diff trick, third struct.
+void dump_gameiface(const char* tag) {
+    HMODULE shared = GetModuleHandleA("Shared.dll");
+    if (!shared) { logf("Shared.dll not loaded; no game interface census"); return; }
+    auto get = reinterpret_cast<void*(*)()>(GetProcAddress(
+        shared, "?GetGameIface@wh@@YAPEBVC_GameInterface@shared@1@XZ"));
+    if (!get) { logf("GetGameIface not exported as expected"); return; }
+    const uintptr_t gi = reinterpret_cast<uintptr_t>(get());
+    logf("--- C_GameInterface census (%s), iface=%p ---", tag, (void*)gi);
+    if (!gi) { logf("  game interface is null"); return; }
+    for (uintptr_t off = 0; off < 0x400; off += 8) {
+        if (!readable(reinterpret_cast<void*>(gi + off), 8)) continue;
+        const uintptr_t v = *reinterpret_cast<uintptr_t*>(gi + off);
+        if (v == 0) { logf("  GI+0x%03llX  NULL", (unsigned long long)off); continue; }
+        if (v < 0x10000 || !readable(reinterpret_cast<void*>(v), 8)) continue;
+        char owner[MAX_PATH]{};
+        if (!owning_module(*reinterpret_cast<uintptr_t*>(v), owner, sizeof(owner))) continue;
+        logf("  GI+0x%03llX  %p  vtable in %s", (unsigned long long)off, (void*)v, owner);
+    }
+    logf("--- end C_GameInterface census (%s) ---", tag);
+}
+
 uintptr_t g_censusEnv = 0;
 DWORD WINAPI census_thread(LPVOID) {
     if (wait_for_module("XGenAIModule.dll", 120000)) Sleep(2000);
     dump_env_slots(g_censusEnv, "dedicated + stub");
+    dump_csystem_slots(g_censusEnv, "dedicated + stub");
+    dump_gameiface("dedicated + stub");
+    return 0;
+}
+
+// ------------------------------------------------- sv_AISystem enable
+
+// WO-71 §5 noted that CSystem::Init's AI-system condition gains a
+// gEnv->bDedicated term. The full condition also has an escape hatch:
+//
+//   !bSkipAI && !minimal && (!gEnv->bDedicated || !m_svAISystem
+//                            || m_svAISystem->GetIVal() != 0)
+//
+// i.e. a dedicated server DOES initialise the AI system if the shipped cvar
+// `sv_AISystem` is non-zero. Without it, gEnv/game-interface AI is never
+// created and XGenAIModule's constructor dereferences the null.
+//
+// The catch: AI init is SystemInit.cpp:0xec8, which runs *before* CryAnimation
+// loads, so a command-line `+sv_AISystem 1` and our own install point are both
+// too late. Set it the moment gEnv->pConsole exists instead.
+//
+// ICVar vtable slots, read off the crashing spec-detect function
+// (CrySystem FUN_18008f400) and the AI condition itself:
+//   +0x10 GetIVal()   +0x38 Set(int)
+using GetCVarFn = void*(__fastcall*)(void*, const char*);  // identical redeclaration below
+using GetIValFn = int(__fastcall*)(void*);
+using SetIntFn  = void(__fastcall*)(void*, int);
+
+DWORD WINAPI ai_enable_thread(LPVOID param) {
+    const uintptr_t env = reinterpret_cast<uintptr_t>(param);
+    void* console = nullptr;
+    for (int i = 0; i < 60000; ++i) {
+        console = *reinterpret_cast<void**>(env + 0xa8);
+        if (console) break;
+        Sleep(1);
+    }
+    if (!console) { logf("sv_AISystem: pConsole never appeared"); return 0; }
+    void** cvt = *reinterpret_cast<void***>(console);
+    auto getCVar = reinterpret_cast<GetCVarFn>(cvt[0xb8 / 8]);
+    for (int i = 0; i < 20000; ++i) {
+        void* c = getCVar(console, "sv_AISystem");
+        if (c) {
+            void** vt = *reinterpret_cast<void***>(c);
+            const int before = reinterpret_cast<GetIValFn>(vt[0x10 / 8])(c);
+            reinterpret_cast<SetIntFn>(vt[0x38 / 8])(c, 1);
+            const int after = reinterpret_cast<GetIValFn>(vt[0x10 / 8])(c);
+            logf("sv_AISystem: found at %p, was %d, now %d", c, before, after);
+            return 0;
+        }
+        Sleep(1);
+    }
+    logf("sv_AISystem: cvar never registered within 20s");
     return 0;
 }
 
@@ -413,7 +542,9 @@ void mode_scan(HMODULE crySystem) {
             }
         }
         if (found) {
-            if (wait_for_module("XGenAIModule.dll", 120000)) { Sleep(2000); dump_env_slots(env, "normal boot"); }
+            if (wait_for_module("XGenAIModule.dll", 120000)) { Sleep(2000); dump_env_slots(env, "normal boot"); dump_csystem_slots(env, "normal boot"); dump_gameiface("normal boot t+2s");
+                Sleep(20000); dump_gameiface("normal boot t+22s");
+                Sleep(25000); dump_gameiface("normal boot t+47s"); }
             logf("scan complete"); return;
         }
         Sleep(250);
@@ -444,6 +575,8 @@ void mode_stub(HMODULE crySystem, uintptr_t rendererOffset) {
     }
     logf("MODE=stub -- will install a logging stub at gEnv+0x%llX",
          (unsigned long long)rendererOffset);
+    g_arena = static_cast<char*>(VirtualAlloc(nullptr, kArenaBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    logf("stub arena %p (%zu MB, %zu-byte blocks)", (void*)g_arena, kArenaBytes / (1024 * 1024), kArenaBlock);
     fill_vtbl();
     logf("stub object %p, vtable %p, %d slots", (void*)g_stubObject, (void*)g_stubVtbl, kStubSlots);
 
@@ -453,6 +586,10 @@ void mode_stub(HMODULE crySystem, uintptr_t rendererOffset) {
     if (!env) { logf("gEnv still null after 60s -- aborting, wrote nothing"); return; }
     logf("gEnv = %p", (void*)env);
     logf("gEnv->bDedicated(+0x3d4) = %d", *reinterpret_cast<unsigned char*>(env + kEnvDedicated));
+
+    // Must run as early as possible: the AI-init decision is made before
+    // CryAnimation loads, which is where this DLL installs the stub.
+    CreateThread(nullptr, 0, ai_enable_thread, reinterpret_cast<LPVOID>(env), 0, nullptr);
 
     // Do this before the window opens: CrySystem primes its cached ICVar*
     // pointers once, and a null cached there is permanent.
@@ -479,6 +616,14 @@ void mode_stub(HMODULE crySystem, uintptr_t rendererOffset) {
     }
     *pRenderer = reinterpret_cast<uintptr_t>(g_stubObject);
     logf("installed stub at gEnv+0x%llX", (unsigned long long)rendererOffset);
+    {
+        const uintptr_t sys = env - kEnvOffsetInCSystem;
+        const uintptr_t r = readable(reinterpret_cast<void*>(sys + 0x148), 8)
+                          ? *reinterpret_cast<uintptr_t*>(sys + 0x148) : 0;
+        logf("CSystem base check: CSystem=%p, CSystem+0x148=%p, stub=%p -> %s",
+             (void*)sys, (void*)r, (void*)g_stubObject,
+             r == reinterpret_cast<uintptr_t>(g_stubObject) ? "MATCH" : "MISMATCH");
+    }
     g_censusEnv = env;
     CreateThread(nullptr, 0, census_thread, nullptr, 0, nullptr);
 
