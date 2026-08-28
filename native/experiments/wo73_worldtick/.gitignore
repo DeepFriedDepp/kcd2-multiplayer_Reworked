@@ -1,0 +1,5 @@
+# The game mirrors its entire log to stdout; these are hundreds of KB of
+# duplicate of kcd.log and carry no evidence the run reports don't. The
+# *.txt run reports ARE committed -- they are the measurement record.
+stdout-*.log
+stdout-*.log.err

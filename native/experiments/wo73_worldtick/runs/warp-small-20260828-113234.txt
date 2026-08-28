@@ -1,0 +1,22 @@
+﻿[11:32:34] === WO-73 run: config=warp-small playline=1 save=exit
+[11:32:34] early cvars: r_HeadlessStartup=1,r_overrideDXGIAdapter=1,r_Width=320,r_Height=240
+[11:32:34] pid 8256, probe injected=True after 0.05s
+[11:33:09] BOOT: api up after 34.9s wall, 23.9 CPU-s, 2.7 GB, 98 threads
+[11:33:09] menu: [WO73][menu] gameTime=0 worldTime=0 day=0 hour=0 ratio=15 paused=true
+[11:33:09] issuing: wh_sys_LoadGame 1 exit
+[11:36:32] LOAD: world up after 202.2s wall; cumulative 2041.8 CPU-s (2017.9 CPU-s for the load itself)
+[11:36:34] save lock applied=True
+[11:36:36] sanity: souls=1500  [WO73][SAN] entities=22204
+[11:36:37] TICK-A: [WO73][tickA] gameTime=14856 worldTime=568884 day=6 hour=14.0235 ratio=15 paused=true
+[11:38:07] COST: 6.88 cores, 9.06 GB WS (peak 9.2), 142 threads  [620.2 CPU-s / 90.2 s wall]
+[11:40:09] TICK-B: [WO73][tickB] gameTime=14869 worldTime=568942 day=6 hour=14.0396 ratio=15 paused=false
+[11:40:09] TICK VERDICT: worldTime +58 over 211.6 real-s; gameTime +13 (0.061x real time); paused=false -> WORLD CLOCK ADVANCING
+[11:40:09] applying render-off cvars: e_Shadows 0 e_Vegetation 0 e_Particles 0 e_Clouds 0 e_WaterOcean 0 r_PostProcessEffects 0
+[11:42:17] TICK-C (features off): [WO73][tickC] gameTime=14871 worldTime=568976 day=6 hour=14.049 ratio=15 paused=false
+[11:43:47] COST (features off): 6.79 cores, 9.35 GB WS, 179 threads  [610.9 CPU-s / 90 s wall]
+[11:44:11] TICK-D (features off): [WO73][tickD] gameTime=14873 worldTime=569010 day=6 hour=14.0584 ratio=15 paused=false
+[11:44:11] RATE (features off): gameTime +2 over 114 real-s = 0.018x real time
+[11:44:11] HARD KILL (DUMPTODISK discipline)
+[11:44:14] install clean=True (system.cfg match=True, user.cfg present=False)
+[11:44:15] saves untouched=True
+[11:44:15] report: C:\Users\Jonasty\Documents\KCD2_MP\native\experiments\wo73_worldtick\runs\warp-small-20260828-113234.txt

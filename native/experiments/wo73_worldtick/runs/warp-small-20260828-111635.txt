@@ -1,0 +1,17 @@
+﻿[11:16:35] === WO-73 run: config=warp-small playline=1 save=exit
+[11:16:35] early cvars: r_HeadlessStartup=1,r_overrideDXGIAdapter=1,r_Width=320,r_Height=240
+[11:16:35] pid 17992, probe injected=True after 0.05s
+[11:17:09] BOOT: api up after 34.2s wall, 26.2 CPU-s, 2.72 GB, 96 threads
+[11:17:10] menu: [WO73][menu] gameTime=0 worldTime=0 day=0 hour=0 ratio=15 paused=true
+[11:17:10] issuing: wh_sys_LoadGame 1 exit
+[11:19:02] LOAD: world up after 111.9s wall; cumulative 1199.8 CPU-s (1173.6 CPU-s for the load itself)
+[11:20:22] save lock applied=True
+[11:20:38] sanity: souls=1500  [WO73][SAN] entities=21732
+[11:20:41] TICK-A: [WO73][tickA] gameTime=14840 worldTime=568884 day=6 hour=14.0235 ratio=15 paused=true
+[11:22:11] COST: 7.62 cores, 9.03 GB WS (peak 9.23), 140 threads  [686.7 CPU-s / 90.1 s wall]
+[11:23:55] TICK-B: 
+[11:23:55] TICK VERDICT: worldTime +-568884 game-s over -63923512841.2 real-s (x-568884); gameTime +-14840; paused= -> DEAD
+[11:23:55] HARD KILL (DUMPTODISK discipline)
+[11:23:58] install clean=True (system.cfg match=True, user.cfg present=False)
+[11:23:59] saves untouched=True
+[11:23:59] report: C:\Users\Jonasty\Documents\KCD2_MP\native\experiments\wo73_worldtick\runs\warp-small-20260828-111635.txt

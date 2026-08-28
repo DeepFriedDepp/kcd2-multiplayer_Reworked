@@ -1,0 +1,6 @@
+﻿[10:59:10] === WO-73 run: config=warp playline=1 save=exit
+[10:59:10] early cvars: r_HeadlessStartup=1,r_overrideDXGIAdapter=1
+[10:59:10] pid 1412, probe injected=True after 0.04s
+[10:59:46] BOOT: api up after 36.3s wall, 25.9 CPU-s, 2.7 GB, 99 threads
+[10:59:47] menu: [WO73][menu] gameTime=0 worldTime=0 day=0 hour=0 ratio=15 paused=true
+[10:59:47] issuing: wh_sys_LoadGame 1 exit
