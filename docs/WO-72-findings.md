@@ -97,6 +97,32 @@ The value must therefore be in place *before* renderer init. Two mechanisms:
    what the WO-72 probe does (`KCDMP_WO72_EARLY_CVARS`), and it is how the
    result above was obtained without editing anything.
 
+### The debug surface works headless too (observed)
+
+The CPU-only instance opens `127.0.0.1:1403`, the Modding Tools reflection REST
+API, and executes Lua through it:
+
+```
+GET /api/System/Console/ExecuteString?command=%23System.LogAlways("[WO72] probe alive on WARP")
+-> 200, and the line appears in kcd.log
+```
+
+So a GPU-less host is drivable by exactly the same channel the mod already uses
+(`docs/LAUNCHING.md`, `tools\KcdApi.ps1`). `Calendar.GetWorldTime()` returns
+`0` at the menu, as expected with no world loaded.
+
+### Boot cost, WARP vs GPU (observed)
+
+Same build, same arguments, measured to `Entering game loop`:
+
+| | CPU to game loop | idle RAM |
+|---|---|---|
+| WARP (software) | **~130 CPU-seconds** | 2.67 GB |
+| AMD RX 6700 XT | **~18.5 CPU-seconds** | 2.32 GB |
+
+Roughly **7× the CPU to boot**, and ~1.2 cores to idle afterwards. Startup is
+the expensive part; steady state is cheap.
+
 ### What this does *not* establish
 
 - **Not tested on an actual GPU-less VM.** This box has a GPU; WARP was
@@ -104,9 +130,37 @@ The value must therefore be in place *before* renderer init. Two mechanisms:
   the only adapter and therefore index 0, so `r_HeadlessStartup=1` alone would
   likely suffice — **inferred**. The device did come up on an adapter reporting
   `Displays connected: no`, which is the substance of the headless case.
-- **No world was loaded.** The measurement is the main loop with no save
-  loaded. Whether simulation keeps up on WARP, and what a loaded world costs,
-  is unmeasured.
+- **No world was loaded, and this remains the decisive open question.** The
+  measurements above are the main loop with no save. Whether simulation keeps
+  up on WARP, and what a loaded world costs, is still unmeasured — see §1a.
+
+### §1a — the world-load attempt, and a hang that was *not* WARP's fault
+
+`Game.QuickLoad()` returns `true` but does nothing: `kcd.log` says
+`[Warning] No quicksave.` The savegame list enumerates fine (e.g.
+`playline3/permanent002.whs`, level `trosecko`), so the data is there; there is
+just no Lua entry point that loads a *named* save. The only save/load members
+Lua exposes are `Game.QuickSave/QuickLoad/SaveGameViaResting/AddSaveLock/
+RemoveSaveLock/IsLoadingEngineSaveGame` — none take a save name.
+
+The console has a `map` command ("Load a map"). `map trosecko` on the WARP
+instance opened the level paks, fired `[game] action event ... trosecko`, and
+then **wedged**: log frozen, RAM flat, ~1.3 cores burning indefinitely.
+
+**That looked like a WARP failure and is not one.** The control run — identical
+command, identical build, on the real AMD GPU — hangs with the *same*
+signature: log frozen at the same point, RAM flat, ~1 core spinning. So `map`
+is simply not a working load path in KCD2, which is exactly what
+`docs/LAUNCHING.md` already records: the launcher dropped `+map` because "KCD2
+loads a save; there is no level to boot into". Recorded prominently because the
+mis-attribution was one control run away from going in as fact.
+
+**Concrete next lever for the world-tick measurement:** the console command
+`test_load` — "Loads named test from test database" — is TestModule's harness
+entry, and WO-72 already established TestModule is Warhorse's in-game test
+command module. A named test that stands up a world is the most promising way
+to get a save-backed world loaded without the UI. Failing that, driving the
+main menu's load flow through `UIAction` is the fallback. Neither was tried.
 - `r_HeadlessStartup` and `r_overrideDXGIAdapter` are `DUMPTODISK`. Every run
   here was hard-killed before clean shutdown and the install verified
   afterwards: `system.cfg` untouched, no `user.cfg`, nothing under
@@ -172,9 +226,16 @@ expensive* of the two.
 > renderer.** Forcing the shipped renderer onto the WARP software adapter —
 > `r_HeadlessStartup=1` plus, on a machine that also has a GPU,
 > `r_overrideDXGIAdapter=<software adapter index>` — boots KCD2 to
-> `Entering game loop` with no GPU, at ~1.2 cores and 2.7 GB idle. The only
-> catch is that the cvars must be applied before renderer init, which
-> `system.cfg` does and a `+cvar` command-line argument does not.
+> `Entering game loop` with no GPU, at ~1.2 cores and 2.7 GB idle, and the
+> instance is drivable over the usual :1403 REST console. The only catch is
+> that the cvars must be applied before renderer init, which `system.cfg` does
+> and a `+cvar` command-line argument does not. Booting on WARP costs ~7x the
+> CPU of the GPU path (~130 vs ~18.5 CPU-seconds); steady state is cheap.
+>
+> **Still unproven: a loaded world.** No save-backed world has been stood up on
+> either renderer, because KCD2 exposes no named-save load to Lua and the `map`
+> console command hangs the game on GPU and WARP alike. Until a world ticks,
+> the per-instance cost of an actual hosted session is unknown.
 >
 > The renderer-less (`-dedicated`) route is further along than WO-71 left it —
 > three blockers cleared, one of them via the previously-unknown shipped
