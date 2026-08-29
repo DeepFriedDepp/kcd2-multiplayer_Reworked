@@ -3,8 +3,10 @@
 #include "log.h"
 
 #include <windows.h>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -25,12 +27,13 @@ std::mutex                          g_mutex;
 std::vector<std::function<void()>>  g_queue;
 std::vector<std::function<void()>>  g_repeating;
 std::condition_variable             g_drained;
-volatile unsigned long long         g_frames = 0;
+std::atomic<unsigned long long>     g_frames{0};
 DWORD                               g_main_thread_id = 0;
 
 constexpr const char* kImporter = "WHGame.dll";
 constexpr const char* kProvider = "Framework.dll";
 constexpr const char* kSymbol   = "?Update@C_ModulesManager@framework@wh@@QEAAXM@Z";
+enum class SyncPhase { pending, running, done, cancelled };
 
 // Separate function because __try/__except cannot share a frame with objects
 // that need unwinding (C2712), and the drain loop below owns a vector of
@@ -127,23 +130,60 @@ bool run_sync(std::function<void()> work, unsigned timeout_ms) {
         return true;
     }
 
-    std::mutex done_mutex;
-    std::condition_variable done_cv;
-    bool done = false;
+    struct State {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::function<void()> work;
+        SyncPhase phase = SyncPhase::pending;
+    };
 
-    post([&] {
-        work();
+    auto state = std::make_shared<State>();
+    state->work = std::move(work);
+
+    post([state] {
         {
-            std::lock_guard<std::mutex> lock(done_mutex);
-            done = true;
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->phase != SyncPhase::pending) return;
+            state->phase = SyncPhase::running;
         }
-        done_cv.notify_all();
+
+        // Guard here as well as in hooked_update so an SEH fault cannot skip
+        // the completion signal and leave the waiting pipe thread blocked.
+        try {
+            run_guarded(&state->work);
+        } catch (...) {
+            logf("MAIN: task raised a C++ exception -- swallowed");
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->work = {};
+            state->phase = SyncPhase::done;
+        }
+        state->cv.notify_all();
     });
 
-    std::unique_lock<std::mutex> lock(done_mutex);
-    return done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] { return done; });
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (state->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] {
+            return state->phase == SyncPhase::done;
+        })) {
+        return true;
+    }
+
+    if (state->phase == SyncPhase::pending) {
+        // The frame never picked the task up. Cancel it while its captured
+        // caller state is still alive; the queued wrapper becomes a no-op.
+        state->phase = SyncPhase::cancelled;
+        state->work = {};
+        return false;
+    }
+
+    // Once execution has started, returning would invalidate references held
+    // by the caller's lambda. Finish safely even if that crosses the timeout.
+    state->cv.wait(lock, [&] { return state->phase == SyncPhase::done; });
+    return true;
 }
 
-unsigned long long frame_count() { return g_frames; }
+unsigned long long frame_count() { return g_frames.load(std::memory_order_relaxed); }
 
 } // namespace kcdmp::main_thread

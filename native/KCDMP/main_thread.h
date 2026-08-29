@@ -28,8 +28,9 @@ void post(std::function<void()> work);
 // outbound sampler, which needs a per-frame heartbeat rather than a one-shot.
 void post_repeating(std::function<void()> work);
 
-// Queue work and block until it has run, up to timeout_ms. Returns false on
-// timeout -- which means the tick is not running, not that the work failed.
+// Queue work and block until it has run. Returns false when timeout_ms elapses
+// before the game thread starts it. Work already running is allowed to finish
+// so lambdas capturing caller state cannot outlive that state.
 bool run_sync(std::function<void()> work, unsigned timeout_ms = 5000);
 
 // Frames observed since install. Zero after a second or two means the hook is

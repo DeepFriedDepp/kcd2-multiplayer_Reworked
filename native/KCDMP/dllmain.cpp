@@ -161,9 +161,6 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(module);
         CloseHandle(CreateThread(nullptr, 0, plugin_main, nullptr, 0, nullptr));
-    } else if (reason == DLL_PROCESS_DETACH) {
-        kcdmp::pipe::stop();
-        kcdmp::main_thread::uninstall();
     }
     return TRUE;
 }
