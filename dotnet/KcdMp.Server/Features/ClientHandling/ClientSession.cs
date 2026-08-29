@@ -89,7 +89,7 @@ public class ClientSession
                     nameLen, handshakeLen - 2);
                 return;
             }
-            Name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
+            string name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
 
             // WO-19: an optional trailing release-version field, the same
             // idiom as Invite's [configLen][config] -- whatever is left after
@@ -98,6 +98,15 @@ public class ClientSession
             int releaseVersionOffset = 2 + nameLen;
             if (handshakeLen > releaseVersionOffset)
                 ReleaseVersion = Encoding.UTF8.GetString(handshakePayload, releaseVersionOffset, handshakeLen - releaseVersionOffset);
+
+            if (!_clientHandler.TryMarkReady(this))
+            {
+                _logger.Warning("[!] Rejecting '{Name}' from {ClientRemoteEndPoint}: server is full.",
+                    name, _tcp.Client.RemoteEndPoint);
+                return;
+            }
+
+            Name = name;
 
             _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}, release {Release}) from {ClientRemoteEndPoint}.",
                 Name, Id, clientVersion, ReleaseVersion ?? "(none)", _tcp.Client.RemoteEndPoint);

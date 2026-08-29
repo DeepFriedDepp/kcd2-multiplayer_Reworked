@@ -31,6 +31,9 @@
                              self-heal for a genuine teleport).
       V6  counters        -> GET api/information/npc-validation matches the
                              exact per-reason tallies the tests produced.
+      V7  capacity        -> the info endpoint counts only handshaken peers;
+                             a fourth peer is refused at the configured limit,
+                             and a disconnected peer frees its slot.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\Test-NpcClaimValidation.ps1
@@ -124,6 +127,10 @@ function Get-RejectCounters {
     Invoke-RestMethod -Uri "http://localhost:$HttpPort/api/information/npc-validation" -TimeoutSec 5
 }
 
+function Get-ServerInfo {
+    Invoke-RestMethod -Uri "http://localhost:$HttpPort/api/information" -TimeoutSec 5
+}
+
 function Connect-Peer([string]$name) {
     $tcp = New-Object System.Net.Sockets.TcpClient('localhost', $TcpPort)
     $s = $tcp.GetStream(); $s.ReadTimeout = 8000
@@ -144,7 +151,7 @@ $serverExe = Join-Path $PSScriptRoot '..\dotnet\KcdMp.Server\bin\Debug\net8.0\Kc
 if (-not (Test-Path $serverExe)) { throw "relay not built: $serverExe (run dotnet build first)" }
 Write-Host "starting relay: $serverExe (tcp $TcpPort, http $HttpPort)"
 $env:ASPNETCORE_URLS = "http://localhost:$HttpPort"
-$relay = Start-Process -FilePath $serverExe -ArgumentList "--port", "$TcpPort" -PassThru -WindowStyle Hidden
+$relay = Start-Process -FilePath $serverExe -ArgumentList "--port", "$TcpPort", "--ServerInfo:MaxPlayers", "3" -PassThru -WindowStyle Hidden
 $deadline = (Get-Date).AddSeconds(15)
 $up = $false
 while (-not $up -and (Get-Date) -lt $deadline) {
@@ -156,11 +163,32 @@ if (-not $up) { throw "relay never opened tcp $TcpPort" }
 Start-Sleep -Milliseconds 500
 
 try {
+    $pendingProbe = New-Object System.Net.Sockets.TcpClient('localhost', $TcpPort)
+    Start-Sleep -Milliseconds 100
+    $info = Get-ServerInfo
+    Check "open connection without handshake is not counted as a player" ($info.players -eq 0) "got $($info.players)"
+    Check "info endpoint reports configured maxPlayers=3" ($info.maxPlayers -eq 3) "got $($info.maxPlayers)"
+
     $peerA = Connect-Peer 'wo66-auth-A'     # lowest id = world authority, passive receiver
     $peerB = Connect-Peer 'wo66-claim-B'
     $peerC = Connect-Peer 'wo66-claim-C'
     Write-Host "peers: A=id$($peerA.Id) B=id$($peerB.Id) C=id$($peerC.Id)"
     $null = Drain-NpcStates $peerA.Stream 800; $null = Drain-NpcStates $peerB.Stream 800; $null = Drain-NpcStates $peerC.Stream 800
+
+    $info = Get-ServerInfo
+    Check "info endpoint counts three handshaken peers" ($info.players -eq 3) "got $($info.players)"
+
+    $overflow = New-Object System.Net.Sockets.TcpClient('localhost', $TcpPort)
+    $overflowStream = $overflow.GetStream(); $overflowStream.ReadTimeout = 1500
+    $overflowName = [System.Text.Encoding]::UTF8.GetBytes('wo66-overflow-D')
+    $overflowHandshake = New-Object byte[] (2 + $overflowName.Length)
+    $overflowHandshake[0] = $PROTOCOL_VERSION; $overflowHandshake[1] = [byte]$overflowName.Length
+    [Array]::Copy($overflowName, 0, $overflowHandshake, 2, $overflowName.Length)
+    try { Send-Packet $overflowStream $HANDSHAKE $overflowHandshake } catch { }
+    $overflowReply = Read-Packet $overflowStream
+    Check "fourth connection refused at maxPlayers=3" ($null -eq $overflowReply) "unexpected packet type $($overflowReply.Type)"
+    $overflow.Close()
+    $pendingProbe.Close()
 
     Write-Host "`n--- V0: counters start at zero ---"
     $c0 = Get-RejectCounters
@@ -265,7 +293,18 @@ try {
     Check "reserved-name counter = 1" ($c1.reservedName -eq 1) "got $($c1.reservedName)"
     Check "stale-owner counter = 4"   ($c1.staleOwner -eq 4)   "got $($c1.staleOwner)"
 
-    $peerA.Tcp.Close(); $peerB.Tcp.Close(); $peerC.Tcp.Close()
+    $peerC.Tcp.Close()
+    $deadline = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $info = Get-ServerInfo
+    } while ($info.players -ne 2 -and (Get-Date) -lt $deadline)
+    Check "disconnect removes the peer from the info count" ($info.players -eq 2) "got $($info.players)"
+
+    $peerD = Connect-Peer 'wo66-replacement-D'
+    Check "replacement peer can use the freed slot" ($null -ne $peerD -and $peerD.Id -gt 0)
+
+    $peerA.Tcp.Close(); $peerB.Tcp.Close(); $peerD.Tcp.Close()
 }
 finally {
     if ($relay -and -not $relay.HasExited) { Stop-Process -Id $relay.Id -Force }

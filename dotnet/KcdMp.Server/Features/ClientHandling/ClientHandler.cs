@@ -10,7 +10,9 @@ namespace KcdMp.Server.Features.ClientHandling;
 public class ClientHandler
 {
 	private readonly List<ClientSession> _clients = [];
+	private readonly HashSet<ClientSession> _readyClients = [];
 	private readonly object _lock = new();
+	private readonly int _maxPlayers;
 
 	// ---- WO-66 claim-update validation tunables ----
 	//
@@ -28,6 +30,7 @@ public class ClientHandler
 
 	public ClientHandler(IConfiguration configuration)
 	{
+		_maxPlayers          = configuration.GetValue("ServerInfo:MaxPlayers", 64);
 		_maxNpcSpeedMps      = configuration.GetValue("NpcClaimValidation:MaxSpeedMps", 40.0);
 		_npcSpeedSlackMeters = configuration.GetValue("NpcClaimValidation:SlackMeters", 2.0);
 	}
@@ -45,6 +48,22 @@ public class ClientHandler
 	}
 
 	/// <summary>
+	/// Reserves one player slot after a valid handshake. The check and reserve
+	/// happen under the same lock so simultaneous handshakes cannot overbook
+	/// the relay; a socket that never handshakes consumes no player slot.
+	/// </summary>
+	public bool TryMarkReady(ClientSession client)
+	{
+		lock (_lock)
+		{
+			if (_readyClients.Count >= _maxPlayers)
+				return false;
+
+			return _readyClients.Add(client);
+		}
+	}
+
+	/// <summary>
 	/// Remove a client.
 	///
 	/// Called when a client disconnects.
@@ -53,7 +72,10 @@ public class ClientHandler
 	public void RemoveClient(ClientSession client)
 	{
 		lock (_lock)
+		{
 			_clients.Remove(client);
+			_readyClients.Remove(client);
+		}
 	}
 
 	/// <summary>
@@ -412,12 +434,7 @@ public class ClientHandler
 		get
 		{
 			lock (_lock)
-			{
-				int count = 0;
-				foreach (var c in _clients)
-					if (c.IsReady) count++;
-				return count;
-			}
+				return _readyClients.Count;
 		}
 	}
 }
