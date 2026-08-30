@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Net.Sockets;
@@ -34,6 +35,7 @@ public partial class GameBridge(ClientConfig config)
     private const float RotThreshold  = 0.02f;
 
     private IGameTransport _transport = null!;   // set in RunAsync before use
+    private readonly SemaphoreSlim _tcpWriteLock = new(1, 1);
 
     // Last pushed position (for change detection)
     private float _lastX, _lastY, _lastZ, _lastRotZ;
@@ -279,8 +281,8 @@ public partial class GameBridge(ClientConfig config)
     /// <summary>Game-seconds per real second (WO-38 live: ratio 15, confirmed exactly).</summary>
     private const double WorldTimeRatio = 15.0;
 
-    /// <summary>How often the mod is asked for the world clock (position-loop ticks; TickMs each).</summary>
-    private const int TimePollEveryTicks = 1000;   // ~10 s
+    /// <summary>How often the mod is asked for the world clock.</summary>
+    private static readonly TimeSpan TimePollInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// How many game-seconds beyond the plausible natural advance between two
@@ -329,7 +331,7 @@ public partial class GameBridge(ClientConfig config)
     // minted per connection and a re-minted broadcast after reconnect would
     // duplicate the item on every peer that kept the old one.
     private readonly ConcurrentDictionary<uint, byte[]> _myOpenDrops = new();
-    private const int ItemDropHeartbeatEveryTicks = 3000;   // 30 s at TickMs=10
+    private static readonly TimeSpan ItemDropHeartbeatInterval = TimeSpan.FromSeconds(30);
 
     // Relay-assigned ghost id of THIS client, from the connect Ack. The
     // receive loop needs it to tell the mod whether an ItemClaimDown echo
@@ -366,19 +368,16 @@ public partial class GameBridge(ClientConfig config)
     // the ghost stays permanently bodiless -- observed live: the nameplate kept
     // walking its path with nothing under it. Re-verified on the same slow
     // cadence as the interp re-arm; see the position loop.
-    private const int ReconcileGhostsEveryTicks = 500;
+    private static readonly TimeSpan ReconcileGhostsInterval = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// How often the position loop re-arms the mod's Script.SetTimer loops.
-    /// The loop runs at roughly the emit interval, so a few hundred ticks is
-    /// a handful of seconds -- fast enough that a save load costs at most a
-    /// brief freeze, slow enough to be free.
     /// </summary>
-    private const int ReArmInterpEveryTicks = 250;
+    private static readonly TimeSpan ReArmInterpInterval = TimeSpan.FromMilliseconds(2500);
 
     /// <summary>
     /// WO-59: how often the last position is re-sent even when the player has
-    /// not moved (200 ticks x 10 ms = 2 s). Positions were purely
+    /// not moved (every 2 s). Positions were purely
     /// change-gated, which left a standing-still player unspawnable on any
     /// peer whose reload had just cleared the ghost row -- WO-38's
     /// "invisible after reload" candidate (a), now closed: Reconcile clears
@@ -386,7 +385,9 @@ public partial class GameBridge(ClientConfig config)
     /// trigger within 2 s more, moving or not. One 18-byte packet per 2 s
     /// of stillness is the whole cost.
     /// </summary>
-    private const int PositionHeartbeatEveryTicks = 200;
+    private static readonly TimeSpan PositionHeartbeatInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan AggroSweepInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan WeatherTickInterval = TimeSpan.FromSeconds(5);
     // Reassigned per connection, same idiom as _combat.OnLocalHit: closes
     // over that connection's stream, so callers that don't have it
     // themselves (OnGameEvent, the tail transport's own event thread) can
@@ -720,7 +721,7 @@ public partial class GameBridge(ClientConfig config)
             pkt[0] = type;
             BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(1), (ushort)payload.Length);
             payload.CopyTo(pkt, 3);
-            await stream.WriteAsync(pkt, ict);
+            await WritePacketAsync(stream, pkt, ict);
         }
 
         var interactions = new InteractionClient(SendPacketAsync);
@@ -909,6 +910,14 @@ public partial class GameBridge(ClientConfig config)
         {
             int tickCount = 0;
             long totalReadMs = 0;
+            long nowTimestamp = Stopwatch.GetTimestamp();
+            long lastReArm = nowTimestamp;
+            long lastDropHeartbeat = nowTimestamp;
+            long lastGhostReconcile = nowTimestamp;
+            long lastAggroSweep = nowTimestamp;
+            long lastTimePoll = nowTimestamp;
+            long lastWeatherTick = nowTimestamp;
+            long lastPositionHeartbeat = nowTimestamp;
 
             while (tcp.Connected)
             {
@@ -917,6 +926,7 @@ public partial class GameBridge(ClientConfig config)
                 sw.Stop();
                 totalReadMs += sw.ElapsedMilliseconds;
                 tickCount++;
+                nowTimestamp = Stopwatch.GetTimestamp();
 
                 // Re-arm the mod's own timer loops periodically (WO-13).
                 // Loading a save destroys every pending Script.SetTimer in the
@@ -927,7 +937,7 @@ public partial class GameBridge(ClientConfig config)
                 // load. StartInterp is idempotent and cheap (a stamp
                 // comparison) so calling it on a slow cadence costs nothing
                 // and makes the recovery automatic rather than a restart.
-                if (tickCount % ReArmInterpEveryTicks == 0)
+                if (IntervalElapsed(ref lastReArm, ReArmInterpInterval, nowTimestamp))
                 {
                     // WO-28 Phase 0 found this was only half a fix. WO-13
                     // re-armed the interp loop and stopped there, but a save
@@ -987,7 +997,8 @@ public partial class GameBridge(ClientConfig config)
                 // WO-48: re-broadcast my still-unclaimed drops so a peer who
                 // joined after the drop still converges. Receivers dedupe by
                 // dropId, so a resend costs nothing when everyone has it.
-                if (tickCount % ItemDropHeartbeatEveryTicks == 0 && !_myOpenDrops.IsEmpty)
+                if (IntervalElapsed(ref lastDropHeartbeat, ItemDropHeartbeatInterval, nowTimestamp)
+                    && !_myOpenDrops.IsEmpty)
                 {
                     foreach (var payload in _myOpenDrops.Values)
                         try { await SendItemDropAsync(stream, payload, cts.Token); } catch { }
@@ -1000,14 +1011,14 @@ public partial class GameBridge(ClientConfig config)
                 // path with no body under it, indefinitely. The mod cannot
                 // notice on its own without paying a world lookup on the hot
                 // 20 ms path, so it is asked on a slow cadence from here.
-                if (tickCount % ReconcileGhostsEveryTicks == 0)
+                if (IntervalElapsed(ref lastGhostReconcile, ReconcileGhostsInterval, nowTimestamp))
                 {
                     try { await ExecLuaAsync("if KCD2MP_ReconcileGhosts then KCD2MP_ReconcileGhosts() end"); }
                     catch { }
                 }
 
                 // WO-17: cheap when nothing is attached -- see the method doc.
-                if (tickCount % 100 == 0)
+                if (IntervalElapsed(ref lastAggroSweep, AggroSweepInterval, nowTimestamp))
                     _ = SweepAggroCooldownsAsync(cts.Token);
 
                 // WO-38 Phase 1: poll the world clock on a slow cadence. Feeds
@@ -1016,7 +1027,8 @@ public partial class GameBridge(ClientConfig config)
                 // event, handled in OnGameEvent. One batched Lua call per
                 // ~10 s; suppressed while our own marker-skip is resolving,
                 // since the skip-end path requests the same reading itself.
-                if (tickCount % TimePollEveryTicks == 0 && !_localSkipActive && !_awaitSkipDoneTime)
+                if (IntervalElapsed(ref lastTimePoll, TimePollInterval, nowTimestamp)
+                    && !_localSkipActive && !_awaitSkipDoneTime)
                 {
                     try { await ExecLuaAsync("if KCD2MP_ReportWorldTime then KCD2MP_ReportWorldTime() end"); }
                     catch { }
@@ -1025,7 +1037,7 @@ public partial class GameBridge(ClientConfig config)
                 // WO-40 Phase 3: weather arbitration, checked every ~5 s.
                 // All the real gates (authority, live peers, cadences) live
                 // inside the tick.
-                if (tickCount % 500 == 0)
+                if (IntervalElapsed(ref lastWeatherTick, WeatherTickInterval, nowTimestamp))
                     WeatherArbiterTick();
 
                 if (state.HasValue)
@@ -1048,7 +1060,8 @@ public partial class GameBridge(ClientConfig config)
                         _voice.UpdateAllVolumes();
                     }
 
-                    bool posHeartbeat = tickCount % PositionHeartbeatEveryTicks == 0;
+                    bool posHeartbeat = IntervalElapsed(
+                        ref lastPositionHeartbeat, PositionHeartbeatInterval, nowTimestamp);
                     if (!_hasPushed || HasChanged(x, y, z, rotZ) || posHeartbeat)
                     {
                         bool moved = !_hasPushed || HasChanged(x, y, z, rotZ);
@@ -1154,7 +1167,7 @@ public partial class GameBridge(ClientConfig config)
                 packet[0] = Protocol.Ping;
                 BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), 8);
                 tsBytes.CopyTo(packet, 3);
-                await stream.WriteAsync(packet, ct);
+                await WritePacketAsync(stream, packet, ct);
             }
             catch (OperationCanceledException) { break; }
             catch { break; }
@@ -1185,8 +1198,8 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private async Task AppearanceLoopAsync(NetworkStream stream, CancellationToken ct)
     {
-        int ticksSinceSend = int.MaxValue; // force the first poll to send
-        int ticksPerHeartbeat = Math.Max(1, Protocol.AppearanceHeartbeatSeconds * 1000 / AppearancePollMs);
+        long lastSentTimestamp = 0; // zero forces the first successful poll to send
+        var heartbeatInterval = TimeSpan.FromSeconds(Protocol.AppearanceHeartbeatSeconds);
 
         while (!ct.IsCancellationRequested)
         {
@@ -1216,7 +1229,8 @@ public partial class GameBridge(ClientConfig config)
                     }
                     var currentSet = new HashSet<Guid>(current);
                     bool changed = _lastSentAppearance is null || !currentSet.SetEquals(_lastSentAppearance);
-                    bool heartbeatDue = ticksSinceSend >= ticksPerHeartbeat;
+                    bool heartbeatDue = lastSentTimestamp == 0
+                        || Stopwatch.GetElapsedTime(lastSentTimestamp) >= heartbeatInterval;
                     bool forced = _forceAppearanceResync;
 
                     if (changed || heartbeatDue || forced)
@@ -1226,7 +1240,7 @@ public partial class GameBridge(ClientConfig config)
                             : currentSet.Take(Protocol.MaxAppearanceItems).ToArray();
                         await SendAppearanceAsync(stream, items, ct);
                         _lastSentAppearance = currentSet;
-                        ticksSinceSend = 0;
+                        lastSentTimestamp = Stopwatch.GetTimestamp();
                         _forceAppearanceResync = false;
                         Console.WriteLine($"[appearance] sent {items.Length} item class(es)" +
                             (forced ? " (forced)" : changed ? "" : " (heartbeat)"));
@@ -1237,7 +1251,6 @@ public partial class GameBridge(ClientConfig config)
 
             try { await Task.Delay(AppearancePollMs, ct); }
             catch (OperationCanceledException) { break; }
-            ticksSinceSend++;
         }
     }
 
@@ -1642,7 +1655,7 @@ public partial class GameBridge(ClientConfig config)
             packet[0] = Protocol.PauseUp;
             BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PauseUpPayloadLen);
             packet[3] = aggregate ? Protocol.PauseStateEntered : Protocol.PauseStateExited;
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine($"[pause] local state -> {(aggregate ? "entered" : "exited")}");
         }
         catch (Exception ex) { Console.WriteLine($"[pause] send failed: {ex.Message}"); }
@@ -1664,7 +1677,7 @@ public partial class GameBridge(ClientConfig config)
             packet[3] = phase;
             packet[4] = kind;
             BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(5), worldTime);
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine($"[timeskip] sent {phase switch { Protocol.TimeSkipPhaseStart => "start", Protocol.TimeSkipPhaseSync => "sync", _ => "done" }} kind={kind} t={worldTime}");
         }
         catch (Exception ex) { Console.WriteLine($"[timeskip] send failed: {ex.Message}"); }
@@ -1847,7 +1860,7 @@ public partial class GameBridge(ClientConfig config)
             BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)(1 + nameBytes.Length));
             packet[3] = (byte)nameBytes.Length;
             nameBytes.CopyTo(packet, 4);
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine($"[horse] sent mount identity '{(horseName.Length == 0 ? "(none)" : horseName)}'");
         }
         catch (Exception ex) { Console.WriteLine($"[horse] send failed: {ex.Message}"); }
@@ -1866,7 +1879,7 @@ public partial class GameBridge(ClientConfig config)
             packet[0] = Protocol.CombatEventUp;
             BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.CombatEventUpPayloadLen);
             packet[3] = evt;
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
         }
         catch (Exception ex) { Console.WriteLine($"[combatviz] send failed: {ex.Message}"); }
     }
@@ -1935,7 +1948,7 @@ public partial class GameBridge(ClientConfig config)
             packet[0] = Protocol.ItemDropUp;
             BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payload.Length);
             payload.CopyTo(packet, 3);
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
         }
         catch (Exception ex) { Console.WriteLine($"[itemsync] drop send failed: {ex.Message}"); }
     }
@@ -1949,7 +1962,7 @@ public partial class GameBridge(ClientConfig config)
             packet[0] = Protocol.ItemClaimUp;
             BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.ItemClaimUpPayloadLen);
             BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(3), dropId);
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine($"[itemsync] sent claim for drop {dropId}");
         }
         catch (Exception ex) { Console.WriteLine($"[itemsync] claim send failed: {ex.Message}"); }
@@ -1971,7 +1984,7 @@ public partial class GameBridge(ClientConfig config)
             packet[3] = (byte)nameBytes.Length;
             nameBytes.CopyTo(packet, 4);
             BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(4 + nameBytes.Length), blendSec);
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine($"[weather] sent profile '{profile}' blend={blendSec}");
         }
         catch (Exception ex) { Console.WriteLine($"[weather] send failed: {ex.Message}"); }
@@ -2218,7 +2231,7 @@ public partial class GameBridge(ClientConfig config)
         packet[11] = flags;
         try
         {
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             if (changed)
                 Console.WriteLine($"[vitals] sent health={health:F1} stamina={stamina:F1} flags={flags}");
             _lastSentHealth = health;
@@ -2264,7 +2277,7 @@ public partial class GameBridge(ClientConfig config)
         BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PlayerDeathUpPayloadLen);
         try
         {
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine("[death] local player died -- told the relay");
         }
         catch (Exception ex)
@@ -2332,7 +2345,7 @@ public partial class GameBridge(ClientConfig config)
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 12), rotZ);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 16), health);
         packet[o + 20] = flags;
-        try { await stream.WriteAsync(packet, ct); }
+        try { await WritePacketAsync(stream, packet, ct); }
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
     }
 
@@ -2355,7 +2368,7 @@ public partial class GameBridge(ClientConfig config)
         packet[12] = 0;
         try
         {
-            await stream.WriteAsync(packet, ct);
+            await WritePacketAsync(stream, packet, ct);
             Console.WriteLine($"[playerhit] ghost {targetGhostId} lost {healthLoss:F1} here -- told its owner");
         }
         catch (Exception ex) { Console.WriteLine($"[playerhit] send failed: {ex.Message}"); }
@@ -2425,7 +2438,7 @@ public partial class GameBridge(ClientConfig config)
         catch (Exception ex) { Console.WriteLine($"[role] could not tell the mod: {ex.Message}"); }
     }
 
-    private static async Task SendAppearanceAsync(NetworkStream stream, Guid[] itemClasses, CancellationToken ct)
+    private async Task SendAppearanceAsync(NetworkStream stream, Guid[] itemClasses, CancellationToken ct)
     {
         int payloadLen = 1 + itemClasses.Length * Protocol.ItemClassLen;
         var packet = new byte[3 + payloadLen];
@@ -2438,7 +2451,7 @@ public partial class GameBridge(ClientConfig config)
             cls.TryWriteBytes(packet.AsSpan(o, Protocol.ItemClassLen));
             o += Protocol.ItemClassLen;
         }
-        await stream.WriteAsync(packet, ct);
+        await WritePacketAsync(stream, packet, ct);
     }
 
     // -------------------------------------------------------------------------
@@ -3626,7 +3639,7 @@ public partial class GameBridge(ClientConfig config)
     /// will bounce the same hit back and forth forever. That is why applying
     /// remote damage goes straight to the pipe and never through here.
     /// </summary>
-    public static async Task SendLocalHitAsync(NetworkStream stream, Guid soul,
+    public async Task SendLocalHitAsync(NetworkStream stream, Guid soul,
                                                float stamina, float health,
                                                bool suppressHitReaction)
     {
@@ -3637,7 +3650,7 @@ public partial class GameBridge(ClientConfig config)
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(19), stamina);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(23), health);
         packet[27] = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
-        await stream.WriteAsync(packet);
+        await WritePacketAsync(stream, packet);
     }
 
     /// <summary>
@@ -3645,7 +3658,7 @@ public partial class GameBridge(ClientConfig config)
     /// cross-install-reliable alternative to guid-addressed 0x12. The caller
     /// has already translated the local per-save guid to the soul's name.
     /// </summary>
-    public static async Task SendNpcDamageAsync(NetworkStream stream, string npcName,
+    public async Task SendNpcDamageAsync(NetworkStream stream, string npcName,
                                                 float stamina, float health,
                                                 bool suppressHitReaction)
     {
@@ -3659,30 +3672,30 @@ public partial class GameBridge(ClientConfig config)
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o), stamina);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 4), health);
         packet[o + 8] = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
-        await stream.WriteAsync(packet);
+        await WritePacketAsync(stream, packet);
     }
 
     /// <summary>Report an NPC our client killed. Idempotent at every receiver.</summary>
-    public static async Task SendLocalDeathAsync(NetworkStream stream, Guid soul)
+    public async Task SendLocalDeathAsync(NetworkStream stream, Guid soul)
     {
         var packet = new byte[3 + Protocol.DeathUpPayloadLen];
         packet[0] = Protocol.DeathUp;
         BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.DeathUpPayloadLen);
         soul.TryWriteBytes(packet.AsSpan(3, 16));
-        await stream.WriteAsync(packet);
+        await WritePacketAsync(stream, packet);
     }
 
-    private static async Task SendVoiceAsync(NetworkStream stream, byte[] pcm)
+    private async Task SendVoiceAsync(NetworkStream stream, byte[] pcm)
     {
         // 3 header + 640 payload = 643 bytes
         var packet = new byte[3 + Protocol.VoiceFrameLen];
         packet[0] = Protocol.VoiceUp;
         BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.VoiceFrameLen);
         Buffer.BlockCopy(pcm, 0, packet, 3, Protocol.VoiceFrameLen);
-        await stream.WriteAsync(packet);
+        await WritePacketAsync(stream, packet);
     }
 
-    private static async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ, bool isRiding)
+    private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ, bool isRiding)
     {
         // 3 header + 17 payload = 20 bytes
         var packet = new byte[3 + Protocol.PositionPayloadLen];
@@ -3693,7 +3706,21 @@ public partial class GameBridge(ClientConfig config)
         WriteFloat(packet, 11, z);
         WriteFloat(packet, 15, rotZ);
         packet[19] = isRiding ? (byte)0x01 : (byte)0x00;
-        await stream.WriteAsync(packet);
+        await WritePacketAsync(stream, packet);
+    }
+
+    private async Task WritePacketAsync(NetworkStream stream, byte[] packet, CancellationToken ct = default)
+    {
+        await _tcpWriteLock.WaitAsync(ct);
+        try { await stream.WriteAsync(packet, ct); }
+        finally { _tcpWriteLock.Release(); }
+    }
+
+    private static bool IntervalElapsed(ref long lastTimestamp, TimeSpan interval, long nowTimestamp)
+    {
+        if (Stopwatch.GetElapsedTime(lastTimestamp, nowTimestamp) < interval) return false;
+        lastTimestamp = nowTimestamp;
+        return true;
     }
 
     private static float ReadFloat(byte[] buf, int offset) =>

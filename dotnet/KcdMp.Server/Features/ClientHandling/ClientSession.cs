@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
 using System.Text;
-using System.Threading.Channels;
 using KcdMp.Server.Features.Interactions;
 using KcdMp.Server.Features.Tcp;
 using ILogger = Serilog.ILogger;
@@ -23,7 +22,14 @@ public class ClientSession
     private readonly TcpBroadcastService _broadcastService;
     private readonly SessionManager _sessions;
     private readonly ClientHandler _clientHandler;
-    private readonly Channel<byte[]> _writeQueue = Channel.CreateUnbounded<byte[]>();
+    private const int MaxQueuedPackets = 512;
+    private readonly object _writeQueueLock = new();
+    private readonly Queue<QueuedWrite> _writeQueue = new();
+    private readonly Dictionary<byte, byte[]> _pendingGhostPackets = new();
+    private readonly SemaphoreSlim _writeSignal = new(0);
+    private bool _writeQueueStopped;
+
+    private readonly record struct QueuedWrite(byte[]? Packet, byte? GhostId);
 
     public byte Id { get; } = (byte)Interlocked.Increment(ref _idCounter);
     public string? Name { get; private set; }
@@ -89,7 +95,7 @@ public class ClientSession
                     nameLen, handshakeLen - 2);
                 return;
             }
-            Name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
+            string name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
 
             // WO-19: an optional trailing release-version field, the same
             // idiom as Invite's [configLen][config] -- whatever is left after
@@ -98,6 +104,15 @@ public class ClientSession
             int releaseVersionOffset = 2 + nameLen;
             if (handshakeLen > releaseVersionOffset)
                 ReleaseVersion = Encoding.UTF8.GetString(handshakePayload, releaseVersionOffset, handshakeLen - releaseVersionOffset);
+
+            if (!_clientHandler.TryMarkReady(this))
+            {
+                _logger.Warning("[!] Rejecting '{Name}' from {ClientRemoteEndPoint}: server is full.",
+                    name, _tcp.Client.RemoteEndPoint);
+                return;
+            }
+
+            Name = name;
 
             _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}, release {Release}) from {ClientRemoteEndPoint}.",
                 Name, Id, clientVersion, ReleaseVersion ?? "(none)", _tcp.Client.RemoteEndPoint);
@@ -475,13 +490,13 @@ public class ClientSession
                 _broadcastService.Broadcast(this, x, y, z, rotZ, flags);
             }
         }
-        catch (Exception ex) when (ex is IOException or SocketException or EndOfStreamException)
+        catch (Exception ex) when (ex is IOException or SocketException or EndOfStreamException or ObjectDisposedException)
         {
             // Normal disconnect
         }
         finally
         {
-            _writeQueue.Writer.Complete();
+            StopWriteQueue();
             await writeTask;
             _tcp.Dispose();
         }
@@ -497,7 +512,7 @@ public class ClientSession
         WriteFloat(payload, 9, z);
         WriteFloat(payload, 13, rotZ);
         payload[17] = flags;
-        EnqueueRaw(BuildPacket(Protocol.Ghost, payload));
+        EnqueueGhostPacket(ghostId, BuildPacket(Protocol.Ghost, payload));
     }
 
     /// <summary>Thread-safe: enqueue a Disconnect packet (0x06) to be sent to this client.</summary>
@@ -877,13 +892,100 @@ public class ClientSession
         EnqueueRaw(BuildPacket(Protocol.ReleaseVersion, payload));
     }
 
-    private void EnqueueRaw(byte[] packet) =>
-        _writeQueue.Writer.TryWrite(packet);
+    private void EnqueueRaw(byte[] packet)
+    {
+        bool overflow;
+        lock (_writeQueueLock)
+        {
+            if (_writeQueueStopped) return;
+            overflow = _writeQueue.Count >= MaxQueuedPackets;
+            if (!overflow) _writeQueue.Enqueue(new(packet, null));
+        }
+
+        if (overflow) AbortWriteQueue("outbound queue limit reached");
+        else _writeSignal.Release();
+    }
+
+    private void EnqueueGhostPacket(byte ghostId, byte[] packet)
+    {
+        bool overflow;
+        bool queued = false;
+        lock (_writeQueueLock)
+        {
+            if (_writeQueueStopped) return;
+
+            if (_pendingGhostPackets.ContainsKey(ghostId))
+            {
+                // A marker for this source is already queued. Replace only its
+                // payload so a slow client receives the newest position.
+                _pendingGhostPackets[ghostId] = packet;
+                return;
+            }
+
+            overflow = _writeQueue.Count >= MaxQueuedPackets;
+            if (!overflow)
+            {
+                _pendingGhostPackets[ghostId] = packet;
+                _writeQueue.Enqueue(new(null, ghostId));
+                queued = true;
+            }
+        }
+
+        if (overflow) AbortWriteQueue("outbound queue limit reached");
+        else if (queued) _writeSignal.Release();
+    }
+
+    private void StopWriteQueue()
+    {
+        lock (_writeQueueLock) _writeQueueStopped = true;
+        _writeSignal.Release();
+    }
+
+    private void AbortWriteQueue(string? reason)
+    {
+        lock (_writeQueueLock)
+        {
+            if (_writeQueueStopped) return;
+            _writeQueueStopped = true;
+            _writeQueue.Clear();
+            _pendingGhostPackets.Clear();
+        }
+
+        if (reason is not null)
+            _logger.Warning("[!] Disconnecting {Name}: {Reason}.", Name ?? $"id={Id}", reason);
+        _writeSignal.Release();
+        _tcp.Dispose();
+    }
 
     private async Task WriteLoopAsync()
     {
-        await foreach (var packet in _writeQueue.Reader.ReadAllAsync())
+        while (true)
         {
+            await _writeSignal.WaitAsync();
+
+            byte[]? packet = null;
+            lock (_writeQueueLock)
+            {
+                if (_writeQueue.Count > 0)
+                {
+                    var queued = _writeQueue.Dequeue();
+                    if (queued.GhostId is byte ghostId)
+                    {
+                        _pendingGhostPackets.Remove(ghostId, out packet);
+                    }
+                    else
+                    {
+                        packet = queued.Packet;
+                    }
+                }
+                else if (_writeQueueStopped)
+                {
+                    return;
+                }
+            }
+
+            if (packet is null) continue;
+
             try { await _stream.WriteAsync(packet); }
             catch (Exception ex)
             {
@@ -894,6 +996,7 @@ public class ClientSession
                 // unexpected write failure (not just "the peer is gone") used
                 // to be indistinguishable from a normal disconnect from here.
                 _logger.Debug(ex, "[!] Write loop for {Name} stopped", Name ?? $"id={Id}");
+                AbortWriteQueue(null);
                 break;
             }
         }

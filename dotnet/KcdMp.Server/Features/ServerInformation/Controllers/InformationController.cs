@@ -33,7 +33,7 @@ public class InformationController : ControllerBase
 	[ProducesResponseType(StatusCodes.Status200OK)]
 	public IActionResult GetInfo()
 	{
-		_serverInfo.Players = _clientHandler.ClientCount;
+		_serverInfo.Players = _clientHandler.ReadyClientCount;
 
 		return Ok(_serverInfo);
 	}

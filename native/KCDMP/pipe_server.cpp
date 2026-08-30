@@ -20,7 +20,6 @@ constexpr const char* kPipeName = R"(\\.\pipe\kcdmp)";
 std::atomic<bool>   g_running{false};
 std::atomic<bool>   g_connected{false};
 HANDLE              g_pipe = INVALID_HANDLE_VALUE;
-std::thread         g_thread;
 uint8_t             g_seq = 0;
 
 // The pipe is duplex and both directions are in use at once: the serve loop
@@ -366,7 +365,9 @@ bool start() {
         rttr::sample_health(&send_local_hit);
     });
 
-    g_thread = std::thread(listen_loop);
+    // The injected plugin has process lifetime. Detaching keeps DLL teardown
+    // free of a blocking join under the Windows loader lock.
+    std::thread(listen_loop).detach();
     logf("PIPE: listening on %s", kPipeName);
     return true;
 }
@@ -377,7 +378,6 @@ void stop() {
     HANDLE poke = CreateFileA(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                               OPEN_EXISTING, 0, nullptr);
     if (poke != INVALID_HANDLE_VALUE) CloseHandle(poke);
-    if (g_thread.joinable()) g_thread.join();
 }
 
 bool connected() { return g_connected; }
