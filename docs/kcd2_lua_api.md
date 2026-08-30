@@ -317,6 +317,19 @@ $pakPath = 'D:\kcd2multiplayer\kdcmp\Data\kdcmp.pak'
 $srcRoot  = 'D:\kcd2multiplayer\kdcmp\Data'
 $files    = @(
     'Scripts\Startup\kdcmp.lua',
+    'Scripts\KCD2MP\utils.lua',
+    'Scripts\KCD2MP\state.lua',
+    'Scripts\KCD2MP\transport.lua',
+    'Scripts\KCD2MP\interaction.lua',
+    'Scripts\KCD2MP\dice.lua',
+    'Scripts\KCD2MP\npc_sync.lua',
+    'Scripts\KCD2MP\ghosts.lua',
+    'Scripts\KCD2MP\animation.lua',
+    'Scripts\KCD2MP\appearance.lua',
+    'Scripts\KCD2MP\diagnostics.lua',
+    'Scripts\KCD2MP\items.lua',
+    'Scripts\KCD2MP\commands.lua',
+    'Scripts\KCD2MP\input.lua',
     'Libs\Tables\item\clothing_preset__kdcmp.xml'
 )
 

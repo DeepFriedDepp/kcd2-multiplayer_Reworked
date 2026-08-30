@@ -92,6 +92,23 @@ $PakMarkers = @(
     @{ Marker = 'npc_state';                       Owner = 'WO-32 npc_state event' }
 )
 
+$PakLuaFiles = @(
+    'Scripts/Startup/kdcmp.lua',
+    'Scripts/KCD2MP/utils.lua',
+    'Scripts/KCD2MP/state.lua',
+    'Scripts/KCD2MP/transport.lua',
+    'Scripts/KCD2MP/interaction.lua',
+    'Scripts/KCD2MP/dice.lua',
+    'Scripts/KCD2MP/npc_sync.lua',
+    'Scripts/KCD2MP/ghosts.lua',
+    'Scripts/KCD2MP/animation.lua',
+    'Scripts/KCD2MP/appearance.lua',
+    'Scripts/KCD2MP/diagnostics.lua',
+    'Scripts/KCD2MP/items.lua',
+    'Scripts/KCD2MP/commands.lua',
+    'Scripts/KCD2MP/input.lua'
+)
+
 function Test-Assembly($dir, $label) {
     Write-Host "`n[$label] $dir" -ForegroundColor Cyan
     if (-not (Test-Path $dir)) {
@@ -129,10 +146,21 @@ function Test-Pak($pak, $label) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $z = [IO.Compression.ZipFile]::OpenRead($pak)
     try {
-        $e = $z.Entries | Where-Object { $_.FullName -match 'kdcmp\.lua$' }
-        if (-not $e) { Write-Host "  kdcmp.lua NOT IN PAK" -ForegroundColor Red; $script:fail++; return }
-        $sr = New-Object IO.StreamReader($e.Open())
-        $lua = $sr.ReadToEnd(); $sr.Close()
+        $luaParts = @()
+        $missingLua = $false
+        foreach ($rel in $PakLuaFiles) {
+            $e = $z.Entries | Where-Object { $_.FullName -ieq $rel } | Select-Object -First 1
+            if (-not $e) {
+                Write-Host "  $rel NOT IN PAK" -ForegroundColor Red
+                $script:fail++
+                $missingLua = $true
+                continue
+            }
+            $sr = New-Object IO.StreamReader($e.Open())
+            try { $luaParts += $sr.ReadToEnd() } finally { $sr.Close() }
+        }
+        if ($missingLua) { return }
+        $lua = $luaParts -join "`n"
     } finally { $z.Dispose() }
 
     # Roster size is the WO-34 fix's own signature: 24 male entries means the

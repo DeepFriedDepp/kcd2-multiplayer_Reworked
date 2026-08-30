@@ -519,9 +519,13 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   puts it. It is not needed for the recovery fix. `ForceMount` is unaffected —
   re-tested against a real horse in every spawn shape. See
   `docs/WO-22-brain-lead.md`.
-- **`kdcmp.lua` is a ~2,400-line monolith.** Much of the ghost plumbing is
-  redundant if the DLL ever renders players directly. The animation tables and
-  speed thresholds are empirical data — port them, never regenerate them.
+- **The Lua mod is split into feature modules.**
+  `Scripts/Startup/kdcmp.lua` is only the deterministic bootstrap;
+  `Scripts/KCD2MP/` contains transport, interaction, dice, NPC sync, ghosts,
+  animation, appearance, item sync, diagnostics, input and commands. Shared
+  helpers live in `utils.lua`. Much of the ghost plumbing is redundant if the
+  DLL ever renders players directly. The animation tables and speed thresholds
+  are empirical data — port them, never regenerate them.
 
 ---
 
