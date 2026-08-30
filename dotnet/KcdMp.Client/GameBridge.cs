@@ -63,7 +63,7 @@ public partial class GameBridge(ClientConfig config)
 
     // ghostId → display name, from Name packets. Lets an invite prompt say who
     // is asking instead of showing a bare relay id.
-    private readonly ConcurrentDictionary<byte, string> _ghostNames = new();
+    private readonly ConcurrentDictionary<uint, string> _ghostNames = new();
 
     // ghostId → CryEngine entity id, from the mod's spawn-time "ghostid"
     // event (WO-46). This is what the native swing path addresses a ghost by;
@@ -93,7 +93,7 @@ public partial class GameBridge(ClientConfig config)
 
     // WO-47: per-ghost swing counter -- rotates through the several real rows
     // a weapon class ships (slash/stab), so consecutive swings vary.
-    private readonly ConcurrentDictionary<byte, int> _ghostSwingIndex = new();
+    private readonly ConcurrentDictionary<uint, int> _ghostSwingIndex = new();
 
     // WO-49: npcName → local entity id of this world's copy of a puppeted
     // NPC, from the mod's puppet-start "npcid" event (same tostring-hex idiom
@@ -117,7 +117,7 @@ public partial class GameBridge(ClientConfig config)
     // for a peer whose Handshake carried none (an old build). Read by
     // VersionIpcServer so the launcher can compare it against this agent's
     // own ReleaseVersionInfo.Current without the wire protocol itself caring.
-    private readonly ConcurrentDictionary<byte, string> _ghostReleaseVersions = new();
+    private readonly ConcurrentDictionary<uint, string> _ghostReleaseVersions = new();
 
     // WO-50: one instance for the whole agent process, surviving reconnects —
     // see RunAsync. Null-safe throughout: Discord not running degrades to no
@@ -134,8 +134,8 @@ public partial class GameBridge(ClientConfig config)
     // applying a diff never needs an extra round trip to ask "what does this
     // ghost have on already".
     private HashSet<Guid>? _lastSentAppearance;
-    private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostAppearance = new();
-    private readonly ConcurrentDictionary<byte, HashSet<Guid>> _ghostKnownItemClasses = new();
+    private readonly ConcurrentDictionary<uint, HashSet<Guid>> _ghostAppearance = new();
+    private readonly ConcurrentDictionary<uint, HashSet<Guid>> _ghostKnownItemClasses = new();
     // WO-58: item classes a ghost has proven it will never equip -- a full
     // verify-and-retry schedule ran and the final read still lacked them.
     // Without this, the failed class is dropped from `applied`, the next
@@ -154,7 +154,7 @@ public partial class GameBridge(ClientConfig config)
     // the one-way clothing reports. Ten minutes keeps ~95% of WO-58's
     // churn reduction (one 10 s retry cycle per item per 10 min instead of
     // one every 30 s) while letting legitimate changes heal.
-    private readonly ConcurrentDictionary<byte, Dictionary<Guid, DateTime>> _ghostNeverEquips = new();
+    private readonly ConcurrentDictionary<uint, Dictionary<Guid, DateTime>> _ghostNeverEquips = new();
 
     /// <summary>How long one exhausted verify schedule suppresses an item class for a ghost.</summary>
     private static readonly TimeSpan NeverEquipTtl = TimeSpan.FromMinutes(10);
@@ -189,7 +189,7 @@ public partial class GameBridge(ClientConfig config)
     // for its lifetime -- it does not change, and re-reading it on every
     // damage event would add a round trip to the hot path. Invalidated on
     // Disconnect alongside the other per-ghost caches.
-    private readonly ConcurrentDictionary<byte, Guid> _ghostSoulGuidCache = new();
+    private readonly ConcurrentDictionary<uint, Guid> _ghostSoulGuidCache = new();
 
     // How long a ghost stays attached to the hostile faction after the most
     // recent combat event involving it, before the sweep in the main tick
@@ -197,7 +197,7 @@ public partial class GameBridge(ClientConfig config)
     // so a sustained fight keeps it attached continuously rather than
     // flapping attach/detach every few seconds.
     private static readonly TimeSpan AggroHoldDuration = TimeSpan.FromSeconds(20);
-    private readonly ConcurrentDictionary<byte, DateTime> _ghostHostileUntilUtc = new();
+    private readonly ConcurrentDictionary<uint, DateTime> _ghostHostileUntilUtc = new();
 
     // The only channel to KCDMP_launcher's dice window -- see DiceIpcServer.
     private DiceIpcServer? _diceIpcServer;
@@ -253,7 +253,7 @@ public partial class GameBridge(ClientConfig config)
     // A peer's skip that resolved while our own was still resolving. Applied
     // once our own skip ends (SetWorldTime mid-skip is untested); only the
     // highest target is kept -- applying is forward-only anyway.
-    private (byte SourceId, byte Kind, uint WorldTime, bool Quiet)? _pendingTimeSkip;
+    private (uint SourceId, byte Kind, uint WorldTime, bool Quiet)? _pendingTimeSkip;
     private readonly object _timeSkipLock = new();
 
     // Clock-jump watcher: the fallback detector for time advances that emit
@@ -275,7 +275,7 @@ public partial class GameBridge(ClientConfig config)
     // apply PA's post-reload broadcast). Convergence is therefore forward and
     // ours: on a detected backward jump, this client fast-forwards ITSELF to
     // the best-known session clock. Solo reloads are left alone.
-    private readonly ConcurrentDictionary<byte, DateTime> _peerLastSeenUtc = new();
+    private readonly ConcurrentDictionary<uint, DateTime> _peerLastSeenUtc = new();
     private uint _peerWorldTime;               // last clock any peer reported (TimeSkipDown)
     private DateTime _peerWorldTimeUtc = DateTime.MinValue;
     /// <summary>Game-seconds per real second (WO-38 live: ratio 15, confirmed exactly).</summary>
@@ -336,7 +336,7 @@ public partial class GameBridge(ClientConfig config)
     // Relay-assigned ghost id of THIS client, from the connect Ack. The
     // receive loop needs it to tell the mod whether an ItemClaimDown echo
     // means "you won" (claimer == us) or "you lost, roll back".
-    private byte _myGhostId;
+    private uint _myGhostId;
 
     // ---- Shared player combat (WO-28) ----
 
@@ -397,7 +397,7 @@ public partial class GameBridge(ClientConfig config)
     // Same idiom for WO-28 Flow B: the mod reports a ghost health drop on the
     // log-tail event channel, which is read on the tail loop's own thread and
     // has no access to this connection's stream.
-    private Func<byte, float, float, Task>? _sendPlayerHit;
+    private Func<uint, float, float, Task>? _sendPlayerHit;
 
     // NPC sync (WO-32): set per connection like _sendPlayerHit; carries one
     // npc_state event line from the mod onto the wire as an NpcStateUp (0x26).
@@ -657,21 +657,23 @@ public partial class GameBridge(ClientConfig config)
         releaseVersionBytes.CopyTo(handshake, 5 + nameBytes.Length);
         await stream.WriteAsync(handshake);
 
-        // --- Ack (S→C 0xFF [id:1]) or rejection (S→C 0x09 [serverVersion:1]) ---
-        // Both are 4 bytes on the wire, so the type byte decides.
-        var reply = new byte[4]; // header(3) + 1
-        await ReadExactAsync(stream, reply);
+        // --- Ack (S→C 0xFF [id:4]) or rejection (S→C 0x09 [serverVersion:1]) ---
+        var replyHeader = new byte[3];
+        await ReadExactAsync(stream, replyHeader);
+        int replyPayloadLen = BinaryPrimitives.ReadUInt16LittleEndian(replyHeader.AsSpan(1));
+        var replyPayload = new byte[replyPayloadLen];
+        await ReadExactAsync(stream, replyPayload);
 
-        if (reply[0] == Protocol.VersionMismatch)
-            throw new ProtocolVersionMismatchException(reply[3]);
+        if (replyHeader[0] == Protocol.VersionMismatch && replyPayloadLen == 1)
+            throw new ProtocolVersionMismatchException(replyPayload[0]);
 
-        if (reply[0] != Protocol.Ack)
+        if (replyHeader[0] != Protocol.Ack || replyPayloadLen != Protocol.GhostIdLen)
         {
-            Console.WriteLine($"[!] Expected Ack, got packet type 0x{reply[0]:X2}. Dropping connection.");
+            Console.WriteLine($"[!] Expected Ack, got packet type 0x{replyHeader[0]:X2} with {replyPayloadLen} bytes. Dropping connection.");
             return;
         }
 
-        byte myId = reply[3];
+        uint myId = BinaryPrimitives.ReadUInt32LittleEndian(replyPayload);
         _myGhostId = myId;
         Console.WriteLine($"Connected! Assigned id={myId} (protocol v{Protocol.Version})");
         Console.WriteLine();
@@ -901,7 +903,8 @@ public partial class GameBridge(ClientConfig config)
             tailForPause.SkipTimeStateChanged += OnLocalSkipTime;
         }
 
-        var receiveTask     = ReceiveLoopAsync(stream, cts.Token);
+        var asyncLogger     = new AsyncLogger(cts.Token);
+        var receiveTask     = ReceiveLoopAsync(stream, asyncLogger, cts.Token);
         var pingTask        = PingLoopAsync(stream, cts.Token);
         var appearanceTask  = AppearanceLoopAsync(stream, cts.Token);
 
@@ -1069,7 +1072,10 @@ public partial class GameBridge(ClientConfig config)
                         _lastX = x; _lastY = y; _lastZ = z; _lastRotZ = rotZ;
                         await SendPositionAsync(stream, x, y, z, rotZ, riding);
                         if (moved)
-                            Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
+                            asyncLogger.Summarize("pos",
+                                string.Create(CultureInfo.InvariantCulture,
+                                    $"{x:F1} {y:F1} {z:F1}, rot={rotZ:F2}, riding={riding}"),
+                                sw.ElapsedMilliseconds, "read", "ms");
                     }
                 }
 
@@ -1090,6 +1096,7 @@ public partial class GameBridge(ClientConfig config)
         finally
         {
             cts.Cancel();
+            await asyncLogger.DisposeAsync();
             try { await receiveTask;     } catch { }
             try { await pingTask;        } catch { }
             try { await appearanceTask;  } catch { }
@@ -1360,7 +1367,7 @@ public partial class GameBridge(ClientConfig config)
     /// WO-47: the ghost's equipped Oversized-slot item class (halberd/polearm),
     /// or null when it has none / the catalog is unavailable.
     /// </summary>
-    private Guid? OversizedItemFor(byte ghostId)
+    private Guid? OversizedItemFor(uint ghostId)
     {
         var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
         if (catalog is null || !_ghostAppearance.TryGetValue(ghostId, out var applied))
@@ -1370,7 +1377,7 @@ public partial class GameBridge(ClientConfig config)
         return catalog.OversizedItemOf(snapshot);
     }
 
-    private string ResolveSwingSpec(byte ghostId)
+    private string ResolveSwingSpec(uint ghostId)
     {
         var catalog = _swingCatalog.IsCompletedSuccessfully ? _swingCatalog.Result : null;
         if (catalog is null || !_ghostAppearance.TryGetValue(ghostId, out var applied))
@@ -1474,7 +1481,7 @@ public partial class GameBridge(ClientConfig config)
     /// part of the diff -- unequips what dropped out, equips what is new.
     /// Never re-touches a slot that did not change.
     /// </summary>
-    private async Task ApplyAppearanceAsync(byte ghostId, Guid[] target, CancellationToken ct)
+    private async Task ApplyAppearanceAsync(uint ghostId, Guid[] target, CancellationToken ct)
     {
         // WO-40 Phase 10: substitute quest-item aliases with their real
         // source items before any diffing -- the alias class is what fails.
@@ -1565,7 +1572,7 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private static readonly int[] AppearanceRetryDelaysMs = [1000, 1000, 1000, 2000, 2000, 3000];
 
-    private async Task VerifyAndRetryAsync(string soulName, byte ghostId, List<Guid> toAdd,
+    private async Task VerifyAndRetryAsync(string soulName, uint ghostId, List<Guid> toAdd,
         HashSet<Guid> applied, CancellationToken ct)
     {
         var pending = new List<Guid>(toAdd);
@@ -2051,7 +2058,7 @@ public partial class GameBridge(ClientConfig config)
     /// when our own skip is still resolving -- SetWorldTime mid-skip is
     /// untested, and our own skip's result may supersede it anyway.
     /// </summary>
-    private async Task ApplyTimeSkipAsync(byte sourceId, byte kind, uint worldTime, bool quiet, CancellationToken ct)
+    private async Task ApplyTimeSkipAsync(uint sourceId, byte kind, uint worldTime, bool quiet, CancellationToken ct)
     {
         if (_localSkipActive || _awaitSkipDoneTime)
         {
@@ -2082,7 +2089,7 @@ public partial class GameBridge(ClientConfig config)
 
     private void ApplyPendingTimeSkipIfAny()
     {
-        (byte SourceId, byte Kind, uint WorldTime, bool Quiet)? pending;
+        (uint SourceId, byte Kind, uint WorldTime, bool Quiet)? pending;
         lock (_timeSkipLock)
         {
             pending = _pendingTimeSkip;
@@ -2167,7 +2174,7 @@ public partial class GameBridge(ClientConfig config)
         cts.Dispose();
     }
 
-    private async Task ApplyPeerPauseAsync(byte sourceGhostId, bool paused, CancellationToken ct)
+    private async Task ApplyPeerPauseAsync(uint sourceGhostId, bool paused, CancellationToken ct)
     {
         try
         {
@@ -2349,7 +2356,7 @@ public partial class GameBridge(ClientConfig config)
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
     }
 
-    private async Task SendPlayerHitAsync(NetworkStream stream, byte targetGhostId,
+    private async Task SendPlayerHitAsync(NetworkStream stream, uint targetGhostId,
                                           float healthLoss, float staminaLoss, CancellationToken ct)
     {
         if (!_isDamageAuthority)
@@ -2362,10 +2369,10 @@ public partial class GameBridge(ClientConfig config)
         var packet = new byte[3 + Protocol.PlayerHitUpPayloadLen];
         packet[0] = Protocol.PlayerHitUp;
         BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PlayerHitUpPayloadLen);
-        packet[3] = targetGhostId;
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(4), healthLoss);
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(8), staminaLoss);
-        packet[12] = 0;
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(3), targetGhostId);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(3 + Protocol.GhostIdLen), healthLoss);
+        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(7 + Protocol.GhostIdLen), staminaLoss);
+        packet[11 + Protocol.GhostIdLen] = 0;
         try
         {
             await WritePacketAsync(stream, packet, ct);
@@ -2458,7 +2465,7 @@ public partial class GameBridge(ClientConfig config)
     // Receive loop – server pushes Ghost and Name packets to us
     // -------------------------------------------------------------------------
 
-    private async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken ct)
+    private async Task ReceiveLoopAsync(NetworkStream stream, AsyncLogger asyncLogger, CancellationToken ct)
     {
         var header = new byte[3];
         try
@@ -2484,14 +2491,14 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.Ghost && payloadLen == Protocol.GhostPayloadLen)
                 {
-                    // Ghost: [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
+                    // Ghost: [ghostId:4][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
                     // Length is exact now that the handshake pins the version.
-                    byte ghostId   = payload[0];
-                    float x        = ReadFloat(payload, 1);
-                    float y        = ReadFloat(payload, 5);
-                    float z        = ReadFloat(payload, 9);
-                    float rotZ     = ReadFloat(payload, 13);
-                    bool  isRiding = (payload[17] & 0x01) != 0;
+                    uint ghostId   = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    float x        = ReadFloat(payload, Protocol.GhostIdLen);
+                    float y        = ReadFloat(payload, Protocol.GhostIdLen + 4);
+                    float z        = ReadFloat(payload, Protocol.GhostIdLen + 8);
+                    float rotZ     = ReadFloat(payload, Protocol.GhostIdLen + 12);
+                    bool  isRiding = (payload[Protocol.GhostIdLen + 16] & 0x01) != 0;
                     // WO-59: a ghost id we have never seen this connection is
                     // a newly-arrived peer -- re-announce our clock so THEY
                     // converge too (our connect-time sync went out before
@@ -2504,27 +2511,30 @@ public partial class GameBridge(ClientConfig config)
                     RefreshDiscordPeerCount();
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
                     await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding);
+                    asyncLogger.Summarize($"ghost {ghostId}",
+                        string.Create(CultureInfo.InvariantCulture,
+                            $"{x:F1} {y:F1} {z:F1}, rot={rotZ:F2}, riding={isRiding}"));
                 }
-                else if (type == Protocol.Name && payloadLen >= 2)
+                else if (type == Protocol.Name && payloadLen >= Protocol.GhostIdLen + 1)
                 {
-                    // Name packet: [ghostId:1][name:UTF-8...]
-                    byte ghostId = payload[0];
-                    string gname = Encoding.UTF8.GetString(payload, 1, payloadLen - 1);
+                    // Name packet: [ghostId:4][name:UTF-8...]
+                    uint ghostId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    string gname = Encoding.UTF8.GetString(payload, Protocol.GhostIdLen, payloadLen - Protocol.GhostIdLen);
                     _ghostNames[ghostId] = gname;
                     await SetGhostNameAsync(ghostId.ToString(), gname);
                 }
-                else if (type == Protocol.ReleaseVersion && payloadLen >= 2)
+                else if (type == Protocol.ReleaseVersion && payloadLen >= Protocol.GhostIdLen + 1)
                 {
-                    // ReleaseVersion (0x1E, WO-19): [ghostId:1][releaseVersion:UTF-8...]
-                    byte ghostId = payload[0];
-                    string releaseVersion = Encoding.UTF8.GetString(payload, 1, payloadLen - 1);
+                    // ReleaseVersion (0x1E, WO-19): [ghostId:4][releaseVersion:UTF-8...]
+                    uint ghostId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    string releaseVersion = Encoding.UTF8.GetString(payload, Protocol.GhostIdLen, payloadLen - Protocol.GhostIdLen);
                     _ghostReleaseVersions[ghostId] = releaseVersion;
                     Console.WriteLine($"[version] ghost {ghostId} is on release {releaseVersion}");
                 }
-                else if (type == Protocol.Disconnect && payloadLen == 1)
+                else if (type == Protocol.Disconnect && payloadLen == Protocol.GhostIdLen)
                 {
-                    // Disconnect packet: [ghostId:1]
-                    byte ghostId = payload[0];
+                    // Disconnect packet: [ghostId:4]
+                    uint ghostId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
                     Console.WriteLine($"[disconnect] ghost {ghostId} removed");
                     _peerLastSeenUtc.TryRemove(ghostId, out _);
                     RefreshDiscordPeerCount();
@@ -2541,23 +2551,23 @@ public partial class GameBridge(ClientConfig config)
                     await ApplyPeerPauseAsync(ghostId, paused: false, ct);
                     try { await ExecLuaAsync($"KCD2MP_RemoveGhost(\"{ghostId}\")"); } catch { }
                 }
-                else if (type == Protocol.VoiceDown && payloadLen == 1 + Protocol.VoiceFrameLen)
+                else if (type == Protocol.VoiceDown && payloadLen == Protocol.GhostIdLen + Protocol.VoiceFrameLen)
                 {
-                    // Voice packet: [sourceId:1][pcm: 640 bytes]
-                    byte sourceId = payload[0];
+                    // Voice packet: [sourceId:4][pcm: 640 bytes]
+                    uint sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
                     var pcm = new byte[Protocol.VoiceFrameLen];
-                    Buffer.BlockCopy(payload, 1, pcm, 0, Protocol.VoiceFrameLen);
+                    Buffer.BlockCopy(payload, Protocol.GhostIdLen, pcm, 0, Protocol.VoiceFrameLen);
                     _voice?.OnVoiceReceived(sourceId, pcm);
                 }
                 else if (type == Protocol.DamageDown && payloadLen == Protocol.DamageDownPayloadLen)
                 {
-                    // Damage: [sourceGhostId:1][guid:16][stamina:4f][health:4f][flags:1]
+                    // Damage: [sourceGhostId:4][guid:16][stamina:4f][health:4f][flags:1]
                     // Applied through the DLL, not Lua: Lua writes are inert.
-                    byte  sourceId = payload[0];
-                    var   soul     = new Guid(payload.AsSpan(1, 16));
-                    float stamina  = ReadFloat(payload, 17);
-                    float health   = ReadFloat(payload, 21);
-                    bool  suppress = (payload[25] & Protocol.DamageFlagSuppressHitReaction) != 0;
+                    uint  sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    var   soul     = new Guid(payload.AsSpan(Protocol.GhostIdLen, 16));
+                    float stamina  = ReadFloat(payload, Protocol.GhostIdLen + 16);
+                    float health   = ReadFloat(payload, Protocol.GhostIdLen + 20);
+                    bool  suppress = (payload[Protocol.GhostIdLen + 24] & Protocol.DamageFlagSuppressHitReaction) != 0;
 
                     bool applied = await _combat.ApplyDamageAsync(soul, stamina, health, suppress, ct);
                     if (!applied)
@@ -2570,23 +2580,24 @@ public partial class GameBridge(ClientConfig config)
                         _ = TriggerReactiveAggroAsync(sourceId, ct);
                 }
                 else if (type == Protocol.NpcDamageDown
-                         && payloadLen >= 1 + 1 + 1 + Protocol.NpcDamageFixedTail
-                         && payloadLen <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcDamageFixedTail)
+                         && payloadLen >= Protocol.GhostIdLen + 1 + 1 + Protocol.NpcDamageFixedTail
+                         && payloadLen <= Protocol.GhostIdLen + 1 + Protocol.MaxNpcNameLen + Protocol.NpcDamageFixedTail)
                 {
                     // Name-addressed NPC damage (WO-40 Phase 5):
-                    // [sourceGhostId:1][nameLen:1][name][stamina:4f][health:4f][flags:1].
+                    // [sourceGhostId:4][nameLen:1][name][stamina:4f][health:4f][flags:1].
                     // The name resolves to THIS install's per-save guid via the
                     // reflection REST (cached), then applies through the same
                     // DLL pipe as 0x22 -- so the DLL's credit-out still stops
                     // echoes.
-                    byte ndSource = payload[0];
-                    int ndNameLen = payload[1];
-                    if (payloadLen == 2 + ndNameLen + Protocol.NpcDamageFixedTail)
+                    uint ndSource = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    int ndNameLen = payload[Protocol.GhostIdLen];
+                    if (payloadLen == Protocol.GhostIdLen + 1 + ndNameLen + Protocol.NpcDamageFixedTail)
                     {
-                        string ndName = Encoding.UTF8.GetString(payload, 2, ndNameLen);
+                        int ndNameOffset = Protocol.GhostIdLen + 1;
+                        string ndName = Encoding.UTF8.GetString(payload, ndNameOffset, ndNameLen);
                         if (NpcNamePattern.IsMatch(ndName))
                         {
-                            int no = 2 + ndNameLen;
+                            int no = ndNameOffset + ndNameLen;
                             float ndStamina = ReadFloat(payload, no);
                             float ndHealth  = ReadFloat(payload, no + 4);
                             bool  ndSupp    = (payload[no + 8] & Protocol.DamageFlagSuppressHitReaction) != 0;
@@ -2605,8 +2616,8 @@ public partial class GameBridge(ClientConfig config)
                 {
                     // Death is its own packet rather than inferred from health
                     // reaching zero, and the DLL treats it as idempotent.
-                    byte sourceId = payload[0];
-                    var  soul     = new Guid(payload.AsSpan(1, 16));
+                    uint sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    var  soul     = new Guid(payload.AsSpan(Protocol.GhostIdLen, 16));
                     bool applied  = await _combat.ApplyDeathAsync(soul, ct);
                     if (!applied)
                         Console.WriteLine($"[combat] death from ghost {sourceId} not applied " +
@@ -2614,21 +2625,21 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.PauseDown && payloadLen == Protocol.PauseDownPayloadLen)
                 {
-                    // PauseDown: [sourceGhostId:1][state:1]
-                    byte sourceId = payload[0];
-                    bool paused = payload[1] == Protocol.PauseStateEntered;
+                    // PauseDown: [sourceGhostId:4][state:1]
+                    uint sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    bool paused = payload[Protocol.GhostIdLen] == Protocol.PauseStateEntered;
                     await ApplyPeerPauseAsync(sourceId, paused, ct);
                 }
                 else if (type == Protocol.PlayerStateDown && payloadLen == Protocol.PlayerStateDownPayloadLen)
                 {
-                    // WO-28 Flow A: [ghostId:1][health:4f][stamina:4f][flags:1]
+                    // WO-28 Flow A: [ghostId:4][health:4f][stamina:4f][flags:1]
                     // Rendered, not reconciled -- a player's health is
                     // authoritative on their own machine, so this is simply
                     // what that ghost's health IS.
-                    byte  sourceId = payload[0];
-                    float health   = ReadFloat(payload, 1);
-                    float stamina  = ReadFloat(payload, 5);
-                    byte  vflags   = payload[9];
+                    uint  sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    float health   = ReadFloat(payload, Protocol.GhostIdLen);
+                    float stamina  = ReadFloat(payload, Protocol.GhostIdLen + 4);
+                    byte  vflags   = payload[Protocol.GhostIdLen + 8];
                     await ApplyGhostVitalsAsync(sourceId, health, stamina, vflags, ct);
                 }
                 else if (type == Protocol.PlayerHitDown && payloadLen == Protocol.PlayerHitDownPayloadLen)
@@ -2642,9 +2653,9 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.PlayerDeathDown && payloadLen == Protocol.PlayerDeathDownPayloadLen)
                 {
-                    // WO-28 Flow C: [ghostId:1]. Idempotent -- the mod's own
+                    // WO-28 Flow C: [ghostId:4]. Idempotent -- the mod's own
                     // setter only logs on an actual transition.
-                    byte sourceId = payload[0];
+                    uint sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
                     string who = _ghostNames.TryGetValue(sourceId, out var dn) ? dn : $"player {sourceId}";
                     Console.WriteLine($"[death] {who} died and is reloading their own save");
                     try
@@ -2660,14 +2671,14 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.TimeSkipDown && payloadLen == Protocol.TimeSkipDownPayloadLen)
                 {
-                    // Time-skip sync (WO-38): [sourceGhostId:1][phase:1][kind:1][worldTime:4].
+                    // Time-skip sync (WO-38): [sourceGhostId:4][phase:1][kind:1][worldTime:4].
                     // A start carries no time and needs nothing done here --
                     // the join rule is enforced relay-side. Both done phases
                     // apply the clock; only the announced one shows a toast.
-                    byte  tsSource = payload[0];
-                    byte  tsPhase  = payload[1];
-                    byte  tsKind   = payload[2];
-                    uint  tsTime   = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(3));
+                    uint  tsSource = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    byte  tsPhase  = payload[Protocol.GhostIdLen];
+                    byte  tsKind   = payload[Protocol.GhostIdLen + 1];
+                    uint  tsTime   = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(Protocol.GhostIdLen + 2));
                     if (tsPhase == Protocol.TimeSkipPhaseStart)
                     {
                         string tsWho = _ghostNames.TryGetValue(tsSource, out var tsName) ? tsName : $"player {tsSource}";
@@ -2686,21 +2697,22 @@ public partial class GameBridge(ClientConfig config)
                     }
                 }
                 else if (type == Protocol.NpcStateDown
-                         && payloadLen >= 1 + 1 + 1 + Protocol.NpcStateFixedTail
-                         && payloadLen <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
+                         && payloadLen >= Protocol.GhostIdLen + 1 + 1 + Protocol.NpcStateFixedTail
+                         && payloadLen <= Protocol.GhostIdLen + 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
                 {
-                    // NPC sync (WO-32): [sourceGhostId:1][nameLen:1][name][x][y][z][rotZ][health][flags]
+                    // NPC sync (WO-32): [sourceGhostId:4][nameLen:1][name][x][y][z][rotZ][health][flags]
                     // The name is validated before interpolation -- it crosses
                     // into a Lua string literal and relay data must not be able
                     // to inject code. A name for an entity not loaded in this
                     // world is handled (ignored) on the Lua side.
-                    int nameLen = payload[1];
-                    if (payloadLen == 2 + nameLen + Protocol.NpcStateFixedTail)
+                    int nameLen = payload[Protocol.GhostIdLen];
+                    if (payloadLen == Protocol.GhostIdLen + 1 + nameLen + Protocol.NpcStateFixedTail)
                     {
-                        string npcName = Encoding.UTF8.GetString(payload, 2, nameLen);
+                        int npcNameOffset = Protocol.GhostIdLen + 1;
+                        string npcName = Encoding.UTF8.GetString(payload, npcNameOffset, nameLen);
                         if (NpcNamePattern.IsMatch(npcName))
                         {
-                            int o = 2 + nameLen;
+                            int o = npcNameOffset + nameLen;
                             float nx    = ReadFloat(payload, o);
                             float ny    = ReadFloat(payload, o + 4);
                             float nz    = ReadFloat(payload, o + 8);
@@ -2752,33 +2764,34 @@ public partial class GameBridge(ClientConfig config)
                     }
                 }
                 else if (type == Protocol.HorseInfoDown
-                         && payloadLen >= 2
-                         && payloadLen <= 2 + Protocol.MaxHorseNameLen)
+                         && payloadLen >= Protocol.GhostIdLen + 1
+                         && payloadLen <= Protocol.GhostIdLen + 1 + Protocol.MaxHorseNameLen)
                 {
-                    // Horse identity (WO-38 Phase 5): [sourceGhostId:1][nameLen:1][name].
+                    // Horse identity (WO-38 Phase 5): [sourceGhostId:4][nameLen:1][name].
                     // Same validate-before-Lua-interpolation discipline as NpcStateDown.
-                    byte hiSource = payload[0];
-                    int hiNameLen = payload[1];
-                    if (payloadLen == 2 + hiNameLen)
+                    uint hiSource = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    int hiNameLen = payload[Protocol.GhostIdLen];
+                    if (payloadLen == Protocol.GhostIdLen + 1 + hiNameLen)
                     {
-                        string horseName = hiNameLen == 0 ? "" : Encoding.UTF8.GetString(payload, 2, hiNameLen);
+                        string horseName = hiNameLen == 0 ? "" : Encoding.UTF8.GetString(payload, Protocol.GhostIdLen + 1, hiNameLen);
                         if (hiNameLen == 0 || NpcNamePattern.IsMatch(horseName))
                             await ExecLuaAsync($"if KCD2MP_SetGhostHorse then KCD2MP_SetGhostHorse(\"{hiSource}\",\"{horseName}\") end");
                     }
                 }
                 else if (type == Protocol.WeatherDown
-                         && payloadLen >= 1 + 1 + 2
-                         && payloadLen <= 1 + 1 + Protocol.MaxWeatherNameLen + 2)
+                         && payloadLen >= Protocol.GhostIdLen + 1 + 2
+                         && payloadLen <= Protocol.GhostIdLen + 1 + Protocol.MaxWeatherNameLen + 2)
                 {
                     // Weather sync (WO-40 Phase 3):
-                    // [sourceGhostId:1][nameLen:1][profileName][blendSec:2].
+                    // [sourceGhostId:4][nameLen:1][profileName][blendSec:2].
                     // Same validate-before-Lua-interpolation discipline as
                     // NpcStateDown; the apply is change-gated.
-                    int wNameLen = payload[1];
-                    if (config.WeatherSyncEnabled && payloadLen == 2 + wNameLen + 2)
+                    int wNameLen = payload[Protocol.GhostIdLen];
+                    int wNameOffset = Protocol.GhostIdLen + 1;
+                    if (config.WeatherSyncEnabled && payloadLen == wNameOffset + wNameLen + 2)
                     {
-                        string wProfile = Encoding.UTF8.GetString(payload, 2, wNameLen);
-                        ushort wBlend = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(2 + wNameLen));
+                        string wProfile = Encoding.UTF8.GetString(payload, wNameOffset, wNameLen);
+                        ushort wBlend = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(wNameOffset + wNameLen));
                         if (WeatherNamePattern.IsMatch(wProfile))
                             await ApplyWeatherAsync(wProfile, wBlend);
                     }
@@ -2786,20 +2799,20 @@ public partial class GameBridge(ClientConfig config)
                 else if (type == Protocol.ItemDropDown && payloadLen == Protocol.ItemDropDownPayloadLen)
                 {
                     // Dropped-item sync (WO-48):
-                    // [sourceGhostId:1][dropId:4][itemClass:16][amount:2][health:4f][x:4f][y:4f][z:4f].
+                    // [sourceGhostId:4][dropId:4][itemClass:16][amount:2][health:4f][x:4f][y:4f][z:4f].
                     // Handed to the mod as a pending drop; it materializes the
                     // pickup entity only once the local player is near enough
                     // for the ground to be streamed (placing far away was
                     // observed to drop the item through the world). Dedupe by
                     // dropId is the mod's job -- heartbeats repeat this packet.
-                    byte idSource   = payload[0];
-                    uint idDropId   = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(1));
-                    var  idClass    = new Guid(payload.AsSpan(5, Protocol.ItemClassLen));
-                    ushort idAmount = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(21));
-                    float idHealth  = ReadFloat(payload, 23);
-                    float idX       = ReadFloat(payload, 27);
-                    float idY       = ReadFloat(payload, 31);
-                    float idZ       = ReadFloat(payload, 35);
+                    uint idSource   = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    uint idDropId   = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(Protocol.GhostIdLen));
+                    var  idClass    = new Guid(payload.AsSpan(Protocol.GhostIdLen + 4, Protocol.ItemClassLen));
+                    ushort idAmount = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(Protocol.GhostIdLen + 20));
+                    float idHealth  = ReadFloat(payload, Protocol.GhostIdLen + 22);
+                    float idX       = ReadFloat(payload, Protocol.GhostIdLen + 26);
+                    float idY       = ReadFloat(payload, Protocol.GhostIdLen + 30);
+                    float idZ       = ReadFloat(payload, Protocol.GhostIdLen + 34);
                     if (idDropId != 0 && idAmount > 0)
                         await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
                             "if KCD2MP_ItemDropAdd then KCD2MP_ItemDropAdd(\"{0}\",\"{1}\",{2},{3:F4},{4:F3},{5:F3},{6:F3},\"{7}\") end",
@@ -2807,13 +2820,13 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.ItemClaimDown && payloadLen == Protocol.ItemClaimDownPayloadLen)
                 {
-                    // [claimerGhostId:1][dropId:4]. The relay echoes claims to
+                    // [claimerGhostId:4][dropId:4]. The relay echoes claims to
                     // everyone INCLUDING the claimant, in arrival order -- the
                     // first echo a client sees for a dropId settles that drop
                     // everywhere (the mod ignores repeats). Also retires the
                     // drop from our own heartbeat set, whoever won it.
-                    byte icClaimer = payload[0];
-                    uint icDropId  = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(1));
+                    uint icClaimer = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    uint icDropId  = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(Protocol.GhostIdLen));
                     _myOpenDrops.TryRemove(icDropId, out _);
                     bool claimIsMine = icClaimer == _myGhostId;
                     Console.WriteLine($"[itemsync] drop {icDropId} claimed by {(claimIsMine ? "us" : $"ghost {icClaimer}")}");
@@ -2821,14 +2834,14 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.CombatEventDown && payloadLen == Protocol.CombatEventDownPayloadLen)
                 {
-                    // Combat visibility (WO-39 Phase 1): [sourceGhostId:1][event:1].
+                    // Combat visibility (WO-39 Phase 1): [sourceGhostId:4][event:1].
                     // Purely cosmetic on this side -- the Lua applies a
                     // draw/holster call or a one-shot animation to the ghost.
                     // An event byte this build does not know is passed through
                     // anyway; the Lua ignores unknown values, so a newer peer
                     // can emit new events without breaking us.
-                    byte ceSource = payload[0];
-                    byte ceEvent  = payload[1];
+                    uint ceSource = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    byte ceEvent  = payload[Protocol.GhostIdLen];
                     // WO-46: swings go native when the ghost's entity id is
                     // known and the DLL pipe is up — the WO-45 rung-2 route
                     // renders a real, complete Mannequin swing where the Lua
@@ -2871,16 +2884,17 @@ public partial class GameBridge(ClientConfig config)
                         await ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
                     }
                 }
-                else if (type == Protocol.AppearanceDown && payloadLen >= 2)
+                else if (type == Protocol.AppearanceDown && payloadLen >= Protocol.GhostIdLen + 1)
                 {
-                    // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
-                    byte sourceId = payload[0];
-                    int itemCount = payload[1];
-                    if (payloadLen == 2 + itemCount * Protocol.ItemClassLen)
+                    // Appearance: [sourceGhostId:4][itemCount:1][itemClass:16]*itemCount
+                    uint sourceId = BinaryPrimitives.ReadUInt32LittleEndian(payload);
+                    int itemCount = payload[Protocol.GhostIdLen];
+                    int itemsOffset = Protocol.GhostIdLen + 1;
+                    if (payloadLen == itemsOffset + itemCount * Protocol.ItemClassLen)
                     {
                         var items = new Guid[itemCount];
                         for (int i = 0; i < itemCount; i++)
-                            items[i] = new Guid(payload.AsSpan(2 + i * Protocol.ItemClassLen, Protocol.ItemClassLen));
+                            items[i] = new Guid(payload.AsSpan(itemsOffset + i * Protocol.ItemClassLen, Protocol.ItemClassLen));
                         _ = ApplyAppearanceAsync(sourceId, items, ct);
                     }
                 }
@@ -2913,7 +2927,6 @@ public partial class GameBridge(ClientConfig config)
         try
         {
             await ExecLuaAsync($@"KCD2MP_UpdateGhost(""{ghostId}"",{gx},{gy},{gz},{rot},{ride})");
-            Console.WriteLine($"[ghost {ghostId}] {gx} {gy} {gz} riding={isRiding}");
         }
         catch { /* game might have unloaded */ }
     }
@@ -2924,7 +2937,7 @@ public partial class GameBridge(ClientConfig config)
     /// alive -- a completed save reload is exactly "their vitals started
     /// arriving again", so nothing else has to detect the end of a death.
     /// </summary>
-    private async Task ApplyGhostVitalsAsync(byte ghostId, float health, float stamina, byte flags, CancellationToken ct)
+    private async Task ApplyGhostVitalsAsync(uint ghostId, float health, float stamina, byte flags, CancellationToken ct)
     {
         string h = health.ToString("F1", CultureInfo.InvariantCulture);
         string s = stamina.ToString("F1", CultureInfo.InvariantCulture);
@@ -3099,7 +3112,7 @@ public partial class GameBridge(ClientConfig config)
                 // would drain a real player's stamina on a guess.
                 var bits = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (bits.Length < 2
-                    || !byte.TryParse(bits[0], out byte hitGhostId)
+                    || !uint.TryParse(bits[0], out uint hitGhostId)
                     || !float.TryParse(bits[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float loss))
                 {
                     Console.WriteLine($"[playerhit] malformed ghost_hit '{arg}'");
@@ -3283,7 +3296,7 @@ public partial class GameBridge(ClientConfig config)
                 // KCD2MP.dice.wagerAmount; Lua already checked its own balance
                 // before emitting this, so no re-check happens here.
                 var parts = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 1 || !byte.TryParse(parts[0], out byte targetId))
+                if (parts.Length < 1 || !uint.TryParse(parts[0], out uint targetId))
                 {
                     Console.WriteLine($"[interaction] malformed invite_send '{arg}'");
                     break;
@@ -3372,7 +3385,7 @@ public partial class GameBridge(ClientConfig config)
     /// nothing) while the ghost is not yet a real soul the game will answer
     /// for -- a normal, transient state right after spawn.
     /// </summary>
-    private async Task<Guid?> ResolveGhostSoulGuidAsync(byte ghostId, CancellationToken ct)
+    private async Task<Guid?> ResolveGhostSoulGuidAsync(uint ghostId, CancellationToken ct)
     {
         if (_ghostSoulGuidCache.TryGetValue(ghostId, out var cached)) return cached;
 
@@ -3388,7 +3401,7 @@ public partial class GameBridge(ClientConfig config)
     /// No-op, silently, when aggro is disabled: every caller of this can stay
     /// unconditional, keeping the toggle-off path simple to audit.
     /// </summary>
-    private async Task TriggerReactiveAggroAsync(byte ghostId, CancellationToken ct)
+    private async Task TriggerReactiveAggroAsync(uint ghostId, CancellationToken ct)
     {
         if (!_aggroEnabled) return;
 
@@ -3416,7 +3429,7 @@ public partial class GameBridge(ClientConfig config)
     /// (WO-39/WO-40 -- per-save Guids are field-confirmed unstable), and this
     /// runs once per spawn or per toggle, not on any hot path.
     ///
-    /// Ghost ids are strings here, not the byte ids <see cref="_ghostSoulGuidCache"/>
+    /// Ghost ids are strings here, not the numeric ids <see cref="_ghostSoulGuidCache"/>
     /// uses, so the locally-spawned test ghost ("test_ghost") is covered too.
     ///
     /// Never throws into its caller: every failure is a log line. A ghost that
@@ -3448,7 +3461,7 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Detaches one ghost back to its pre-attach orphan state.</summary>
-    private async Task DetachGhostAggroAsync(byte ghostId, CancellationToken ct)
+    private async Task DetachGhostAggroAsync(uint ghostId, CancellationToken ct)
     {
         _ghostHostileUntilUtc.TryRemove(ghostId, out _);
         if (!_ghostSoulGuidCache.TryGetValue(ghostId, out var guid)) return;

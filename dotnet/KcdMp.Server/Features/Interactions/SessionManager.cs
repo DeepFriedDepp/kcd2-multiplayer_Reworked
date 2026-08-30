@@ -73,7 +73,7 @@ public class SessionManager
 	/// Handles an Invite. Returns the created session, or null when it was
 	/// refused — in which case the caller has already been told why.
 	/// </summary>
-	public Session? Invite(ClientSession from, byte targetId, InteractionKind kind, ClientHandler clients, byte[] openConfig)
+	public Session? Invite(ClientSession from, uint targetId, InteractionKind kind, ClientHandler clients, byte[] openConfig)
 	{
 		if (!Enum.IsDefined(kind))
 		{

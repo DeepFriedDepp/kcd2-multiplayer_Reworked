@@ -32,12 +32,12 @@ public sealed class VoiceChat : IDisposable
     private WaveOutEvent?          _waveOut;
     private MixingSampleProvider?  _mixer;
 
-    // Per-player state (keyed by ghostId byte)
-    private readonly ConcurrentDictionary<byte, BufferedWaveProvider> _buffers = new();
-    private readonly ConcurrentDictionary<byte, VolumeSampleProvider> _volumes = new();
+    // Per-player state (keyed by ghostId)
+    private readonly ConcurrentDictionary<uint, BufferedWaveProvider> _buffers = new();
+    private readonly ConcurrentDictionary<uint, VolumeSampleProvider> _volumes = new();
 
     // Positions (updated from outside)
-    private readonly ConcurrentDictionary<byte, (float x, float y, float z)> _ghostPos = new();
+    private readonly ConcurrentDictionary<uint, (float x, float y, float z)> _ghostPos = new();
     public (float x, float y, float z) LocalPos { get; set; }
 
     public bool Muted { get; set; } = false;
@@ -131,7 +131,7 @@ public sealed class VoiceChat : IDisposable
     // -------------------------------------------------------------------------
 
     /// <summary>Called when a voice frame arrives from a remote player.</summary>
-    public void OnVoiceReceived(byte sourceId, byte[] pcm)
+    public void OnVoiceReceived(uint sourceId, byte[] pcm)
     {
         if (!_running) return;
 
@@ -156,14 +156,14 @@ public sealed class VoiceChat : IDisposable
     }
 
     /// <summary>Update the 3D position of a remote player's ghost for proximity volume.</summary>
-    public void UpdateGhostPos(byte ghostId, float x, float y, float z)
+    public void UpdateGhostPos(uint ghostId, float x, float y, float z)
     {
         _ghostPos[ghostId] = (x, y, z);
         ApplyVolume(ghostId);
     }
 
     /// <summary>Remove a player — silence and discard their audio pipeline.</summary>
-    public void RemovePlayer(byte ghostId)
+    public void RemovePlayer(uint ghostId)
     {
         _ghostPos.TryRemove(ghostId, out _);
         if (_volumes.TryRemove(ghostId, out var vol))
@@ -178,7 +178,7 @@ public sealed class VoiceChat : IDisposable
             ApplyVolume(id);
     }
 
-    private void ApplyVolume(byte ghostId)
+    private void ApplyVolume(uint ghostId)
     {
         if (!_volumes.TryGetValue(ghostId, out var vol)) return;
 

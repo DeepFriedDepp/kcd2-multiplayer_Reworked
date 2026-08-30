@@ -18,7 +18,7 @@
       Mod\  -> <KCD2 Modding Tools>\Mods\kdcmp
                mod.manifest and Data\kdcmp.pak, and DELIBERATELY NOTHING ELSE.
                kdcmp\Data\ also holds the pak's *sources* (Libs\Tables\...,
-               Libs\Config\..., Scripts\Startup\kdcmp.lua). Shipping those
+               Libs\Config\..., Scripts\Startup\..., Scripts\KCD2MP\...). Shipping those
                loose breaks the game outright: a loose Data\Libs\Tables inside
                a mod takes over the engine's table root and every base table
                fails to resolve ("114 tables are not loaded"). The [Files]

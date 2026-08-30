@@ -7,10 +7,10 @@ namespace KcdMp.Client;
 /// from the Invite's opaque config, forwarded on InviteReceived -- 0 for no
 /// stake, or for any kind that does not use one.
 /// </summary>
-public sealed record PendingInvite(ushort SessionId, byte FromGhostId, InteractionKind Kind, DateTime ReceivedUtc, int WagerAmount = 0);
+public sealed record PendingInvite(ushort SessionId, uint FromGhostId, InteractionKind Kind, DateTime ReceivedUtc, int WagerAmount = 0);
 
 /// <summary>A session both players agreed to.</summary>
-public sealed record ActiveSession(ushort SessionId, byte PeerGhostId, InteractionKind Kind, SessionRole Role);
+public sealed record ActiveSession(ushort SessionId, uint PeerGhostId, InteractionKind Kind, SessionRole Role);
 
 /// <summary>
 /// Agent-side half of the interaction layer (WO-2).
@@ -51,7 +51,7 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
     /// An opaque event arrived from the peer. Interpreting the payload is the
     /// interaction's job, not this layer's.
     /// </summary>
-    public event Action<ushort, byte, byte[]>? SessionEvent;
+    public event Action<ushort, uint, byte[]>? SessionEvent;
 
     /// <summary>A session or pending invite ended, for the given reason.</summary>
     public event Action<ushort, SessionEndReason>? SessionEnded;
@@ -66,14 +66,14 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
     /// score, WO-33's dice wager) -- opaque to this layer, same as
     /// SessionEvent's payload.
     /// </summary>
-    public Task InviteAsync(byte targetGhostId, InteractionKind kind, byte[]? config = null, CancellationToken ct = default)
+    public Task InviteAsync(uint targetGhostId, InteractionKind kind, byte[]? config = null, CancellationToken ct = default)
     {
         config ??= [];
-        var payload = new byte[3 + config.Length];
-        payload[0] = targetGhostId;
-        payload[1] = (byte)kind;
-        payload[2] = (byte)config.Length;
-        config.CopyTo(payload, 3);
+        var payload = new byte[Protocol.GhostIdLen + 2 + config.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, targetGhostId);
+        payload[Protocol.GhostIdLen] = (byte)kind;
+        payload[Protocol.GhostIdLen + 1] = (byte)config.Length;
+        config.CopyTo(payload, Protocol.GhostIdLen + 2);
         return sendPacket(Protocol.Invite, payload, ct);
     }
 
@@ -140,23 +140,24 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
     {
         switch (type)
         {
-            case Protocol.InviteReceived when payload.Length >= 4:
+            case Protocol.InviteReceived when payload.Length >= 2 + Protocol.GhostIdLen + 1:
             {
                 // config trailer added WO-33: [configLen:1][config:configLen],
-                // same shape Invite itself sends. A pre-WO-33 relay never
-                // appends it, so payload.Length == 4 there and wager stays 0.
+                // same shape Invite itself sends. When absent, wager stays 0.
                 int wager = 0;
-                if (payload.Length >= 5)
+                int configLenOffset = 2 + Protocol.GhostIdLen + 1;
+                int configOffset = configLenOffset + 1;
+                if (payload.Length > configLenOffset)
                 {
-                    int configLen = payload[4];
-                    if (payload.Length >= 5 + configLen && configLen >= 10)
-                        wager = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(5 + 6, 4));
+                    int configLen = payload[configLenOffset];
+                    if (payload.Length >= configOffset + configLen && configLen >= 10)
+                        wager = BinaryPrimitives.ReadInt32LittleEndian(payload.AsSpan(configOffset + 6, 4));
                 }
 
                 var invite = new PendingInvite(
                     BinaryPrimitives.ReadUInt16LittleEndian(payload),
-                    payload[2],
-                    (InteractionKind)payload[3],
+                    BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(2)),
+                    (InteractionKind)payload[2 + Protocol.GhostIdLen],
                     DateTime.UtcNow,
                     wager);
 
@@ -165,13 +166,13 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
                 return true;
             }
 
-            case Protocol.SessionStart when payload.Length >= 5:
+            case Protocol.SessionStart when payload.Length >= 2 + Protocol.GhostIdLen + 2:
             {
                 var session = new ActiveSession(
                     BinaryPrimitives.ReadUInt16LittleEndian(payload),
-                    payload[2],
-                    (InteractionKind)payload[3],
-                    (SessionRole)payload[4]);
+                    BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(2)),
+                    (InteractionKind)payload[2 + Protocol.GhostIdLen],
+                    (SessionRole)payload[3 + Protocol.GhostIdLen]);
 
                 lock (_lock)
                 {
@@ -182,10 +183,10 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
                 return true;
             }
 
-            case Protocol.SessionEventDown when payload.Length >= 3:
+            case Protocol.SessionEventDown when payload.Length >= 2 + Protocol.GhostIdLen:
             {
                 ushort sid = BinaryPrimitives.ReadUInt16LittleEndian(payload);
-                byte from = payload[2];
+                uint from = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(2));
 
                 // Ignore events for a session we are not in: the relay should
                 // never send one, and acting on it would be worse than dropping.
@@ -194,7 +195,7 @@ public sealed class InteractionClient(Func<byte, byte[], CancellationToken, Task
                     if (_active is null || _active.SessionId != sid) return true;
                 }
 
-                SessionEvent?.Invoke(sid, from, payload[3..]);
+                SessionEvent?.Invoke(sid, from, payload[(2 + Protocol.GhostIdLen)..]);
                 return true;
             }
 

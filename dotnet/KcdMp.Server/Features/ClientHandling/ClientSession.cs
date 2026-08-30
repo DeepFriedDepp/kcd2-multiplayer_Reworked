@@ -14,7 +14,7 @@ namespace KcdMp.Server.Features.ClientHandling;
 /// </summary>
 public class ClientSession
 {
-    private static int _idCounter;
+    private static long _idCounter;
 
     private readonly ILogger _logger;
     private readonly TcpClient _tcp;
@@ -25,13 +25,13 @@ public class ClientSession
     private const int MaxQueuedPackets = 512;
     private readonly object _writeQueueLock = new();
     private readonly Queue<QueuedWrite> _writeQueue = new();
-    private readonly Dictionary<byte, byte[]> _pendingGhostPackets = new();
+    private readonly Dictionary<uint, byte[]> _pendingGhostPackets = new();
     private readonly SemaphoreSlim _writeSignal = new(0);
     private bool _writeQueueStopped;
 
-    private readonly record struct QueuedWrite(byte[]? Packet, byte? GhostId);
+    private readonly record struct QueuedWrite(byte[]? Packet, uint? GhostId);
 
-    public byte Id { get; } = (byte)Interlocked.Increment(ref _idCounter);
+    public uint Id { get; } = checked((uint)Interlocked.Increment(ref _idCounter));
     public string? Name { get; private set; }
     public bool IsReady => Name is not null;
 
@@ -118,7 +118,7 @@ public class ClientSession
                 Name, Id, clientVersion, ReleaseVersion ?? "(none)", _tcp.Client.RemoteEndPoint);
 
             // Send Ack with assigned ID
-            EnqueueRaw(BuildPacket(Protocol.Ack, [Id]));
+            EnqueueRaw(BuildPacket(Protocol.Ack, EncodeGhostId(Id)));
 
             // Broadcast this client's name to all others; send existing names to this client
             _broadcastService.BroadcastName(this);
@@ -503,28 +503,26 @@ public class ClientSession
     }
 
     /// <summary>Thread-safe: enqueue a Ghost packet to be sent to this client.</summary>
-    public void EnqueueGhost(byte ghostId, float x, float y, float z, float rotZ, byte flags)
+    public void EnqueueGhost(uint ghostId, float x, float y, float z, float rotZ, byte flags)
     {
-        var payload = new byte[18];
-        payload[0] = ghostId;
-        WriteFloat(payload, 1, x);
-        WriteFloat(payload, 5, y);
-        WriteFloat(payload, 9, z);
-        WriteFloat(payload, 13, rotZ);
-        payload[17] = flags;
+        var payload = new byte[Protocol.GhostPayloadLen];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, ghostId);
+        WriteFloat(payload, Protocol.GhostIdLen, x);
+        WriteFloat(payload, Protocol.GhostIdLen + 4, y);
+        WriteFloat(payload, Protocol.GhostIdLen + 8, z);
+        WriteFloat(payload, Protocol.GhostIdLen + 12, rotZ);
+        payload[Protocol.GhostIdLen + 16] = flags;
         EnqueueGhostPacket(ghostId, BuildPacket(Protocol.Ghost, payload));
     }
 
     /// <summary>Thread-safe: enqueue a Disconnect packet (0x06) to be sent to this client.</summary>
-    public void EnqueueDisconnect(byte ghostId) =>
-        EnqueueRaw(BuildPacket(Protocol.Disconnect, [ghostId]));
+    public void EnqueueDisconnect(uint ghostId) =>
+        EnqueueRaw(BuildPacket(Protocol.Disconnect, EncodeGhostId(ghostId)));
 
     /// <summary>Thread-safe: enqueue a Voice packet (0x08) to be sent to this client.</summary>
-    public void EnqueueVoice(byte sourceId, byte[] pcm)
+    public void EnqueueVoice(uint sourceId, byte[] pcm)
     {
-        var payload = new byte[1 + pcm.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(pcm, 0, payload, 1, pcm.Length);
+        var payload = PrefixGhostId(sourceId, pcm);
         EnqueueRaw(BuildPacket(Protocol.VoiceDown, payload));
     }
 
@@ -532,20 +530,16 @@ public class ClientSession
     /// Thread-safe: enqueue a Damage (0x13) packet to be sent to this client.
     /// The body is the upstream payload verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueDamage(byte sourceId, byte[] upstreamBody)
+    public void EnqueueDamage(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.DamageDown, payload));
     }
 
     /// <summary>Thread-safe: enqueue a Death (0x15) packet to be sent to this client.</summary>
-    public void EnqueueDeath(byte sourceId, byte[] soulGuid)
+    public void EnqueueDeath(uint sourceId, byte[] soulGuid)
     {
-        var payload = new byte[1 + soulGuid.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(soulGuid, 0, payload, 1, soulGuid.Length);
+        var payload = PrefixGhostId(sourceId, soulGuid);
         EnqueueRaw(BuildPacket(Protocol.DeathDown, payload));
     }
 
@@ -554,11 +548,9 @@ public class ClientSession
     /// client. The body is the upstream [itemCount][itemClass...] payload
     /// verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueAppearance(byte sourceId, byte[] upstreamBody)
+    public void EnqueueAppearance(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.AppearanceDown, payload));
     }
 
@@ -567,11 +559,9 @@ public class ClientSession
     /// client. The body is the upstream [state:1] payload verbatim, prefixed
     /// with who sent it.
     /// </summary>
-    public void EnqueuePause(byte sourceId, byte[] upstreamBody)
+    public void EnqueuePause(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.PauseDown, payload));
     }
 
@@ -583,11 +573,9 @@ public class ClientSession
     /// Thread-safe: enqueue a PlayerStateDown (0x20). The body is the upstream
     /// [health][stamina][flags] payload verbatim, prefixed with whose health it is.
     /// </summary>
-    public void EnqueuePlayerState(byte sourceId, byte[] upstreamBody)
+    public void EnqueuePlayerState(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.PlayerStateDown, payload));
     }
 
@@ -596,11 +584,9 @@ public class ClientSession
     /// upstream payload (with the phase byte possibly rewritten to done-quiet
     /// by the routing rules), prefixed with who sent it.
     /// </summary>
-    public void EnqueueTimeSkip(byte sourceId, byte[] upstreamBody)
+    public void EnqueueTimeSkip(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.TimeSkipDown, payload));
     }
 
@@ -608,11 +594,9 @@ public class ClientSession
     /// Thread-safe: enqueue a CombatEventDown (0x2D, WO-39 Phase 1). The body
     /// is the upstream [event:1] payload verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueCombatEvent(byte sourceId, byte[] upstreamBody)
+    public void EnqueueCombatEvent(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.CombatEventDown, payload));
     }
 
@@ -620,11 +604,9 @@ public class ClientSession
     /// Thread-safe: enqueue an NpcDamageDown (0x31, WO-40 Phase 5). The body
     /// is the upstream payload verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueNpcDamage(byte sourceId, byte[] upstreamBody)
+    public void EnqueueNpcDamage(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.NpcDamageDown, payload));
     }
 
@@ -632,11 +614,9 @@ public class ClientSession
     /// Thread-safe: enqueue an ItemDropDown (0x33, WO-48). The body is the
     /// upstream payload verbatim, prefixed with who dropped it.
     /// </summary>
-    public void EnqueueItemDrop(byte sourceId, byte[] upstreamBody)
+    public void EnqueueItemDrop(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.ItemDropDown, payload));
     }
 
@@ -646,11 +626,9 @@ public class ClientSession
     /// other Down packet this one also goes back to its own sender -- the
     /// echo is the claim's confirmation (see Protocol's 0x34 notes).
     /// </summary>
-    public void EnqueueItemClaim(byte claimerId, byte[] upstreamBody)
+    public void EnqueueItemClaim(uint claimerId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = claimerId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(claimerId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.ItemClaimDown, payload));
     }
 
@@ -658,11 +636,9 @@ public class ClientSession
     /// Thread-safe: enqueue a WeatherDown (0x2F, WO-40 Phase 3). The body is
     /// the upstream payload verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueWeather(byte sourceId, byte[] upstreamBody)
+    public void EnqueueWeather(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.WeatherDown, payload));
     }
 
@@ -670,11 +646,9 @@ public class ClientSession
     /// Thread-safe: enqueue a HorseInfoDown (0x2B, WO-38 Phase 5). The body is
     /// the upstream payload verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueHorseInfo(byte sourceId, byte[] upstreamBody)
+    public void EnqueueHorseInfo(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.HorseInfoDown, payload));
     }
 
@@ -682,11 +656,9 @@ public class ClientSession
     /// Thread-safe: enqueue an NpcStateDown (0x27, WO-32). The body is the
     /// upstream payload verbatim, prefixed with who sent it.
     /// </summary>
-    public void EnqueueNpcState(byte sourceId, byte[] upstreamBody)
+    public void EnqueueNpcState(uint sourceId, byte[] upstreamBody)
     {
-        var payload = new byte[1 + upstreamBody.Length];
-        payload[0] = sourceId;
-        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        var payload = PrefixGhostId(sourceId, upstreamBody);
         EnqueueRaw(BuildPacket(Protocol.NpcStateDown, payload));
     }
 
@@ -698,13 +670,13 @@ public class ClientSession
     public void EnqueuePlayerHit(byte[] upstreamBody)
     {
         var payload = new byte[Protocol.PlayerHitDownPayloadLen];
-        Buffer.BlockCopy(upstreamBody, 1, payload, 0, Protocol.PlayerHitDownPayloadLen);
+        Buffer.BlockCopy(upstreamBody, Protocol.GhostIdLen, payload, 0, Protocol.PlayerHitDownPayloadLen);
         EnqueueRaw(BuildPacket(Protocol.PlayerHitDown, payload));
     }
 
     /// <summary>Thread-safe: enqueue a PlayerDeathDown (0x24). Idempotent at the receiver.</summary>
-    public void EnqueuePlayerDeath(byte sourceId) =>
-        EnqueueRaw(BuildPacket(Protocol.PlayerDeathDown, [sourceId]));
+    public void EnqueuePlayerDeath(uint sourceId) =>
+        EnqueueRaw(BuildPacket(Protocol.PlayerDeathDown, EncodeGhostId(sourceId)));
 
     /// <summary>
     /// Thread-safe: enqueue a CombatRole (0x25) telling this client whether it
@@ -779,8 +751,8 @@ public class ClientSession
     {
         switch (type)
         {
-            case Protocol.Invite when body.Length >= 2:
-                _sessions.Invite(this, body[0], (InteractionKind)body[1], _clientHandler, ReadOpenConfig(body));
+            case Protocol.Invite when body.Length >= Protocol.GhostIdLen + 1:
+                _sessions.Invite(this, ReadUInt32(body, 0), (InteractionKind)body[Protocol.GhostIdLen], _clientHandler, ReadOpenConfig(body));
                 break;
 
             case Protocol.InviteResponse when body.Length >= 3:
@@ -812,36 +784,36 @@ public class ClientSession
     /// invitee can see kind-specific open-time settings (e.g. dice's wager)
     /// before answering, not just after accepting.
     /// </summary>
-    public void EnqueueInviteReceived(ushort sessionId, byte fromGhostId, InteractionKind kind, byte[]? config = null)
+    public void EnqueueInviteReceived(ushort sessionId, uint fromGhostId, InteractionKind kind, byte[]? config = null)
     {
         config ??= [];
-        var payload = new byte[5 + config.Length];
+        var payload = new byte[2 + Protocol.GhostIdLen + 2 + config.Length];
         BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
-        payload[2] = fromGhostId;
-        payload[3] = (byte)kind;
-        payload[4] = (byte)config.Length;
-        config.CopyTo(payload, 5);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(2), fromGhostId);
+        payload[2 + Protocol.GhostIdLen] = (byte)kind;
+        payload[3 + Protocol.GhostIdLen] = (byte)config.Length;
+        config.CopyTo(payload, 4 + Protocol.GhostIdLen);
         EnqueueRaw(BuildPacket(Protocol.InviteReceived, payload));
     }
 
     /// <summary>Thread-safe: enqueue a SessionStart (0x0D).</summary>
-    public void EnqueueSessionStart(ushort sessionId, byte peerGhostId, InteractionKind kind, SessionRole role)
+    public void EnqueueSessionStart(ushort sessionId, uint peerGhostId, InteractionKind kind, SessionRole role)
     {
-        var payload = new byte[5];
+        var payload = new byte[2 + Protocol.GhostIdLen + 2];
         BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
-        payload[2] = peerGhostId;
-        payload[3] = (byte)kind;
-        payload[4] = (byte)role;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(2), peerGhostId);
+        payload[2 + Protocol.GhostIdLen] = (byte)kind;
+        payload[3 + Protocol.GhostIdLen] = (byte)role;
         EnqueueRaw(BuildPacket(Protocol.SessionStart, payload));
     }
 
     /// <summary>Thread-safe: enqueue a SessionEvent (0x0F) from the peer.</summary>
-    public void EnqueueSessionEvent(ushort sessionId, byte fromGhostId, byte[] eventPayload)
+    public void EnqueueSessionEvent(ushort sessionId, uint fromGhostId, byte[] eventPayload)
     {
-        var payload = new byte[3 + eventPayload.Length];
+        var payload = new byte[2 + Protocol.GhostIdLen + eventPayload.Length];
         BinaryPrimitives.WriteUInt16LittleEndian(payload, sessionId);
-        payload[2] = fromGhostId;
-        eventPayload.CopyTo(payload, 3);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(2), fromGhostId);
+        eventPayload.CopyTo(payload, 2 + Protocol.GhostIdLen);
         EnqueueRaw(BuildPacket(Protocol.SessionEventDown, payload));
     }
 
@@ -857,38 +829,39 @@ public class ClientSession
     private static ushort ReadUInt16(byte[] buf, int offset) =>
         BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(offset));
 
+    private static uint ReadUInt32(byte[] buf, int offset) =>
+        BinaryPrimitives.ReadUInt32LittleEndian(buf.AsSpan(offset));
+
     /// <summary>
     /// Extracts an Invite's optional [configLen:1][config:configLen] tail.
-    /// Absent (a bare 2-byte Invite, the pre-WO-5 shape) or truncated both
+    /// Absent (an Invite containing only id + kind) or truncated both
     /// yield an empty config rather than throwing -- a short/garbled config
     /// is the interaction kind's problem to reject, not a reason to drop the
     /// whole Invite.
     /// </summary>
     private static byte[] ReadOpenConfig(byte[] body)
     {
-        if (body.Length < 3) return [];
-        int configLen = body[2];
-        if (body.Length < 3 + configLen) return [];
-        return body[3..(3 + configLen)];
+        int configLenOffset = Protocol.GhostIdLen + 1;
+        if (body.Length <= configLenOffset) return [];
+        int configLen = body[configLenOffset];
+        int configOffset = configLenOffset + 1;
+        if (body.Length < configOffset + configLen) return [];
+        return body[configOffset..(configOffset + configLen)];
     }
 
     /// <summary>Thread-safe: enqueue a Name packet (0x03) to be sent to this client.</summary>
-    public void EnqueueName(byte ghostId, string name)
+    public void EnqueueName(uint ghostId, string name)
     {
         var nameBytes = Encoding.UTF8.GetBytes(name);
-        var payload = new byte[1 + nameBytes.Length];
-        payload[0] = ghostId;
-        nameBytes.CopyTo(payload, 1);
+        var payload = PrefixGhostId(ghostId, nameBytes);
         EnqueueRaw(BuildPacket(Protocol.Name, payload));
     }
 
     /// <summary>Thread-safe: enqueue a ReleaseVersion packet (0x1E, WO-19) to be sent to this client.</summary>
-    public void EnqueueReleaseVersion(byte ghostId, string releaseVersion)
+    public void EnqueueReleaseVersion(uint ghostId, string releaseVersion)
     {
         var verBytes = Encoding.UTF8.GetBytes(releaseVersion);
-        var payload = new byte[1 + verBytes.Length];
-        payload[0] = ghostId;
-        verBytes.CopyTo(payload, 1);
+        var payload = PrefixGhostId(ghostId, verBytes);
         EnqueueRaw(BuildPacket(Protocol.ReleaseVersion, payload));
     }
 
@@ -906,7 +879,7 @@ public class ClientSession
         else _writeSignal.Release();
     }
 
-    private void EnqueueGhostPacket(byte ghostId, byte[] packet)
+    private void EnqueueGhostPacket(uint ghostId, byte[] packet)
     {
         bool overflow;
         bool queued = false;
@@ -969,7 +942,7 @@ public class ClientSession
                 if (_writeQueue.Count > 0)
                 {
                     var queued = _writeQueue.Dequeue();
-                    if (queued.GhostId is byte ghostId)
+                    if (queued.GhostId is uint ghostId)
                     {
                         _pendingGhostPackets.Remove(ghostId, out packet);
                     }
@@ -1003,6 +976,21 @@ public class ClientSession
     }
 
     // ---- Helpers ----
+
+    private static byte[] EncodeGhostId(uint ghostId)
+    {
+        var payload = new byte[Protocol.GhostIdLen];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, ghostId);
+        return payload;
+    }
+
+    private static byte[] PrefixGhostId(uint ghostId, byte[] body)
+    {
+        var payload = new byte[Protocol.GhostIdLen + body.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, ghostId);
+        body.CopyTo(payload, Protocol.GhostIdLen);
+        return payload;
+    }
 
     private static byte[] BuildPacket(byte type, byte[] payload)
     {

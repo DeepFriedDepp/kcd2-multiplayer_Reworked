@@ -40,9 +40,16 @@ $SrcRoot  = Join-Path $RepoRoot 'kdcmp\Data'
 $PakPath  = Join-Path $SrcRoot 'kdcmp.pak'
 $Manifest = Join-Path $RepoRoot 'kdcmp\mod.manifest'
 
-# Paths inside the pak, relative to kdcmp\Data.
-$Files = @(
-    'Scripts\Startup\kdcmp.lua',
+# Paths inside the pak, relative to kdcmp\Data. Keep this module order aligned
+# with Scripts\Startup\kdcmp.lua; the pak entry order itself is not executable.
+$LuaModules = @(
+    'utils', 'state', 'transport', 'interaction', 'dice', 'npc_sync',
+    'ghosts', 'animation', 'appearance', 'diagnostics', 'items', 'commands',
+    'input'
+)
+$Files = @('Scripts\Startup\kdcmp.lua') + @(
+    $LuaModules | ForEach-Object { "Scripts\KCD2MP\$_.lua" }
+) + @(
     'Libs\Tables\item\clothing_preset__kdcmp.xml',
     'Libs\Config\keybindSuperactions.xml',
     'Libs\Config\defaultProfile.xml'
@@ -87,11 +94,32 @@ foreach ($rel in $Files) {
     }
 }
 
+$bootstrapPath = Join-Path $SrcRoot 'Scripts\Startup\kdcmp.lua'
+$bootstrapText = [IO.File]::ReadAllText($bootstrapPath)
+$orderBlock = [regex]::Match($bootstrapText, 'local moduleOrder = \{(?s)(.*?)\n\}')
+$bootstrapModules = @(
+    [regex]::Matches($orderBlock.Groups[1].Value, '"([a-z_]+)"') |
+        ForEach-Object { $_.Groups[1].Value }
+)
+if (-not $orderBlock.Success -or ($bootstrapModules -join '|') -ne ($LuaModules -join '|')) {
+    Write-Host 'FAILED: bootstrap module order and build module list differ.' -ForegroundColor Red
+    Write-Host ('  bootstrap: ' + ($bootstrapModules -join ', '))
+    Write-Host ('  build:     ' + ($LuaModules -join ', '))
+    exit 1
+}
+foreach ($module in $LuaModules) {
+    $modulePath = Join-Path $SrcRoot "Scripts\KCD2MP\$module.lua"
+    $moduleText = [IO.File]::ReadAllText($modulePath)
+    if ($moduleText -notmatch [regex]::Escape("KCD2MP.modules.$module = true")) {
+        Write-Host "FAILED: $module.lua does not publish its successful-load marker." -ForegroundColor Red
+        exit 1
+    }
+}
+
 # --- refuse to pack a Lua file with a BOM -----------------------------------
 #
-# Lua 5.1 cannot parse a UTF-8 byte order mark. A BOM'd kdcmp.lua fails to load
-# ENTIRELY -- every console command silently disappears and the only evidence is
-# one line in kcd.log:
+# Lua 5.1 cannot parse a UTF-8 byte order mark. A BOM'd bootstrap or module fails
+# to load, and the only evidence may be one line in kcd.log:
 #   [Lua Error] Failed to execute file @scripts/startup/kdcmp.lua:
 #     scripts/startup/kdcmp.lua:1: unexpected symbol near '<?>'
 #
@@ -101,7 +129,8 @@ foreach ($rel in $Files) {
 foreach ($rel in $Files) {
     if ($rel -notlike '*.lua') { continue }
     $full = Join-Path $SrcRoot $rel
-    $head = [byte[]](Get-Content $full -Encoding Byte -TotalCount 3)
+    $bytes = [IO.File]::ReadAllBytes($full)
+    $head = if ($bytes.Length -ge 3) { $bytes[0..2] } else { $bytes }
     if ($head.Length -ge 3 -and $head[0] -eq 0xEF -and $head[1] -eq 0xBB -and $head[2] -eq 0xBF) {
         Write-Host "FAILED: $rel starts with a UTF-8 BOM." -ForegroundColor Red
         Write-Host '  Lua 5.1 cannot parse it and the whole script will fail to load.'

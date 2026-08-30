@@ -19,7 +19,7 @@ namespace KcdMp.Client;
 ///
 /// GET /version-status -> { "myReleaseVersion": "0.9.5", "peers": [{"ghostId":1,"releaseVersion":"0.9.4"}] }
 /// </summary>
-public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port)
+public sealed class VersionIpcServer(Func<KeyValuePair<uint, string>[]> getPeers, int port)
 {
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -138,4 +138,4 @@ public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers
 }
 
 public sealed record VersionStatusDto(string MyReleaseVersion, PeerVersionDto[] Peers);
-public sealed record PeerVersionDto(byte GhostId, string ReleaseVersion);
+public sealed record PeerVersionDto(uint GhostId, string ReleaseVersion);

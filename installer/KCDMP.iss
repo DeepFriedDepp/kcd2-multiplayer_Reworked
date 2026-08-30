@@ -96,7 +96,7 @@ Source: "..\release\KCDMP\*"; DestDir: "{app}"; Flags: ignoreversion overwritere
 ; wildcard over kdcmp\.
 ;
 ; kdcmp\Data\ also holds the pak's *sources* -- Libs\Tables\...,
-; Libs\Config\..., Scripts\Startup\kdcmp.lua -- which tools\Build-And-Install-
+; Libs\Config\..., Scripts\Startup\..., Scripts\KCD2MP\... -- which tools\Build-And-Install-
 ; Mod.ps1 packs into kdcmp.pak and deliberately does not copy. Deploying them
 ; loose as well breaks the game outright: a loose Data\Libs\Tables directory
 ; inside a mod takes over the engine's table root, and every base table then

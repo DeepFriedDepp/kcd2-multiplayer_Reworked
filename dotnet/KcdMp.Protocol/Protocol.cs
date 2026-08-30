@@ -12,24 +12,24 @@ namespace KcdMp.Wire;
 ///                          flags bit 0: isRiding
 /// C→S  0x04  Ping:       [timestamp:8 LE int64]
 /// C→S  0x07  Voice:      [pcm:640]  (16 kHz mono 16-bit, 20 ms frame)
-/// S→C  0x02  Ghost:      [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]  (18 bytes)
-/// S→C  0x03  Name:       [ghostId:1][name:UTF-8]
+/// S→C  0x02  Ghost:      [ghostId:4 LE uint32][x:4f][y:4f][z:4f][rotZ:4f][flags:1]  (21 bytes)
+/// S→C  0x03  Name:       [ghostId:4 LE uint32][name:UTF-8]
 /// S→C  0x05  Pong:       [timestamp:8 LE int64]  (echo of Ping)
-/// S→C  0x06  Disconnect: [ghostId:1]
-/// S→C  0x08  Voice:      [sourceId:1][pcm:640]
+/// S→C  0x06  Disconnect: [ghostId:4 LE uint32]
+/// S→C  0x08  Voice:      [sourceId:4 LE uint32][pcm:640]
 /// S→C  0x09  VersionMismatch: [serverVersion:1]
-/// S→C  0xFF  Ack:        [assignedId:1]
+/// S→C  0xFF  Ack:        [assignedId:4 LE uint32]
 ///
 /// Interaction layer (WO-2). Opt-in paired interactions: one player invites,
 /// the other accepts or declines, both enter a session the relay arbitrates,
 /// both leave. Dice (WO-5) and duelling are clients of this rather than
 /// separate protocols.
-/// C→S  0x0A  Invite:         [targetGhostId:1][kind:1][configLen:1][config:configLen]
-/// S→C  0x0B  InviteReceived: [sessionId:2][fromGhostId:1][kind:1]
+/// C→S  0x0A  Invite:         [targetGhostId:4 LE uint32][kind:1][configLen:1][config:configLen]
+/// S→C  0x0B  InviteReceived: [sessionId:2][fromGhostId:4 LE uint32][kind:1]
 /// C→S  0x0C  InviteResponse: [sessionId:2][accept:1]
-/// S→C  0x0D  SessionStart:   [sessionId:2][peerGhostId:1][kind:1][role:1]
+/// S→C  0x0D  SessionStart:   [sessionId:2][peerGhostId:4 LE uint32][kind:1][role:1]
 /// C→S  0x0E  SessionEvent:   [sessionId:2][payload:N]
-/// S→C  0x0F  SessionEvent:   [sessionId:2][fromGhostId:1][payload:N]
+/// S→C  0x0F  SessionEvent:   [sessionId:2][fromGhostId:4 LE uint32][payload:N]
 /// C→S  0x10  SessionLeave:   [sessionId:2][reason:1]
 /// S→C  0x11  SessionEnd:     [sessionId:2][reason:1]
 ///
@@ -38,8 +38,7 @@ namespace KcdMp.Wire;
 /// change without touching the session framing.
 ///
 /// [configLen:1][config:configLen] on Invite is new in WO-5 and optional: a
-/// 2-byte Invite (no config) is still valid, matching the WO-2 wire exactly,
-/// so the presence layer and old test scripts needed no changes. It carries
+/// An Invite containing only target id + kind (no config trailer) is valid. It carries
 /// kind-specific open-time settings the same way SessionEvent carries
 /// kind-specific in-play events -- opaque to this layer, interpreted only by
 /// whichever kind reads it. Dice's config is
@@ -58,9 +57,9 @@ namespace KcdMp.Wire;
 ///
 /// Combat layer (WO-4). Replicates damage and death against shared NPCs.
 /// C→S  0x12  Damage: [targetGuid:16][stamina:4f][health:4f][flags:1]  (25 bytes)
-/// S→C  0x13  Damage: [sourceGhostId:1][targetGuid:16][stamina:4f][health:4f][flags:1]  (26)
+/// S→C  0x13  Damage: [sourceGhostId:4 LE uint32][targetGuid:16][stamina:4f][health:4f][flags:1]  (29)
 /// C→S  0x14  Death:  [targetGuid:16]  (16 bytes)
-/// S→C  0x15  Death:  [sourceGhostId:1][targetGuid:16]  (17 bytes)
+/// S→C  0x15  Death:  [sourceGhostId:4 LE uint32][targetGuid:16]  (20 bytes)
 ///                      flags bit 0: suppressHitReaction
 ///
 /// targetGuid is the NPC's SharedSoulGuid, in the same 16-byte order the game
@@ -133,7 +132,7 @@ namespace KcdMp.Wire;
 /// player's currently-equipped clothing/armor AND weapons onto their ghost,
 /// per item, instead of the single hardcoded spawn-time preset.
 /// C→S  0x1A  AppearanceUp:   [itemCount:1][itemClass:16]*itemCount
-/// S→C  0x1B  AppearanceDown: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
+/// S→C  0x1B  AppearanceDown: [sourceGhostId:4 LE uint32][itemCount:1][itemClass:16]*itemCount
 ///
 /// itemClass is the item's ItemClass GUID (the game's per-type id, e.g. every
 /// "GambesonShort01_m04_D2" shares one), read from
@@ -168,7 +167,7 @@ namespace KcdMp.Wire;
 /// (HANDOFF-WO4-combat.md), so a player sitting in a menu stops advancing
 /// relative to a peer who is not.
 /// C→S  0x1C  PauseUp:   [state:1]                       (1 byte)
-/// S→C  0x1D  PauseDown: [sourceGhostId:1][state:1]       (2 bytes)
+/// S→C  0x1D  PauseDown: [sourceGhostId:4 LE uint32][state:1]       (5 bytes)
 ///
 /// state: 1 = entered a pausing-like UI state, 0 = exited. Sent on every
 /// transition, not on a timer -- unlike Appearance there is no heartbeat,
@@ -211,7 +210,7 @@ namespace KcdMp.Wire;
 ///      [version][nameLen][name] and never looks past it, so a new client's
 ///      extra bytes are silently ignored rather than breaking the parse.
 ///      A new relay talking to an old client simply finds nothing there.
-/// S→C  0x1E  ReleaseVersion: [ghostId:1][releaseVersion:UTF-8]  -- no
+/// S→C  0x1E  ReleaseVersion: [ghostId:4 LE uint32][releaseVersion:UTF-8]  -- no
 ///      explicit length field, exactly like Name (0x03): the outer
 ///      [type][payloadLen] framing already carries it. Broadcast to existing
 ///      peers when a client's Handshake carried one (mirrors BroadcastName),
@@ -236,7 +235,7 @@ namespace KcdMp.Wire;
 /// even in principle. Players are addressed by ghostId here instead.
 ///
 /// C→S  0x1F  PlayerStateUp:   [health:4f][stamina:4f][flags:1]              (9)
-/// S→C  0x20  PlayerStateDown: [ghostId:1][health:4f][stamina:4f][flags:1]   (10)
+/// S→C  0x20  PlayerStateDown: [ghostId:4 LE uint32][health:4f][stamina:4f][flags:1]   (13)
 ///              flags bit 0: isUnconscious
 ///                   bit 1: isBleeding
 ///
@@ -253,7 +252,7 @@ namespace KcdMp.Wire;
 /// authoritative on that player's own machine (Rule 1), and it is the only
 /// rule that cannot produce a disagreement which fails to self-correct.
 ///
-/// C→S  0x21  PlayerHitUp:   [targetGhostId:1][health:4f][stamina:4f][flags:1]  (10)
+/// C→S  0x21  PlayerHitUp:   [targetGhostId:4 LE uint32][health:4f][stamina:4f][flags:1]  (13)
 /// S→C  0x22  PlayerHitDown: [health:4f][stamina:4f][flags:1]                   (9)
 ///
 /// Flow B, an NPC hurt a player. health/stamina are *loss amounts* (positive
@@ -271,7 +270,7 @@ namespace KcdMp.Wire;
 /// it is that one.
 ///
 /// C→S  0x23  PlayerDeathUp:   []                    (0) -- "I died"
-/// S→C  0x24  PlayerDeathDown: [ghostId:1]           (1)
+/// S→C  0x24  PlayerDeathDown: [ghostId:4 LE uint32]           (4)
 ///
 /// Flow C, a player died. Sent by the dying player's own client (Rule 1) and
 /// never inferred by a peer from health reaching zero, for exactly the reason
@@ -306,7 +305,7 @@ namespace KcdMp.Wire;
 /// ---- NPC sync layer (WO-32) ----
 ///
 /// C→S  0x26  NpcStateUp:   [nameLen:1][name:UTF-8][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
-/// S→C  0x27  NpcStateDown: [sourceGhostId:1] + the upstream body verbatim
+/// S→C  0x27  NpcStateDown: [sourceGhostId:4 LE uint32] + the upstream body verbatim
 ///                            flags bit 0: dead in the authority's world
 ///                                 bit 1: knocked out in the authority's world (WO-38 Phase 6)
 ///
@@ -372,7 +371,7 @@ namespace KcdMp.Wire;
 /// ---- Time-skip sync layer (WO-38 Phase 1) ----
 ///
 /// C→S  0x28  TimeSkipUp:   [phase:1][kind:1][worldTime:4 LE uint32]                  (6)
-/// S→C  0x29  TimeSkipDown: [sourceGhostId:1][phase:1][kind:1][worldTime:4 LE uint32] (7)
+/// S→C  0x29  TimeSkipDown: [sourceGhostId:4 LE uint32][phase:1][kind:1][worldTime:4 LE uint32] (10)
 ///
 /// Synchronises the day/night clock across players -- the WO-38 report's
 /// Section F: a player who sleeps to midnight leaves every peer still in
@@ -436,7 +435,7 @@ namespace KcdMp.Wire;
 /// ---- Horse identity layer (WO-38 Phase 5) ----
 ///
 /// C→S  0x2A  HorseInfoUp:   [nameLen:1][name:UTF-8]                  (1 + nameLen)
-/// S→C  0x2B  HorseInfoDown: [sourceGhostId:1][nameLen:1][name:UTF-8] (2 + nameLen)
+/// S→C  0x2B  HorseInfoDown: [sourceGhostId:4 LE uint32][nameLen:1][name:UTF-8] (5 + nameLen)
 ///
 /// Which world horse the sending player is currently riding, by entity name
 /// -- the same cross-client key as the NPC sync layer, valid for the same
@@ -463,7 +462,7 @@ namespace KcdMp.Wire;
 /// ---- Combat visibility layer (WO-39 Phase 1) ----
 ///
 /// C→S  0x2C  CombatEventUp:   [event:1]                    (1)
-/// S→C  0x2D  CombatEventDown: [sourceGhostId:1][event:1]   (2)
+/// S→C  0x2D  CombatEventDown: [sourceGhostId:4 LE uint32][event:1]   (5)
 ///
 /// The WO-38 report's Phase 4 gap: the emit line carries position, rotation,
 /// riding/sneaking flags, health, stamina, dead, unconscious -- and NOTHING
@@ -495,7 +494,7 @@ namespace KcdMp.Wire;
 /// ---- Weather sync layer (WO-40 Phase 3) ----
 ///
 /// C→S  0x2E  WeatherUp:   [nameLen:1][profileName utf8][blendSec:2]                  (var)
-/// S→C  0x2F  WeatherDown: [sourceGhostId:1][nameLen:1][profileName utf8][blendSec:2] (var)
+/// S→C  0x2F  WeatherDown: [sourceGhostId:4 LE uint32][nameLen:1][profileName utf8][blendSec:2] (var)
 ///
 /// The 2026-08-18 footage: "Weather is not synced at all... for PA it is
 /// sunny, for PB it is foggy." The engine exposes a write
@@ -519,7 +518,7 @@ namespace KcdMp.Wire;
 /// ---- Name-addressed NPC damage layer (WO-40 Phase 5) ----
 ///
 /// C→S  0x30  NpcDamageUp:   [nameLen:1][name][stamina:4f][health:4f][flags:1]                  (var)
-/// S→C  0x31  NpcDamageDown: [sourceGhostId:1][nameLen:1][name][stamina:4f][health:4f][flags:1] (var)
+/// S→C  0x31  NpcDamageDown: [sourceGhostId:4 LE uint32][nameLen:1][name][stamina:4f][health:4f][flags:1] (var)
 ///
 /// WO-39 Phase 3 proved the 0x12 wire guid is the per-save Soul Guid, not
 /// SharedSoulGuid, and flagged cross-install stability as the open premise.
@@ -539,9 +538,9 @@ namespace KcdMp.Wire;
 /// ---- Dropped-item sync layer (WO-48) ----
 ///
 /// C→S  0x32  ItemDropUp:   [dropId:4 LE][itemClass:16][amount:2 LE][health:4f][x:4f][y:4f][z:4f]  (38)
-/// S→C  0x33  ItemDropDown: [sourceGhostId:1] + the upstream body verbatim                          (39)
+/// S→C  0x33  ItemDropDown: [sourceGhostId:4 LE uint32] + the upstream body verbatim                  (42)
 /// C→S  0x34  ItemClaimUp:  [dropId:4 LE]                                                            (4)
-/// S→C  0x35  ItemClaimDown:[claimerGhostId:1][dropId:4 LE]                                          (5)
+/// S→C  0x35  ItemClaimDown:[claimerGhostId:4 LE uint32][dropId:4 LE]                                 (8)
 ///
 /// A player deliberately dropping an item for another player is direct
 /// interaction, so it is shared; chests and NPC pockets stay per-player on
@@ -608,14 +607,14 @@ public static class Protocol
     /// <summary>
     /// Protocol version, negotiated in the Handshake.
     ///
-    /// Bumped to 6 for the pause-mitigation layer. The relay refuses any
+    /// Bumped to 7 for 32-bit player/ghost identifiers. The relay refuses any
     /// handshake version that isn't an exact match, so a peer that is
     /// actually connected always speaks the relay's own pause vocabulary --
     /// there is no separate "does the peer support this" gate to add on top
     /// of that, because a peer that didn't would never have gotten past
     /// Handshake.
     /// </summary>
-    public const byte Version = 6;
+    public const byte Version = 7;
 
     // C→S
     public const byte Handshake      = 0x00;
@@ -679,8 +678,11 @@ public static class Protocol
     /// <summary>Exact Position (0x01) payload length.</summary>
     public const int PositionPayloadLen = 17;
 
+    /// <summary>Length of every player/ghost identifier on the wire.</summary>
+    public const int GhostIdLen = sizeof(uint);
+
     /// <summary>Exact Ghost (0x02) payload length.</summary>
-    public const int GhostPayloadLen = 18;
+    public const int GhostPayloadLen = GhostIdLen + PositionPayloadLen;
 
     /// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
     public const int VoiceFrameLen = 640;
@@ -692,13 +694,13 @@ public static class Protocol
     public const int DamageUpPayloadLen = SoulGuidLen + 4 + 4 + 1;
 
     /// <summary>Exact Damage (0x13) downstream payload length.</summary>
-    public const int DamageDownPayloadLen = 1 + DamageUpPayloadLen;
+    public const int DamageDownPayloadLen = GhostIdLen + DamageUpPayloadLen;
 
     /// <summary>Exact Death (0x14) upstream payload length.</summary>
     public const int DeathUpPayloadLen = SoulGuidLen;
 
     /// <summary>Exact Death (0x15) downstream payload length.</summary>
-    public const int DeathDownPayloadLen = 1 + SoulGuidLen;
+    public const int DeathDownPayloadLen = GhostIdLen + SoulGuidLen;
 
     /// <summary>Damage flag: apply without playing a hit reaction.</summary>
     public const byte DamageFlagSuppressHitReaction = 0x01;
@@ -707,7 +709,7 @@ public static class Protocol
     public const int PauseUpPayloadLen = 1;
 
     /// <summary>Exact PauseDown (0x1D) payload length.</summary>
-    public const int PauseDownPayloadLen = 2;
+    public const int PauseDownPayloadLen = GhostIdLen + PauseUpPayloadLen;
 
     /// <summary>PauseUp/PauseDown state byte: entered a pausing-like UI state.</summary>
     public const byte PauseStateEntered = 1;
@@ -745,10 +747,10 @@ public static class Protocol
     public const int PlayerStateUpPayloadLen = 4 + 4 + 1;
 
     /// <summary>Exact PlayerStateDown (0x20) payload length.</summary>
-    public const int PlayerStateDownPayloadLen = 1 + PlayerStateUpPayloadLen;
+    public const int PlayerStateDownPayloadLen = GhostIdLen + PlayerStateUpPayloadLen;
 
     /// <summary>Exact PlayerHitUp (0x21) payload length.</summary>
-    public const int PlayerHitUpPayloadLen = 1 + 4 + 4 + 1;
+    public const int PlayerHitUpPayloadLen = GhostIdLen + 4 + 4 + 1;
 
     /// <summary>Exact PlayerHitDown (0x22) payload length.</summary>
     public const int PlayerHitDownPayloadLen = 4 + 4 + 1;
@@ -757,7 +759,7 @@ public static class Protocol
     public const int PlayerDeathUpPayloadLen = 0;
 
     /// <summary>Exact PlayerDeathDown (0x24) payload length.</summary>
-    public const int PlayerDeathDownPayloadLen = 1;
+    public const int PlayerDeathDownPayloadLen = GhostIdLen;
 
     /// <summary>Exact CombatRole (0x25) payload length.</summary>
     public const int CombatRolePayloadLen = 1;
@@ -885,7 +887,7 @@ public static class Protocol
     public const int TimeSkipUpPayloadLen = 1 + 1 + 4;
 
     /// <summary>Exact TimeSkipDown (0x29) payload length.</summary>
-    public const int TimeSkipDownPayloadLen = 1 + TimeSkipUpPayloadLen;
+    public const int TimeSkipDownPayloadLen = GhostIdLen + TimeSkipUpPayloadLen;
 
     /// <summary>TimeSkip phase: a skip began (no time yet -- worldTime is 0).</summary>
     public const byte TimeSkipPhaseStart = 0;
@@ -960,7 +962,7 @@ public static class Protocol
     public const int CombatEventUpPayloadLen = 1;
 
     /// <summary>Exact CombatEventDown (0x2D) payload length.</summary>
-    public const int CombatEventDownPayloadLen = 2;
+    public const int CombatEventDownPayloadLen = GhostIdLen + CombatEventUpPayloadLen;
 
     /// <summary>Combat event: the sender drew their weapon. Receivers call the ghost's DrawWeapon.</summary>
     public const byte CombatEventWeaponDrawn = 0;
@@ -1015,13 +1017,13 @@ public static class Protocol
     public const int ItemDropUpPayloadLen = 4 + ItemClassLen + 2 + 4 + 4 + 4 + 4;
 
     /// <summary>Exact ItemDropDown (0x33) payload length.</summary>
-    public const int ItemDropDownPayloadLen = 1 + ItemDropUpPayloadLen;
+    public const int ItemDropDownPayloadLen = GhostIdLen + ItemDropUpPayloadLen;
 
     /// <summary>Exact ItemClaimUp (0x34) payload length.</summary>
     public const int ItemClaimUpPayloadLen = 4;
 
     /// <summary>Exact ItemClaimDown (0x35) payload length.</summary>
-    public const int ItemClaimDownPayloadLen = 1 + ItemClaimUpPayloadLen;
+    public const int ItemClaimDownPayloadLen = GhostIdLen + ItemClaimUpPayloadLen;
 
     /// <summary>
     /// How often the dropping agent re-sends a still-unclaimed drop, so a
