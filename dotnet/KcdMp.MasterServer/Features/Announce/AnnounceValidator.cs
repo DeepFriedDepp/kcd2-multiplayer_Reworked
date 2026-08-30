@@ -42,8 +42,8 @@ internal static class AnnounceValidator
 	private const int MaxAddressLength = 253;
 
 	/// <summary>
-	/// The relay addresses ghosts by a single byte and reserves none of it, so
-	/// no relay can hold more than this however it is configured.
+	/// Defensive public-listing cap. Ghost ids are wider, but this keeps bogus
+	/// announcements from advertising impractical player counts.
 	/// </summary>
 	private const int MaxPlayerLimit = 255;
 
@@ -101,7 +101,7 @@ internal static class AnnounceValidator
 
 		var maxPlayers = Math.Clamp(announce.MaxPlayers, 0, MaxPlayerLimit);
 		if (maxPlayers != announce.MaxPlayers)
-			warnings.Add($"maxPlayers was clamped to {maxPlayers}; a relay cannot address more than {MaxPlayerLimit} players");
+			warnings.Add($"maxPlayers was clamped to the public listing limit of {MaxPlayerLimit}");
 
 		var players = Math.Clamp(announce.Players, 0, maxPlayers);
 

@@ -40,7 +40,7 @@ namespace KCDMP_launcher.Models
 
     public class PeerVersionData
     {
-        public byte GhostId { get; set; }
+        public uint GhostId { get; set; }
         public string ReleaseVersion { get; set; } = "";
     }
 

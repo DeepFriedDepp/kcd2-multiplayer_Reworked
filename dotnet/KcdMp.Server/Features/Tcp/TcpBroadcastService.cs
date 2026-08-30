@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using KcdMp.Server.Features.ClientHandling;
 
 namespace KcdMp.Server.Features.Tcp;
@@ -234,7 +235,7 @@ public class TcpBroadcastService
     /// </summary>
     public void RoutePlayerHit(ClientSession source, byte[] body)
     {
-        byte targetId = body[0];
+        uint targetId = BinaryPrimitives.ReadUInt32LittleEndian(body);
         if (targetId == source.Id) return;
 
         foreach (var target in _clientHandler.GetClients())

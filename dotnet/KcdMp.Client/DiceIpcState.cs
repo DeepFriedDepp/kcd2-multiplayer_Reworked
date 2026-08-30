@@ -56,14 +56,14 @@ public sealed class DiceIpcState
 {
     private readonly InteractionClient _interactions;
     private readonly DiceClient _dice;
-    private readonly Func<byte, string?> _lookupGhostName;
+    private readonly Func<uint, string?> _lookupGhostName;
 
     private readonly object _lock = new();
     private DiceInviteDto? _invite;
     private DiceSessionDto? _session;
     private ushort? _trackedSessionId;
 
-    public DiceIpcState(InteractionClient interactions, DiceClient dice, Func<byte, string?> lookupGhostName)
+    public DiceIpcState(InteractionClient interactions, DiceClient dice, Func<uint, string?> lookupGhostName)
     {
         _interactions = interactions;
         _dice = dice;

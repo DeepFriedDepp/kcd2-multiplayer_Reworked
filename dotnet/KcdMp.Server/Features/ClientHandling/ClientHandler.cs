@@ -132,14 +132,14 @@ public class ClientHandler
 	// Deliberately NOT tied to Rule 2's damage authority: any player's sleep
 	// counts (WO-38 spec), so this layer has its own first-come arbitration.
 
-	private byte? _skipOwnerId;
+	private uint? _skipOwnerId;
 	private DateTime _skipStartedUtc;
-	private readonly HashSet<byte> _skipJoined = [];
+	private readonly HashSet<uint> _skipJoined = [];
 
 	// Grace record of the most recently cleared skip, so a joined client
 	// whose own vanilla skip resolves shortly *after* the owner's still gets
 	// its result forwarded quietly rather than announced as a second skip.
-	private HashSet<byte>? _lastSkipJoined;
+	private HashSet<uint>? _lastSkipJoined;
 	private DateTime _lastSkipClearedUtc;
 
 	/// <summary>What the relay should do with an inbound TimeSkipUp.</summary>
@@ -269,7 +269,7 @@ public class ClientHandler
 	// expiry, disconnect clear, and reclaim all destroy it with the entry, so
 	// a new claimant's first packet is never speed-checked against a previous
 	// owner's data -- it seeds a fresh baseline instead.
-	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc, DateTime EngagedUtc, float X, float Y, float Z)> _npcClaims = [];
+	private readonly Dictionary<string, (uint OwnerId, DateTime LastUtc, DateTime EngagedUtc, float X, float Y, float Z)> _npcClaims = [];
 
 	/// <summary>How <see cref="RouteNpcState"/> disposed of one NpcStateUp.</summary>
 	public enum NpcRoute
