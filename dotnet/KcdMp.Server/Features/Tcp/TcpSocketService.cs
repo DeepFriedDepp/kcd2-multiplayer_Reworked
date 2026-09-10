@@ -72,7 +72,7 @@ public class TcpSocketService : BackgroundService
 					{
 						_logger.Error(task.Exception?.Flatten(),
 							"[!] {ClientName}'s connection handler faulted unexpectedly",
-							client.Name ?? $"id={client.Id}");
+							client.Name ?? "(not ready)");
 					}
 
 					_clientHandler.RemoveClient(client);
@@ -90,7 +90,7 @@ public class TcpSocketService : BackgroundService
 					_sessions.HandleDisconnect(client);
 
 					_logger.Information("[-] {ClientName} disconnected. Clients: {ClientHandlerClientCount}",
-						client.Name ?? $"id={client.Id}", _clientHandler.ClientCount);
+						client.Name ?? "(not ready)", _clientHandler.ClientCount);
 					if (client.IsReady)
 						_broadcastService.BroadcastDisconnect(client);
 

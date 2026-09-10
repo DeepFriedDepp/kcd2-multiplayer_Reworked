@@ -16,6 +16,17 @@ public class ClientHandler
 	private readonly object _lock = new();
 	private readonly int _maxPlayers;
 
+	// WO-76 (docs/WO-75-audit-findings.md s1): a free-list pool of the wire's
+	// byte-wide session ids. ClientSession.Id stays a byte until PR #3 widens
+	// it to uint; until then, an ever-incrementing counter wraps after 256
+	// connections in one relay lifetime and two live sessions can end up
+	// sharing an id. Reserved only here, when a handshake actually completes
+	// (TryMarkReady) -- a probe, a version mismatch, or a rejected-for-full
+	// connection never burns one -- and released back to the pool on
+	// disconnect (RemoveClient), so a long-lived relay can serve far more
+	// than 256 total connections without ever handing out a live-colliding id.
+	private readonly Queue<byte> _freeIds = new(Enumerable.Range(0, 256).Select(i => (byte)i));
+
 	// ---- WO-66 claim-update validation tunables ----
 	//
 	// Config-backed like Tcp:Port / Echo, with the shipped defaults inline.
@@ -62,17 +73,19 @@ public class ClientHandler
 	}
 
 	/// <summary>
-	/// Reserves one player slot after a valid handshake. The check and reserve
-	/// happen under the same lock so simultaneous handshakes cannot overbook
-	/// the relay; a socket that never handshakes consumes no player slot.
+	/// Reserves one player slot and one wire id after a valid handshake. The
+	/// check and reserve happen under the same lock so simultaneous
+	/// handshakes cannot overbook the relay; a socket that never handshakes
+	/// consumes neither a player slot nor an id (WO-76).
 	/// </summary>
 	public bool TryMarkReady(ClientSession client)
 	{
 		lock (_lock)
 		{
-			if (_readyClients.Count >= _maxPlayers)
+			if (_readyClients.Count >= _maxPlayers || _freeIds.Count == 0)
 				return false;
 
+			client.Id = _freeIds.Dequeue();
 			return _readyClients.Add(client);
 		}
 	}
@@ -80,7 +93,9 @@ public class ClientHandler
 	/// <summary>
 	/// Remove a client.
 	///
-	/// Called when a client disconnects.
+	/// Called when a client disconnects. Only a client that was ever marked
+	/// ready holds a pooled id to release (WO-76) -- one that dropped mid- or
+	/// pre-handshake never reserved one.
 	/// </summary>
 	/// <param name="client"></param>
 	public void RemoveClient(ClientSession client)
@@ -88,7 +103,8 @@ public class ClientHandler
 		lock (_lock)
 		{
 			_clients.Remove(client);
-			_readyClients.Remove(client);
+			if (_readyClients.Remove(client))
+				_freeIds.Enqueue(client.Id);
 		}
 	}
 

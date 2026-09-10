@@ -14,8 +14,6 @@ namespace KcdMp.Server.Features.ClientHandling;
 /// </summary>
 public class ClientSession
 {
-    private static int _idCounter;
-
     private readonly ILogger _logger;
     private readonly TcpClient _tcp;
     private readonly NetworkStream _stream;
@@ -31,7 +29,13 @@ public class ClientSession
 
     private readonly record struct QueuedWrite(byte[]? Packet, byte? GhostId);
 
-    public byte Id { get; } = (byte)Interlocked.Increment(ref _idCounter);
+    /// <summary>
+    /// WO-76: assigned by <see cref="ClientHandler.TryMarkReady"/> from its
+    /// byte-id free-list pool, not at construction. Meaningless (default 0)
+    /// before that -- check <see cref="IsReady"/>, not this, to tell a
+    /// pre-handshake socket from a real peer with id 0.
+    /// </summary>
+    public byte Id { get; internal set; }
     public string? Name { get; private set; }
     public bool IsReady => Name is not null;
 
