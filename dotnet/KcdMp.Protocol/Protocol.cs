@@ -588,7 +588,21 @@ namespace KcdMp.Wire;
 /// item would evaporate. No client ever concludes "I won" from local state;
 /// only the echo decides.
 ///
-/// Free type bytes for new features: 0x36 and up.
+/// ---- Capacity layer (WO-76) ----
+///
+/// S→C  0x36  ServerFull: [maxPlayers:1]
+///
+/// Sent instead of silently closing the socket when a handshake arrives at a
+/// relay already at ServerInfo:MaxPlayers (docs/WO-75-audit-findings.md s1,
+/// PR #1 merge message). Before this, a full relay just dropped the
+/// connection with no packet, so a reconnecting client's generic "expected
+/// Ack" error path could not tell "full" from any other refusal and kept
+/// retrying every few seconds forever -- burning one byte-wide session id per
+/// attempt on top of it. Fatal for the client like VersionMismatch: retrying
+/// immediately cannot help, so the agent stops reconnecting on sight of this
+/// rather than looping.
+///
+/// Free type bytes for new features: 0x37 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -674,6 +688,7 @@ public static class Protocol
     public const byte NpcDamageDown    = 0x31;
     public const byte ItemDropDown     = 0x33;
     public const byte ItemClaimDown    = 0x35;
+    public const byte ServerFull       = 0x36;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>

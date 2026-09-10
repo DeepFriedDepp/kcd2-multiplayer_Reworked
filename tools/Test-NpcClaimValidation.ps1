@@ -32,8 +32,10 @@
       V6  counters        -> GET api/information/npc-validation matches the
                              exact per-reason tallies the tests produced.
       V7  capacity        -> the info endpoint counts only handshaken peers;
-                             a fourth peer is refused at the configured limit,
-                             and a disconnected peer frees its slot.
+                             a fourth peer is refused at the configured limit
+                             with a ServerFull (0x36) packet, not a silent
+                             close (WO-76), and a disconnected peer frees its
+                             slot.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\Test-NpcClaimValidation.ps1
@@ -51,6 +53,7 @@ $HANDSHAKE     = 0x00
 $ACK_TYPE      = 0xFF
 $NPCSTATE_UP   = 0x26
 $NPCSTATE_DOWN = 0x27
+$SERVER_FULL   = 0x36   # WO-76: sent instead of a silent close when full
 $ENGAGED_FLAGS = [byte]0x24   # drawn (0x04) + ENGAGED (0x20), the WO-60 test value
 
 $script:Pass = 0; $script:Fail = 0
@@ -186,7 +189,9 @@ try {
     [Array]::Copy($overflowName, 0, $overflowHandshake, 2, $overflowName.Length)
     try { Send-Packet $overflowStream $HANDSHAKE $overflowHandshake } catch { }
     $overflowReply = Read-Packet $overflowStream
-    Check "fourth connection refused at maxPlayers=3" ($null -eq $overflowReply) "unexpected packet type $($overflowReply.Type)"
+    Check "fourth connection refused at maxPlayers=3 with a ServerFull packet, not silence" `
+        ($null -ne $overflowReply -and $overflowReply.Type -eq $SERVER_FULL -and $overflowReply.Payload[0] -eq 3) `
+        "got $(if ($null -eq $overflowReply) { '(null / timeout)' } else { "type=0x{0:X2} payload={1}" -f $overflowReply.Type, $overflowReply.Payload[0] })"
     $overflow.Close()
     $pendingProbe.Close()
 

@@ -113,6 +113,11 @@ public class ClientSession
             {
                 _logger.Warning("[!] Rejecting '{Name}' from {ClientRemoteEndPoint}: server is full.",
                     name, _tcp.Client.RemoteEndPoint);
+                // WO-76: previously just returned, closing the socket with no
+                // packet -- the client's generic "expected Ack" failure looked
+                // identical to any other refusal, so it retried forever,
+                // burning one pooled id per attempt. See Protocol's 0x36 notes.
+                EnqueueRaw(BuildPacket(Protocol.ServerFull, [(byte)Math.Min(_clientHandler.MaxPlayers, byte.MaxValue)]));
                 return;
             }
 

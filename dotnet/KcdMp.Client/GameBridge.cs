@@ -567,6 +567,14 @@ public partial class GameBridge(ClientConfig config)
                 Console.WriteLine($"[!] {ex.Message}");
                 break;
             }
+            catch (ServerFullException ex)
+            {
+                // Fatal for this attempt (WO-76): looping every 3 s against a
+                // relay that just said it is full only burns another pooled
+                // id for nothing until someone else leaves.
+                Console.WriteLine($"[!] {ex.Message}");
+                break;
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[!] Unexpected error: {ex.Message}");
@@ -664,6 +672,9 @@ public partial class GameBridge(ClientConfig config)
 
         if (reply[0] == Protocol.VersionMismatch)
             throw new ProtocolVersionMismatchException(reply[3]);
+
+        if (reply[0] == Protocol.ServerFull)
+            throw new ServerFullException(reply[3]);
 
         if (reply[0] != Protocol.Ack)
         {
