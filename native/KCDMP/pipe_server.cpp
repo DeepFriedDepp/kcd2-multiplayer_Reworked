@@ -7,8 +7,14 @@
 #include "log.h"
 
 #include <windows.h>
+#include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
 
 namespace kcdmp::pipe {
@@ -145,6 +151,62 @@ void send_result(HANDLE h, bool ok, uint8_t seq) {
     LeaveCriticalSection(&g_write_lock);
 }
 
+// WO-76 (docs/WO-75-audit-findings.md s1/s2; PR #1 merge message): run_sync
+// deliberately waits UNBOUNDED once a queued task has started -- returning
+// early there would invalidate references the caller's own lambda captured,
+// the exact use-after-free PR #1 already fixed for run_sync's internal
+// state. That is the right call for run_sync itself, but it means one hung
+// frame (the game's main thread wedged) freezes this pipe's entire serve()
+// loop forever: no timeout, no log line, the next request never read.
+//
+// Fixed here instead, one level up, with the identical shape PR #1 used --
+// state with process lifetime behind a shared_ptr, so giving up on it can
+// never dangle anything. The actual run_sync call moves to a detached helper
+// thread; serve() waits on ITS OWN bounded timeout against the shared state.
+// If that elapses, serve() logs it, replies failure, and goes back to
+// reading the pipe; the helper thread and run_sync's own wait are left to
+// finish whenever (or if) the game recovers -- harmlessly, since nothing on
+// the pipe thread still references them by then.
+template <typename T>
+struct PipeSyncState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    bool ran = false;
+    T value{};
+};
+
+constexpr unsigned kPipeSyncTimeoutMs = 5000;
+
+// `work` must capture everything it needs BY VALUE: it can end up running
+// well after this function has returned to its caller. Returns run_sync's
+// own result (false = the frame never picked the task up) through outValue
+// and the return value; a false return with no "timed out" log from the
+// caller's usual pattern means THIS wait gave up, not run_sync's -- see the
+// distinct log line below.
+template <typename T>
+bool run_sync_bounded(const std::function<void(T&)>& work, const char* what, T& outValue) {
+    auto state = std::make_shared<PipeSyncState<T>>();
+    std::thread([state, work] {
+        const bool ran = main_thread::run_sync([&] { work(state->value); });
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->ran = ran;
+        state->done = true;
+        state->cv.notify_all();
+    }).detach();
+
+    std::unique_lock<std::mutex> lock(state->mutex);
+    if (!state->cv.wait_for(lock, std::chrono::milliseconds(kPipeSyncTimeoutMs),
+                             [&] { return state->done; })) {
+        logf("PIPE: %s is still waiting on the main thread past %ums -- the frame loop "
+             "may be hung. Replying failure now; the call will still land if a frame resumes.",
+             what, kPipeSyncTimeoutMs);
+        return false;
+    }
+    outValue = state->value;
+    return state->ran;
+}
+
 // One connected agent, until it disconnects.
 void serve(HANDLE h) {
     g_connected = true;
@@ -178,8 +240,8 @@ void serve(HANDLE h) {
                     send_result(h, false, seq);
                     break;
                 }
-                unsigned char guid[16];
-                std::memcpy(guid, body, 16);
+                std::array<unsigned char, 16> guid;
+                std::memcpy(guid.data(), body, 16);
                 float stamina, health;
                 std::memcpy(&stamina, body + 16, 4);
                 std::memcpy(&health,  body + 20, 4);
@@ -188,10 +250,11 @@ void serve(HANDLE h) {
                 // Onto the game's thread, and wait so the agent gets a truthful
                 // result rather than an optimistic one.
                 bool ok = false;
-                const bool ran = main_thread::run_sync([&] {
-                    ok = rttr::apply_damage(guid, stamina, health, suppress);
-                    if (ok) rttr::note_remote_damage(guid, health);
-                });
+                const bool ran = run_sync_bounded<bool>(
+                    [guid, stamina, health, suppress](bool& result) {
+                        result = rttr::apply_damage(guid.data(), stamina, health, suppress);
+                        if (result) rttr::note_remote_damage(guid.data(), health);
+                    }, "ApplyDamage", ok);
                 if (!ran) logf("PIPE: ApplyDamage timed out waiting for a frame");
                 logf("PIPE: ApplyDamage stamina=%.2f health=%.2f -> %s",
                      stamina, health, ok ? "applied" : "soul not loaded / failed");
@@ -205,12 +268,13 @@ void serve(HANDLE h) {
                     send_result(h, false, seq);
                     break;
                 }
-                unsigned char guid[16];
-                std::memcpy(guid, body, 16);
+                std::array<unsigned char, 16> guid;
+                std::memcpy(guid.data(), body, 16);
                 bool ok = false;
-                const bool ran = main_thread::run_sync([&] {
-                    ok = rttr::apply_death(guid);
-                });
+                const bool ran = run_sync_bounded<bool>(
+                    [guid](bool& result) { result = rttr::apply_death(guid.data()); },
+                    "ApplyDeath", ok);
+                if (!ran) logf("PIPE: ApplyDeath timed out waiting for a frame");
                 logf("PIPE: ApplyDeath -> %s", ok ? "dead" : "soul not loaded / failed");
                 send_result(h, ran && ok, seq);
                 break;
@@ -222,13 +286,14 @@ void serve(HANDLE h) {
                     send_result(h, false, seq);
                     break;
                 }
-                unsigned char guid[16];
-                std::memcpy(guid, body, 16);
+                std::array<unsigned char, 16> guid;
+                std::memcpy(guid.data(), body, 16);
                 const bool hostile = body[16] != 0;
                 bool ok = false;
-                const bool ran = main_thread::run_sync([&] {
-                    ok = rttr::set_ghost_faction_hostile(guid, hostile);
-                });
+                const bool ran = run_sync_bounded<bool>(
+                    [guid, hostile](bool& result) { result = rttr::set_ghost_faction_hostile(guid.data(), hostile); },
+                    "SetFactionHostile", ok);
+                if (!ran) logf("PIPE: SetFactionHostile timed out waiting for a frame");
                 logf("PIPE: SetFactionHostile hostile=%s -> %s",
                      hostile ? "true" : "false", ok ? "applied" : "ghost not loaded / failed");
                 send_result(h, ran && ok, seq);
@@ -243,15 +308,13 @@ void serve(HANDLE h) {
                 }
                 uint32_t entityId = 0;
                 std::memcpy(&entityId, body, 4);
-                char spec[192];
                 const size_t specLen = len - 4;
-                std::memcpy(spec, body + 4, specLen);
-                spec[specLen] = 0;
+                std::string spec(reinterpret_cast<const char*>(body + 4), specLen);
 
                 bool ok = false;
-                const bool ran = main_thread::run_sync([&] {
-                    ok = rttr::ghost_swing(entityId, spec);
-                });
+                const bool ran = run_sync_bounded<bool>(
+                    [entityId, spec](bool& result) { result = rttr::ghost_swing(entityId, spec.c_str()); },
+                    "GhostSwing", ok);
                 if (!ran) logf("PIPE: GhostSwing timed out waiting for a frame");
                 send_result(h, ran && ok, seq);
                 break;
@@ -263,13 +326,13 @@ void serve(HANDLE h) {
                     send_result(h, false, seq);
                     break;
                 }
-                unsigned char guid[16];
-                std::memcpy(guid, body, 16);
+                std::array<unsigned char, 16> guid;
+                std::memcpy(guid.data(), body, 16);
                 const bool on = body[16] != 0;
                 bool ok = false;
-                const bool ran = main_thread::run_sync([&] {
-                    ok = sctx::apply_isolation(guid, on);
-                });
+                const bool ran = run_sync_bounded<bool>(
+                    [guid, on](bool& result) { result = sctx::apply_isolation(guid.data(), on); },
+                    "GhostIsolate", ok);
                 if (!ran) logf("PIPE: GhostIsolate timed out waiting for a frame");
                 logf("PIPE: GhostIsolate on=%s -> %s", on ? "true" : "false",
                      ok ? "all contexts in state" : "not fully applied (see SCTX lines)");
@@ -287,9 +350,10 @@ void serve(HANDLE h) {
                 uint64_t closureAddr = 0;
                 std::memcpy(&closureAddr, body, 8);
                 kcdmp::luaintrospect::ClosureInfo info;
-                const bool ran = main_thread::run_sync([&] {
-                    info = kcdmp::luaintrospect::resolve(closureAddr);
-                });
+                const bool ran = run_sync_bounded<kcdmp::luaintrospect::ClosureInfo>(
+                    [closureAddr](kcdmp::luaintrospect::ClosureInfo& result) {
+                        result = kcdmp::luaintrospect::resolve(closureAddr);
+                    }, "ResolveLuaClosure", info);
                 if (!ran) logf("PIPE: ResolveLuaClosure timed out waiting for a frame");
                 send_closure_info(h, ran ? info : kcdmp::luaintrospect::ClosureInfo{});
                 break;
