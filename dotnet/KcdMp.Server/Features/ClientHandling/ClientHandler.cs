@@ -1,3 +1,5 @@
+using ILogger = Serilog.ILogger;
+
 namespace KcdMp.Server.Features.ClientHandling;
 
 /// <summary>
@@ -28,12 +30,24 @@ public class ClientHandler
 	private readonly double _maxNpcSpeedMps;
 	private readonly double _npcSpeedSlackMeters;
 
-	public ClientHandler(IConfiguration configuration)
+	public ClientHandler(ILogger logger, IConfiguration configuration)
 	{
-		_maxPlayers          = configuration.GetValue("ServerInfo:MaxPlayers", 64);
+		// WO-76 (docs/WO-75-audit-findings.md s1): 0 was accepted at face
+		// value and refused every handshake (TryMarkReady's count-vs-limit
+		// check can never pass), bricking the relay with no indication why.
+		int configuredMaxPlayers = configuration.GetValue("ServerInfo:MaxPlayers", 64);
+		_maxPlayers = Math.Max(1, configuredMaxPlayers);
+		if (_maxPlayers != configuredMaxPlayers)
+			logger.Warning("[!] ServerInfo:MaxPlayers={Configured} is invalid; clamped to {Effective}.",
+				configuredMaxPlayers, _maxPlayers);
+		logger.Information("Max players: {MaxPlayers}", _maxPlayers);
+
 		_maxNpcSpeedMps      = configuration.GetValue("NpcClaimValidation:MaxSpeedMps", 40.0);
 		_npcSpeedSlackMeters = configuration.GetValue("NpcClaimValidation:SlackMeters", 2.0);
 	}
+
+	/// <summary>The effective (clamped) player cap, echoed in the ServerFull (0x36) packet.</summary>
+	public int MaxPlayers => _maxPlayers;
 
 	/// <summary>
 	/// Add a client.
