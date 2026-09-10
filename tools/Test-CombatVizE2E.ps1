@@ -16,12 +16,12 @@
       arrive here as the right event byte.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File tools\Test-CombatVizE2E.ps1 -RelayPort 5273
+    powershell -ExecutionPolicy Bypass -File tools\Test-CombatVizE2E.ps1 -RelayPort 7778
 #>
 [CmdletBinding()]
 param(
     [string] $RelayHost = 'localhost',
-    [int]    $RelayPort = 5273,
+    [int]    $RelayPort = 7778,
     [string] $KcdLog = 'D:\SteamLibrary\steamapps\common\KCD2Mod\kcd.log',
     [int]    $ListenSeconds = 45
 )

@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'KcdApi.ps1')
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 
 function Read-Packet($stream) {
     $head = New-Object byte[] 3; $got = 0
@@ -39,7 +40,7 @@ Write-Host "target : $SoulName  guid=$guidText  health=$before"
 $tcp = New-Object System.Net.Sockets.TcpClient($RelayHost, $Port)
 $stream = $tcp.GetStream(); $stream.ReadTimeout = 10000
 $nb = [Text.Encoding]::UTF8.GetBytes('listening-peer')
-$hs = New-Object byte[] (2 + $nb.Length); $hs[0] = 3; $hs[1] = [byte]$nb.Length
+$hs = New-Object byte[] (2 + $nb.Length); $hs[0] = $PROTOCOL_VERSION; $hs[1] = [byte]$nb.Length
 [Array]::Copy($nb, 0, $hs, 2, $nb.Length)
 $stream.Write(([byte[]]@(0x00, ($hs.Length -band 0xFF), 0)), 0, 3)
 $stream.Write($hs, 0, $hs.Length); $stream.Flush()

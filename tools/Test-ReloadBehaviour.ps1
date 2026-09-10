@@ -54,10 +54,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'KcdApi.ps1')
+. (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
 
 $HANDSHAKE = 0x00; $ACK = 0xFF; $POSITION = 0x01
 $GHOST = 0x02; $NAME = 0x03; $DISCONNECT = 0x06
-$VERSION = 6   # matches Protocol.Version; the relay refuses any mismatch
+$VERSION = $PROTOCOL_VERSION   # matches Protocol.Version; the relay refuses any mismatch
 
 function Send-Packet($stream, [byte] $type, [byte[]] $payload) {
     if ($null -eq $payload) { $payload = @() }

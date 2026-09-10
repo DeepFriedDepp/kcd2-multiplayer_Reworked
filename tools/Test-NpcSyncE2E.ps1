@@ -11,9 +11,12 @@
                as NpcStateDown (0x27) and checks the payload against the same
                NPC's actual position read out of the running game.
 
-      Phase 2  AUTHORITY guard. This peer, while NOT the authority, sends an
-               NpcStateUp naming the test NPC at a displaced position. The
-               relay must drop it: no puppet appears, the NPC does not move.
+      Phase 2  CLAIM guard. This peer, while NOT the global damage authority,
+               sends an NpcStateUp naming the test NPC (which nobody else is
+               currently streaming) at a displaced position. Since WO-39
+               Phase 2 a non-authority's state for an unclaimed entity IS a
+               valid claim: the relay broadcasts it and the real NPC follows
+               the peer's stream as a puppet.
 
       Phase 3  APPLY side -- the load-bearing half. Requires ONE MANUAL STEP:
                the operator restarts their agent while this peer stays
@@ -211,7 +214,7 @@ try {
     Drain $s 800 | Out-Null
 
     Write-Host ""
-    Write-Host "--- Phase 2: authority guard (peer is NOT authority, its NpcStateUp must be dropped) ---" -ForegroundColor Cyan
+    Write-Host "--- Phase 2: claim guard (peer is NOT the authority, but its claim on an unclaimed NPC is still accepted) ---" -ForegroundColor Cyan
 
     $before = Get-NpcPos
     Check "test NPC '$NpcName' is loaded" ($null -ne $before) "cannot run the guard without it"
@@ -220,9 +223,9 @@ try {
         Start-Sleep -Seconds 2
         $after = Get-NpcPos
         $moved = [Math]::Abs($after.X - $before.X) -gt 0.5 -or [Math]::Abs($after.Y - $before.Y) -gt 0.5
-        Check "relay dropped the non-authority NpcStateUp (NPC did not move)" (-not $moved) "before=$($before.X),$($before.Y) after=$($after.X),$($after.Y)"
+        Check "since WO-39, a non-authority's claim on an unclaimed NPC is broadcast and moves it" ($moved) "before=$($before.X),$($before.Y) after=$($after.X),$($after.Y)"
         $pup = LuaRead 'pup' ('local n=0; for _ in pairs(KCD2MP.npcPuppets) do n=n+1 end; System.LogAlways("[WO32E] pup="..n)')
-        Check "no puppet was created" ($pup -eq '0') "npcPuppets count = $pup"
+        Check "a puppet was created for the claimed NPC" ($pup -ne '0') "npcPuppets count = $pup"
     }
 
     if ($SkipPhase3) {

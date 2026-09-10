@@ -39,11 +39,14 @@ $code = @"
 local function P(k,v) System.LogAlways("[KCD2-MP-FACE] "..k.."="..tostring(v)) end
 local ppos = player:GetWorldPos()
 local ok, err = pcall(function()
+  -- WO-22: SharedSoulGuid is a TOP-LEVEL parameter of SpawnEntity's table,
+  -- not something nested under Properties -- passing it nested binds no
+  -- soul at all (see kdcmp.lua's KCD2MP_SpawnGhost for the shipped shape).
   XGenAIModule.SpawnEntity{
     Name = "$SpawnName",
     ClassName = "$ClassName",
     Pos = {ppos.x+2, ppos.y, ppos.z},
-    Properties = { esFaction = "Civilians", esModularBehaviorTree = "", guidSharedSoulId = "$donorShared" },
+    SharedSoulGuid = "$donorShared",
   }
 end)
 P("spawn.ok", ok)

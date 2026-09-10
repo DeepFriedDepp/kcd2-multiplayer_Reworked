@@ -25,8 +25,10 @@
             docs/WO-28-findings.md, which marks it unverified rather than
             quietly implying otherwise.
 
-    Runs against an isolated relay on its own port by default so a live session
-    on 7778 is never touched.
+    Runs against an isolated relay on its own TCP port by default so a live
+    session on 7778 is never touched -- and, since WO-76, its own HTTP port
+    too (appsettings.json hardcodes the HTTP listener to 5273 regardless of
+    -Port, so this relay is started with ASPNETCORE_URLS overridden).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\Test-PlayerCombat.ps1
@@ -35,6 +37,11 @@
 param(
     [string] $RelayHost = 'localhost',
     [int]    $Port = 7781,
+    # WO-76: isolates the HTTP listener too -- ServerInfo's appsettings.json
+    # hardcodes "Urls": "http://0.0.0.0:5273", so a relay started without
+    # overriding ASPNETCORE_URLS still binds 5273 regardless of -Port, and
+    # collides with (or gets refused by) any other relay already up.
+    [int]    $HttpPort = 7782,
     # Empty means "start one myself on $Port and stop it afterwards".
     [string] $RelayExe = ''
 )
@@ -121,7 +128,8 @@ if (-not $RelayExe) {
     $RelayExe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $RelayExe) { throw "no built KcdMpServer.exe found -- run: dotnet build dotnet\KcdMp.Server\KcdMp.Server.csproj" }
 }
-Write-Host "starting an isolated relay on port $Port so a live session is untouched..."
+Write-Host "starting an isolated relay on port $Port (http $HttpPort) so a live session is untouched..."
+$env:ASPNETCORE_URLS = "http://localhost:$HttpPort"
 $relayProc = Start-Process -FilePath $RelayExe -ArgumentList "--port $Port" -PassThru -WindowStyle Hidden
 Start-Sleep -Seconds 2
 if ($relayProc.HasExited) { throw "the relay exited immediately (port $Port already in use?)" }
@@ -302,6 +310,7 @@ finally {
     if ($relayProc -and -not $relayProc.HasExited) {
         Stop-Process -Id $relayProc.Id -Force -ErrorAction SilentlyContinue
     }
+    Remove-Item Env:ASPNETCORE_URLS -ErrorAction SilentlyContinue
 }
 
 Write-Host ""
