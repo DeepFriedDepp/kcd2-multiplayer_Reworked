@@ -3586,7 +3586,13 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     end
 
     if istate.packetCount % 40 == 1 then
-        local spd = math.sqrt(raw_vx*raw_vx + raw_vy*raw_vy)
+        -- WO-76: raw_vx/raw_vy were never defined -- this nil-arithmetic
+        -- error was thrown, inside the per-statement pcall, on roughly every
+        -- 40th ghost packet, which is why no pkt#N line has ever appeared in
+        -- a field log. istate.vx/vy (lines 3536-3537) is the same lerped
+        -- velocity estimate this function already computes and stores.
+        local svx, svy = istate.vx or 0, istate.vy or 0
+        local spd = math.sqrt(svx*svx + svy*svy)
         mp_log(string.format("pkt#%d id=%s pos=%.1f,%.1f,%.1f spd=%.1f riding=%s",
             istate.packetCount, id, x, y, z, spd, tostring(riding)))
     end
