@@ -1,5 +1,15 @@
 # WO-69 progress
 
+> **Correction (WO-76, pointing to WO-74):** the relay cold-start diagnosis
+> recorded below/in `WO-69-findings.md` (a `Microsoft.Extensions.Configuration.*`
+> version mismatch in `%LocalAppData%\KCDMP`) was retracted by
+> `docs/WO-74-findings.md`. WO-74 showed no shipped release has ever carried
+> that assembly version, and that the directory read went through a sandbox
+> shadow copy that lies about that path. The *symptom* (Setup could leave an
+> install half-applied) was real and is fixed in WO-74/0.19.0; the *file-level
+> diagnosis* below is not established and should not be carried forward.
+> Original text follows unedited.
+
 Read `docs/WO-69-findings.md` first — it carries the diagnosis and the evidence
 tags. This file is the state-of-play and the runbook.
 

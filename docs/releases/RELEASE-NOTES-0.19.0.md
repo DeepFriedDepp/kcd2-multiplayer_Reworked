@@ -66,11 +66,14 @@ repair removed. If you report a problem, send that file.
 
 ## For anyone coming from before 0.18.8
 
-- **Ghost gender** — ghosts of female characters no longer appear male.
-- **Ghost crime isolation** — the reachable half; a ghost can no longer be
-  talked to. Punching a ghost in front of a guard still files a real crime;
-  that needs a native fix and is not done.
-- **Ghost yaw smoothing** — turning ghosts no longer snap their heads round.
+- **Ghost gender** — male players no longer render as female (the roster
+  picker used to derive gender from a hash of the player's name; it is now
+  male-only, since every KCD2 player character is Henry).
+- **Ghost crime isolation** — both halves now: a ghost can no longer be
+  talked to, and punching one in front of a guard no longer files a crime
+  (WO-68's native `crime_disableReport`-family write, applied by default).
+- **NPC puppet yaw smoothing** — a driven puppet's facing no longer snaps to
+  the last packet 4x/second; it turns smoothly like ghosts already did.
 - **Relay claim-update hardening** — implausible NPC movement from a peer is
   rejected and counted instead of applied.
 

@@ -10,6 +10,7 @@
   <a href="https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/DeepFriedDepp/kcd2-multiplayer_Reworked?label=latest%20release&color=8a3324&style=flat-square"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2c3e50?style=flat-square"></a>
   <a href="docs/LAUNCHING.md"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows-555555?style=flat-square"></a>
+  <a href="https://discord.gg/WPCAcG4H4"><img alt="Discord" src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white&style=flat-square"></a>
 </p>
 
 Two or more people play the same open world together at once: you see each
@@ -60,7 +61,7 @@ known rough edges in [the detailed status table](#full-status-detail) below.
 | Shared player health/death (HP on nameplate, death → reload) | ✅ Working, live-verified |
 | NPC hits on a player crossing between machines | 🚧 Built, guards verified — cross-machine hit unverified |
 | NPC sync (hand-placed NPCs mirrored across machines) | ✅ Working, on by default — proximity-based authority as of 0.18.2 |
-| Reactive ghost combat (self-defense, joins nearby fights) | ✅ Working, always on, no toggle |
+| Reactive ghost combat (self-defense, joins nearby fights) | ⚠️ Working, but suppressed by default — `mp_ghost_isolate` (on by default since WO-68) disables it |
 | Proactive NPC aggro on ghosts (`mp_enable_aggro`) | ✅ Working, opt-in, off by default |
 | Dropped-item sync (shared pickups, race-safe) | ✅ Working |
 | Voice chat | ✅ Working, proximity-based |
@@ -72,7 +73,7 @@ known rough edges in [the detailed status table](#full-status-detail) below.
 | One-click installer | ✅ Working — automated + manual tests |
 | Emotes | ❌ Not implemented |
 | Duelling | ❌ Not implemented |
-| Dice wagers | ❌ Not implemented — score-only match, no groschen change hands |
+| Dice wagers | ✅ Working — `mp_dice_wager <amount>` stakes groschen on the next invite |
 | Ranged weapon swings on ghosts | ❌ Melee only |
 
 <details>
@@ -91,7 +92,7 @@ known rough edges in [the detailed status table](#full-status-detail) below.
 | Shared player health and death | **Working** — every player's own health and stamina now reach everyone else, so a peer's ghost shows their real `HP`/`ST` on its nameplate instead of looking permanently healthy while its owner is being killed. A player who dies is announced explicitly by their own game (never guessed from health hitting zero) and their ghost is tagged **`[dead - reloading]`**, clearing by itself once they are back in the world. Live-verified end to end on one machine, 17/17. **What death does is ordinary single-player behaviour: you reload your own most recent save.** Nobody else's world reverts — every player has always had a completely separate save, and this mod has never had, and is not getting, a way to sync one player's save into another's |
 | NPC hits on a player crossing between players | **Built, guards verified, cross-machine step UNVERIFIED.** An NPC attacking your ghost in someone else's world reports the damage back to you, so NPC combat can hurt a remote player rather than only their stand-in. Exactly one client holds this authority at a time (the relay assigns it) — without that, every player's own NPCs would independently damage everyone and multiply the damage by the player count. All three guards around it are individually verified live, plus a positive control. The actual hit crossing two machines was **not** tested: there is one machine here and no second player. **This does not synchronise NPCs themselves** — each player still sees their own local version of any fight; what's shared is only who got hurt and who died, never the NPC's position, animation or AI state |
 | Recovering from a mid-session save reload | **Fixed, live-verified.** Loading a save used to permanently stop that player transmitting at all — they simply vanished for everyone else for the rest of the session — and destroyed every other player's ghost body in their world while leaving the floating nameplate walking around with nothing under it. Both were measured (dead for 197s and 187s respectively, still going when the test ended) and both now recover on their own in about 14 seconds. Two more reload bugs — a peer going invisible after standing still, and an embedded save-file ghost impersonating a live one — were closed in WO-59 |
-| Reactive ghost combat (self-defense, joining nearby fights) | **Working, always on, no toggle** — a ghost has a real soul and brain, so it defends itself when attacked (treats it as a crime, arms itself, lands real damage) and will join a fight already happening near it, independent of `mp_enable_aggro` below. Verified taking a real player from 100 to 57 HP in one exchange, and separately pursuing and killing another ghost 340 m from where both spawned. A knocked-out ghost also gets back up on its own, usually within a minute. Its position is still pinned to its owner's real movement during a networked session, so it cannot step, close, or retreat — a real, unresolved gap. **A ghost's own attacks are not replicated to its owner** — a remote player's character can kill NPCs in your world that its owner never actually attacked, invisibly to them |
+| Reactive ghost combat (self-defense, joining nearby fights) | **Working, but suppressed by default since WO-68.** A ghost has a real soul and brain, so *un-isolated* it defends itself when attacked (treats it as a crime, arms itself, lands real damage) and joins a fight already happening near it, independent of `mp_enable_aggro` below — verified taking a real player from 100 to 57 HP in one exchange, and separately pursuing and killing another ghost 340 m from where both spawned. But `mp_ghost_isolate`, on by default since WO-68, applies `switch_disabledHitBehavioralReaction` to every ghost, and WO-68 observed exactly this: **a ghost stopped fighting back once isolated.** Turn isolation off to get the behaviour above back. A knocked-out (un-isolated) ghost also gets back up on its own, usually within a minute. Its position is still pinned to its owner's real movement during a networked session, so it cannot step, close, or retreat — a real, unresolved gap. **A ghost's own attacks are not replicated to its owner** — a remote player's character can kill NPCs in your world that its owner never actually attacked, invisibly to them |
 | NPC aggro on ghosts (`mp_enable_aggro`) | **Working, opt-in, off by default** — this does NOT turn the reactive combat above on or off; that already happens regardless. What the toggle actually gates is *proactive, faction-wide* hostility: when on, a ghost that lands or receives a hit gets attached to one real hostile faction for ~20s, so *any* nearby NPC of an opposing faction — not just whoever it's already fighting — can recognize and attack it unprompted. When off, that native attach never fires. Verified end-to-end (synthetic peer → relay → agent → native plugin → game) via a live on/off comparison and repeated live fights; **unverified** with a second real human. **Known limits, not bugs** — see below |
 | NPC sync (`mp_npc_sync`) | **Working, ON by default** — up to 5 hand-placed NPCs within 30 m of a player mirror that player's world on everyone else's machine: position, walking/running animation, health, death. Costs less bandwidth than one player's position stream. **As of 0.18.2 (WO-60), tracking is proximity-based**: previously only the host's own surroundings were tracked, so an NPC fighting a joining player far from the host was never synced at all. Now whichever machine is actually near an NPC tracks and streams it, with a 15s "engagement hold" so an active fight can't bounce between machines through a brief packet gap. Wire-verified (35/35); **no live two-machine session has run this model yet** — rollback with `mp_npc_proximity off` on the joining machine if it behaves worse than the previous release. **Unverified** with a second real human; dialogue with an NPC *while* it is actively being driven is untested (before/after works) |
 | Dropped-item sync (`mp_item_sync`) | **Working** — a player who drops an item shares it: peers see it appear at the same spot, anyone can pick it up, and the first pickup wins for everyone (a losing pickup rolls back automatically). Verified across food, a bandage stack, armor and weapons. Late joiners converge via a 30s re-broadcast; a save reload self-heals both directions. Deliberately **not** shared: chests and NPC pockets — each player keeps their own loot pool, only deliberate player-to-player handoffs sync |
@@ -263,6 +264,12 @@ default, so you should not normally see this).
 reports the seat under you — both are for working out why a table is not
 being recognised.
 
+Want groschen on the line? Run `mp_dice_wager <amount>` before `mp_dice` — it
+stakes that amount on the *next* invite you send (0, the default, plays for
+score only). The other player sees the stake before accepting; the winner's
+inventory is credited and the loser's debited automatically when the match
+ends.
+
 ### 3. Accept the challenge
 
 The other player sees the invite prompt and runs:
@@ -314,9 +321,6 @@ Every key above has a console equivalent if a key ever fails you:
   but are built on **guessed** action names (`dialog_answer3/4`,
   `dialog_answer1/2`) that have never been confirmed to fire — treat them as
   not working.
-- **Nothing is wagered.** The match is a pure score contest; no groschen
-  changes hands. Moving real currency needs a native write and has not been
-  built.
 - **A full two-human match has never been played.** Everything above was
   verified against a scripted opponent (`tools\Bot-DiceOpponent.ps1`) on one
   machine.
@@ -424,8 +428,6 @@ rather than hardcoding it — never add a new literal version byte to a script.
 - **Duelling** — not implemented. The wire protocol reserves an
   `InteractionKind.Duel` value and nothing at all sits behind it; it reads
   like a shipped feature to anyone skimming `Protocol.cs` and it is not one.
-- **Dice wagers** — a match is a pure score contest. No groschen moves.
-  Transferring real currency needs a native (RTTR) write, not a Lua one.
 - **Dice invite / accept / decline keybinds** — the console commands
   (`mp_dice`, `mp_accept`, `mp_decline`) are the working path. The key
   bindings in the code are built on guessed engine action names that have
@@ -508,7 +510,7 @@ Explorer's address bar:
 | Launcher settings | `%LocalAppData%\KCDMP\settings.json` | Always — it is three lines and it says which game it found |
 | Native plugin log | `%LocalAppData%\KCDMP\kcdmp-native.log` | Injection, ghosts, combat, or dice not appearing in game |
 | Game log | `<ModdingTools>\kcd.log`, e.g. `...\steamapps\common\KCD2Mod\kcd.log` | Anything in-game. Look for `[KCD2-MP]` lines |
-| Agent output | The `KcdMpClient.exe` console window — **it writes no log file**, so copy the text out before closing it | Connected but nothing syncs |
+| Agent log | `%LocalAppData%\KCDMP\agent.log` (`.prev.log`/`.prev2.log` for the last two runs, since WO-39) | Connected but nothing syncs |
 | Relay output | The `KcdMpServer.exe` console window on the **host's** PC | Nobody can join, or people get dropped |
 | Installer log | `%Temp%\Setup Log <date> #NNN.txt` — newest one | Anything that went wrong during install |
 

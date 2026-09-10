@@ -170,8 +170,8 @@ Three version numbers live here and none of them is the others:
 | | What it is | Who checks it |
 |---|---|---|
 | `MasterApi.Version` | This API's message shapes | Master refuses a mismatched `announce`; launcher refuses a mismatched listing rather than misread it |
-| `Protocol.Version` | The relay wire protocol | Carried in every listing. The launcher refuses to start the game for a server on a different one — the relay would hard-refuse the handshake anyway, and finding that out before the game loads is better than after |
-| Release version | The repo's `VERSION` | Shown in the browser (hover a row). Compared with `ReleaseVersionCompare` |
+| `Protocol.Version` | The relay wire protocol | Carried in the announce/listing DTOs (`MasterApi.cs`, `RegisteredServer.cs`), but `NetService` never maps it into the launcher's own `ServerInfo` — the browser neither gates Launch on it nor shows it. A mismatch is only ever discovered the way it always was: the relay hard-refuses the Handshake once the game actually connects |
+| Release version | The repo's `VERSION` | Also carried in the listing DTOs, and also dropped by the same `NetService` mapping — **not** shown in the browser. `ReleaseVersionCompare` genuinely runs, but only between two already-connected peers over the in-game wire layer (WO-19), which is unrelated to this browser listing |
 
 A relay stamps its release version from `VERSION` at build time, the same way
 the client and launcher do (WO-35 added this stamping to `KcdMp.Server.csproj`

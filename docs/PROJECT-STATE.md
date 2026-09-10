@@ -1,6 +1,6 @@
 # Project state — supersedes the original engineering brief
 
-Current as of 2026-07-28, branch `main`, pushed to
+Current as of 2026-09-10 (WO-76 doc pass), branch `main`, pushed to
 `DeepFriedDepp/kcd2-multiplayer_Reworked`.
 
 **Read this before the original brief.** The brief remains the best statement of
@@ -161,15 +161,21 @@ list at least one method (`System.DrawTriStrip`) this build does not register.
 ### The agent↔DLL pipe
 
 `\\.\pipe\kcdmp`, DLL hosts, agent connects. Framing matches the relay protocol.
-`0x01 ApplyDamage`, `0x02 ApplyDeath`, `0x03 Ping` down; `0x81 Result`,
-`0x83 Pong`, `0x90 LocalHit` up. **Overlapped I/O on both handles is mandatory**
-— see §5.
+Down: `0x01 ApplyDamage`, `0x02 ApplyDeath`, `0x03 Ping`, `0x04
+SetFactionHostile` (WO-17), `0x05 ResolveLuaClosure` (WO-20 Phase 2
+diagnostic), `0x06 GhostSwing` (WO-46), `0x07 GhostIsolate` (WO-68's native
+crime/dialogue isolation). Up: `0x81 Result`, `0x83 Pong`, `0x84 ClosureInfo`,
+`0x90 LocalHit`. `pipe_server.h`'s own header comment is the authority for the
+exact payload shapes; check it there, not here. **Overlapped I/O on both
+handles is mandatory** — see §5.
 
-### Wire protocol v5
+### Wire protocol v6
 
 Added `0x12`–`0x15` (Damage/Death, both directions) in v3, `0x16`–`0x19`
 (DiceIntent/DiceState/DiceError/DiceEnd) in v4, and `0x1A`–`0x1B`
-(AppearanceUp/AppearanceDown) in v5. `Protocol.cs` is **no longer
+(AppearanceUp/AppearanceDown) in v5 — `Protocol.Version` is **6** now (bumped
+for the pause-mitigation layer below; re-verify against `Protocol.cs` directly
+rather than trusting this or any other doc's number). `Protocol.cs` is **no longer
 duplicated** — it moved to a shared `KcdMp.Protocol` project (net8.0 classlib,
 namespace `KcdMp.Wire` to avoid a name collision with the `Protocol` class
 itself) that both `KcdMp.Client` and `KcdMp.Server` reference. One copy, kept
@@ -178,7 +184,8 @@ in sync with itself by construction.
 Since then: `0x1C`–`0x1D` (PauseUp/PauseDown, WO-11), `0x1E` (ReleaseVersion,
 WO-19), `0x1F`–`0x25` (shared player combat, WO-28), `0x26`–`0x27`
 (NPC sync, WO-32 — real hand-placed NPCs streamed from the world authority,
-behind `mp_npc_sync`, off by default; see `docs/WO-32-findings.md`),
+behind `mp_npc_sync`, **on by default** (`kdcmp.lua:1852`); see
+`docs/WO-32-findings.md`),
 `0x28`–`0x29` (time-skip sync, WO-38), `0x2A`–`0x2B` (horse identity, WO-38),
 `0x2C`–`0x2D` (combat visibility, WO-39), `0x2E`–`0x2F` (weather, WO-40),
 `0x30`–`0x31` (name-addressed NPC damage, WO-40), and `0x32`–`0x35`
@@ -226,8 +233,8 @@ bit 2 (dead) and bit 3 (unconscious). `LogTailGameTransport` parses `v1` and
 | `Test-ReloadBehaviour.ps1` | what a mid-session save reload does to the connection, the mod's timer chains and ghost entities | relay + agent + game + a human to reload |
 | `Test-CombatE2E.ps1` | inbound, full chain | everything |
 | `Test-CombatOutbound.ps1` | outbound, full chain | everything |
-| `Test-Sessions.ps1` | WO-2 sessions, 23/23 | relay only |
-| `Test-Dice.ps1` | WO-5 dice, 10/10 | relay only |
+| `Test-Sessions.ps1` | WO-2 sessions, 22/22 | relay only |
+| `Test-Dice.ps1` | WO-5 dice, 15/15 | relay only |
 | `Probe-Reflection.ps1` | capability re-check after a game patch | game |
 | `KcdApi.ps1` | bounded REST client — dot-source it | game |
 
@@ -238,12 +245,16 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ## 4. Closed as not achievable — do not re-derive
 
-- **Aggro / stimulus injection via reflection/native surfaces.** No reachable
-  surface. `xgen` reflected = two read-only properties; `XBehaviorModule` =
-  empty; XGenAIModule's 1,784 exports are behaviour-tree enum glue;
+- **Aggro / stimulus injection via reflection/native surfaces.** A reachable,
+  working surface exists and has shipped since WO-15/16/17 — the native
+  faction `SetParent` attach — and WO-26 additionally found the shipped
+  default ghost already engages reactively with no toggle at all (see its
+  amendment below). What genuinely has no reachable surface is the
+  *reflection*-only route this bullet originally investigated: `xgen`
+  reflected = two read-only properties; `XBehaviorModule` = empty;
+  XGenAIModule's 1,784 exports are behaviour-tree enum glue;
   `SkirmishManager::DebugTriggerEvent` does nothing observable outside a
-  running skirmish. **The shipped path remains WO-15/16/17's native faction
-  `SetParent` attach.**
+  running skirmish.
 
   **WO-22 amendment — a second, unshipped mechanism exists.** A ghost spawned
   with a hostile soul's `SharedSoulGuid` inherits that soul row's own
@@ -460,10 +471,15 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   rewrote `LaunchGame` to start the Modding Tools build, wait for `WHGame.dll`,
   run the injector, check its exit code, and then start `KcdMpClient.exe`.
 
-  What remains is **verification**: the launcher has never been run against a
-  real game launch. Its pieces are exercised individually by
-  `tools\Test-CombatOutbound.ps1`, but its own sequencing has only been
-  reviewed. The `WHGame.dll` wait is a reasoned choice, not a measured one.
+  **It has been run against a real launch, the same day this document was
+  first written** — `docs/VERIFICATION-REPORT.md` Track 1 (2026-07-28,
+  observed-pass): one click on a configured server row started the game,
+  the injector attached automatically (exit code 0), and the agent
+  connected to the relay on its own. That run also surfaced a real,
+  since-fixed defect (the native DLL's one-shot tick-liveness check aborted
+  on an early automatic injection) — see README's "Native plugin +
+  injection" row for the fix. What is still genuinely unverified is a
+  **second** end-to-end run on a clean machine, not the first one.
 
   *(This bullet previously claimed the launcher still booted the base game and
   never started the agent. That was already false when written — `54af330`
@@ -519,7 +535,8 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   puts it. It is not needed for the recovery fix. `ForceMount` is unaffected —
   re-tested against a real horse in every spawn shape. See
   `docs/WO-22-brain-lead.md`.
-- **`kdcmp.lua` is a ~2,400-line monolith.** Much of the ghost plumbing is
+- **`kdcmp.lua` is a 7,873-line monolith** (re-verify with `wc -l`, not this
+  or any other doc's number — it has drifted before). Much of the ghost plumbing is
   redundant if the DLL ever renders players directly. The animation tables and
   speed thresholds are empirical data — port them, never regenerate them.
 
