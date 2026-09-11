@@ -3272,9 +3272,10 @@ public partial class GameBridge(ClientConfig config)
             case "slow_time_toggle":
                 // mp_slow_time (WO-11): the honest floor for pause detection,
                 // same idea as mp_sync_appearance above. Automatic detection
-                // only covers the three states confirmed live (menu,
-                // inventory, skip-time) -- a tutorial popup or photo mode was
-                // never confirmed to emit a log marker, so this lets a player
+                // only covers the four states confirmed live (menu,
+                // inventory, skip-time, Rendered cutscenes -- WO-80) --
+                // dialogs, a tutorial popup or photo mode were never
+                // confirmed to emit a usable log marker, so this lets a player
                 // manually declare "I'm effectively unavailable" regardless
                 // of why. Toggles rather than a one-shot, since Lua has no
                 // way to know the current state; OR'd with automatic

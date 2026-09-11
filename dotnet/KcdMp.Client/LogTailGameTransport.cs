@@ -246,11 +246,17 @@ public sealed class LogTailGameTransport : IGameTransport
     private bool _inventoryOpen;
     private bool _skipTimeActive;
 
-    private bool AggregatePaused => _menuOpen || _inventoryOpen || _skipTimeActive;
+    // Rendered cutscene (WO-80). Independent for the same reason as the three
+    // above -- a real field session shows a cutscene starting while a
+    // skip-time animation was still resolving (docs/WO-80-findings.md).
+    private bool _cutsceneActive;
+
+    private bool AggregatePaused => _menuOpen || _inventoryOpen || _skipTimeActive || _cutsceneActive;
 
     /// <summary>
     /// Scans one raw (untagged) engine log line for the marker pairs found
-    /// live in WO-11. These are not this mod's own lines -- no
+    /// live in WO-11 (menu/inventory/skip-time) and WO-80 (Rendered
+    /// cutscenes). These are not this mod's own lines -- no
     /// [KCD2-MP-...] tag -- so they are matched by substring against
     /// whatever CryEngine/Warhorse actually wrote, confirmed against real
     /// isolated single-action tests rather than the mixed first pass that
@@ -294,6 +300,27 @@ public sealed class LogTailGameTransport : IGameTransport
                 catch (Exception ex) { Console.WriteLine($"[timeskip] handler threw: {ex.Message}"); }
             }
         }
+
+        // Rendered cutscene (WO-80): CutscenePlayer::PlayCutscene / OnCutsceneEnd
+        // are generic CryEngine events (holder/module vary, the event name and
+        // cutscene type do not) -- confirmed against six real Play/End pairs in
+        // a field session's kcd.log, cleanly ordered with no orphans
+        // (docs/WO-80-findings.md). The candidate "OnCutsceneStart" named in
+        // the WO does not appear anywhere in either field log -- it has
+        // drifted or never existed on this build -- so PlayCutscene is used
+        // as the entry edge instead; OnCutsceneEnd matches verbatim.
+        //
+        // Scoped to the "Rendered" type specifically, not every cutscene:
+        // the same session logs a 62 s "Text" cutscene and three "Fader"
+        // cutscenes with the emitter's DATA line flowing the entire time --
+        // those do not freeze Script.SetTimer, so tracking them would only
+        // pump needlessly. A "SkipTime"-type cutscene also appears, but its
+        // own PlayCutscene fires ~19 s before anything actually freezes; the
+        // freeze there is the existing AfterSkipTime marker above, which this
+        // deliberately does not duplicate. Only "Rendered" (the one real
+        // instance observed) sat inside the field session's 60.69 s DATA gap.
+        if (line.IndexOf("CutscenePlayer::PlayCutscene called for Rendered cutscene") >= 0) _cutsceneActive = true;
+        else if (line.IndexOf("CutscenePlayer::OnCutsceneEnd called for Rendered cutscene") >= 0) _cutsceneActive = false;
 
         bool after = AggregatePaused;
         if (after != before)
@@ -409,8 +436,9 @@ public sealed class LogTailGameTransport : IGameTransport
         {
             // Not one of this mod's own tagged lines -- still worth scanning
             // for the raw engine markers WO-11 found (menu/inventory/skip-
-            // time). Those never appear on a [KCD2-MP-...] line, so checking
-            // only here costs nothing on the hot (DATA-tagged) path.
+            // time) and WO-80 added (Rendered cutscenes). Those never appear
+            // on a [KCD2-MP-...] line, so checking only here costs nothing on
+            // the hot (DATA-tagged) path.
             ProcessPauseMarkers(line);
             return;
         }
