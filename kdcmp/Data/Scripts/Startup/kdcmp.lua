@@ -1858,8 +1858,20 @@ KCD2MP.npcSync = {
                           -- switch gates every role's NPC emission.
     radius     = 30,      -- metres around the local player (WO-32 Phase 0 bound)
     maxTracked = 5,       -- hard cap on synced NPCs (WO-32 Phase 0/2 bound)
-    emitMs     = 250,     -- per-NPC emit cadence (4 Hz) -- position lerp on the
-                          -- receiver smooths the gaps, same as ghost interp
+    emitMs     = 100,     -- per-NPC emit cadence (10 Hz). WO-77 Step 2: was
+                          -- 250 (4 Hz, WO-32). The per-NPC gate below is
+                          -- unchanged -- an NPC that did not move since its
+                          -- last emit still costs only the 2 s heartbeat --
+                          -- so this only raises the rate for MOVING NPCs.
+                          -- Send-side and unconditional: it is what this
+                          -- client transmits about its own locally-simulated
+                          -- NPCs, independent of any receiver's
+                          -- mp_npc_smooth state (design: WO-75 s2.4/s4 Step
+                          -- 2). The receiver's interpolation delay is derived
+                          -- from this value (KCD2MP_NpcSmoothDelayS), so the
+                          -- two cannot drift apart. Adaptive per-NPC cadence
+                          -- (100 ms engaged/near, 250 ms otherwise) is a
+                          -- noted future refinement, not built.
     scanMs     = 2000,    -- how often the tracked set is rebuilt
     moveEps    = 0.05,    -- metres; below this nothing is emitted
     heartbeatS = 2.0,     -- unconditional resend so a late joiner converges
@@ -1869,6 +1881,159 @@ KCD2MP.npcSyncRunning  = false
 KCD2MP._npcSyncAliveAt = nil
 KCD2MP.npcTracked      = {}   -- name -> {lastX,lastY,lastZ,lastRot,lastHp,lastSentAt}
 KCD2MP._npcScanAt      = 0
+
+-- WO-77 Step 1: puppet renderer = time-based snapshot interpolation-behind
+-- (design: docs/WO-75-jitter-design.md s2.3/s4 Step 1). The receiver keeps a
+-- 3-deep ring of stamped samples per puppet and renders the puppet at
+-- `os.clock() - DELAY` along the segment between the two samples bracketing
+-- that time. Speed along a segment is constant, so the rendered velocity and
+-- the anim tag derived from it never modulate inside a packet gap (WO-69 D1).
+-- No velocity estimator, no dead reckoning, no extrapolation past the newest
+-- sample -- an NPC that stopped emitting has stopped moving (the emitter's
+-- `moved` gate). Everything advances by real elapsed time, never by "one
+-- tick", so a leaked second timer chain (WO-69 D3) or the menu pump's faster
+-- cadence computes the same renderAt and writes the same position: a no-op,
+-- not doubled movement.
+--
+-- `mp_npc_smooth on|off`, default ON (WO-77 overrides the WO-63/WO-75
+-- default-off recommendation; reasoning in docs/WO-77-findings.md). Off
+-- restores the pre-WO-77 per-tick 0.5 lerp verbatim for a live A/B.
+KCD2MP.npcSmooth = true
+
+-- DELAY = 1.2 x the emit period, derived from emitMs at call time so the two
+-- can never drift out of sync (0.12 s at 100 ms). Also the cap on the
+-- segment duration used for speed: a packet arriving after a `moved`-gated
+-- silence renders as a DELAY-long move at the NPC's implied speed, not as a
+-- slow slide across the whole silent gap.
+local NPC_SMOOTH_DELAY_FACTOR = 1.2
+function KCD2MP_NpcSmoothDelayS()
+    return ((KCD2MP.npcSync and KCD2MP.npcSync.emitMs) or 250) / 1000 * NPC_SMOOTH_DELAY_FACTOR
+end
+-- Ring depth: renderAt only ever looks DELAY back, and packets are ~emitMs
+-- apart, so three samples cover it with one to spare.
+local NPC_SMOOTH_RING = 3
+-- Anim only: while the renderer holds at the newest sample because the next
+-- packet is merely LATE (jitter past DELAY), keep the last segment's speed
+-- for up to this long before reading the hold as "stopped". Position is not
+-- affected -- it holds regardless. Without this a 130 ms gap against a
+-- 120 ms delay would flick walk->idle->walk for one tick, which is exactly
+-- the churn Step 1 exists to remove.
+local NPC_SMOOTH_ANIM_GRACE_S = 0.06
+
+-- Copy of the ghost path's calcAnimTag hysteresis bands (kdcmp.lua ANIM_UP /
+-- ANIM_DOWN + calcAnimTag), stance-free. Deliberately a COPY, not a shared
+-- helper: the puppet and ghost render paths must stay separate code (WO-70
+-- constraint 1), so a retune of one can never silently retune the other.
+local NPC_ANIM_UP   = { walk=1.0, run=2.5, sprint=4.0 }
+local NPC_ANIM_DOWN = { walk=0.4, run=1.8, sprint=3.2 }
+local function mp_npc_anim_tag(speed, cur)
+    local t = cur or "idle"
+    if t == "combatidle" then t = "idle" end
+    if t == "sprint" then
+        if speed < NPC_ANIM_DOWN.sprint then t = "run"   else return "sprint" end
+    end
+    if t == "run" then
+        if     speed >= NPC_ANIM_UP.sprint  then return "sprint"
+        elseif speed <  NPC_ANIM_DOWN.run   then t = "walk"  else return "run" end
+    end
+    if t == "walk" then
+        if     speed >= NPC_ANIM_UP.sprint  then return "sprint"
+        elseif speed >= NPC_ANIM_UP.run     then return "run"
+        elseif speed <  NPC_ANIM_DOWN.walk  then return "idle" else return "walk" end
+    end
+    if     speed >= NPC_ANIM_UP.sprint then return "sprint"
+    elseif speed >= NPC_ANIM_UP.run    then return "run"
+    elseif speed >= NPC_ANIM_UP.walk   then return "walk"
+    else                                     return "idle" end
+end
+
+-- Push one stamped sample onto a puppet's ring. An XY step over 5 m from the
+-- previous sample is a teleport: keep the pre-WO-77 snap behaviour (clear
+-- the ring, jump the render state to the packet) -- a teleport is never
+-- smoothed.
+local function mp_npc_ring_push(p, x, y, z, rot, at)
+    local ring = p.ring
+    if not ring then ring = {}; p.ring = ring end
+    local last = ring[#ring]
+    if last then
+        local sdx, sdy = x - last.x, y - last.y
+        if sdx*sdx + sdy*sdy > 25.0 then
+            ring = {}
+            p.ring = ring
+            p.cx, p.cy, p.cz, p.cr = x, y, z, rot
+            p.segSpd = 0
+        end
+    end
+    ring[#ring + 1] = { x = x, y = y, z = z, rot = rot, at = at }
+    while #ring > NPC_SMOOTH_RING do table.remove(ring, 1) end
+end
+
+-- Render state for one puppet at wall-clock `now`: position/yaw plus the
+-- constant speed of the segment being rendered. Returns nil when the ring is
+-- empty (caller falls back to the legacy lerp). Pure bookkeeping -- never
+-- reads the entity (WO-70 constraint 3); Z is packet-direct, no floor
+-- raycast (constraint 4).
+local function mp_npc_smooth_render(p, now)
+    local ring = p.ring
+    local n = ring and #ring or 0
+    if n == 0 then return nil end
+    local delay = KCD2MP_NpcSmoothDelayS()
+    local renderAt = now - delay
+    local a, b
+    if renderAt >= ring[n].at then
+        a, b = ring[n], ring[n]              -- past the newest: hold, never extrapolate
+    elseif renderAt <= ring[1].at then
+        a, b = ring[1], ring[1]              -- before the oldest (ring too shallow): hold at oldest
+    else
+        for i = n, 2, -1 do
+            if ring[i-1].at <= renderAt then a, b = ring[i-1], ring[i]; break end
+        end
+    end
+    local spd
+    if a == b then
+        p.cx, p.cy, p.cz, p.cr = a.x, a.y, a.z, a.rot
+        -- Holding. A late packet (jitter) is indistinguishable from a stop
+        -- for the first NPC_SMOOTH_ANIM_GRACE_S; after that it is a stop.
+        if a == ring[n] and (renderAt - a.at) <= NPC_SMOOTH_ANIM_GRACE_S then
+            spd = p.segSpd or 0
+        else
+            spd = 0
+        end
+    else
+        -- Effective segment start: the later of the previous sample and
+        -- (b.at - DELAY). For a steady stream that is a.at itself; after a
+        -- moved-gated silence it clips the segment to DELAY so both the
+        -- position slide and the speed read as one DELAY-long move (design
+        -- s2.3: "does not slide slowly"). Position and speed always use the
+        -- SAME segment, so the rendered velocity equals spd.
+        local aAt = a.at
+        if b.at - aAt > delay then aAt = b.at - delay end
+        local segDur = b.at - aAt
+        if segDur < 0.05 then segDur = 0.05 end
+        local t = (renderAt - aAt) / segDur
+        if t < 0 then t = 0 elseif t > 1 then t = 1 end
+        p.cx = a.x + (b.x - a.x) * t
+        p.cy = a.y + (b.y - a.y) * t
+        p.cz = b.z
+        p.cr = lerpAngle(a.rot, b.rot, t)
+        local sdx, sdy = b.x - a.x, b.y - a.y
+        spd = math.sqrt(sdx*sdx + sdy*sdy) / segDur
+        p.segSpd = spd
+    end
+    return spd
+end
+
+function KCD2MP_SetNpcSmooth(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "on" or s == "1" or s == "true" then
+        KCD2MP.npcSmooth = true
+    elseif s == "off" or s == "0" or s == "false" then
+        KCD2MP.npcSmooth = false
+    end
+    mp_log(string.format("mp_npc_smooth = %s (interp delay %.0f ms = %.1f x emitMs %d)",
+        tostring(KCD2MP.npcSmooth), KCD2MP_NpcSmoothDelayS() * 1000,
+        NPC_SMOOTH_DELAY_FACTOR, KCD2MP.npcSync.emitMs))
+end
 
 -- WO-69: chain identity for the two NPC-sync Script.SetTimer chains.
 --
@@ -2364,6 +2529,15 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     if not p then
         local cur = e:GetWorldPos()
         p = { cx = cur.x, cy = cur.y, cz = cur.z, cr = rot, animTag = "idle" }
+        -- WO-77: seed the sample ring with where the puppet actually IS,
+        -- stamped one DELAY in the past, so the first packet renders as a
+        -- DELAY-long slide from the entity's current position onto the
+        -- stream instead of a pop. This is the same one-time creation read
+        -- the pre-WO-77 code already made for cx/cy/cz -- not a per-tick
+        -- readback into the render path. A first packet more than 5 m away
+        -- snaps, exactly as before (mp_npc_ring_push).
+        p.ring = { { x = cur.x, y = cur.y, z = cur.z, rot = rot,
+                     at = os.clock() - KCD2MP_NpcSmoothDelayS() } }
         KCD2MP.npcPuppets[name] = p
         mp_log("NPC-SYNC puppet start " .. name)
         -- WO-49: report this world's copy's entity id so the agent can
@@ -2399,6 +2573,9 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
         end
     end
     p.lastPacketAt = nowPkt
+    -- WO-77 Step 1: stamp and ring the sample. Pushed regardless of
+    -- mp_npc_smooth so a live toggle-on has data to render from.
+    mp_npc_ring_push(p, x, y, z, rot, nowPkt)
     if swingCue and not p.dead and not p.ko then
         p.swingCuePending = true
     end
@@ -2625,9 +2802,23 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 end
             end
 
+            -- WO-77 Step 1: interpolation-behind (mp_npc_smooth on, the
+            -- default). Everything below derives from os.clock() elapsed --
+            -- the D3 structural fix (WO-75 s2.5). `spd` is the constant
+            -- speed of the segment being rendered.
+            local spd = nil
+            if KCD2MP.npcSmooth then
+                spd = mp_npc_smooth_render(p, now)
+            end
+            local dx, dy = 0, 0
+            if spd ~= nil then
+                -- rendered; fall through to the write below
+            else
+            -- Legacy path (mp_npc_smooth off, or an empty ring): the
+            -- pre-WO-77 per-tick 0.5 lerp, kept verbatim for the live A/B.
             -- Same teleport-vs-lerp shape as the ghost interp: snap on a big
             -- gap, smooth otherwise.
-            local dx, dy = (p.tx or p.cx) - p.cx, (p.ty or p.cy) - p.cy
+            dx, dy = (p.tx or p.cx) - p.cx, (p.ty or p.cy) - p.cy
             if dx*dx + dy*dy > 25.0 then
                 p.cx, p.cy, p.cz, p.cr = p.tx, p.ty, p.tz, p.tr
             else
@@ -2651,30 +2842,48 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 -- snap-between-attractors that WO-60's footage has to show.
                 if p.tr then p.cr = lerpAngle(p.cr or p.tr, p.tr, 0.5) end
             end
+            -- Legacy speed: per-tick rendered displacement, no hysteresis.
+            spd = math.sqrt(dx*dx + dy*dy) * 0.5 / 0.050
+            end
 
             e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
             p.lastWroteX, p.lastWroteY = p.cx, p.cy
             pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
 
-            -- Animation from rendered speed, exactly the ghost thresholds.
-            -- Without this the NPC slides in its current activity pose
-            -- (observed live: a seated NPC slid sitting).
+            -- Animation from rendered speed. Without this the NPC slides in
+            -- its current activity pose (observed live: a seated NPC slid
+            -- sitting).
+            --
+            -- WO-77: on the smooth path the tag comes from the segment speed
+            -- through a copy of the ghost path's hysteresis bands
+            -- (mp_npc_anim_tag), so the tag cannot churn inside a packet gap
+            -- -- the design's constraint 2, re-deriving spd in the same
+            -- change as the position math. The legacy path keeps its raw
+            -- thresholds so `mp_npc_smooth off` really is the old renderer.
             --
             -- WO-38 Phase 5: a Horse-class puppet gets horse gaits, not
             -- humanoid locomotion. These three names were confirmed present
             -- on real KCD2 horse entities by the mp_scan_horse probes (see
-            -- the HORSE_ENTITY_* candidate lists' comments).
-            local spd = math.sqrt(dx*dx + dy*dy) * 0.5 / 0.050
+            -- the HORSE_ENTITY_* candidate lists' comments). Horse gaits are
+            -- unchanged by WO-77 (segment speed is already constant).
             local tag, anim
             if tostring(e.class or "") == "Horse" then
                 if     spd >= 4.0 then tag, anim = "gallop", "relaxed_gallop"
                 elseif spd >= 0.3 then tag, anim = "walk",   "relaxed_walk"
                 else                    tag, anim = "idle",   "relaxed_idle" end
             else
+                if KCD2MP.npcSmooth and p.ring and #p.ring > 0 then
+                    tag = mp_npc_anim_tag(spd, p.animTag)
+                    if     tag == "sprint" then anim = "3d_relaxed_sprint_turn_strafe"
+                    elseif tag == "run"    then anim = "3d_relaxed_run_turn_strafe"
+                    elseif tag == "walk"   then anim = "3d_relaxed_walk_turn_strafe"
+                    else   tag, anim = "idle", "relaxed_idle_both" end
+                else
                 if     spd >= 5.5 then tag, anim = "sprint", "3d_relaxed_sprint_turn_strafe"
                 elseif spd >= 3.0 then tag, anim = "run",    "3d_relaxed_run_turn_strafe"
                 elseif spd >= 0.3 then tag, anim = "walk",   "3d_relaxed_walk_turn_strafe"
                 else                    tag, anim = "idle",   "relaxed_idle_both" end
+                end
                 -- WO-40 Phase 6: a weapon-out NPC idles in the combat guard
                 -- (human-confirmed correct read on ghosts, WO-39), so a
                 -- fighting NPC reads as fighting instead of standing.
@@ -7486,6 +7695,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
     System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69: off (default) logs a leaked puppet-tick chain and leaves it running; on makes the stale chain exit: mp_npc_chainfix on|off")
+    System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
 
     -- Shared player combat (WO-28)
     System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")
