@@ -19,6 +19,13 @@
       (f) a packet after a moved-gated silence: DELAY-long move, no crawl
       (g) >5 m teleport snaps; (h) yaw wraps the short way
       (i) mp_npc_smooth off restores the pre-WO-77 lerp; on renders again
+      (j) WO-78: the per-packet restart caller (KCD2MP_ApplyNpcState ->
+          StartNpcPuppet) during a timer suspension arms one probe and
+          starts no new chain; a real death restarts exactly once;
+          mp_npc_chainfix defaults on
+
+    The same driver runs the ghost scenarios when given -Scenario; see
+    Test-GhostInterpSynthetic.ps1.
 
     What this does NOT prove: how the puppet looks or feels to a human
     watching real combat, and whether WO-60's claim system holds under real
@@ -33,7 +40,12 @@
 [CmdletBinding()]
 param(
     [string] $KdcmpLua = '',
-    [string] $MoonSharpVersion = '2.0.0.0'
+    [string] $MoonSharpVersion = '2.0.0.0',
+    # WO-78: the scenario file to splice kdcmp.lua into. Defaults to this
+    # script's own puppet scenarios; Test-GhostInterpSynthetic.ps1 passes the
+    # ghost interp scenarios through the same driver.
+    [string] $Scenario = '',
+    [string] $Title = 'WO-77 synthetic NPC-smooth test'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +53,7 @@ $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1, so resolve the default here.
 $toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $KdcmpLua) { $KdcmpLua = Join-Path $toolsDir '..\kdcmp\Data\Scripts\Startup\kdcmp.lua' }
+if (-not $Scenario) { $Scenario = Join-Path $toolsDir 'Test-NpcSmoothSynthetic.lua' }
 
 # --- locate (or restore) MoonSharp -------------------------------------------
 $pkgRoot = Join-Path $env:USERPROFILE '.nuget\packages\moonsharp'
@@ -77,14 +90,16 @@ Add-Type -Path $dll
 
 # --- splice the real kdcmp.lua into the scenario file ------------------------
 if (-not (Test-Path $KdcmpLua)) { throw "kdcmp.lua not found: $KdcmpLua" }
-$scenario = Get-Content (Join-Path $toolsDir 'Test-NpcSmoothSynthetic.lua') -Raw
+if (-not (Test-Path $Scenario)) { throw "scenario file not found: $Scenario" }
+$scenarioText = Get-Content $Scenario -Raw
 $marker = '-- @@KDCMP@@'
-if ($scenario.IndexOf($marker) -lt 0) { throw "scenario file lacks the $marker splice marker" }
-$parts = $scenario -split [regex]::Escape($marker), 2
+if ($scenarioText.IndexOf($marker) -lt 0) { throw "scenario file lacks the $marker splice marker" }
+$parts = $scenarioText -split [regex]::Escape($marker), 2
 $mod = Get-Content $KdcmpLua -Raw
 $code = $parts[0] + "`n" + $mod + "`n" + $parts[1]
 
-Write-Host "WO-77 synthetic NPC-smooth test"
+Write-Host $Title
+Write-Host "  scenario  : $((Resolve-Path $Scenario).Path)"
 Write-Host "  kdcmp.lua : $((Resolve-Path $KdcmpLua).Path)"
 Write-Host "  MoonSharp : $dll"
 Write-Host ""

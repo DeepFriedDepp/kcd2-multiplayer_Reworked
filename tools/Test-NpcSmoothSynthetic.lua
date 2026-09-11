@@ -187,6 +187,7 @@ do
     for i = 1, #LOG do if LOG[i]:find("CHAIN LEAK CONFIRMED", 1, true) then leakLogged = true end end
     check("(c) the stale generation was recognised as a leak (instrument intact) yet wrote no different position", leakLogged)
     noErrs("(c)")
+    KCD2MP.npcChainFix = true      -- WO-78: restore the shipped default for (j)
 end
 
 -- ------------------------------------ (e) jittered arrivals, no churn
@@ -288,6 +289,49 @@ do
         near(e.px, 1.0 * (0.03 / 0.10), 1e-6), fmt(e.px))
     check("(i) mp_npc_smooth is on again", KCD2MP.npcSmooth == true)
     noErrs("(i)")
+end
+
+-- ------------------------------- (j) WO-78: the per-packet restart caller
+-- The puppet chain's second entry is KCD2MP_ApplyNpcState -> StartNpcPuppet on
+-- EVERY inbound packet. The 2026-09-11 field session showed it restarting
+-- once per ~1 s of a menu/dialog/cutscene suspension (67 host starts vs 34
+-- for the 2.5 s-re-armed chains). With the shared probe gate a stale stamp
+-- during a suspension arms one probe and starts nothing, however many
+-- packets arrive.
+do
+    local e = reset("npc_j", 0, 0, 0)
+    check("(j) mp_npc_chainfix defaults ON since WO-78", KCD2MP.npcChainFix == true, tostring(KCD2MP.npcChainFix))
+    KCD2MP._chainProbe = {}
+    NOW = 20.0; pkt("npc_j", 0, 0, 0)                 -- starts the chain (flag was false)
+    local gen0 = KCD2MP.npcPuppetGen
+    check("(j) the first packet on a stopped chain starts it at once", KCD2MP.npcPuppetRunning == true and gen0 ~= nil)
+    chainTick(gen0)                                   -- one real fire: stamps alive
+    local nT, nLog = #TIMERS, #LOG
+    NOW = 25.0                                        -- 5 s suspension: stamp stale, chain suspended
+    for k = 1, 10 do pkt("npc_j", 0.1 * k, 0, 0) end  -- packets keep arriving via ExecuteString
+    check("(j) 10 packets during a suspension start no new generation", KCD2MP.npcPuppetGen == gen0,
+        tostring(gen0) .. " -> " .. tostring(KCD2MP.npcPuppetGen))
+    check("(j) exactly one probe armed for all 10 packets", #TIMERS == nT + 1 and TIMERS[nT + 1].ms == 400, tostring(#TIMERS - nT))
+    check("(j) no 'puppet tick started' logged", animTransitions("__none__", nLog) == 0 and
+        (function() for i = nLog + 1, #LOG do if LOG[i]:find("puppet tick started", 1, true) then return false end end return true end)())
+    -- resume: the chain fires first, then the probe hops
+    chainTick(gen0)
+    NOW = 25.4; for i = nT + 1, #TIMERS do local t = TIMERS[i]; if not t.fired and NOW >= t.at + t.ms/1000 - 1e-9 then t.fired = true; t.f() end end
+    NOW = 25.6; for i = nT + 1, #TIMERS do local t = TIMERS[i]; if not t.fired and NOW >= t.at + t.ms/1000 - 1e-9 then t.fired = true; t.f() end end
+    check("(j) the probe found the resumed chain alive ('suspended, not dead') and restarted nothing",
+        KCD2MP.npcPuppetGen == gen0 and KCD2MP._chainProbe.puppet == nil and
+        (function() for i = nLog + 1, #LOG do if LOG[i]:find("CHAIN puppet was suspended, not dead", 1, true) then return true end end return false end)())
+    -- a real death: stale stamp, nothing refreshes it, packets arrive
+    NOW = 40.0
+    local nT2, nLog2 = #TIMERS, #LOG
+    pkt("npc_j", 2.0, 0, 0)
+    check("(j) after a real death the first packet arms a probe, does not restart yet", KCD2MP.npcPuppetGen == gen0 and #TIMERS == nT2 + 1)
+    NOW = 40.4; for i = nT2 + 1, #TIMERS do local t = TIMERS[i]; if not t.fired and NOW >= t.at + t.ms/1000 - 1e-9 then t.fired = true; t.f() end end
+    NOW = 40.6; for i = nT2 + 1, #TIMERS do local t = TIMERS[i]; if not t.fired and NOW >= t.at + t.ms/1000 - 1e-9 then t.fired = true; t.f() end end
+    check("(j) the probe confirmed death and restarted the puppet chain exactly once",
+        KCD2MP.npcPuppetGen == gen0 + 1 and
+        (function() local n = 0; for i = nLog2 + 1, #LOG do if LOG[i]:find("puppet tick started", 1, true) then n = n + 1 end end return n == 1 end)())
+    noErrs("(j)")
 end
 
 OUT = table.concat(RESULTS, "\n")
