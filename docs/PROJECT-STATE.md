@@ -235,7 +235,8 @@ bit 2 (dead) and bit 3 (unconscious). `LogTailGameTransport` parses `v1` and
 | `Test-CombatOutbound.ps1` | outbound, full chain | everything |
 | `Test-Sessions.ps1` | WO-2 sessions, 22/22 | relay only |
 | `Test-Dice.ps1` | WO-5 dice, 15/15 | relay only |
-| `Test-NpcSmoothSynthetic.ps1` | WO-77 NPC puppet renderer math (interpolation-behind, hold-at-newest, doubled-chain no-op, DELAY derivation), 39/39 — runs the real `kdcmp.lua` under MoonSharp with the engine stubbed; proves nothing about on-screen feel | .NET SDK only (no game/relay/agent) |
+| `Test-NpcSmoothSynthetic.ps1` | WO-77 NPC puppet renderer math (interpolation-behind, hold-at-newest, doubled-chain no-op, DELAY derivation), 48/48 — WO-78 added (j): the per-packet restart caller during a suspension arms one probe and starts nothing — runs the real `kdcmp.lua` under MoonSharp with the engine stubbed; proves nothing about on-screen feel | .NET SDK only (no game/relay/agent) |
+| `Test-GhostInterpSynthetic.ps1` | WO-78 ghost interp chain: time-based advance (same-frame duplicate and 10 ms-offset chains render the single-chain trajectory), the `GHOST CHAIN LEAK CONFIRMED` detector + stale exit, and the shared probe-confirmed restart gate (suspension refused, real death restarted once), 35/35 — same MoonSharp driver, separate scenario file | .NET SDK only (no game/relay/agent) |
 | `Probe-Reflection.ps1` | capability re-check after a game patch | game |
 | `KcdApi.ps1` | bounded REST client — dot-source it | game |
 
@@ -446,6 +447,24 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 ---
 
 ## 7. Still open
+
+- **WO-78 (2026-09-11) — the chain leak is root-caused and fixed in Lua, not
+  yet seen live.** Cause: `tickAlive` could not tell a suspended timer chain
+  from a dead one, and menus, inventory, **dialogs and cutscenes** suspend
+  every `Script.SetTimer` chain while the agent's 2.5 s re-arm keeps
+  executing (host 34 restarts of each chain, joiner 41; a 60 s cutscene alone
+  made 24 and left 14–21 interp chains running). Fix: probe-confirmed restart
+  gate on all six chains, time-based ghost interp, ghost leak detector, both
+  stale-chain exits default on. Synthetic 35/35 + 48/48; **no live session
+  yet**. Read `WO-78-findings.md` before touching any `Start*`/`tickAlive`
+  code. Named follow-ups from the same logs, none started: the agent's pause
+  detector misses dialogs and cutscenes (ghosts freeze for the local player
+  during both); **1,582** `[Lua Error] Error executing lua [string ""]:12/13:
+  ... near '<eof>'` lines on the host — a batched ExecuteString is cut
+  mid-statement and the batch is lost (agent-side, `GameBridge.cs` batching);
+  `GHOST_DEATH` flag flapping with a dead ghost body attacking; a horse puppet
+  teleporting ~1,957 m in one tick (WO-69's two-bodies hazard, field
+  instance); `Animation-queue overflow` correlating with chain count.
 
 - **`Test-AppearanceE2E.ps1` fails: 2 of 5 item classes never equip.** Newly
   visible, 2026-08-07. That script had drifted to protocol version 5 against a
