@@ -448,6 +448,24 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ## 7. Still open
 
+- **WO-80 (2026-09-11) — pause detection covers `Rendered` cutscenes now;
+  dialogs still don't, not yet seen live.** Extends WO-13's menu/inventory/
+  skip-time pause detector with a fourth, independent state: a `Rendered`-type
+  `CutscenePlayer::PlayCutscene`/`OnCutsceneEnd` pair, confirmed against real
+  data to be the only cutscene type of four present (`Fader`, `SkipTime`,
+  `Text`, `Rendered`) that actually freezes `Script.SetTimer`. The existing
+  WO-13 pump engages for it unchanged — no new pump, no Lua change. Verified
+  by replaying a real ~60 s field-session cutscene stall through the actual
+  compiled `LogTailGameTransport`: the aggregate pause window now correctly
+  spans the whole stall instead of dropping ~193 lines early. **Dialogs
+  explicitly not covered**: the candidate log markers (`Dialog ends`,
+  `Localization/dialog/`) are ambient NPC-chatter/audio-streaming noise at
+  650–1,800× the real cutscene rate and were rejected on that evidence; the
+  documented `human:IsInDialog()` Lua bind (WO-57) was not built because no
+  live game was reachable this session to probe it first (WO-65's rule: a
+  documented bind is not a verified one). Read `WO-80-findings.md`. **No live
+  session yet** for either half.
+
 - **WO-78 (2026-09-11) — the chain leak is root-caused and fixed in Lua, not
   yet seen live.** Cause: `tickAlive` could not tell a suspended timer chain
   from a dead one, and menus, inventory, **dialogs and cutscenes** suspend
@@ -457,14 +475,15 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
   gate on all six chains, time-based ghost interp, ghost leak detector, both
   stale-chain exits default on. Synthetic 35/35 + 48/48; **no live session
   yet**. Read `WO-78-findings.md` before touching any `Start*`/`tickAlive`
-  code. Named follow-ups from the same logs, none started: the agent's pause
-  detector misses dialogs and cutscenes (ghosts freeze for the local player
-  during both); **1,582** `[Lua Error] Error executing lua [string ""]:12/13:
-  ... near '<eof>'` lines on the host — a batched ExecuteString is cut
-  mid-statement and the batch is lost (agent-side, `GameBridge.cs` batching);
-  `GHOST_DEATH` flag flapping with a dead ghost body attacking; a horse puppet
-  teleporting ~1,957 m in one tick (WO-69's two-bodies hazard, field
-  instance); `Animation-queue overflow` correlating with chain count.
+  code. Named follow-ups from the same logs: the agent's pause detector
+  missing dialogs and cutscenes is **now partially addressed by WO-80**
+  (cutscenes only — see above); still untouched: **1,582**
+  `[Lua Error] Error executing lua [string ""]:12/13: ... near '<eof>'` lines
+  on the host — a batched ExecuteString is cut mid-statement and the batch is
+  lost (agent-side, `GameBridge.cs` batching); `GHOST_DEATH` flag flapping
+  with a dead ghost body attacking; a horse puppet teleporting ~1,957 m in
+  one tick (WO-69's two-bodies hazard, field instance); `Animation-queue
+  overflow` correlating with chain count.
 
 - **`Test-AppearanceE2E.ps1` fails: 2 of 5 item classes never equip.** Newly
   visible, 2026-08-07. That script had drifted to protocol version 5 against a
