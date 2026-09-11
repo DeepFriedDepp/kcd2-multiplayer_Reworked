@@ -11,6 +11,7 @@ namespace KcdMp.Server.Features.ClientHandling;
 /// </summary>
 public class ClientHandler
 {
+	private readonly ILogger _logger;
 	private readonly List<ClientSession> _clients = [];
 	private readonly HashSet<ClientSession> _readyClients = [];
 	private readonly object _lock = new();
@@ -41,8 +42,24 @@ public class ClientHandler
 	private readonly double _maxNpcSpeedMps;
 	private readonly double _npcSpeedSlackMeters;
 
+	// ---- WO-81 claim-lifecycle logging tunables ----
+	//
+	// A claim transition (grant/release/reassignment) happens orders of
+	// magnitude less often than a per-tick position update, so unlike a hot
+	// path there is no real cost argument for shipping this off by default --
+	// and the project is actively bug-hunting the claim system on a live field
+	// report (a 2026-09-11 session describing NPC jitter that "fought over
+	// authority" when players stood close together). Visibility now is worth
+	// more than saving a few log lines nobody asked to see, so this defaults
+	// ON rather than requiring an operator to discover and flip a flag before
+	// the next incident. Same section as the WO-66 gates it instruments.
+	private readonly bool _claimLifecycleLoggingEnabled;
+	private readonly double _contestedGapSeconds;
+
 	public ClientHandler(ILogger logger, IConfiguration configuration)
 	{
+		_logger = logger;
+
 		// WO-76 (docs/WO-75-audit-findings.md s1): 0 was accepted at face
 		// value and refused every handshake (TryMarkReady's count-vs-limit
 		// check can never pass), bricking the relay with no indication why.
@@ -55,6 +72,9 @@ public class ClientHandler
 
 		_maxNpcSpeedMps      = configuration.GetValue("NpcClaimValidation:MaxSpeedMps", 40.0);
 		_npcSpeedSlackMeters = configuration.GetValue("NpcClaimValidation:SlackMeters", 2.0);
+
+		_claimLifecycleLoggingEnabled = configuration.GetValue("NpcClaimValidation:ClaimLifecycleLogging", true);
+		_contestedGapSeconds          = configuration.GetValue("NpcClaimValidation:ContestedGapSeconds", 10.0);
 	}
 
 	/// <summary>The effective (clamped) player cap, echoed in the ServerFull (0x36) packet.</summary>
@@ -262,6 +282,44 @@ public class ClientHandler
 		_skipJoined.Clear();
 	}
 
+	// ---- WO-81 diagnostic position cache ----
+	//
+	// The relay already parses every Position (0x01) packet in ClientSession
+	// to build the outgoing Ghost packet, but never retained it -- Phase 0 of
+	// this WO confirmed there was no existing cache to reuse. This one exists
+	// SOLELY to answer "how far apart were the two players" on a contested
+	// claim log line; it is never read by RouteNpcState or any other decision
+	// path. Read-only observation, same discipline as every other diagnostic
+	// surface in this project -- see docs/WO-81-findings.md.
+	private readonly Dictionary<byte, (float X, float Y, float Z)> _playerPositions = [];
+
+	/// <summary>WO-81: records the sender's latest reported position, diagnostic-only.</summary>
+	public void RecordPlayerPosition(ClientSession sender, float x, float y, float z)
+	{
+		lock (_lock)
+			_playerPositions[sender.Id] = (x, y, z);
+	}
+
+	/// <summary>WO-81: drops a disconnected client's cached position.</summary>
+	public void ClearPlayerPositionFor(ClientSession client)
+	{
+		lock (_lock)
+			_playerPositions.Remove(client.Id);
+	}
+
+	/// <summary>
+	/// WO-81: Euclidean distance between two sessions' last-known positions,
+	/// or "unknown" if either has not reported one. Caller must already hold
+	/// <see cref="_lock"/> -- this reads <see cref="_playerPositions"/> directly.
+	/// </summary>
+	private string DistanceBetweenLocked(byte a, byte b)
+	{
+		if (!_playerPositions.TryGetValue(a, out var pa) || !_playerPositions.TryGetValue(b, out var pb))
+			return "unknown";
+		double dx = pa.X - pb.X, dy = pa.Y - pb.Y, dz = pa.Z - pb.Z;
+		return Math.Sqrt(dx * dx + dy * dy + dz * dz).ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+	}
+
 	// ---- Per-entity NPC authority (WO-39 Phase 2) ----
 	//
 	// The handoff item C of docs/WO-38-gaps-and-next-WOs.md asks for: "the
@@ -299,7 +357,33 @@ public class ClientHandler
 	// expiry, disconnect clear, and reclaim all destroy it with the entry, so
 	// a new claimant's first packet is never speed-checked against a previous
 	// owner's data -- it seeds a fresh baseline instead.
-	private readonly Dictionary<string, (byte OwnerId, DateTime LastUtc, DateTime EngagedUtc, float X, float Y, float Z)> _npcClaims = [];
+	// WO-81 adds GrantedUtc: when this claim entry was first created, kept
+	// alongside LastUtc (last accepted refresh) so a release can log
+	// heldForSec -- how long the claim actually lasted, not just how stale it
+	// was when it finally lapsed.
+	private readonly Dictionary<string, (byte OwnerId, DateTime GrantedUtc, DateTime LastUtc, DateTime EngagedUtc, float X, float Y, float Z)> _npcClaims = [];
+
+	// WO-81: the previous owner and last-touched moment for a name that has
+	// been released, kept AFTER the entry leaves _npcClaims so the next claim
+	// on that name can tell "brand new" (granted) apart from "someone is
+	// reclaiming a body that had an owner before" (reassigned), and compute
+	// the gap between the two.
+	//
+	// LastActiveUtc is the released claim's OWN LastUtc (its last accepted
+	// packet), not the moment of removal. Removal is lazy -- an expired claim
+	// is only actually deleted when some later packet triggers the check in
+	// RouteNpcState, which for the reassignment path is the SAME packet that
+	// then grants the new claim. Stamping "now" at removal would therefore
+	// make every expiry-driven reassignment's gap read as ~0.0 regardless of
+	// how long the body actually sat unclaimed (caught by
+	// Test-NpcClaimLifecycle.ps1's T5 case). LastUtc is the real moment
+	// nobody was touching this claim any more, so "now - LastActiveUtc" is
+	// the genuine silence duration a rival reassignment interrupted.
+	//
+	// Overwritten on every release; never cleaned up otherwise -- the NPC
+	// name space here is bounded (named world NPCs + the capped ghost/horse
+	// pool), so this cannot grow unbounded over a relay's lifetime.
+	private readonly Dictionary<string, (byte PrevOwnerId, DateTime LastActiveUtc)> _recentReleases = [];
 
 	/// <summary>How <see cref="RouteNpcState"/> disposed of one NpcStateUp.</summary>
 	public enum NpcRoute
@@ -343,6 +427,49 @@ public class ClientHandler
 		Interlocked.Read(ref _rejectReservedName),
 		Interlocked.Read(ref _rejectStaleOwner));
 
+	// ---- WO-81 claim-lifecycle counters ----
+	//
+	// One per event kind, matching the [CLAIM]/[CLAIM-CONTESTED] log lines,
+	// same shape as WO-66's rejection counters above. Interlocked for the
+	// same reason: read from the HTTP endpoint outside _lock. ContestedByNpc
+	// is the one per-NPC breakdown kept (guarded by _lock, not Interlocked --
+	// it is only ever touched from inside RouteNpcState/ClearNpcClaimsFor,
+	// which already hold it): grants/releases/reassignments happen routinely
+	// for any claim-using feature, but a contested claim is the rare, actually
+	// diagnostic event this WO exists to surface, so only it gets a per-NPC
+	// breakdown -- a per-NPC table for the other three would just be a bigger
+	// version of the same totals for no analytical gain.
+	private long _claimGrants, _claimReleases, _claimReassignments, _claimContested;
+	private readonly Dictionary<string, long> _claimContestedByNpc = [];
+
+	/// <summary>Snapshot of the WO-81 claim-lifecycle counters.</summary>
+	public NpcClaimCounters GetNpcClaimCounters()
+	{
+		lock (_lock)
+			return new NpcClaimCounters(
+				Interlocked.Read(ref _claimGrants),
+				Interlocked.Read(ref _claimReleases),
+				Interlocked.Read(ref _claimReassignments),
+				Interlocked.Read(ref _claimContested),
+				new Dictionary<string, long>(_claimContestedByNpc));
+	}
+
+	/// <summary>
+	/// WO-81: logs and counts a contested claim -- a reassignment or a
+	/// stale-owner rejection whose gap since the current/previous owner's
+	/// last accepted packet is under <see cref="_contestedGapSeconds"/>. Caller
+	/// must already hold <see cref="_lock"/>.
+	/// </summary>
+	private void LogContestedLocked(string npcName, byte prevOwnerId, byte newOwnerId, double gapSec)
+	{
+		Interlocked.Increment(ref _claimContested);
+		_claimContestedByNpc.TryGetValue(npcName, out long count);
+		_claimContestedByNpc[npcName] = count + 1;
+		_logger.Information(
+			"[CLAIM-CONTESTED] npc={Npc} prevOwner={PrevOwner} newOwner={NewOwner} gapSec={GapSec:F1} distanceBetweenPlayers={Distance}",
+			npcName, prevOwnerId, newOwnerId, gapSec, DistanceBetweenLocked(prevOwnerId, newOwnerId));
+	}
+
 	/// <summary>
 	/// Decides whether one NpcStateUp for <paramref name="npcName"/> from
 	/// <paramref name="sender"/> may be broadcast, updating the per-entity
@@ -372,6 +499,14 @@ public class ClientHandler
 			{
 				_npcClaims.Remove(npcName);
 				claimed = false;
+
+				if (_claimLifecycleLoggingEnabled)
+				{
+					_recentReleases[npcName] = (claim.OwnerId, claim.LastUtc);
+					Interlocked.Increment(ref _claimReleases);
+					_logger.Information("[CLAIM] released npc={Npc} owner={Owner} reason=expiry heldForSec={HeldForSec:F1}",
+						npcName, claim.OwnerId, (now - claim.GrantedUtc).TotalSeconds);
+				}
 			}
 
 			if (IsDamageAuthority(sender))
@@ -388,6 +523,22 @@ public class ClientHandler
 				// former owner's late packet after release-and-reclaim arrives
 				// as a non-owner and lands here. Never releases anything.
 				Interlocked.Increment(ref _rejectStaleOwner);
+
+				// WO-81: this is "someone tried to take an actively-live
+				// claim" by definition -- claimed is only still true here
+				// because claim.LastUtc is within NpcClaimTimeoutSeconds (5s),
+				// which is well under the default 10s ContestedGapSeconds, so
+				// under shipped defaults every stale-owner rejection reports
+				// contested. That is not double-counting a coincidence: a
+				// rival being rejected because the claim is LIVE is exactly
+				// the contest this detector exists to surface, just via the
+				// rejection path rather than the reassignment path below.
+				if (_claimLifecycleLoggingEnabled)
+				{
+					double gapSec = (now - claim.LastUtc).TotalSeconds;
+					if (gapSec < _contestedGapSeconds)
+						LogContestedLocked(npcName, claim.OwnerId, sender.Id, gapSec);
+				}
 				return NpcRoute.RejectStaleOwner;
 			}
 
@@ -403,7 +554,32 @@ public class ClientHandler
 				// First claim wins, by relay arrival order. This packet seeds
 				// the speed-gate baseline; it is deliberately not speed-checked
 				// (there is nothing of THIS owner's to check it against).
-				_npcClaims[npcName] = (sender.Id, now, engaged ? now : DateTime.MinValue, x, y, z);
+				_npcClaims[npcName] = (sender.Id, now, now, engaged ? now : DateTime.MinValue, x, y, z);
+
+				if (_claimLifecycleLoggingEnabled)
+				{
+					// WO-81: a name this WO has seen released before is a
+					// reassignment (someone claiming a body that had an owner);
+					// one it has never seen released is a fresh grant. A
+					// same-session reclaim of its own prior release (nobody
+					// else ever took it) is left as a grant too -- nothing was
+					// contested for that case.
+					if (_recentReleases.TryGetValue(npcName, out var released) && released.PrevOwnerId != sender.Id)
+					{
+						double gapSec = (now - released.LastActiveUtc).TotalSeconds;
+						Interlocked.Increment(ref _claimReassignments);
+						_logger.Information("[CLAIM] reassigned npc={Npc} prevOwner={PrevOwner} newOwner={NewOwner} gapSec={GapSec:F1}",
+							npcName, released.PrevOwnerId, sender.Id, gapSec);
+						if (gapSec < _contestedGapSeconds)
+							LogContestedLocked(npcName, released.PrevOwnerId, sender.Id, gapSec);
+					}
+					else
+					{
+						Interlocked.Increment(ref _claimGrants);
+						_logger.Information("[CLAIM] granted npc={Npc} owner={Owner} pos=({X:F1},{Y:F1},{Z:F1})",
+							npcName, sender.Id, x, y, z);
+					}
+				}
 				return NpcRoute.Broadcast;
 			}
 
@@ -418,8 +594,8 @@ public class ClientHandler
 				return NpcRoute.RejectSpeed;
 			}
 
-			_npcClaims[npcName] = (sender.Id, now, engaged ? now : claim.EngagedUtc, x, y, z);
-			return NpcRoute.Broadcast;   // refresh (and re-arm the hold if still engaged)
+			_npcClaims[npcName] = (sender.Id, claim.GrantedUtc, now, engaged ? now : claim.EngagedUtc, x, y, z);
+			return NpcRoute.Broadcast;   // refresh (and re-arm the hold if still engaged; NOT logged -- see class notes)
 		}
 	}
 
@@ -432,11 +608,23 @@ public class ClientHandler
 	{
 		lock (_lock)
 		{
+			var now = DateTime.UtcNow;
 			var mine = new List<string>();
 			foreach (var kv in _npcClaims)
 				if (kv.Value.OwnerId == client.Id) mine.Add(kv.Key);
 			foreach (var name in mine)
+			{
+				var claim = _npcClaims[name];
 				_npcClaims.Remove(name);
+
+				if (_claimLifecycleLoggingEnabled)
+				{
+					_recentReleases[name] = (claim.OwnerId, claim.LastUtc);
+					Interlocked.Increment(ref _claimReleases);
+					_logger.Information("[CLAIM] released npc={Npc} owner={Owner} reason=disconnect heldForSec={HeldForSec:F1}",
+						name, client.Id, (now - claim.GrantedUtc).TotalSeconds);
+				}
+			}
 		}
 	}
 

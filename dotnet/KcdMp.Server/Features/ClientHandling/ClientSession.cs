@@ -496,6 +496,11 @@ public class ClientSession
                 float rotZ = ReadFloat(posPayload, 12);
                 byte  flags = posPayload[16];
 
+                // WO-81: diagnostic-only cache of this session's last reported
+                // position, read solely by the contested-claim detector's
+                // distance correlation -- never a routing decision.
+                _clientHandler.RecordPlayerPosition(this, x, y, z);
+
                 _broadcastService.Broadcast(this, x, y, z, rotZ, flags);
             }
         }

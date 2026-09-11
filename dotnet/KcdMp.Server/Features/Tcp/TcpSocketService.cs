@@ -85,6 +85,10 @@ public class TcpSocketService : BackgroundService
 					// claimed bodies now, not at the claim timeout.
 					_clientHandler.ClearNpcClaimsFor(client);
 
+					// WO-81: drop this session's cached position so a later
+					// reused byte Id cannot inherit a stale distance reading.
+					_clientHandler.ClearPlayerPositionFor(client);
+
 					// Before announcing the disconnect: a peer still in a session
 					// with this client needs telling, or it waits forever.
 					_sessions.HandleDisconnect(client);
