@@ -35,7 +35,17 @@ namespace KCDMP_launcher.Components.Shared
         /// zip path. Files that do not exist are skipped, never fatal -- a
         /// partial bundle beats no bundle.
         /// </summary>
-        public static string Collect(string gameRoot, string agentDirectory)
+        /// <param name="relayDirectory">
+        /// WO-81: where the relay executable lives, i.e. where it writes
+        /// relay*.log if it has ever run from here. Empty is fine -- this
+        /// machine may be a joiner with no local relay process, exactly like
+        /// an empty GameRoot/AgentDirectory; the file simply will not exist
+        /// and is skipped like any other missing file. Before this WO the
+        /// relay had no persistent log at all (Console-only Serilog sink), so
+        /// there was nothing here to collect regardless of this parameter --
+        /// see docs/WO-81-findings.md.
+        /// </param>
+        public static string Collect(string gameRoot, string agentDirectory, string relayDirectory = "")
         {
             string zipPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
@@ -113,6 +123,28 @@ namespace KCDMP_launcher.Components.Shared
                     AddIfPresent(f.FullName, f.Name);
             }
             catch { }
+
+            // WO-81: the relay's own Serilog output (relay<yyyyMMdd>.log, same
+            // rolling shape as this launcher's app.log -- see
+            // dotnet/KcdMp.Server/appsettings.json), including its
+            // [WO66-REJECT]/[CLAIM]/[CLAIM-CONTESTED] lines. Only exists on
+            // whichever machine hosted; DirectoryInfo on a bad/empty path or
+            // GetFiles finding nothing both no-op through the same try/catch
+            // used above, so a joiner (or a host who never started a relay
+            // this install) collects a bundle with this simply absent, not an
+            // error or a misleading empty entry.
+            if (!string.IsNullOrWhiteSpace(relayDirectory))
+            {
+                try
+                {
+                    foreach (var f in new DirectoryInfo(relayDirectory)
+                                 .GetFiles("relay*.log")
+                                 .OrderByDescending(f => f.LastWriteTimeUtc)
+                                 .Take(2))
+                        AddIfPresent(f.FullName, f.Name);
+                }
+                catch { }
+            }
 
             // The launcher's real settings file (written by Home.SaveSettings
             // as a working-directory-relative "settings.json").

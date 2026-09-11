@@ -52,6 +52,7 @@
     // come from. Empty is fine -- LogBundle skips what it cannot find.
     [Parameter] public string GameRoot { get; set; } = "";
     [Parameter] public string AgentDirectory { get; set; } = "";
+    [Parameter] public string RelayDirectory { get; set; } = "";
 
     private string collectResult = "";
 
@@ -62,7 +63,7 @@
     {
         try
         {
-            string zip = LogBundle.Collect(GameRoot, AgentDirectory);
+            string zip = LogBundle.Collect(GameRoot, AgentDirectory, RelayDirectory);
             collectResult = $"Saved to your Desktop: {System.IO.Path.GetFileName(zip)}";
         }
         catch (Exception ex)

@@ -1156,6 +1156,16 @@ namespace KCDMP_launcher.Pages
             Path.GetDirectoryName(ResolveAgainstLauncher(settings.AgentPath)) ?? "";
 
         /// <summary>
+        /// WO-81: where the relay writes relay*.log, if it is running (or has
+        /// ever run) from this install -- same resolution rule as
+        /// LogBundleAgentDirectory, and the same "just resolve the path,
+        /// AddIfPresent skips what is not there" handling for a joiner's
+        /// machine, which has no local relay process at all.
+        /// </summary>
+        private string LogBundleRelayDirectory =>
+            Path.GetDirectoryName(ResolveAgainstLauncher(settings.RelayPath)) ?? "";
+
+        /// <summary>
         /// A relative path in settings means "next to the launcher", which is
         /// where a packaged build puts the DLL, the injector and the agent.
         /// </summary>
