@@ -324,7 +324,17 @@ try {
     $peerA.Tcp.Close(); $peerB.Tcp.Close(); $peerC.Tcp.Close(); $peerE.Tcp.Close()
 }
 finally {
-    if ($relay -and -not $relay.HasExited) { Stop-Process -Id $relay.Id -Force }
+    if ($relay -and -not $relay.HasExited) {
+        Stop-Process -Id $relay.Id -Force
+        # Stop-Process -Force requests termination and returns; it does not
+        # wait for the OS to actually tear the process down, so the Serilog
+        # File sink's handle on relay*.log can still be open for a moment
+        # after this call returns. Without waiting here, the Remove-Item
+        # below can silently no-op against a locked file (SilentlyContinue),
+        # leaving this relay's own [CLAIM] lines in place for T7 to trip
+        # over -- a race, not a claim-logging defect (WO-82, reproduced).
+        $relay.WaitForExit(3000) | Out-Null
+    }
 }
 
 Write-Host "`n--- T7: config gate off -- ClaimLifecycleLogging=false produces no [CLAIM] lines, all-zero counters ---"
