@@ -235,6 +235,7 @@ bit 2 (dead) and bit 3 (unconscious). `LogTailGameTransport` parses `v1` and
 | `Test-CombatOutbound.ps1` | outbound, full chain | everything |
 | `Test-Sessions.ps1` | WO-2 sessions, 22/22 | relay only |
 | `Test-Dice.ps1` | WO-5 dice, 15/15 | relay only |
+| `Test-NpcSmoothSynthetic.ps1` | WO-77 NPC puppet renderer math (interpolation-behind, hold-at-newest, doubled-chain no-op, DELAY derivation), 39/39 — runs the real `kdcmp.lua` under MoonSharp with the engine stubbed; proves nothing about on-screen feel | .NET SDK only (no game/relay/agent) |
 | `Probe-Reflection.ps1` | capability re-check after a game patch | game |
 | `KcdApi.ps1` | bounded REST client — dot-source it | game |
 
