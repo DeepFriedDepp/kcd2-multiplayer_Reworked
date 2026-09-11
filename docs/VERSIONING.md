@@ -64,7 +64,7 @@ Confirmed from `git log --follow -- VERSION`, not assumed:
 | `0.13.6` | WO-39 | + WO-39 — combat visibility on NPC puppets. User-chosen. |
 | `0.14.4` | WO-40 | + WO-40 — mount-crash guards, weather sync `0x2E`/`0x2F`, reload time convergence, name-addressed NPC damage `0x30`/`0x31`, puppet combat cues + carry state, `MotionJump`, ghosts stimulus-deaf by default, quest-alias clothing map. User-chosen. |
 | `0.15.0` | WO-43 | + WO-42 (no code, reverse-engineering only) and WO-43 — the native `combat_playanim.cpp` diagnostic for the direct-call combat-swing route (`kcdmp-playanim.txt` opt-in), `mp_entity_id` console command, and the real (not guessed) sync-attack fragment/tag data documented for `mp_combat_frag`. User-chosen. Combat-swing fidelity itself is not yet confirmed live — see `docs/WO-43-findings.md`. |
-| `0.16.6` … `0.19.0` | WO-52 … WO-74 | not recorded here at the time; see `docs/releases/` and `git log --follow -- VERSION`. |
+| `0.16.6` … `0.19.0` | — | user-chosen in the sessions between WO-43 and WO-74, not recorded in this table at the time; see `docs/releases/` and `git log --follow -- VERSION`. |
 | `0.20.2` | WO-77 | + WO-75/76/77 and PR #1 — NPC puppet jitter fix (time-based interpolation-behind, 10 Hz emit for moving NPCs, `mp_npc_smooth` default on), relay hygiene (`ServerFull` 0x36, `MaxPlayers` clamp, session-id pool, bounded native pipe wait), test-suite repairs. User-chosen. Pre-release tester build; the session built it, the maintainer distributes it. See `docs/releases/RELEASE-NOTES-0.20.2.md`. |
 
 `0.9.2` was stated by the user explicitly. It is the label for everything on
