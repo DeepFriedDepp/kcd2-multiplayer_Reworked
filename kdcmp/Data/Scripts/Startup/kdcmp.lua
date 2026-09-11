@@ -315,6 +315,73 @@ local function tickAlive(flag, stamp)
     return flag and stamp and (os.clock() - stamp) < TICK_ALIVE_WINDOW
 end
 
+-- WO-78: SUSPENDED IS NOT DEAD. The stale-stamp rule above has a gap the
+-- first real two-player session (2026-09-11) measured directly: a menu, the
+-- inventory, a DIALOG or a CUTSCENE suspends every Script.SetTimer chain at
+-- once while the agent's ExecuteString keeps executing -- so the agent's
+-- 2.5 s re-arm (and, for the puppet chain, every inbound packet) found a
+-- stale stamp, called the chain dead and started a second one. Then the
+-- first one RESUMED. Host: 34 restarts of each of the four re-armed chains
+-- (interp/label/emitter/npc-sync), 33 of the 33 non-initial ones directly
+-- after a >= 1.0 s stall in the emitter's own os.clock stamps; joiner: one
+-- 60 s pillory cutscene produced 24 restarts (= 60 / 2.5) and 14-21
+-- concurrent interp chains for the rest of the session (TICK_ALIVE every
+-- 0.26-0.38 s against a 5.3-6.6 s single-chain baseline). Save loads reset
+-- the count to 1 every time -- those really do kill the timers.
+--
+-- Lua cannot tell a suspended chain from a dead one by looking at the stamp,
+-- because the clock the stamp is compared against keeps running while the
+-- timers do not. What it CAN do is ask the timer system itself: arm a
+-- one-shot probe and only restart when the probe fires while the stamp is
+-- STILL stale. A probe armed during a suspension fires when everything
+-- resumes and finds a fresh stamp (no restart); a probe armed after a save
+-- load fires into a working timer system and finds no heartbeat (restart).
+-- The second hop exists because a resumed chain and the probe come due in
+-- the same frame and nothing says which runs first.
+--
+-- Shared by every chain in this file on purpose: it is liveness plumbing,
+-- like tickAlive, not rendering math (WO-70 constraint 1 is about the
+-- latter). A chain whose flag is false -- never started, or stopped on
+-- purpose (the puppet chain's "no puppets" exit) -- still starts at once.
+local CHAIN_PROBE_MS        = 400
+local CHAIN_PROBE_SETTLE_MS = 200
+local CHAIN_PROBE_REARM_S   = 3.0   -- a probe this old that never fired was itself killed or suspended; arm another
+KCD2MP._chainProbe = {}
+KCD2MP._chainSuspendedN = 0        -- false restarts this gate has refused (diagnostic)
+
+local function chainMayStart(key, flagField, stampField, restart)
+    if tickAlive(KCD2MP[flagField], KCD2MP[stampField]) then return false end
+    if not KCD2MP[flagField] or not KCD2MP[stampField] then return true end
+    local pr = KCD2MP._chainProbe[key]
+    local now = os.clock()
+    if pr and pr.deadConfirmed then
+        KCD2MP._chainProbe[key] = nil
+        return true
+    end
+    if pr and (now - pr.armedAt) < CHAIN_PROBE_REARM_S then return false end
+    local mine = { armedAt = now, staleFor = now - KCD2MP[stampField] }
+    KCD2MP._chainProbe[key] = mine
+    Script.SetTimer(CHAIN_PROBE_MS, function()
+        Script.SetTimer(CHAIN_PROBE_SETTLE_MS, function()
+            if KCD2MP._chainProbe[key] ~= mine then return end   -- superseded by a later probe
+            if tickAlive(KCD2MP[flagField], KCD2MP[stampField]) then
+                KCD2MP._chainProbe[key] = nil
+                KCD2MP._chainSuspendedN = (KCD2MP._chainSuspendedN or 0) + 1
+                mp_log(string.format(
+                    "CHAIN %s was suspended, not dead (stamp %.1fs stale when asked; resumed before the probe) -- restart skipped (#%d)",
+                    key, mine.staleFor, KCD2MP._chainSuspendedN))
+                return
+            end
+            mine.deadConfirmed = true
+            mp_log(string.format(
+                "CHAIN %s confirmed dead (timers fire, no heartbeat for %.1fs) -- restarting",
+                key, os.clock() - (KCD2MP[stampField] or os.clock())))
+            restart()
+        end)
+    end)
+    return false
+end
+
 -- WO-39 Phase 1, outbound drawn-state half. Rides the emit tick but is
 -- throttled to 5 Hz -- a draw/sheathe is a once-in-a-while transition, not a
 -- position stream. Human.IsWeaponDrawn() is documented ("return true if human
@@ -447,7 +514,9 @@ end
 -- intervalMs is optional; the agent passes its configured rate.
 function KCD2MP_StartEmitter(intervalMs)
     if intervalMs and intervalMs >= 5 then KCD2MP.emitIntervalMs = intervalMs end
-    if tickAlive(KCD2MP.emitRunning, KCD2MP._emitAliveAt) then return end
+    -- WO-78: probe-confirmed restart (see chainMayStart) -- a menu/dialog/
+    -- cutscene suspension no longer counts as death.
+    if not chainMayStart("emit", "emitRunning", "_emitAliveAt", function() KCD2MP_StartEmitter() end) then return end
     KCD2MP.emitRunning = true
     KCD2MP._emitAliveAt = os.clock()   -- prime it: the first tick is one interval away
     KCD2MP._emitErrLogged = false
@@ -2062,7 +2131,29 @@ end
 -- unverified. Same mechanism, same fix shape, different burden of proof.
 KCD2MP.npcPuppetGen   = 0
 KCD2MP.npcChainFix    = false  -- mp_npc_chainfix on|off
-KCD2MP._chainLeakSeen = {}     -- "puppet" -> true, so the line logs once per chain kind
+KCD2MP._chainLeakSeen = {}     -- "puppet" / "interp" -> true, so the line logs once per chain kind
+-- WO-78: both stale-chain exits default ON. WO-69's rule was "observe-only
+-- until a log line shows two chains alive at once"; the 2026-09-11 session
+-- showed exactly that on both machines (host: puppet gen=1 alive at gen=8;
+-- joiner: gen=5 alive at gen=9) with `mp_npc_chainfix` never toggled -- the
+-- observe-only default produced the observation and then could do nothing
+-- with it. With chainMayStart refusing the false restart in the first place,
+-- a stale chain can now only exist through a bug, and two chains writing one
+-- entity is never wanted. The toggles stay as the rollback.
+KCD2MP.npcChainFix = true
+KCD2MP.ghostChainFix = true
+
+function KCD2MP_SetGhostChainFix(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "on" or s == "1" or s == "true" then
+        KCD2MP.ghostChainFix = true
+    elseif s == "off" or s == "0" or s == "false" then
+        KCD2MP.ghostChainFix = false
+    end
+    mp_log("mp_ghost_chainfix = " .. tostring(KCD2MP.ghostChainFix)
+        .. " (interp gen=" .. tostring(KCD2MP.interpGen) .. ", false restarts refused="
+        .. tostring(KCD2MP._chainSuspendedN or 0) .. ")")
+end
 
 -- WO-69: measured inbound packet cadence. Before this there was NO per-packet
 -- record anywhere in the mod, so every cadence number in the WO-69 diagnosis
@@ -2505,7 +2596,7 @@ function KCD2MP_NpcSyncTick()
 end
 
 function KCD2MP_StartNpcSync()
-    if tickAlive(KCD2MP.npcSyncRunning, KCD2MP._npcSyncAliveAt) then return end
+    if not chainMayStart("npcsync", "npcSyncRunning", "_npcSyncAliveAt", KCD2MP_StartNpcSync) then return end  -- WO-78
     KCD2MP.npcSyncRunning = true
     KCD2MP._npcSyncAliveAt = os.clock()
     mp_log("NPC-SYNC emit tick started (" .. KCD2MP.npcSync.emitMs .. "ms)")
@@ -2625,6 +2716,9 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 tostring(gen), tostring(KCD2MP.npcPuppetGen),
                 KCD2MP.npcChainFix and " (stale chain exiting now)"
                                     or " (observe-only; `mp_npc_chainfix on` to stop it)"))
+            -- WO-78: the 2026-09-11 session logged this line on both machines
+            -- and nobody could have known to act on it live. Surface it.
+            pcall(function() KCD2MP_ShowNativeToast("KCD2-MP: NPC puppet chain leak detected -- see kcd.log") end)
         end
         -- The fix, gated: a stale chain stops rescheduling and dies here.
         if KCD2MP.npcChainFix then return end
@@ -2922,7 +3016,10 @@ function KCD2MP_NpcPuppetTick(arg, gen)
 end
 
 function KCD2MP_StartNpcPuppet()
-    if tickAlive(KCD2MP.npcPuppetRunning, KCD2MP._npcPuppetAliveAt) then return end
+    -- WO-78: this is the per-packet caller of the shared gate. The field
+    -- session showed it restarting once per ~1 s of suspension (67 starts vs
+    -- 34 for the 2.5 s-re-armed chains) -- same defect, faster caller.
+    if not chainMayStart("puppet", "npcPuppetRunning", "_npcPuppetAliveAt", KCD2MP_StartNpcPuppet) then return end
     KCD2MP.npcPuppetRunning = true
     KCD2MP._npcPuppetAliveAt = os.clock()
     -- WO-69: every start claims a new generation. Any chain still running
@@ -3850,14 +3947,22 @@ function KCD2MP_StartInterp()
     -- flag-only guard here made that permanent: every remote ghost frozen for
     -- the rest of the session with no way to recover short of restarting the
     -- game.
-    if not tickAlive(KCD2MP.interpRunning, KCD2MP._interpAliveAt) then
+    --
+    -- WO-78: the liveness check is now the probe-confirmed gate (chainMayStart)
+    -- -- a stale stamp during a menu/dialog/cutscene suspension no longer
+    -- starts a second chain -- and every start claims a generation, the
+    -- puppet chain's WO-69 instrument mirrored, so a chain still running
+    -- under an old generation can say so (KCD2MP_InterpTick).
+    if chainMayStart("interp", "interpRunning", "_interpAliveAt", KCD2MP_StartInterp) then
         KCD2MP.interpRunning = true
         KCD2MP._interpAliveAt = os.clock()
-        System.LogAlways("[KCD2-MP] Interp tick started (20ms)")
-        Script.SetTimer(20, KCD2MP_InterpTick)
+        KCD2MP.interpGen = (KCD2MP.interpGen or 0) + 1
+        local myGen = KCD2MP.interpGen
+        System.LogAlways("[KCD2-MP] Interp tick started (20ms) gen=" .. tostring(myGen))
+        Script.SetTimer(20, function() KCD2MP_InterpTick(nil, myGen) end)
     end
     -- Start label render loop if not already running (8ms < 16.7ms frame = no flicker)
-    if not tickAlive(KCD2MP.labelRunning, KCD2MP._labelAliveAt) then
+    if chainMayStart("label", "labelRunning", "_labelAliveAt", KCD2MP_StartInterp) then
         KCD2MP.labelRunning = true
         KCD2MP._labelAliveAt = os.clock()
         System.LogAlways("[KCD2-MP] Label render loop started (8ms)")
@@ -4891,10 +4996,28 @@ end
 -- A pumped call must NOT reschedule. Script.SetTimer is frozen for the whole
 -- duration of a local menu (WO-12 s0.3), so every timer queued by a pumped
 -- call would still be pending when the menu closes and fire as one burst.
-function KCD2MP_InterpTick(arg)
+function KCD2MP_InterpTick(arg, gen)
     if not KCD2MP.interpRunning then return end
+    -- WO-78: chain identity, mirroring the puppet tick's WO-69 instrument.
+    -- `gen` is nil for the external menu pump (never reschedules, cannot leak)
+    -- and for any legacy bare reschedule. The 2026-09-11 field session had no
+    -- detector on this path and had to infer 5-21 concurrent chains from the
+    -- TICK_ALIVE interval by hand; this line is the direct confirmation.
+    if gen ~= nil and gen ~= KCD2MP.interpGen then
+        if not KCD2MP._chainLeakSeen.interp then
+            KCD2MP._chainLeakSeen.interp = true
+            mp_log(string.format(
+                "GHOST CHAIN LEAK CONFIRMED: interp chain gen=%s is still running while gen=%s"
+                .. " is current -- two chains were rendering the same ghosts%s",
+                tostring(gen), tostring(KCD2MP.interpGen),
+                KCD2MP.ghostChainFix and " (stale chain exiting now)"
+                                      or " (observe-only; `mp_ghost_chainfix on` to stop it)"))
+            pcall(function() KCD2MP_ShowNativeToast("KCD2-MP: ghost chain leak detected -- see kcd.log") end)
+        end
+        if KCD2MP.ghostChainFix then return end   -- the stale chain stops rescheduling and dies here
+    end
     if arg ~= "ext" then
-        Script.SetTimer(20, KCD2MP_InterpTick)  -- reschedule FIRST: crash-safe, tick never stops
+        Script.SetTimer(20, function() KCD2MP_InterpTick(nil, gen) end)  -- reschedule FIRST: crash-safe, tick never stops
         -- Only a scheduled fire counts as the chain being alive. A pumped call
         -- must not stamp this, or the pump would make a dead chain look
         -- healthy and stop KCD2MP_StartInterp from ever rebuilding it.
@@ -4917,6 +5040,28 @@ function KCD2MP_InterpTick(arg)
         local istate = ghost.istate
         if istate and ghost.entity then
             istate.ticksSincePacket = istate.ticksSincePacket + 1
+
+            -- WO-78: TIME-BASED ADVANCE (WO-75 s2.5's prescription for this
+            -- path, the puppet renderer's discipline copied -- not shared --
+            -- per WO-70 constraint 1). Every per-tick factor below used to
+            -- assume "one 20 ms tick has passed": the 0.5/0.15 lerp, the DR
+            -- projection in ticks, rendSpeed / 0.020, the 0.4 speed smoother,
+            -- the horse's Z/yaw smoothers. N concurrent chains therefore
+            -- applied N ticks' worth per 20 ms: at the joiner's measured
+            -- 14-21 chains the lerp became a snap onto the DR-projected point
+            -- and every correction against travel rendered at full strength
+            -- -- the reported "2 steps forward, jitter, 1 step back".
+            -- Everything now derives from the real elapsed time since THIS
+            -- ghost was last rendered. A second chain fire in the same frame
+            -- sees ~0 elapsed and does nothing; a chain at any other cadence
+            -- (the 80 Hz menu pump, a frame-quantised 20 ms timer) renders
+            -- the same trajectory.
+            local nowClock = os.clock()
+            local dt = nowClock - (istate.renderAt or (nowClock - 0.020))
+            if dt < 0.002 then return end          -- same-frame duplicate (os.clock is ~1 ms on Windows)
+            if dt > 1.0 then dt = 1.0 end          -- a resumed chain catches up, it does not explode
+            istate.renderAt = nowClock
+            local steps = dt / 0.020               -- how many nominal ticks this fire is worth
 
             -- If ghost drifted very far from target (>5m), teleport directly.
             -- Prevents STEP_CAP from locking ghost hundreds of meters away.
@@ -4949,15 +5094,17 @@ function KCD2MP_InterpTick(arg)
             -- overwrites it.
             local renderX = istate.tx or istate.cx
             local renderY = istate.ty or istate.cy
-            local DR_MAX = 3  -- 3 * 20ms = 60ms lookahead (covers 50ms packet gap)
-            local ticks = istate.ticksSincePacket or 0
-            if ticks >= 1 then
+            -- WO-78: projection by real time since the last packet (was
+            -- ticksSincePacket x 20 ms, which N chains advanced N times).
+            local DR_MAX_S = 0.060  -- 60 ms lookahead (covers a 50 ms packet gap)
+            local sincePkt = nowClock - (istate.lastPacketTime or nowClock)
+            if sincePkt > 0 then
                 local vx = istate.vx or 0
                 local vy = istate.vy or 0
                 if math.sqrt(vx*vx + vy*vy) > 0.5 then
-                    local proj = math.min(ticks, DR_MAX)
-                    renderX = renderX + vx * (proj * 0.020)
-                    renderY = renderY + vy * (proj * 0.020)
+                    local proj = math.min(sincePkt, DR_MAX_S)
+                    renderX = renderX + vx * proj
+                    renderY = renderY + vy * proj
                 end
             end
 
@@ -4977,6 +5124,10 @@ function KCD2MP_InterpTick(arg)
             if (vxS*vxS + vyS*vyS) > 0.25 and (dxT*vxS + dyT*vyS) < 0 then
                 factor = 0.15
             end
+            -- WO-78: the per-tick factor scaled to the real elapsed time.
+            -- steps == 1 gives exactly the old 0.5 / 0.15; two fires 10 ms
+            -- apart compose to the same result as one 20 ms fire.
+            factor = 1 - (1 - factor) ^ steps
             local prevCx = istate.cx
             local prevCy = istate.cy
             local nx = lerpVal(istate.cx, renderX, factor)
@@ -4999,7 +5150,6 @@ function KCD2MP_InterpTick(arg)
             -- window, so the snap was flattening the whole arc back onto the
             -- floor. Held briefly past the last upward motion so the falling
             -- half of the arc isn't snapped either.
-            local nowClock = os.clock()
             if (istate.vz or 0) > 1.2 and not istate.isRiding then
                 istate.airborneUntil = nowClock + 0.6
             end
@@ -5076,8 +5226,9 @@ function KCD2MP_InterpTick(arg)
                 -- Speed from rendered XY movement this tick
                 local movedDx = nx - prevCx
                 local movedDy = ny - prevCy
-                local rendSpeed = math.sqrt(movedDx*movedDx + movedDy*movedDy) / 0.020
-                istate.smoothedSpeed = lerpVal(istate.smoothedSpeed or 0, rendSpeed, 0.4)
+                -- WO-78: over the real elapsed time, not a nominal tick.
+                local rendSpeed = math.sqrt(movedDx*movedDx + movedDy*movedDy) / dt
+                istate.smoothedSpeed = lerpVal(istate.smoothedSpeed or 0, rendSpeed, 1 - 0.6 ^ steps)
 
                 if frozen then
                     -- WO-34 issue D: no animation on a corpse. Driving walk/run
@@ -5138,7 +5289,7 @@ function KCD2MP_InterpTick(arg)
                     end
                     local horseData = KCD2MP.horseGhosts[id]
                     if horseData and horseData.entity then
-                        local dt = 0.020
+                        -- WO-78: `dt` is the ghost's real elapsed render time (above), not 0.020.
                         local vx = (x - (horseData.lastX or x)) / dt
                         local vy = (y - (horseData.lastY or y)) / dt
                         local spd = math.sqrt(vx*vx + vy*vy)
@@ -5147,9 +5298,9 @@ function KCD2MP_InterpTick(arg)
 
                         -- Smooth horse Z and rotation to remove raycast noise / snap artifacts
                         if not horseData.smoothZ then horseData.smoothZ = horseGroundZ end
-                        horseData.smoothZ = lerpVal(horseData.smoothZ, horseGroundZ, 0.25)
+                        horseData.smoothZ = lerpVal(horseData.smoothZ, horseGroundZ, 1 - 0.75 ^ steps)   -- WO-78: was 0.25/tick
                         if not horseData.smoothR then horseData.smoothR = r end
-                        horseData.smoothR = lerpAngle(horseData.smoothR, r, 0.35)
+                        horseData.smoothR = lerpAngle(horseData.smoothR, r, 1 - 0.65 ^ steps)            -- WO-78: was 0.35/tick
                         local hz = horseData.smoothZ
                         local hr = horseData.smoothR
 
@@ -7614,7 +7765,7 @@ function KCD2MP_ItemSyncTick()
 end
 
 function KCD2MP_StartItemSync()
-    if tickAlive(KCD2MP.itemSyncRunning, KCD2MP._itemSyncAliveAt) then return end
+    if not chainMayStart("itemsync", "itemSyncRunning", "_itemSyncAliveAt", KCD2MP_StartItemSync) then return end  -- WO-78
     KCD2MP.itemSyncRunning = true
     KCD2MP._itemSyncAliveAt = os.clock()
     KCD2MP._itemRestartSweep = true
@@ -7694,7 +7845,8 @@ local ok, err = pcall(function()
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
-    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69: off (default) logs a leaked puppet-tick chain and leaves it running; on makes the stale chain exit: mp_npc_chainfix on|off")
+    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
+    System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%LINE")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
     System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
 
     -- Shared player combat (WO-28)
