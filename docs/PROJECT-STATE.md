@@ -448,6 +448,24 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ## 7. Still open
 
+- **WO-83 (2026-09-12) — seven roster souls were crime-role-2 authority
+  figures; replaced in place, not deleted.** The field report (a `ttac_man_9`
+  ghost drawing on a player who drew first) is the game's own `drawnWeapon`
+  crime being enforced by a soul whose social class (`guard`, 101) has
+  `soul_crime_role_id=2` — read from `Tables.pak`, and corroborated by the
+  ghost itself speaking the guard `vytazena_zbran.straz_*` bark 13× in the
+  joiner log while the `ttro_man_59` ghost (crime role 1) spoke it 0×. The
+  lever is the class's crime role, not the faction string: a commonFolk-faction
+  guard barks, a soldiers_guards-faction soldier does not. Audit by crime role
+  found 7/19 (guard ×3 incl. the `ttkc_man_3` fallback, soldier_crimeAuthority
+  ×3, huntsman_crimeAuthority ×1; GuardLeader 0). Because the picker is
+  `% #list`, deleting rows re-rolls every face (WO-34 paid that), so the seven
+  slots hold other already-live-verified roster commoners and the fallback is
+  `ttkc_man_26`: 12 slots byte-identical, 8/8 untouched keys resolve as before,
+  distinct faces 19→12. **Not seen live** (no game this session); no pak
+  rebuild, no `VERSION`. Read `WO-83-findings.md`; its §3.2 lists candidate
+  commoners for widening the roster again once REST-resolved.
+
 - **WO-84 (2026-09-11) — three field symptoms traced to two causes and one
   coincidence; all four fixes are Lua, none seen live.** (1) The 265–266
   `NPC kcd2mp_0 does not have a faction.` errors are **not the live ghost** —
