@@ -448,6 +448,30 @@ machine itself, headless, no relay needed — see `WO-5-dice.md`.
 
 ## 7. Still open
 
+- **WO-84 (2026-09-11) — three field symptoms traced to two causes and one
+  coincidence; all four fixes are Lua, none seen live.** (1) The 265–266
+  `NPC kcd2mp_0 does not have a faction.` errors are **not the live ghost** —
+  the host's live ghost is `kcd2mp_1` and never throws one. They come from a
+  ghost body a previous session serialised into the savegame, restored on every
+  entity-reconcile pass. WO-58 had already written the sweeper for exactly this
+  and it was only reachable from `mp_remove_all`/`KCD2MP_Stop`; it now runs off
+  the agent's 5 s reconcile call. (2) The ~9,000-error animation storm (98–99%
+  of all overflows on one entity, both machines) is the ghost path calling
+  `StartAnimation` **every 20 ms tick** — 50/s against the NPC puppet path's
+  1/s — a guard that commit `57f13f5` deleted in Feb 2026. Now throttled to a
+  change plus a keep-alive, with a menu-pump exemption; rollback
+  `mp_ghost_anim_refresh 0`. **Ruled out:** any faction or soul link. (3) The
+  chain leak is a **new mechanism WO-78's gate cannot catch** — the puppet tick
+  reschedules before it self-stops, and `chainMayStart` correctly grants a
+  stopped chain an instant restart, so the orphan timer wakes into the next
+  generation. Fixed by retiring the generation; real leaks still report and are
+  now counted. The prompt's "no timer suspension occurred" is refuted by the
+  log's own 19.19 s clock gap. Verified synthetically only
+  (`tools\Test-WO84Synthetic.ps1`, 67/67; the two existing suites stay 35/35 and
+  48/48). Read `WO-84-findings.md`. **No live session yet**; what a live one
+  must still answer is listed in its §5, including two `inconclusive` items the
+  new log lines are written to settle on their own.
+
 - **WO-80 (2026-09-11) — pause detection covers `Rendered` cutscenes now;
   dialogs still don't, not yet seen live.** Extends WO-13's menu/inventory/
   skip-time pause detector with a fourth, independent state: a `Rendered`-type
