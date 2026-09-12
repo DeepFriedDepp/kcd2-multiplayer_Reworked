@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Answers two different questions that are easy to confuse: did the build
     produce the right files, and did the installer actually put them on disk.
@@ -81,7 +81,14 @@ $AsmMarkers = @(
     @{ File = 'KcdMpClient.dll'; Marker = 'KCD2MP_ReconcileGhosts'; Owner = 'WO-28/34 ghost reconcile' },
     @{ File = 'KcdMpClient.dll'; Marker = 'KCD2MP_SetGhostDead';    Owner = 'WO-28/34 death tag' },
     @{ File = 'KcdMpServer.dll'; Marker = 'MasterAnnounce';         Owner = 'WO-35 master server' },
-    @{ File = 'KcdMp.Protocol.dll'; Marker = 'MasterApi';           Owner = 'WO-35 master API' }
+    @{ File = 'KcdMp.Protocol.dll'; Marker = 'MasterApi';           Owner = 'WO-35 master API' },
+    # 0.20.6 and later. Added in WO-84 because the list above stopped at
+    # WO-35: four releases of agent- and relay-side work shipped with nothing
+    # here able to tell a new build from an old one, which is exactly the
+    # half-applied-install failure this script was written for.
+    @{ File = 'KcdMpClient.dll'; Marker = 'CutscenePlayer::PlayCutscene called for Rendered cutscene'
+                                                                  ; Owner = 'WO-80 cutscene pause detection' },
+    @{ File = 'KcdMpServer.dll'; Marker = '[CLAIM-CONTESTED]';      Owner = 'WO-81 relay claim logging' }
 )
 
 $PakMarkers = @(
@@ -89,7 +96,20 @@ $PakMarkers = @(
     @{ Marker = 'local frozen = mp_ghost_is_corpse'; Owner = 'WO-34 InterpTick freeze' },
     @{ Marker = 'is DEAD in this world';           Owner = 'WO-34 corpse recycling' },
     @{ Marker = 'function KCD2MP_ApplyNpcState';   Owner = 'WO-32 NPC sync (mod half)' },
-    @{ Marker = 'npc_state';                       Owner = 'WO-32 npc_state event' }
+    @{ Marker = 'npc_state';                       Owner = 'WO-32 npc_state event' },
+    # 0.20.6 (WO-78). The probe-confirmed chain-restart gate and the two leak
+    # detectors. If these are absent the pak predates the fix and every menu
+    # longer than a second still starts a duplicate update loop.
+    @{ Marker = 'was suspended, not dead';         Owner = 'WO-78 probe-confirmed restart gate' },
+    @{ Marker = 'GHOST CHAIN LEAK CONFIRMED';      Owner = 'WO-78 ghost chain leak detector' },
+    @{ Marker = 'NPC-SYNC CHAIN LEAK CONFIRMED';   Owner = 'WO-78 puppet chain leak detector' },
+    # 0.20.8 (WO-84). The three fixes that only exist in the pak: without a
+    # rebuild the Lua in the repo and the Lua in the pak silently disagree,
+    # which is the specific thing WO-84's own progress note warned about.
+    @{ Marker = 'local function mp_anim_loop';     Owner = 'WO-84 ghost animation throttle' },
+    @{ Marker = 'KCD2MP._npcPuppetRetired';        Owner = 'WO-84 chain generation retirement' },
+    @{ Marker = 'SweepStrayGhosts: untracked';     Owner = 'WO-84 stray ghost-body sweep' },
+    @{ Marker = 'faction attempt ghost';           Owner = 'WO-84 faction attempt logging' }
 )
 
 function Test-Assembly($dir, $label) {
