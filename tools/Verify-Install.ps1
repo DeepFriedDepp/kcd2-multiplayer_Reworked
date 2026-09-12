@@ -88,7 +88,11 @@ $AsmMarkers = @(
     # half-applied-install failure this script was written for.
     @{ File = 'KcdMpClient.dll'; Marker = 'CutscenePlayer::PlayCutscene called for Rendered cutscene'
                                                                   ; Owner = 'WO-80 cutscene pause detection' },
-    @{ File = 'KcdMpServer.dll'; Marker = '[CLAIM-CONTESTED]';      Owner = 'WO-81 relay claim logging' }
+    @{ File = 'KcdMpServer.dll'; Marker = '[CLAIM-CONTESTED]';      Owner = 'WO-81 relay claim logging' },
+    # 0.21.1 (WO-86). Death sync spans all three artefacts; an agent that
+    # predates it ignores the FATAL bit and never kills the peer's copy.
+    @{ File = 'KcdMpClient.dll'; Marker = 'KCD2MP_NpcRemoteDeath';  Owner = 'WO-86 NPC death apply (agent half)' },
+    @{ File = 'KcdMpServer.dll'; Marker = '[NPCDEATH]';             Owner = 'WO-86 relay FATAL logging' }
 )
 
 $PakMarkers = @(
@@ -113,7 +117,11 @@ $PakMarkers = @(
     # 0.20.9 (WO-83). The roster swap lives only in the pak; a pak that still
     # carries ttac_man_9 as a roster ROW (not this note) spawns guard-class
     # ghosts that enforce the drawn-weapon crime on the other player.
-    @{ Marker = 'WO-83: was ttac_man_9';           Owner = 'WO-83 authority-soul roster swap' }
+    @{ Marker = 'WO-83: was ttac_man_9';           Owner = 'WO-83 authority-soul roster swap' },
+    # 0.21.1 (WO-86). A pak without these still lets a locally-dead body follow
+    # a living stream and never announces a death.
+    @{ Marker = 'NPC-DEATH DIVERGENCE';            Owner = 'WO-86 corpse-drag safeguard' },
+    @{ Marker = 'function KCD2MP_NpcRemoteDeath';  Owner = 'WO-86 NPC death apply (mod half)' }
 )
 
 function Test-Assembly($dir, $label) {
