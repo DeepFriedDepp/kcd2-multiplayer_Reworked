@@ -109,7 +109,11 @@ $PakMarkers = @(
     @{ Marker = 'local function mp_anim_loop';     Owner = 'WO-84 ghost animation throttle' },
     @{ Marker = 'KCD2MP._npcPuppetRetired';        Owner = 'WO-84 chain generation retirement' },
     @{ Marker = 'SweepStrayGhosts: untracked';     Owner = 'WO-84 stray ghost-body sweep' },
-    @{ Marker = 'faction attempt ghost';           Owner = 'WO-84 faction attempt logging' }
+    @{ Marker = 'faction attempt ghost';           Owner = 'WO-84 faction attempt logging' },
+    # 0.20.9 (WO-83). The roster swap lives only in the pak; a pak that still
+    # carries ttac_man_9 as a roster ROW (not this note) spawns guard-class
+    # ghosts that enforce the drawn-weapon crime on the other player.
+    @{ Marker = 'WO-83: was ttac_man_9';           Owner = 'WO-83 authority-soul roster swap' }
 )
 
 function Test-Assembly($dir, $label) {

@@ -68,6 +68,7 @@ Confirmed from `git log --follow -- VERSION`, not assumed:
 | `0.20.2` | WO-77 | + WO-75/76/77 and PR #1 — NPC puppet jitter fix (time-based interpolation-behind, 10 Hz emit for moving NPCs, `mp_npc_smooth` default on), relay hygiene (`ServerFull` 0x36, `MaxPlayers` clamp, session-id pool, bounded native pipe wait), test-suite repairs. User-chosen. Pre-release tester build; the session built it, the maintainer distributes it. See `docs/releases/RELEASE-NOTES-0.20.2.md`. |
 | `0.20.6` | WO-82 | + WO-78/80/81 — probe-confirmed chain-restart gate and both leak detectors, `Rendered`-cutscene pause detection, relay claim logging. User-chosen. See `docs/releases/RELEASE-NOTES-0.20.6.md`. |
 | `0.20.8` | WO-84 | + WO-84 — ghost animation throttle (50/s → 1/s), self-stop chain-generation retirement, WO-58's stray ghost-body sweep finally given a caller, faction attempt logged, and `Verify-Install.ps1` brought up to date (19 markers). User-chosen; `0.20.7` deliberately skipped by the user. See `docs/releases/RELEASE-NOTES-0.20.8.md`. |
+| `0.20.9` | WO-83 | + WO-83 — seven authority-class roster souls (guard, soldier_crimeAuthority, huntsman_crimeAuthority; crime role 2) replaced in place by live-verified commoners, fallback moved off a guard. User-chosen. Setup exe only, no DirectInstall zip, by the user's instruction. See `docs/releases/RELEASE-NOTES-0.20.9.md`. |
 
 `0.9.2` was stated by the user explicitly. It is the label for everything on
 `main` as of WO-14 — WO-9, WO-10 and WO-13 together — not an increment
