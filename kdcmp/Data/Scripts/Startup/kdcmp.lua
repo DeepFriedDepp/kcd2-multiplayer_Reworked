@@ -2191,6 +2191,145 @@ KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, dumpAt = 0 }
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
+
+-- ===== WO-86: NPC death sync =====
+--
+-- The field report: a villager killed by one player stayed alive, hurt and
+-- walking on the other player's screen, and the corpse on the killer's screen
+-- kept moving afterwards. Traced from code (docs/WO-86-findings.md):
+--
+--   * No NPC death was ever on the wire. 0x14/0x15 exist since WO-4 with a
+--     relay route and a receiver, and no client ever sent one; the DLL's
+--     LocalHit frame dropped its own `died` bit. So each world decided
+--     "dead" alone from health deltas -- and the DLL reports a killing blow
+--     as the hp the victim had LEFT, so a peer copy with more hp survives it
+--     forever. Nothing reconciled the two.
+--   * The corpse moved because of the WO-38 body-follow branch in
+--     KCD2MP_NpcPuppetTick: it let a locally-dead body follow a stream move of
+--     more than 0.5 m, meant for the authority dragging a corpse -- but it
+--     never asked whether the STREAM thought the body was dead. A stream from
+--     a world where the NPC is alive and walking teleported the corpse along
+--     the walk.
+--
+-- What ships here:
+--   1. The safeguard: a body that is dead/KO only LOCALLY (stream says alive)
+--      gets no writes at all, and says so once per body. Body-follow is kept
+--      exactly for the case it was built for: the stream itself says the body
+--      is down.
+--   2. The observer: every place this file already reads actor:IsDead() for a
+--      world NPC (emitter, drag sensor, puppet tick) reports into
+--      mp_npc_death_observe; a WITNESSED alive->dead transition is announced
+--      once as an `npc_death` event line, which the agent sends as a
+--      zero-delta 0x30 with the FATAL bit (Protocol.cs). The DLL's own
+--      frame-accurate `died` bit (also new in WO-86) takes the same wire path
+--      and marks the body announced so the observer stays quiet for it.
+--   3. The receiver: the agent applies an inbound death through the DLL
+--      (ApplyDeath, idempotent) and tells this file first via
+--      KCD2MP_NpcRemoteDeath, so the local IsDead flip it causes is not
+--      announced back.
+--
+-- `mp_npc_deathsync on|off`, default ON (WO-78 precedent: a structural fix
+-- ships on, with a live rollback). Off restores the pre-WO-86 puppet branch
+-- verbatim, stops announcing, and (mirrored in the agent) stops applying.
+KCD2MP.npcDeathSync        = true
+KCD2MP._npcDeathSeen       = {}  -- name -> last observed actor:IsDead() (nil = never read)
+KCD2MP._npcDeathAnnounced  = {}  -- name -> "lua"|"dll": this death already went out
+KCD2MP._npcDeathRemote     = {}  -- name -> {via, at}: this death was applied FROM a peer (puppet held still 10 s from `at`)
+KCD2MP._npcDeathDiverged   = {}  -- name -> true once the divergence line was logged
+KCD2MP._npcDeathSuppressedN = 0  -- corpse writes refused by the safeguard (session total)
+
+-- One reader, three callers. `src` names the caller for the log; `hp` is
+-- whatever the caller already had (-1 for unknown). Returns true when this
+-- call announced a death.
+local function mp_npc_death_observe(name, dead, hp, src)
+    local was = KCD2MP._npcDeathSeen[name]
+    KCD2MP._npcDeathSeen[name] = dead
+    if was == nil then
+        if dead then
+            -- First sight, already dead: a corpse from a save or a fight that
+            -- ended before we looked. Never announced -- there is no
+            -- transition here, and a peer's living NPC must not die to a
+            -- stranger's savegame.
+            mp_log(string.format("NPC-DEATH %s first seen already dead (by %s) -- not announced", name, src))
+        end
+        return false
+    end
+    if dead and not was then
+        local remote = KCD2MP._npcDeathRemote[name]
+        local announced = KCD2MP._npcDeathAnnounced[name]
+        if remote then
+            mp_log(string.format("NPC-DEATH %s died here (by %s, hp=%s) -- applied from a peer via %s, not announced",
+                name, src, tostring(hp), tostring(remote.via)))
+        elseif announced then
+            mp_log(string.format("NPC-DEATH %s died here (by %s, hp=%s) -- already announced by %s",
+                name, src, tostring(hp), tostring(announced)))
+        elseif not KCD2MP.npcDeathSync then
+            mp_log(string.format("NPC-DEATH %s died here (by %s, hp=%s) -- mp_npc_deathsync off, NOT announced",
+                name, src, tostring(hp)))
+        else
+            KCD2MP._npcDeathAnnounced[name] = "lua"
+            mp_log(string.format("NPC-DEATH %s died here (by %s, hp=%s) -- witnessed alive->dead, announcing (npc_death)",
+                name, src, tostring(hp)))
+            KCD2MP_EmitEvent("npc_death", string.format("%s %s %s", name, tostring(hp), src))
+            return true
+        end
+    elseif was and not dead then
+        -- A body we saw dead reads alive: a save reload (WO-13/WO-59), or a
+        -- different entity answering to the name. Forget the death so the
+        -- next one can be announced again.
+        mp_log(string.format("NPC-DEATH %s reads ALIVE again (by %s) -- was dead; reload? clearing its death marks", name, src))
+        KCD2MP._npcDeathAnnounced[name] = nil
+        KCD2MP._npcDeathRemote[name] = nil
+        KCD2MP._npcDeathDiverged[name] = nil
+    end
+    return false
+end
+
+-- Agent -> mod, before it applies a peer's death through the DLL: log this
+-- world's state for the body, mark the death remote so the observer does not
+-- announce it back, and flag the puppet entry dead so the puppet tick stops
+-- writing it on this very tick rather than after the stream catches up.
+function KCD2MP_NpcRemoteDeath(name, via)
+    local e = System.GetEntityByName(name)
+    local dead, hp = nil, -1
+    if e and e.actor then
+        pcall(function() dead = e.actor:IsDead() == true end)
+        pcall(function() hp = e.actor:GetHealth() or -1 end)
+    end
+    local p = KCD2MP.npcPuppets[name]
+    mp_log(string.format("NPC-DEATH %s: peer says dead (via %s); local copy %s, IsDead=%s hp=%s, puppet=%s%s",
+        name, tostring(via),
+        e and "loaded" or "NOT LOADED", tostring(dead), tostring(hp),
+        p and "yes" or "no",
+        KCD2MP.npcDeathSync and "" or " -- mp_npc_deathsync off, agent will not apply"))
+    if not KCD2MP.npcDeathSync then return false end
+    KCD2MP._npcDeathRemote[name] = { via = tostring(via), at = os.clock() }
+    if p then p.dead = true end
+    return true
+end
+
+-- Agent -> mod: the DLL's FATAL LocalHit already announced this body's death
+-- on the wire; the observer must not send a second one.
+function KCD2MP_NpcDeathAnnounced(name, src)
+    if not KCD2MP._npcDeathAnnounced[name] then
+        KCD2MP._npcDeathAnnounced[name] = tostring(src or "dll")
+        mp_log(string.format("NPC-DEATH %s announced by %s (FATAL hit on the wire)", name, tostring(src or "dll")))
+    end
+end
+
+function KCD2MP_SetNpcDeathSync(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "on" or s == "1" or s == "true" then
+        KCD2MP.npcDeathSync = true
+    elseif s == "off" or s == "0" or s == "false" then
+        KCD2MP.npcDeathSync = false
+    else
+        mp_log("mp_npc_deathsync: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return
+    end
+    mp_log("NPC-DEATH sync " .. (KCD2MP.npcDeathSync and "enabled" or "disabled (pre-WO-86 behaviour: corpse body-follow on either source, no announce, no apply)"))
+    KCD2MP_EmitEvent("npc_deathsync", KCD2MP.npcDeathSync and "on" or "off")
+end
 KCD2MP.npcPuppetRunning  = false
 KCD2MP._npcPuppetAliveAt = nil
 
@@ -2425,6 +2564,7 @@ local function mp_drag_sensor()
                         pcall(function() dead = e.actor:IsDead() == true end)
                         pcall(function() ko = e.actor:IsUnconscious() == true end)
                     end
+                    mp_npc_death_observe(name, dead, -1, "drag")   -- WO-86
                     if dead or ko then
                         seen[name] = true
                         local p = e:GetWorldPos()
@@ -2567,6 +2707,9 @@ function KCD2MP_NpcSyncTick()
                 -- its copy of a knocked-out NPC instead of walking it.
                 pcall(function() ko = e.actor:IsUnconscious() == true end)
             end
+            -- WO-86: this is one of the three places a world NPC's death is
+            -- visible to this file; report it.
+            mp_npc_death_observe(name, dead, hp, "emitter")
 
             -- WO-40 Phase 6: the NPC's weapon state travels as flag bit 2 so
             -- an observer's copy fights in a guard stance instead of standing
@@ -2611,6 +2754,12 @@ function KCD2MP_NpcSyncTick()
                 KCD2MP_EmitEvent(isAuthority and "npc_state" or "npc_claim",
                     string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
                     name, p.x, p.y, p.z, rot, hp, flags))
+                -- WO-86 Phase 1: the outbound dead bit, the moment it first
+                -- goes out (it then rides every heartbeat for this body).
+                if dead and not t.sentDead then
+                    mp_log(string.format("NPC-DEATH %s outbound dead bit set on %s (hp=%.1f flags=%d)",
+                        name, isAuthority and "npc_state" or "npc_claim", hp, flags))
+                end
                 t.lastX, t.lastY, t.lastZ, t.lastRot = p.x, p.y, p.z, rot
                 t.lastHp, t.lastSentAt, t.sentDead, t.sentKo = hp, now, dead, ko
                 t.sentDrawn = drawn
@@ -2667,6 +2816,7 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     p.hp = hp
     local f = tonumber(flags) or 0
     local wasKo = p.ko
+    local wasDead = p.dead
     p.dead  = (math.floor(f) % 2) == 1          -- bit 0
     p.ko    = (math.floor(f / 2) % 2) == 1      -- bit 1 (WO-38 Phase 6: knocked out in the authority's world)
     p.drawn = (math.floor(f / 4) % 2) == 1      -- bit 2 (WO-40 Phase 6: weapon out in the authority's world)
@@ -2704,6 +2854,22 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     -- that is already KO on its first packet (late join) just freezes.
     if p.ko and wasKo == false and p.everPacket then
         pcall(function() KCD2MP_NpcTakedownCue(name, e, x, y, z) end)
+    end
+    -- WO-86 Phase 1: the inbound dead bit, against this world's copy. The
+    -- agent applies the death (witnessed transition only); this line is what
+    -- a future log reader needs to see whether the two worlds agreed.
+    if p.dead and not wasDead then
+        local localDead, localHp = nil, -1
+        if e.actor then
+            pcall(function() localDead = e.actor:IsDead() == true end)
+            pcall(function() localHp = e.actor:GetHealth() or -1 end)
+        end
+        mp_log(string.format("NPC-DEATH %s inbound stream says DEAD (stream hp=%s)%s; local copy IsDead=%s hp=%s",
+            name, tostring(hp),
+            p.everPacket and " -- witnessed alive->dead on this stream" or " -- dead on its first packet here (late join / save state): freeze only",
+            tostring(localDead), tostring(localHp)))
+    elseif wasDead and not p.dead then
+        mp_log(string.format("NPC-DEATH %s inbound stream says ALIVE again (stream hp=%s) -- was dead on this stream", name, tostring(hp)))
     end
     p.everPacket = true
     KCD2MP_StartNpcPuppet()
@@ -2804,9 +2970,10 @@ function KCD2MP_NpcPuppetTick(arg, gen)
         st.dumpAt = now
         mp_log(string.format(
             "NPC-SYNC packet cadence: n=%d mean=%.0fms min=%.0fms max=%.0fms (emitter is %dms;"
-            .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d)",
+            .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d corpse writes suppressed=%d)",
             st.n, st.sum / st.n, st.min, st.max, KCD2MP.npcSync.emitMs or 250,
-            KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0))
+            KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0,
+            KCD2MP._npcDeathSuppressedN or 0))
         st.n, st.sum, st.min, st.max = 0, 0, 1e9, 0
     end
     local any = false
@@ -2834,6 +3001,22 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 pcall(function() locallyDead = e.actor:IsDead() == true end)
                 pcall(function() locallyKo = e.actor:IsUnconscious() == true end)
             end
+            -- WO-86: the third death reader. This is the one that covers the
+            -- field report's killer: the NPC was a PUPPET on their machine
+            -- (streamed by the peer), so the emitter never tracked it and the
+            -- drag sensor only sees bodies within 6 m. The local hp is read
+            -- only for a dead body (one extra call per death, not per tick).
+            local localHp = -1
+            if locallyDead and e.actor then pcall(function() localHp = e.actor:GetHealth() or -1 end) end
+            mp_npc_death_observe(name, locallyDead, localHp, "puppet")
+            -- A peer has declared this body dead (KCD2MP_NpcRemoteDeath) and
+            -- the DLL apply is in flight or failed: hold it still for a few
+            -- seconds rather than lerp a body that is about to be a corpse.
+            -- Bounded so a FAILED apply cannot freeze a living NPC for the
+            -- rest of the session; a successful one makes locallyDead true
+            -- and the hold is moot.
+            local rd = KCD2MP._npcDeathRemote[name]
+            local remoteDead = rd ~= nil and (now - (rd.at or 0)) < 10.0
             -- WO-40 Phase 6: the authority's weapon state, applied on the
             -- transition (the same DrawWeapon/HolsterWeapon calls the ghost
             -- path live-verified in WO-39).
@@ -2847,7 +3030,30 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 mp_log("NPC-SYNC " .. name .. (p.drawn and " drew weapon" or " sheathed weapon"))
             end
 
-            if p.dead or p.ko or locallyDead or locallyKo then
+            if p.dead or p.ko or locallyDead or locallyKo or remoteDead then
+                -- WO-86, the safeguard. Body-follow below exists for ONE case:
+                -- the stream's owner is manipulating a body that is down in
+                -- THEIR world too (their packet carries the dead/KO bit). When
+                -- only THIS world's copy is down and the stream says alive,
+                -- the stream is a living NPC walking in the peer's world, and
+                -- following it is the field report's corpse being dragged
+                -- along the walk. Nothing is written. The divergence is
+                -- logged once per body; the observer above has already
+                -- announced the death (or is about to), which is the fix
+                -- that makes the two worlds agree.
+                if KCD2MP.npcDeathSync and not (p.dead or p.ko) then
+                    KCD2MP._npcDeathSuppressedN = (KCD2MP._npcDeathSuppressedN or 0) + 1
+                    if not KCD2MP._npcDeathDiverged[name] then
+                        KCD2MP._npcDeathDiverged[name] = true
+                        mp_log(string.format(
+                            "NPC-DEATH DIVERGENCE %s: local copy is %s but the inbound stream says ALIVE (stream hp=%s)"
+                            .. " -- corpse writes suppressed (WO-86 safeguard; pre-WO-86 this body would follow the stream)",
+                            name,
+                            locallyDead and "DEAD" or locallyKo and "KO" or "peer-declared dead (DLL apply in flight or failed)",
+                            tostring(p.hp)))
+                    end
+                    return
+                end
                 -- WO-38 Phase 6, the drag gap: on THIS channel the stream is
                 -- the body's actual location in the authority's world (unlike
                 -- the ghost stream, which is a live player's position -- that
@@ -8226,6 +8432,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_fake_death",  'KCD2MP_FakeDeath("%LINE")', "WO-28: report yourself dead for N seconds (default 20) so peers can be observed reacting -- test only")
     System.AddCCommand("mp_reconcile",   "KCD2MP_ReconcileGhosts()", "WO-28: respawn any ghost whose entity was destroyed by a save load")
     System.AddCCommand("mp_ghost_sweep", 'KCD2MP_SetOrphanSweep("%LINE")', "WO-84: remove kcd2mp_ bodies a savegame restored with no ghost behind them: mp_ghost_sweep on|off|now")
+    System.AddCCommand("mp_npc_deathsync", 'KCD2MP_SetNpcDeathSync("%LINE")', "WO-86: NPC deaths cross to peers and a locally-dead body never follows a living stream; off = pre-WO-86 behaviour: mp_npc_deathsync on|off")
     System.AddCCommand("mp_ghost_anim_refresh", 'KCD2MP_SetGhostAnimRefresh("%LINE")', "WO-84: seconds a ghost's looped clip plays before a keep-alive restart; 0 = restart every tick (pre-WO-84 rollback)")
 
     -- Dice overlay (WO-6). These console commands are the SUPPORTED path: the

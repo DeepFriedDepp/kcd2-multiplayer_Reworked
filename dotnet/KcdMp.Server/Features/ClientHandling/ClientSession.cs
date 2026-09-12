@@ -420,7 +420,22 @@ public class ClientSession
                     var body = new byte[payloadLen];
                     await ReadExactAsync(body);
                     if (body[0] == payloadLen - 1 - Protocol.NpcDamageFixedTail)
+                    {
+                        // WO-86: an NPC death crossing the relay is rare and
+                        // load-bearing -- it is the one event that makes two
+                        // worlds agree a body is dead -- so it gets a line
+                        // (WO-81 idiom: name the silent decision). Ordinary
+                        // hits stay quiet; the body is forwarded verbatim
+                        // either way, no relay-side state or gate.
+                        if ((body[payloadLen - 1] & Protocol.NpcDamageFlagFatal) != 0)
+                        {
+                            string fatalNpc = System.Text.Encoding.UTF8.GetString(body, 1, body[0]);
+                            float fatalHp = BitConverter.ToSingle(body, 1 + body[0] + 4);
+                            _logger.Information("[NPCDEATH] relayed FATAL npc={Npc} from='{Name}' (id={Id}) blowHp={BlowHp:F1}",
+                                fatalNpc, Name, Id, fatalHp);
+                        }
                         _broadcastService.BroadcastNpcDamage(this, body);
+                    }
                     continue;
                 }
 

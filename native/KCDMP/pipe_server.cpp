@@ -106,11 +106,17 @@ void send_local_hit(const unsigned char guid[16], float health_delta, bool died)
          guid[3], guid[2], guid[1], guid[0],
          g_connected ? "" : "  [no agent attached, not sent]");
     if (!g_connected || g_pipe == INVALID_HANDLE_VALUE) return;
-    unsigned char body[16 + 4 + 4];
+    // WO-86: the `died` bit the sampler has computed since WO-4 used to stop
+    // right here -- the frame carried guid+stamina+health and nothing else, so
+    // the agent could never tell a killing blow from a chip and no client ever
+    // put an NPC death on the wire. Appended as a trailing byte: an agent that
+    // predates it reads the first 24 bytes exactly as before.
+    unsigned char body[16 + 4 + 4 + 1];
     std::memcpy(body, guid, 16);
     const float stamina = 0.0f;
     std::memcpy(body + 16, &stamina, 4);
     std::memcpy(body + 20, &health_delta, 4);
+    body[24] = died ? 1 : 0;
     EnterCriticalSection(&g_write_lock);
     const bool sent = send_frame(g_pipe, kLocalHit, body, sizeof(body));
     const DWORD err = sent ? 0 : GetLastError();

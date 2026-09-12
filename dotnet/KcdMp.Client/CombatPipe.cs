@@ -48,8 +48,11 @@ public sealed class CombatPipe : IAsyncDisposable
     /// <summary>
     /// Raised when the DLL reports that a nearby NPC lost health for a reason
     /// this client did not cause. The handler is expected to put it on the wire.
+    /// Arguments: soul guid, stamina delta, health delta, died (WO-86: the DLL's
+    /// own "this drop took it to zero" bit, once per soul; false from a
+    /// pre-WO-86 DLL whose frame stops at 24 bytes).
     /// </summary>
-    public Func<Guid, float, float, Task>? OnLocalHit { get; set; }
+    public Func<Guid, float, float, bool, Task>? OnLocalHit { get; set; }
 
     public bool IsConnected => _pipe?.IsConnected == true;
 
@@ -216,9 +219,12 @@ public sealed class CombatPipe : IAsyncDisposable
                     var   soul    = new Guid(body.AsSpan(0, 16));
                     float stamina = BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(16));
                     float health  = BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(20));
+                    // WO-86: trailing died byte; absent from a pre-WO-86 DLL.
+                    bool  died    = body.Length >= 25 && body[24] != 0;
+                    if (died) Console.WriteLine($"[npcdeath] DLL reports a FATAL local hit on {soul} (hp -{health:F1})");
                     if (OnLocalHit is { } handler)
                     {
-                        try { await handler(soul, stamina, health); }
+                        try { await handler(soul, stamina, health, died); }
                         catch (Exception ex) { Console.WriteLine($"[combat] local hit not sent: {ex.Message}"); }
                     }
                 }

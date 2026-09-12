@@ -536,6 +536,28 @@ namespace KcdMp.Wire;
 /// the guids happen to match. A sender uses 0x30 OR 0x12 for one hit, never
 /// both -- both resolving on the receiver would double-apply.
 ///
+///                      flags bit 0: suppressHitReaction (as 0x12)
+///                      flags bit 1: FATAL (WO-86) -- the sender's copy of this
+///                                   NPC is dead. The receiver applies the
+///                                   carried damage as usual and then kills
+///                                   its own copy (the idempotent ApplyDeath
+///                                   pipe command 0x14/0x15 were built for).
+///
+/// WO-86: death was never on the wire for NPCs. 0x14/0x15 (WO-4) exist with
+/// a relay route and a receiver, but no client ever sent one -- the DLL's
+/// LocalHit frame dropped its own `died` bit and SendLocalDeathAsync had no
+/// caller -- so "is this NPC dead" was decided on every machine independently
+/// from health deltas, which is exactly the divergence the 0x14 comment
+/// predicted would never self-correct. A dead NPC is a name-addressed fact
+/// like the damage that killed it, so it travels as a flag on 0x30 rather
+/// than by re-wiring the guid-addressed 0x14 (per-save guids are unreliable
+/// across installs, the premise WO-40 settled). health may be 0 on a FATAL
+/// packet (the Lua observer saw the death, not the blow) or carry the killing
+/// blow's delta (the DLL saw both). Protocol.Version is NOT bumped: additive
+/// -- a pre-WO-86 receiver applies the damage and ignores the bit, a
+/// pre-WO-86 sender never sets it -- the same reasoning as the WO-28 layer.
+/// Relay: pass-through, unchanged body; it logs FATAL packets (WO-81 idiom).
+///
 /// ---- Dropped-item sync layer (WO-48) ----
 ///
 /// C→S  0x32  ItemDropUp:   [dropId:4 LE][itemClass:16][amount:2 LE][health:4f][x:4f][y:4f][z:4f]  (38)
@@ -1023,6 +1045,15 @@ public static class Protocol
 
     /// <summary>Fixed tail after the name in an NpcDamage packet: stamina + health + flags.</summary>
     public const int NpcDamageFixedTail = 4 + 4 + 1;
+
+    /// <summary>
+    /// NpcDamage flag (WO-86): the sender's copy of the named NPC is DEAD.
+    /// The receiver applies the carried damage, then ApplyDeath on its own
+    /// copy (idempotent -- an already-dead copy is left alone). See the 0x30
+    /// block in the file header for why this is a flag on 0x30 and not the
+    /// guid-addressed 0x14.
+    /// </summary>
+    public const byte NpcDamageFlagFatal = 0x02;
 
     // ---- Dropped-item sync layer (WO-48) ----
 

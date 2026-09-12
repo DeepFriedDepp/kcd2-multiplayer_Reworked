@@ -113,6 +113,20 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentDictionary<string, int> _npcSwingIndex = new();
     private readonly ConcurrentDictionary<string, bool> _npcLastDrawn = new();
 
+    // WO-86: NPC death sync. _npcLastDead is the dead bit of the last 0x27
+    // packet seen per NPC name (so a 0->1 transition can be told from a body
+    // that was already dead on its first packet -- a late-join corpse, which
+    // must only freeze, never kill). _npcDeathAppliedUtc dedupes the two
+    // inbound death routes (0x31 FATAL and a witnessed 0x27 dead transition)
+    // per name; ApplyDeath is idempotent in the DLL anyway, this only saves
+    // the REST lookup and keeps the log to one line per death.
+    private readonly ConcurrentDictionary<string, bool> _npcLastDead = new();
+    private readonly ConcurrentDictionary<string, DateTime> _npcDeathAppliedUtc = new();
+    private static readonly TimeSpan NpcDeathDedupeWindow = TimeSpan.FromSeconds(60);
+    // Mirror of the mod's mp_npc_deathsync toggle (default on), kept in step
+    // by the npc_deathsync event line -- the agent cannot read Lua state back.
+    private volatile bool _npcDeathSyncEnabled = true;
+
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
     // for a peer whose Handshake carried none (an old build). Read by
     // VersionIpcServer so the launcher can compare it against this agent's
@@ -316,6 +330,10 @@ public partial class GameBridge(ClientConfig config)
     // the agent's authority gate is skipped (a non-authority claims a body
     // by sending state for it; the relay arbitrates).
     private Func<string, float, float, float, float, float, byte, Task>? _sendNpcDrag;
+
+    // WO-86: the mod's npc_death event line onto the wire as a zero-delta 0x30
+    // with the FATAL bit. Reassigned per connection like _sendNpcState.
+    private Func<string, Task>? _sendNpcDeath;
 
     // ---- Dropped-item sync (WO-48) ----
     // Both reassigned per connection like _sendCombatEvent. Drop takes the
@@ -717,6 +735,11 @@ public partial class GameBridge(ClientConfig config)
         _lastPlayerStateSentUtc = DateTime.MinValue;
         _sentDeathForThisLife = false;
         _isDamageAuthority = false;
+        // WO-86: per-stream dead-bit memory and the death dedupe are about
+        // THIS connection's streams; a reconnect starts them over so the first
+        // packet of every body is a "first packet" again (freeze-only rule).
+        _npcLastDead.Clear();
+        _npcDeathAppliedUtc.Clear();
         // WO-59: announce our clock once this connection's first world-time
         // reading arrives, so saves that sit days apart converge without
         // anyone having to sleep first (Thread B: the day/night split).
@@ -790,8 +813,19 @@ public partial class GameBridge(ClientConfig config)
         // Outbound combat: the DLL notices a nearby NPC lose health and we put
         // it on the wire. Never fired for damage we applied on a peer's behalf —
         // the DLL credits those out — or two clients would echo a hit forever.
-        _combat.OnLocalHit = async (soul, stamina, health) =>
+        _combat.OnLocalHit = async (soul, stamina, health, died) =>
         {
+            // WO-86: a FATAL hit is never noise, whatever its delta -- the
+            // DLL's sampler reports the drop that took the soul to zero, which
+            // is bounded by the hp it had left (an overkill blow on a 3 hp NPC
+            // reports 3.0). That bound is also why death has to travel as its
+            // own fact: a peer whose copy sat at 20 hp receives 3.0, survives,
+            // and nothing ever tells it otherwise.
+            if (died)
+            {
+                Console.WriteLine($"[npcdeath] out: local kill of {soul} (blow -{health:F1}) -- sending FATAL");
+            }
+            else
             // WO-40 Phase 5: the DLL's hit hook fires per contact frame, and
             // the 2026-08-18 bundles show what that costs -- 1,025 of PB's
             // 1,058 hit events carried 0.0 damage (bursts of ~26/s across 3
@@ -824,14 +858,31 @@ public partial class GameBridge(ClientConfig config)
                 string? npcName = await ResolveSoulNameAsync(soul, cts.Token);
                 if (npcName is not null && !npcName.StartsWith("kcd2mp_", StringComparison.Ordinal))
                 {
-                    await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true);
-                    Console.WriteLine($"[combat] sent hit {health:F1} on '{npcName}' ({soul})");
+                    await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true, fatal: died);
+                    Console.WriteLine($"[combat] sent hit {health:F1} on '{npcName}' ({soul}){(died ? " FATAL" : "")}");
+                    if (died)
+                    {
+                        // Tell the mod's death observer this death is already
+                        // announced, so its own IsDead transition read does not
+                        // send a second FATAL for the same body.
+                        _ = ExecLuaAsync($"if KCD2MP_NpcDeathAnnounced then KCD2MP_NpcDeathAnnounced(\"{npcName}\", \"dll\") end");
+                    }
                 }
                 else
                 {
                     await SendLocalHitAsync(stream, soul, stamina, health, suppressHitReaction: true);
                     Console.WriteLine($"[combat] sent hit {health:F1} on {soul}"
                         + (npcName is null ? " (name lookup failed -- guid-addressed)" : ""));
+                    if (died && npcName is null)
+                    {
+                        // WO-86: the guid-addressed death packet (0x14) has had
+                        // a sender since WO-4 and no caller until now. It is
+                        // the fallback for the fallback: it lands only when the
+                        // per-save guids happen to match (WO-40), which is
+                        // exactly when 0x12 landed too.
+                        await SendLocalDeathAsync(stream, soul);
+                        Console.WriteLine($"[npcdeath] out: 0x14 guid-addressed death for {soul} (name lookup failed)");
+                    }
                 }
             }
             catch (Exception ex) { Console.WriteLine($"[combat] hit not sent: {ex.Message}"); }
@@ -864,6 +915,7 @@ public partial class GameBridge(ClientConfig config)
         _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
         _sendNpcState = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token);
         _sendNpcDrag = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token, asClaim: true);
+        _sendNpcDeath = npc => SendNpcDamageAsync(stream, npc, 0f, 0f, suppressHitReaction: true, fatal: true);
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
         _sendCombatEvent = evt => SendCombatEventAsync(stream, evt, cts.Token);
         _sendWeather = (profile, blend) => SendWeatherAsync(stream, profile, blend, cts.Token);
@@ -1117,6 +1169,7 @@ public partial class GameBridge(ClientConfig config)
             _sendPlayerHit = null;
             _sendNpcState = null;
             _sendNpcDrag = null;
+            _sendNpcDeath = null;
             _sendTimeSkip = null;
             _sendHorseInfo = null;
             _sendCombatEvent = null;
@@ -1929,6 +1982,63 @@ public partial class GameBridge(ClientConfig config)
     }
 
     // -------------------------------------------------------------------------
+    // NPC death sync (WO-86)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// A peer's world says the named NPC is dead: kill this world's copy so
+    /// the two agree. Two inbound routes land here -- a 0x31 with the FATAL
+    /// bit (the killer's DLL or Lua observer saw it die) and a witnessed 0x27
+    /// dead transition (the body's stream owner saw it die) -- deduped per
+    /// name for <see cref="NpcDeathDedupeWindow"/>. Order matters: the mod is
+    /// told FIRST that this death is remote, so its own IsDead transition read
+    /// (which fires the moment ApplyDeath lands) does not announce it back;
+    /// then ApplyDeath runs through the DLL (Lua writes are inert). The DLL's
+    /// own credit-out keeps the lethal TakeDamage from echoing as a LocalHit.
+    /// Gated by the mod's mp_npc_deathsync toggle on the Lua side: when it is
+    /// off, KCD2MP_NpcRemoteDeath returns false and nothing is applied.
+    /// </summary>
+    private async Task ApplyRemoteNpcDeathAsync(string npcName, Guid? knownLocalGuid, byte sourceGhostId, string via, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (_npcDeathAppliedUtc.TryGetValue(npcName, out var lastUtc) && now - lastUtc < NpcDeathDedupeWindow)
+        {
+            Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -- already applied {(now - lastUtc).TotalSeconds:F0}s ago, ignoring");
+            return;
+        }
+        _npcDeathAppliedUtc[npcName] = now;
+
+        if (!_npcDeathSyncEnabled)
+        {
+            Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -- mp_npc_deathsync is off, local copy left alone");
+            return;
+        }
+
+        // The mod logs its own copy's state ("local state before", Phase 1),
+        // records the remote-death mark and flags its puppet entry dead.
+        // ExecuteNow rather than the batched pump so the mark lands before
+        // the lethal apply below can trip the observer.
+        try
+        {
+            await _transport.ExecuteNowAsync(
+                $"if KCD2MP_NpcRemoteDeath then KCD2MP_NpcRemoteDeath(\"{npcName}\", \"{via.Replace('"', '\'')}\") end", ct);
+        }
+        catch (Exception ex) { Console.WriteLine($"[npcdeath] Lua remote-death mark failed for '{npcName}': {ex.Message}"); }
+
+        Guid? localGuid = knownLocalGuid ?? await ResolveLocalSoulGuidAsync(npcName, ct);
+        if (localGuid is not Guid lg)
+        {
+            Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -- no local soul answers to that name, cannot apply");
+            return;
+        }
+        bool applied = false;
+        try { applied = await _combat.ApplyDeathAsync(lg, ct); }
+        catch (Exception ex) { Console.WriteLine($"[npcdeath] ApplyDeath threw for '{npcName}': {ex.Message}"); }
+        Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -> ApplyDeath "
+                        + (applied ? "applied (or already dead here)" : "FAILED (soul not loaded, or the DLL is absent)"));
+    }
+
+    // -------------------------------------------------------------------------
     // Dropped-item sync (WO-48)
     // -------------------------------------------------------------------------
 
@@ -2601,14 +2711,25 @@ public partial class GameBridge(ClientConfig config)
                             float ndStamina = ReadFloat(payload, no);
                             float ndHealth  = ReadFloat(payload, no + 4);
                             bool  ndSupp    = (payload[no + 8] & Protocol.DamageFlagSuppressHitReaction) != 0;
+                            bool  ndFatal   = (payload[no + 8] & Protocol.NpcDamageFlagFatal) != 0;   // WO-86
                             Guid? localGuid = await ResolveLocalSoulGuidAsync(ndName, ct);
-                            bool ndApplied = localGuid is Guid lg
+                            // WO-86: a FATAL packet may carry no delta at all
+                            // (the Lua observer saw the death, not the blow);
+                            // there is nothing to apply then, only the death.
+                            bool ndHasDelta = ndHealth > 0f || ndStamina > 0f;
+                            bool ndApplied = ndHasDelta && localGuid is Guid lg
                                 && await _combat.ApplyDamageAsync(lg, ndStamina, ndHealth, ndSupp, ct);
-                            if (!ndApplied)
-                                Console.WriteLine($"[combat] damage from ghost {ndSource} on '{ndName}' not applied "
-                                                + (localGuid is null ? "(no local soul answers to that name)" : "(pipe apply failed)"));
-                            else
+                            // WO-86 Phase 1: every inbound NPC damage event, with
+                            // what this client did about it.
+                            Console.WriteLine($"[npcdmg] in: ghost {ndSource} hit '{ndName}' hp -{ndHealth:F1} st -{ndStamina:F1}"
+                                            + (ndFatal ? " FATAL" : "")
+                                            + (localGuid is null ? " -> no local soul answers to that name"
+                                               : !ndHasDelta ? " -> no delta to apply"
+                                               : ndApplied ? " -> applied" : " -> pipe apply FAILED"));
+                            if (ndApplied)
                                 _ = TriggerReactiveAggroAsync(ndSource, ct);
+                            if (ndFatal)
+                                await ApplyRemoteNpcDeathAsync(ndName, localGuid, ndSource, "0x31 FATAL", ct);
                         }
                     }
                 }
@@ -2741,9 +2862,35 @@ public partial class GameBridge(ClientConfig config)
                                 && npcKnown;
                             if (npcSwingNative) nflags &= 0xF7;
 
+                            // WO-86: the stream's dead bit. Logged on every
+                            // transition (Phase 1), and a WITNESSED 0->1 -- a
+                            // body this client saw alive on this stream and now
+                            // sees dead -- kills the local copy too, so both
+                            // worlds agree. A body dead on its FIRST packet is
+                            // a late-join corpse or a save-state difference and
+                            // only freezes, exactly as before: nothing kills a
+                            // living NPC on the strength of a stranger's save.
+                            byte  nsrc    = payload[0];
+                            bool  nDead   = (nflags & Protocol.NpcStateFlagDead) != 0;
+                            bool  nSeen   = _npcLastDead.TryGetValue(npcName, out bool nWasDead);
+                            _npcLastDead[npcName] = nDead;
+                            if (nDead && (!nSeen || !nWasDead))
+                            {
+                                Console.WriteLine($"[npcdeath] in: 0x27 from ghost {nsrc} says '{npcName}' is dead (hp={nhp:F1})"
+                                                + (nSeen ? " -- witnessed transition, killing the local copy"
+                                                         : " -- dead on its first packet here (late join / save state): freeze only"));
+                            }
+                            else if (!nDead && nSeen && nWasDead)
+                            {
+                                Console.WriteLine($"[npcdeath] in: 0x27 from ghost {nsrc} says '{npcName}' is ALIVE again (hp={nhp:F1}) -- was dead on this stream; a reload on their side?");
+                            }
+
                             await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
                                 "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6}) end",
                                 npcName, nx, ny, nz, nrot, nhp, nflags));
+
+                            if (nDead && nSeen && !nWasDead)
+                                await ApplyRemoteNpcDeathAsync(npcName, null, nsrc, "0x27 dead transition", ct);
 
                             if (npcSwingNative)
                             {
@@ -3119,6 +3266,45 @@ public partial class GameBridge(ClientConfig config)
                 var send = _sendPlayerHit;
                 if (send is null) break;
                 _ = send(hitGhostId, loss, 0f);
+                break;
+            }
+
+            case "npc_deathsync":
+                // WO-86: mp_npc_deathsync on|off, mirrored here because the
+                // inbound death apply runs in the agent (Lua writes are inert)
+                // and the agent cannot read the mod's toggle back.
+                _npcDeathSyncEnabled = !arg.Equals("off", StringComparison.OrdinalIgnoreCase);
+                Console.WriteLine($"[npcdeath] mp_npc_deathsync {(_npcDeathSyncEnabled ? "on" : "off")} -- inbound NPC deaths will {(_npcDeathSyncEnabled ? "" : "NOT ")}be applied here");
+                break;
+
+            case "npc_death":
+            {
+                // WO-86: "<npcName> <hp> <source>" from the mod's death
+                // observer -- a world NPC this client saw ALIVE and now reads
+                // as actor:IsDead() in this world, not announced yet by the
+                // DLL's FATAL hit (which is frame-accurate but only fires for
+                // hits the DLL's sampler attributed to this client). Any
+                // client may report a death it observed, like damage: no
+                // authority gate. Travels as a zero-delta 0x30 with the FATAL
+                // bit; the receiver's ApplyDeath is idempotent.
+                var dp = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (dp.Length < 1 || !NpcNamePattern.IsMatch(dp[0]) || dp[0].Length > Protocol.MaxNpcNameLen)
+                {
+                    Console.WriteLine($"[npcdeath] malformed npc_death '{arg}'");
+                    break;
+                }
+                string deadName = dp[0];
+                string deadHp   = dp.Length > 1 ? dp[1] : "?";
+                string deadSrc  = dp.Length > 2 ? dp[2] : "lua";
+                var sendDeath = _sendNpcDeath;
+                if (sendDeath is null) break;
+                Console.WriteLine($"[npcdeath] out: mod observed '{deadName}' die locally (hp={deadHp}, seen by {deadSrc}) -- sending FATAL");
+                _ = sendDeath(deadName)
+                    .ContinueWith(t =>
+                    {
+                        if (t.IsFaulted)
+                            Console.WriteLine($"[npcdeath] FATAL for '{deadName}' not sent: {t.Exception?.GetBaseException().Message}");
+                    }, TaskScheduler.Default);
                 break;
             }
 
@@ -3672,7 +3858,8 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     public async Task SendNpcDamageAsync(NetworkStream stream, string npcName,
                                                 float stamina, float health,
-                                                bool suppressHitReaction)
+                                                bool suppressHitReaction,
+                                                bool fatal = false)
     {
         var nb = Encoding.UTF8.GetBytes(npcName);
         var packet = new byte[3 + 1 + nb.Length + Protocol.NpcDamageFixedTail];
@@ -3683,7 +3870,9 @@ public partial class GameBridge(ClientConfig config)
         int o = 4 + nb.Length;
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o), stamina);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 4), health);
-        packet[o + 8] = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
+        byte ndFlags = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
+        if (fatal) ndFlags |= Protocol.NpcDamageFlagFatal;   // WO-86
+        packet[o + 8] = ndFlags;
         await WritePacketAsync(stream, packet);
     }
 

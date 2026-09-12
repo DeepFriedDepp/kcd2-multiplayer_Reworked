@@ -49,9 +49,17 @@
 //                        (WO-20 Phase 2 diagnostic -- see lua_closure.h.
 //                        A one-shot introspection query, not part of the
 //                        normal combat/appearance/aggro traffic.)
-//     0x90 LocalHit     [guid:16][stamina:4f][health:4f]   (outbound, not yet
-//                        emitted -- the hook that detects a local hit does not
-//                        exist. Reserved so the agent side can be written once.)
+//     0x90 LocalHit     [guid:16][stamina:4f][health:4f][died:1]   (outbound)
+//                        Emitted by rttr::sample_health via send_local_hit
+//                        (pipe_server.cpp) whenever a tracked nearby soul
+//                        loses health this client did not apply on a peer's
+//                        behalf. WO-86: the trailing `died` byte (1 = that
+//                        drop took the soul to <= 0 hp, reported once per
+//                        soul) is the frame-accurate NPC death signal the
+//                        agent forwards as the FATAL bit on 0x30; it was
+//                        computed since WO-4 and dropped at the frame edge
+//                        until WO-86. A pre-WO-86 agent reads 24 bytes and
+//                        ignores it.
 //
 // guid is the SharedSoulGuid in the game's in-memory byte order: the raw 16
 // bytes of the SoulsByGuid key, NOT the text form. The agent converts.
