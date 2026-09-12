@@ -7031,6 +7031,27 @@ KCD2MP.armorPresets = {
 -- H2 (an unresolvable roster soul falling back to a default body) is ruled
 -- out for the shipped roster, not merely assumed.
 --
+-- WO-83: seven of those 19 were AUTHORITY souls -- social classes whose
+-- soul_crime_role_id is 2 ("soldier": guard 101 x3, soldier_crimeAuthority
+-- 108 x3, huntsman_crimeAuthority 110 x1), read off Libs/Tables/rpg/
+-- soul__*.xml -> social_class.xml -> soul_crime_role.xml. Such a soul
+-- ENFORCES crime.xml's drawnWeapon crime: a ghost built from ttac_man_9 was
+-- observed in the field speaking the guard "sees player with a drawn weapon"
+-- bark 13 times and then fighting, while the other player's ghost
+-- (ttro_man_59, class 33, crime role 1) never did (docs/WO-83-findings.md).
+-- The lever is the class's crime role, not the faction name: ttkc_bailiffSon
+-- (commonFolk faction, guard class) barks it; ttro_man_59 (soldiers_guards
+-- faction, soldier class) does not.
+--
+-- Fixed by REPLACING those seven slots in place with commoners that are
+-- already in this list (all 19 were REST-verified live in WO-69), NOT by
+-- deleting them: the picker's modulus is #list, so a shorter list re-rolls
+-- every player's face (WO-34 paid that price once). Twelve slots are
+-- byte-identical; only players whose key landed on an authority slot
+-- change, and they change to a live-verified commoner. Distinct faces go
+-- from 19 to 12; fresh commoner candidates for widening the roster again
+-- are listed in docs/WO-83-findings.md and need a live REST read first.
+--
 -- WO-34: it was 48 (24 male, 24 female) and it then became 43 (19 male, 24
 -- female). Five of the male entries were NOT commoners -- tbuk_man_5,
 -- tkop_man_1, tkop_man_2, tzda_man_6 and tzda_man_9 were bandits, and are
@@ -7061,25 +7082,25 @@ KCD2MP.armorPresets = {
 -- already broken once by WO-22 for the same underlying reason.
 KCD2MP.faceRoster = {
     male = {
-        {"tneb_man_11",  "43b076df-4be8-f9d9-e2e4-dd5cafd0db96"},
-        {"tneb_man_18",  "4a5baae4-2667-2892-178d-b47b10e562b3"},
+        {"tpod_man_1",   "4e628918-2a38-c1ea-c786-2424123506ae"}, -- WO-83: was tneb_man_11 (soldier_crimeAuthority)
+        {"tsem_man_21",  "4072c96a-3bb5-f744-078c-8ef89203a49c"}, -- WO-83: was tneb_man_18 (soldier_crimeAuthority)
         {"tpod_man_1",   "4e628918-2a38-c1ea-c786-2424123506ae"},
         {"tpod_man_5",   "4f45df7c-4667-77a0-a415-d03b0cd1e293"},
         {"tsem_man_21",  "4072c96a-3bb5-f744-078c-8ef89203a49c"},
         {"tsem_man_22",  "46356c7b-ab60-1377-e8e4-514c8a8dcfbb"},
         {"tsla_man_2",   "4166b913-6b12-1965-cbb6-509a49250ba6"},
         {"ttac_man_8",   "fd1af8c5-c500-4add-b0b6-6c0505fe80c2"},
-        {"ttac_man_9",   "69dfede7-a999-43dd-9dfa-5bf0c5aefe01"},
+        {"ttkc_man_26",  "cfa65480-f361-4cf8-80c5-1900b7846bc8"}, -- WO-83: was ttac_man_9 (guard) -- the field report
         {"ttkc_man_26",  "cfa65480-f361-4cf8-80c5-1900b7846bc8"},
-        {"ttkc_man_3",   "4b4c6520-21a6-6125-d814-564837f165a2"},
-        {"ttro_man_30",  "40fd3055-48be-a9f5-de48-0b882695cca5"},
+        {"tzel_man_10",  "8158f557-018e-4016-95a4-024bb060bd18"}, -- WO-83: was ttkc_man_3 (guard)
+        {"tvid_man_3",   "48ea5c5c-fcbb-6a90-be4d-8b7f7ad6a4ac"}, -- WO-83: was ttro_man_30 (soldier_crimeAuthority)
         {"ttro_man_59",  "7e4881d6-ffb7-416f-bbbe-49bc622747b2"},
         {"tvez_man_20",  "2f825ed0-1d9b-4df0-ad90-d6e2b136ce04"},
         {"tvez_man_21",  "4badc882-824c-407e-b823-059fa3e5df5b"},
         {"tvid_man_3",   "48ea5c5c-fcbb-6a90-be4d-8b7f7ad6a4ac"},
-        {"tvid_man_7",   "6947a43f-30eb-49bd-9997-44396f01fcba"},
+        {"tvez_man_20",  "2f825ed0-1d9b-4df0-ad90-d6e2b136ce04"}, -- WO-83: was tvid_man_7 (huntsman_crimeAuthority)
         {"tzel_man_10",  "8158f557-018e-4016-95a4-024bb060bd18"},
-        {"tzel_man_7",   "271ac033-a516-4928-b1f7-825bc57c46e3"},
+        {"tsla_man_2",   "4166b913-6b12-1965-cbb6-509a49250ba6"}, -- WO-83: was tzel_man_7 (guard)
     },
 }
 
@@ -7124,6 +7145,11 @@ end
 -- same face across this upgrade. Only the ~50% who were rendering as women
 -- change, and they change from a wrong body to a right one. Reordering or
 -- "tidying" the male table would re-roll all 19 and break that property.
+--
+-- WO-83 kept that property the only way a fix can: same 19 slots, same
+-- order, seven entries swapped in place. Recomputed with this exact
+-- arithmetic: 8/8 keys that sat on an untouched slot resolve to the same
+-- soul as before; keys on the seven authority slots move to a commoner.
 function KCD2MP_PickFaceForPlayer(nameKey)
     local h = KCD2MP_HashString(tostring(nameKey or ""))
     local list = KCD2MP.faceRoster.male
@@ -7138,9 +7164,12 @@ end
 -- SharedSoulGuid silently produces (WO-22). Kuttenberg is the largest
 -- always-streamed settlement in the game, and this soul's SharedSoulGuid was
 -- read back live from a running build during WO-69 (19/19 male roster souls
--- resolved; this is roster slot 11).
-KCD2MP.faceFallback = { className = "NPC", soulName = "ttkc_man_3",
-                        guid = "4b4c6520-21a6-6125-d814-564837f165a2" }
+-- resolved). WO-83: it WAS ttkc_man_3 (roster slot 11), which turned out to be
+-- social class 101 "guard", crime role 2 -- an authority soul, the exact
+-- defect WO-83 removes. Now ttkc_man_26 (roster slot 10, varlet, crime role
+-- 1), the WO-34 live control that read back as "Hired hand".
+KCD2MP.faceFallback = { className = "NPC", soulName = "ttkc_man_26",
+                        guid = "cfa65480-f361-4cf8-80c5-1900b7846bc8" }
 
 -- Split "a,b,c" -> {"a","b","c"}, trims whitespace
 local function splitCSV(s)
