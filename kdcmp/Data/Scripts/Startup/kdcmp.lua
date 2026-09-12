@@ -2132,6 +2132,25 @@ end
 KCD2MP.npcPuppetGen   = 0
 KCD2MP.npcChainFix    = false  -- mp_npc_chainfix on|off
 KCD2MP._chainLeakSeen = {}     -- "puppet" / "interp" -> true, so the line logs once per chain kind
+-- WO-84: _chainLeakSeen is a latch that is never reset, so ONE firing silences
+-- the report for the rest of the session. That was tolerable while a firing
+-- was assumed to be rare and real; the 2026-09-11 session showed a firing that
+-- was neither (see the retirement note in KCD2MP_NpcPuppetTick). Counting them
+-- separately from reporting them means a later firing is still visible even
+-- though the loud line and the toast stay once-per-session.
+KCD2MP._chainLeakN = {}
+-- WO-84: generations that stopped THEMSELVES and still have one scheduled
+-- successor timer in flight. See KCD2MP_NpcPuppetTick's retirement check.
+KCD2MP._npcPuppetRetired = {}
+KCD2MP._npcPuppetRetiredN = 0  -- orphan timers absorbed (diagnostic)
+-- WO-84: the same retirement for the ghost interp chain. KCD2MP_Stop is the
+-- only place that clears interpRunning, and it does so while a generation's
+-- timer is in flight -- so a Stop immediately followed by a Start (a
+-- reconnect) has the identical orphan race. PREVENTATIVE: unlike the puppet
+-- case this has never been observed in a field log, and it is recorded that
+-- way rather than claimed as a fixed bug.
+KCD2MP._interpRetired = {}
+KCD2MP._interpRetiredN = 0
 -- WO-78: both stale-chain exits default ON. WO-69's rule was "observe-only
 -- until a log line shows two chains alive at once"; the 2026-09-11 session
 -- showed exactly that on both machines (host: puppet gen=1 alive at gen=8;
@@ -2142,6 +2161,12 @@ KCD2MP._chainLeakSeen = {}     -- "puppet" / "interp" -> true, so the line logs 
 -- entity is never wanted. The toggles stay as the rollback.
 KCD2MP.npcChainFix = true
 KCD2MP.ghostChainFix = true
+
+-- WO-84: how long a ghost's looped locomotion clip may play before it is
+-- restarted as a keep-alive, in seconds. 0 restores the pre-WO-84 behaviour
+-- (restart on EVERY tick) as the rollback -- see mp_anim_loop for why that
+-- was a defect and what it cost in the 2026-09-11 field session.
+KCD2MP.ghostAnimRefreshS = 1.0
 
 function KCD2MP_SetGhostChainFix(arg)
     local s = tostring(arg or ""):lower()
@@ -2703,11 +2728,48 @@ local function mp_npc_draw(name, e)
 end
 
 function KCD2MP_NpcPuppetTick(arg, gen)
+    -- WO-84: absorb the orphan of a generation that stopped ITSELF.
+    --
+    -- This tick reschedules its successor at the TOP (below) and may decide at
+    -- the BOTTOM that there is nothing left to drive ("puppet tick stopped (no
+    -- puppets)"). That leaves exactly one scheduled timer belonging to a
+    -- generation that is no longer running. Normally it fires 50 ms later,
+    -- finds npcPuppetRunning false, and dies quietly.
+    --
+    -- It does not die quietly when a packet arrives inside that window.
+    -- KCD2MP_StartNpcPuppet then calls chainMayStart, which -- correctly --
+    -- grants a stopped chain an IMMEDIATE restart: the flag is false, so it
+    -- returns true on its second line without arming any probe. Generation
+    -- N+1 starts, sets the flag back to true, and the orphaned generation-N
+    -- timer wakes into a live chain and is reported as a leak it did not
+    -- cause. A menu widens that 50 ms window to the whole menu, because
+    -- Script.SetTimer is suspended while the agent's pump and its inbound
+    -- ExecuteString traffic keep running: the orphan and the new chain's first
+    -- timer are both released together when the menu closes.
+    --
+    -- That is exactly what the 2026-09-11 joiner log shows, in five
+    -- consecutive mod lines: five `NPC-SYNC release ... (stream silent)`, then
+    -- `puppet tick stopped (no puppets)`, then `NPC-SYNC puppet start
+    -- ttkc_scribe`, then `puppet tick started (50ms) gen=17` -- and the leak
+    -- line 1,225 lines later, 21 lines after the map screen closed.
+    --
+    -- It is NOT the mechanism WO-78 fixed. WO-78's leaks came from a false
+    -- restart of a chain that was suspended rather than dead, and its probe
+    -- gate stops those. Here the chain really did stop, the restart is
+    -- legitimate, and the gate is bypassed by design. So the orphan is
+    -- retired by name instead: it exits silently, writes no puppet, and is
+    -- counted rather than reported as a leak.
+    if gen ~= nil and KCD2MP._npcPuppetRetired[gen] then
+        KCD2MP._npcPuppetRetired[gen] = nil
+        KCD2MP._npcPuppetRetiredN = (KCD2MP._npcPuppetRetiredN or 0) + 1
+        return
+    end
     if not KCD2MP.npcPuppetRunning then return end
     -- WO-69: chain identity. `gen` is nil for the external menu pump (which
     -- never reschedules and so cannot be a leaked chain) and for any legacy
     -- bare reschedule; only a generation-stamped chain is checked.
     if gen ~= nil and gen ~= KCD2MP.npcPuppetGen then
+        KCD2MP._chainLeakN.puppet = (KCD2MP._chainLeakN.puppet or 0) + 1
         if not KCD2MP._chainLeakSeen.puppet then
             KCD2MP._chainLeakSeen.puppet = true
             mp_log(string.format(
@@ -2741,8 +2803,10 @@ function KCD2MP_NpcPuppetTick(arg, gen)
     if st.n > 0 and (now - (st.dumpAt or 0)) >= 5.0 then
         st.dumpAt = now
         mp_log(string.format(
-            "NPC-SYNC packet cadence: n=%d mean=%.0fms min=%.0fms max=%.0fms (emitter is %dms; apply tick is 50ms)",
-            st.n, st.sum / st.n, st.min, st.max, KCD2MP.npcSync.emitMs or 250))
+            "NPC-SYNC packet cadence: n=%d mean=%.0fms min=%.0fms max=%.0fms (emitter is %dms;"
+            .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d)",
+            st.n, st.sum / st.n, st.min, st.max, KCD2MP.npcSync.emitMs or 250,
+            KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0))
         st.n, st.sum, st.min, st.max = 0, 0, 1e9, 0
     end
     local any = false
@@ -3010,6 +3074,15 @@ function KCD2MP_NpcPuppetTick(arg, gen)
         for _ in pairs(KCD2MP.npcPuppets) do empty = false; break end
         if empty then
             KCD2MP.npcPuppetRunning = false
+            -- WO-84: this tick already scheduled its successor (above, or on
+            -- the last scheduled tick if this stop came from a pumped call).
+            -- Retire the generation that owns that orphan so it exits silently
+            -- instead of waking into whatever generation a new packet starts.
+            -- Retire the CURRENT generation rather than `gen`: a pumped call
+            -- arrives with gen == nil but the in-flight timer still belongs to
+            -- KCD2MP.npcPuppetGen.
+            local orphan = KCD2MP.npcPuppetGen
+            if orphan then KCD2MP._npcPuppetRetired[orphan] = true end
             mp_log("NPC-SYNC puppet tick stopped (no puppets)")
         end
     end
@@ -3328,10 +3401,67 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     end
 
     -- Set faction via AI system (XGenAIModule ignores Properties.esFaction at spawn time)
-    pcall(function()
-        entity.Properties.esFaction = "Civilians"
-        AI.ChangeParameter(entity.id, AIPARAM_FACTION, "Civilians")
-    end)
+    --
+    -- WO-84: this was ONE unlogged pcall wrapping both statements, so in the
+    -- whole history of this project no field log has ever said whether either
+    -- of them did anything. Split and reported, in the same spawn-verify
+    -- discipline WO-69 applied to the class/soul read above.
+    --
+    -- Already established, not re-litigated here:
+    --   * the property write takes and changes nothing -- WO-34 read
+    --     props.esFaction back as "Civilians" live while the engine's own
+    --     FactionNode still resolved to the soul's faction
+    --     (docs/WO-34-findings.md 1.3).
+    --   * AI.GetFactionOf does not exist on this build, so nothing could ever
+    --     read the result back either.
+    --
+    -- What WO-84 adds is a measurement nobody had made. The engine DOES answer
+    -- this call when it lands: the earlier 2026-09-11 host session shows the
+    -- HORSE spawn path -- which runs the same AI.ChangeParameter with the same
+    -- "Civilians" string, in its own pcall -- produce
+    -- `[Warning] Validator: AI: Unknown faction 'Civilians' being set...`
+    -- twice, immediately after 16 `NPC kcd2mp_horse_1 does not have a faction.`
+    -- lines and immediately before `HorseSpawn OK id=1`. So on an entity the
+    -- AI system owns, the call reaches the engine and the engine REJECTS THE
+    -- VALUE: "Civilians" is not a faction id in this build's FactionTree.
+    --
+    -- The ghost path never emits that warning -- zero occurrences across all
+    -- three logs in the bundle, over eight ghost spawns. Two readings fit and
+    -- the logs cannot separate them: either the Properties write above throws
+    -- and the shared pcall aborted before AI.ChangeParameter ever ran, or the
+    -- ghost has no AI object for the call to act on (SpawnGhost deliberately
+    -- passes no SchedulerProxyName, and the horse path's comment records that
+    -- registering one fights our per-tick SetWorldPos). This block now records
+    -- which, on the next session, in one line -- including whether the entity
+    -- has an AI object at that moment, which is what tells the two apart.
+    --
+    -- This does NOT claim to fix ghost factions, and deliberately does not
+    -- guess a replacement faction name: WO-34 live-observed that the soul's
+    -- own FactionNode wins regardless, and WO-68 shipped civic isolation
+    -- through script contexts instead, which made faction membership
+    -- unnecessary for the problem it was being used to solve. The 265-266
+    -- "does not have a faction" errors in that session are a different entity
+    -- entirely (see KCD2MP_SweepStrayGhosts). What a real faction attach would
+    -- take is native and is scoped in docs/WO-84-findings.md.
+    local okProp, propErr = pcall(function() entity.Properties.esFaction = "Civilians" end)
+    local hasAi = nil
+    pcall(function() hasAi = (entity.AI ~= nil) end)
+    local aiFn = (AI ~= nil) and type(AI.ChangeParameter) or "no AI table"
+    local okAi, aiErr = false, nil
+    if AIPARAM_FACTION == nil then
+        aiErr = "AIPARAM_FACTION is nil -- call skipped"
+    elseif aiFn ~= "function" then
+        aiErr = "AI.ChangeParameter is " .. tostring(aiFn)
+    else
+        okAi, aiErr = pcall(function()
+            AI.ChangeParameter(entity.id, AIPARAM_FACTION, "Civilians")
+        end)
+    end
+    System.LogAlways(string.format(
+        "[KCD2-MP] faction attempt ghost '%s': Properties.esFaction ok=%s err=%s | entity.AI=%s"
+        .. " | AIPARAM_FACTION=%s AI.ChangeParameter=%s ok=%s err=%s",
+        tostring(id), tostring(okProp), tostring(propErr), tostring(hasAi),
+        tostring(AIPARAM_FACTION), tostring(aiFn), tostring(okAi), tostring(aiErr)))
 
     System.LogAlways("[KCD2-MP] Spawned entityId=" .. tostring(entity.id))
 
@@ -4821,7 +4951,61 @@ local function calcAnimTag(speed, cur, stance)
     else                                 return "idle" end
 end
 
-function KCD2MP_UpdateAnimation(id, ghost)
+-- WO-84: restart a LOOPED clip on a change, plus a keep-alive refresh -- never
+-- on every tick.
+--
+-- Both ghost animation call sites used to call StartAnimation unconditionally
+-- on every interp tick, to override Mannequin's own idle. That is 50 calls per
+-- second from the 20 ms chain -- and 62-86 per second from the agent's menu
+-- pump, whose own log lines measured 5,395 pumped frames in 62.8 s at 86.0 Hz
+-- in the 2026-09-11 field session. A pumped frame lands while the game, and
+-- with it the animation system that drains the queue, is not advancing.
+--
+-- That session logged 9,037 `Animation-queue overflow. More then 16 entries`
+-- errors against a single ghost's character instance, out of 9,192 in the
+-- whole 150,458-line log -- every other entity in the world combined
+-- accounted for 155. 6,148 of the joiner's 9,037 (68%) fell inside local-menu
+-- windows covering 14,884 lines, 10% of the session; the host's ghost showed
+-- the same shape on a different soul and a different clip, so this is neither
+-- soul-specific nor faction-related.
+--
+-- This is the same defect the NPC puppet path carried until WO-40 Phase 5,
+-- and the same fix -- with one addition that path does not need: the guard
+-- compares the CLIP NAME as well as the tag, because tag "idle" maps to two
+-- different clips (relaxed_idle_both, and the combat guard idle when the
+-- owner's weapon is drawn) and a tag-only guard could never switch between
+-- them.
+--
+-- A pumped call gets the change-driven restart but never the keep-alive
+-- refresh: refreshing a loop into a frozen animation system is precisely the
+-- queue filling described above, and the pump exists to keep ghost BODIES
+-- moving through a menu (WO-13), not to re-blend their animations.
+--
+-- `st` is any per-entity state table (a ghost's istate, a horse's data row);
+-- `key` namespaces the two bookkeeping fields so one table can drive more
+-- than one character. Declared here, ABOVE both call sites, deliberately: a
+-- file-local declared later would bind as a nil global inside them (the
+-- getFloorZ trap this file already records).
+local function mp_anim_loop(st, key, ent, animName, blend, speed, pumped)
+    if not (st and ent and animName) then return false end
+    local nameField, atField = key .. "Name", key .. "At"
+    local refreshS = KCD2MP.ghostAnimRefreshS or 1.0
+    local now = os.clock()
+    local changed = st[nameField] ~= animName
+    local stale
+    if refreshS <= 0 then
+        stale = true                      -- rollback: the pre-WO-84 per-tick restart
+    else
+        stale = (not pumped) and (now - (st[atField] or 0)) > refreshS
+    end
+    if not (changed or stale) then return false end
+    st[nameField] = animName
+    st[atField] = now
+    pcall(function() ent:StartAnimation(0, animName, 0, blend or 0.15, speed or 1.0, true) end)
+    return true
+end
+
+function KCD2MP_UpdateAnimation(id, ghost, pumped)
     local istate = ghost.istate
 
     -- WO-39: a one-shot combat animation (swing/block) is mid-play. This
@@ -4831,6 +5015,11 @@ function KCD2MP_UpdateAnimation(id, ghost)
     if istate.oneShotUntil then
         if os.clock() < istate.oneShotUntil then return end
         istate.oneShotUntil = nil
+        -- WO-84: the one-shot replaced the looped clip on layer 0, so the
+        -- change-driven guard below must not still believe that loop is
+        -- playing -- otherwise a ghost holds its swing pose until the next
+        -- keep-alive. Under the old per-tick restart this could not happen.
+        istate.animLoopName = nil
     end
 
     local speed = istate.smoothedSpeed or 0
@@ -4916,9 +5105,11 @@ function KCD2MP_UpdateAnimation(id, ghost)
         end
     end
 
-    -- Call StartAnimation every tick to override Mannequin's idle.
+    -- WO-84: restart on a change (tag OR clip), plus a keep-alive refresh --
+    -- was an unconditional call on every tick. See mp_anim_loop above for the
+    -- field numbers that forced this.
     -- blend=0.15s: short enough to react quickly, long enough to not look choppy.
-    pcall(function() ghost.entity:StartAnimation(0, animName, 0, 0.15, 1.0, true) end)
+    mp_anim_loop(istate, "animLoop", ghost.entity, animName, 0.15, 1.0, pumped)
 
     -- Log only when tag actually changes
     if istate.animTag ~= wantTag then
@@ -4997,6 +5188,14 @@ end
 -- duration of a local menu (WO-12 s0.3), so every timer queued by a pumped
 -- call would still be pending when the menu closes and fire as one burst.
 function KCD2MP_InterpTick(arg, gen)
+    -- WO-84: absorb the orphan of a generation KCD2MP_Stop retired. Same
+    -- mechanism as the puppet chain's retirement (see KCD2MP_NpcPuppetTick);
+    -- preventative here, never observed in the field.
+    if gen ~= nil and KCD2MP._interpRetired[gen] then
+        KCD2MP._interpRetired[gen] = nil
+        KCD2MP._interpRetiredN = (KCD2MP._interpRetiredN or 0) + 1
+        return
+    end
     if not KCD2MP.interpRunning then return end
     -- WO-78: chain identity, mirroring the puppet tick's WO-69 instrument.
     -- `gen` is nil for the external menu pump (never reschedules, cannot leak)
@@ -5004,6 +5203,7 @@ function KCD2MP_InterpTick(arg, gen)
     -- detector on this path and had to infer 5-21 concurrent chains from the
     -- TICK_ALIVE interval by hand; this line is the direct confirmation.
     if gen ~= nil and gen ~= KCD2MP.interpGen then
+        KCD2MP._chainLeakN.interp = (KCD2MP._chainLeakN.interp or 0) + 1
         if not KCD2MP._chainLeakSeen.interp then
             KCD2MP._chainLeakSeen.interp = true
             mp_log(string.format(
@@ -5023,6 +5223,13 @@ function KCD2MP_InterpTick(arg, gen)
         -- healthy and stop KCD2MP_StartInterp from ever rebuilding it.
         KCD2MP._interpAliveAt = os.clock()
     end
+
+    -- WO-84: is this a pumped frame? Read by the animation layer to skip the
+    -- keep-alive refresh (see mp_anim_loop). Kept on KCD2MP rather than as a
+    -- local because this function is already enormous and Lua 5.1 caps locals
+    -- per function at 200; a table field costs no slot. Single-threaded and
+    -- non-reentrant within a frame, so a plain field is safe.
+    KCD2MP._tickPumped = (arg == "ext")
 
     -- Heartbeat: confirm tick is alive (every ~5s = 250 * 20ms)
     KCD2MP._tickN = (KCD2MP._tickN or 0) + 1
@@ -5260,21 +5467,26 @@ function KCD2MP_InterpTick(arg, gen)
                     -- For gallop we must set it explicitly — engine does NOT auto-update.
                     -- ridingFallback: engine failed to mount, set all anims manually.
                     local isGallop = rendSpeed > 3.0
+                    -- WO-84: this ghost is in the saddle, so whatever locomotion
+                    -- clip KCD2MP_UpdateAnimation last pushed is gone. Forget it,
+                    -- or a dismount would wait a keep-alive period before the
+                    -- ghost stopped riding an imaginary horse.
+                    istate.animLoopName = nil
                     if istate.nativeMounted then
                         -- Only override for gallop; leave idle to engine sync system.
                         if isGallop and KCD2MP._ridingGallopAnim then
-                            pcall(function()
-                                ghost.entity:StartAnimation(0, KCD2MP._ridingGallopAnim, 0, 0.3, 1.0, true)
-                            end)
+                            mp_anim_loop(istate, "rideLoop", ghost.entity,
+                                         KCD2MP._ridingGallopAnim, 0.3, 1.0, KCD2MP._tickPumped)
+                        else
+                            -- The engine owns the pose again -- forget which clip
+                            -- we last pushed, or the next gallop would be
+                            -- suppressed as "already playing".
+                            istate.rideLoopName = nil
                         end
                     else
                         local rideAnim = (isGallop and KCD2MP._ridingGallopAnim)
                                       or KCD2MP._ridingIdleAnim
-                        if rideAnim then
-                            pcall(function()
-                                ghost.entity:StartAnimation(0, rideAnim, 0, 0.3, 1.0, true)
-                            end)
-                        end
+                        mp_anim_loop(istate, "rideLoop", ghost.entity, rideAnim, 0.3, 1.0, KCD2MP._tickPumped)
                     end
 
                     -- Horse entity origin = ground level (~1.5m below rider/saddle).
@@ -5335,16 +5547,19 @@ function KCD2MP_InterpTick(arg, gen)
                         else
                             horseAnim = KCD2MP._horseEntityIdleAnim
                         end
-                        if horseAnim then
-                            pcall(function()
-                                horseData.entity:StartAnimation(0, horseAnim, 0, 0.2, 1.0, true)
-                            end)
-                        end
+                        -- WO-84: same change-plus-keep-alive rule as the rider.
+                        mp_anim_loop(horseData, "gaitLoop", horseData.entity,
+                                     horseAnim, 0.2, 1.0, KCD2MP._tickPumped)
                     end
                     -- NPC ghost Z = sz = packet player Z = saddle height (correct).
                     -- Already set above in the nativeMounted block. No extra offset needed.
                 else
-                    KCD2MP_UpdateAnimation(id, ghost)
+                    -- WO-84: tell the animation layer whether this is a pumped
+                    -- frame. `arg` is KCD2MP_InterpTick's own parameter, an
+                    -- upvalue here; "ext" means the agent's menu pump drove
+                    -- this call, so the keep-alive refresh must be skipped.
+                    istate.rideLoopName = nil
+                    KCD2MP_UpdateAnimation(id, ghost, KCD2MP._tickPumped)
                 end
 
                 -- Update label cache for the render loop (runs at 8ms to avoid flicker).
@@ -5527,7 +5742,85 @@ end
 -- KCD2MP_RemoveGhost: there is no entity left to remove, the display name and
 -- menu/health/death tags are all still correct for that player, and the very
 -- next position packet respawns the body through the ordinary path.
+-- ===== WO-84: run WO-58's stray sweep during play, not only at shutdown =====
+--
+-- The 2026-09-11 field session logged 265 (host) and 266 (joiner)
+-- `NPC kcd2mp_0 does not have a faction.` errors. They are not the live ghost:
+--   * they arrive as five bursts of exactly 52 contiguous lines plus a single
+--     trailing one, one set per savegame load;
+--   * each 52-line burst sits inside the entity module's save reconciliation,
+--     and the single one lands right after `EntityModuleOnPostLoadGame`;
+--   * the first burst on each log precedes the mod's first ghost spawn that
+--     session (joiner: burst at line 10062, spawn at 14085);
+--   * on the HOST, whose live ghost is kcd2mp_1, every one of the 265 names
+--     kcd2mp_0 -- a name that machine never spawned in that session, and a
+--     name that exists nowhere in the shipped mod data because it is only
+--     ever built at runtime;
+--   * `Module EntityModule processed savegame data 2705 B of 2705 B` is
+--     byte-identical across all ten loads and across BOTH machines, so that
+--     record is coming out of a fixed save blob rather than live world state.
+--
+-- KCD2MP_SweepStrayGhosts below already described and handled exactly this,
+-- in WO-58, and its reasoning needs no revision. The whole gap is that it was
+-- only ever reachable from KCD2MP_RemoveAllGhosts -- that is, from
+-- `mp_remove_all` or KCD2MP_Stop -- and neither ran in any of the three
+-- sessions in that bundle, so no stray was ever swept while anyone was
+-- playing. WO-84 does not re-solve it; it runs it.
+--
+-- Honest limit: whether the restored body then STANDS there for the session is
+-- still not established. There is no removal line for it, and no further
+-- faction errors after each burst, which fits both "the engine dropped it" and
+-- "it stands there silently". This is why the sweep reports what it finds -- the
+-- first session that runs it answers the question either way.
+--
+-- NOT claimed: that any of this has anything to do with a LIVE ghost's faction.
+-- It does not. The same error text is emitted for a brand-new mod-spawned
+-- entity: the earlier host session shows `[KCD2-MP] Riding START id=1`, then 16
+-- consecutive `NPC kcd2mp_horse_1 does not have a faction.`, then `HorseSpawn
+-- OK id=1`, 21,738 lines from the nearest save load. The message means "an NPC
+-- with no faction was queried", nothing more.
+KCD2MP.orphanSweep     = true   -- mp_ghost_sweep on|off|now
+KCD2MP._orphanSweepAt  = 0
+KCD2MP._orphanSeen     = {}     -- spawn name -> seen untracked on one sweep already
+KCD2MP._orphanRemovedN = 0
+
+-- WO-84: the rollback lever for the animation throttle. 0 restores the
+-- pre-WO-84 per-tick restart, so a live session can A/B the fix on one build
+-- rather than two deploys -- the same discipline WO-69 used for the chain-leak
+-- toggles.
+function KCD2MP_SetGhostAnimRefresh(arg)
+    local n = tonumber(tostring(arg or ""))
+    if n == nil or n < 0 then
+        mp_log(string.format("mp_ghost_anim_refresh: expected seconds >= 0, got '%s' (currently %.2f)",
+            tostring(arg), KCD2MP.ghostAnimRefreshS or 1.0))
+        return
+    end
+    KCD2MP.ghostAnimRefreshS = n
+    mp_log(string.format("GHOST ANIM refresh = %.2fs%s", n,
+        n <= 0 and "  (restart every tick -- pre-WO-84 behaviour)" or ""))
+end
+
+function KCD2MP_SetOrphanSweep(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "now" then
+        local n = KCD2MP_SweepStrayGhosts(true)
+        mp_log("mp_ghost_sweep now: removed " .. tostring(n))
+        return n
+    elseif s == "on" or s == "1" or s == "true" then
+        KCD2MP.orphanSweep = true
+    elseif s == "off" or s == "0" or s == "false" then
+        KCD2MP.orphanSweep = false
+    else
+        mp_log("mp_ghost_sweep: expected 'on', 'off' or 'now', got '" .. tostring(arg) .. "'")
+        return
+    end
+    mp_log("ORPHAN SWEEP " .. (KCD2MP.orphanSweep and "enabled" or "disabled"))
+end
+
 function KCD2MP_ReconcileGhosts()
+    -- WO-84: the agent calls this every 5 s. WO-58's stray sweep throttles
+    -- itself to every 30 s from here, which is the caller it never had.
+    pcall(function() KCD2MP_SweepStrayGhosts(false) end)
     local fixed = 0
     for id, ghost in pairs(KCD2MP.ghosts) do
         if ghost and ghost.entity then
@@ -5656,7 +5949,7 @@ function KCD2MP_RemoveAllGhosts()
     for id, _ in pairs(KCD2MP.horseGhosts) do
         KCD2MP_RemoveHorse(id)
     end
-    KCD2MP_SweepStrayGhosts()
+    KCD2MP_SweepStrayGhosts(true)   -- WO-84: shutdown wants it gone now, not next sweep
     System.LogAlways("[KCD2-MP] Removed " .. count .. " ghosts")
 end
 
@@ -5676,37 +5969,76 @@ end
 -- every possible stray cheaply. Untracked proxies only: a name the live
 -- tables own is left alone, and adopted world horses are real local
 -- content that is never removed by name.
-function KCD2MP_SweepStrayGhosts()
-    local swept = 0
-    for i = 0, 31 do
+-- WO-84 extends this in four ways, without touching the reasoning above:
+--   * `immediate` -- true from the shutdown/`mp_remove_all` caller, which
+--     wants the body gone now. False (the new periodic caller) requires a name
+--     to be seen untracked on TWO consecutive sweeps before it is removed.
+--     Single-threaded Lua already means a sweep cannot interleave with
+--     KCD2MP_SpawnGhost's brief untracked window; the second look makes that
+--     argument unnecessary rather than merely correct, at a cost of one 30 s
+--     cycle against a body that has been standing there since a previous
+--     session.
+--   * a 30 s throttle, so the agent's existing 5 s KCD2MP_ReconcileGhosts call
+--     is a safe host for it.
+--   * ids 0..63 rather than 0..31: the relay's own cap is 64 players
+--     (Max players: 64), so 31 could miss a real stray on a full server. It is
+--     128 name lookups every 30 s.
+--   * the horse branch removes through mp_remove_entity_verified like the ghost
+--     branch, instead of a bare unverified System.RemoveEntity -- the same
+--     silent-no-op failure mode WO-27 spent a session cleaning up.
+local STRAY_SWEEP_MAX_ID  = 63
+local STRAY_SWEEP_EVERY_S = 30
+
+local function mp_stray_check(name, tracked, label, immediate, acc)
+    if tracked then
+        KCD2MP._orphanSeen[name] = nil
+        return
+    end
+    local stray = nil
+    pcall(function() stray = System.GetEntityByName(name) end)
+    if not stray then
+        KCD2MP._orphanSeen[name] = nil
+        return
+    end
+    if not immediate and not KCD2MP._orphanSeen[name] then
+        KCD2MP._orphanSeen[name] = true
+        mp_log("SweepStrayGhosts: untracked " .. name ..
+               " in the world (save-embedded or leaked) -- confirming on the next sweep")
+        return
+    end
+    KCD2MP._orphanSeen[name] = nil
+    mp_log("SweepStrayGhosts: untracked " .. name ..
+           " in the world (save-embedded or leaked) -- removing")
+    mp_remove_entity_verified(stray.id, name, label .. " " .. name)
+    acc.n = acc.n + 1
+end
+
+function KCD2MP_SweepStrayGhosts(immediate)
+    if not KCD2MP.orphanSweep and not immediate then return 0 end
+    if not immediate then
+        local now = os.clock()
+        if (now - (KCD2MP._orphanSweepAt or 0)) < STRAY_SWEEP_EVERY_S then return 0 end
+        KCD2MP._orphanSweepAt = now
+    end
+    local acc = { n = 0 }
+    for i = 0, STRAY_SWEEP_MAX_ID do
+        -- Ids key these tables as strings on this side, but a numeric key has
+        -- turned up often enough in this file's history to be worth checking
+        -- both: a false "untracked" here would delete a live ghost.
         local sid = tostring(i)
-        local gname = "kcd2mp_" .. sid
-        local tracked = KCD2MP.ghosts[sid] or KCD2MP.ghosts[i]
-        if not tracked then
-            local stray = nil
-            pcall(function() stray = System.GetEntityByName(gname) end)
-            if stray then
-                mp_log("SweepStrayGhosts: untracked " .. gname .. " in the world (save-embedded or leaked) -- removing")
-                mp_remove_entity_verified(stray.id, gname, gname)
-                swept = swept + 1
-            end
-        end
-        local hname = "kcd2mp_horse_" .. sid
-        local htracked = KCD2MP.horseGhosts[sid] or KCD2MP.horseGhosts[i]
-        if not htracked then
-            local strayH = nil
-            pcall(function() strayH = System.GetEntityByName(hname) end)
-            if strayH then
-                mp_log("SweepStrayGhosts: untracked " .. hname .. " in the world -- removing")
-                pcall(function() System.RemoveEntity(strayH.id) end)
-                swept = swept + 1
-            end
-        end
+        mp_stray_check("kcd2mp_" .. sid,
+                       (KCD2MP.ghosts[sid] ~= nil) or (KCD2MP.ghosts[i] ~= nil),
+                       "stray ghost", immediate, acc)
+        mp_stray_check("kcd2mp_horse_" .. sid,
+                       (KCD2MP.horseGhosts[sid] ~= nil) or (KCD2MP.horseGhosts[i] ~= nil),
+                       "stray ghost horse", immediate, acc)
     end
-    if swept > 0 then
-        mp_log("SweepStrayGhosts: removed " .. swept .. " stray bodies")
+    if acc.n > 0 then
+        KCD2MP._orphanRemovedN = (KCD2MP._orphanRemovedN or 0) + acc.n
+        System.LogAlways("[KCD2-MP] SweepStrayGhosts: removed " .. acc.n
+                         .. " stray bodies (session total " .. KCD2MP._orphanRemovedN .. ")")
     end
-    return swept
+    return acc.n
 end
 
 -- ===== Start / Stop =====
@@ -5726,6 +6058,9 @@ end
 function KCD2MP_Stop()
     KCD2MP.running = false
     KCD2MP.interpRunning = false
+    -- WO-84: retire the generation whose timer is still in flight, so a
+    -- Start right after this Stop cannot be told it has a leaked chain.
+    if KCD2MP.interpGen then KCD2MP._interpRetired[KCD2MP.interpGen] = true end
     KCD2MP.labelRunning = false
     KCD2MP.labelCache = {}
     KCD2MP_RemoveAllGhosts()
@@ -7853,6 +8188,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")
     System.AddCCommand("mp_fake_death",  'KCD2MP_FakeDeath("%LINE")', "WO-28: report yourself dead for N seconds (default 20) so peers can be observed reacting -- test only")
     System.AddCCommand("mp_reconcile",   "KCD2MP_ReconcileGhosts()", "WO-28: respawn any ghost whose entity was destroyed by a save load")
+    System.AddCCommand("mp_ghost_sweep", 'KCD2MP_SetOrphanSweep("%LINE")', "WO-84: remove kcd2mp_ bodies a savegame restored with no ghost behind them: mp_ghost_sweep on|off|now")
+    System.AddCCommand("mp_ghost_anim_refresh", 'KCD2MP_SetGhostAnimRefresh("%LINE")', "WO-84: seconds a ghost's looped clip plays before a keep-alive restart; 0 = restart every tick (pre-WO-84 rollback)")
 
     -- Dice overlay (WO-6). These console commands are the SUPPORTED path: the
     -- keybinds below them are unverified action-name guesses, exactly as WO-2's
