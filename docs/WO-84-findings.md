@@ -368,6 +368,11 @@ Two things the puppet path's rule does not need, and this one does:
 A one-shot (a swing) clears the loop guard when its window expires, because it
 replaced the clip on layer 0 — without that a ghost would hold its swing pose
 until the next keep-alive. Under the old per-tick restart this could not arise.
+The **vz-driven jump branch** needed the same clear explicitly: it is the one
+one-shot site in the file that sets no `oneShotUntil`, so the expiry path never
+runs for it, and a ghost running both before and after a jump would have
+matched on clip name and skipped the restart. Found by writing the test for it,
+not by reading the code.
 
 Rollback: `mp_ghost_anim_refresh <seconds>`; `0` restores the pre-WO-84
 per-tick restart exactly, so the fix can be A/B'd on one build.

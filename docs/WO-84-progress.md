@@ -88,7 +88,7 @@ Synthetic only. No live game was available this session.
 |---|---|
 | `tools/Test-GhostInterpSynthetic.ps1` (WO-78) | 35 passed, 0 failed |
 | `tools/Test-NpcSmoothSynthetic.ps1` (WO-77) | 48 passed, 0 failed |
-| `tools/Test-WO84Synthetic.ps1` (new) | 67 passed, 0 failed |
+| `tools/Test-WO84Synthetic.ps1` (new) | 72 passed, 0 failed |
 
 The new suite extends the existing MoonSharp harness rather than inventing a
 style: same driver, same stubs, same fake clock, new scenario file. Headline
@@ -98,6 +98,12 @@ numbers it pins:
 - 2 s of 80 Hz pumping: **160 → 1**.
 - The self-stop race reproduced end to end, the orphan absorbed with no leak
   line, no toast, no write and no reschedule.
+- Landing from a jump re-asserts the locomotion loop on the very next tick.
+  Writing that test found a real regression the first cut of the throttle
+  introduced: the vz-driven jump branch is the one one-shot site in the file
+  that sets no `oneShotUntil`, so nothing cleared the loop guard for it, and a
+  ghost running before and after a jump would have held the jump pose until the
+  next keep-alive. Fixed and covered.
 - An unretired stale generation still reports, still toasts, and a second leak
   is still counted behind the latch.
 

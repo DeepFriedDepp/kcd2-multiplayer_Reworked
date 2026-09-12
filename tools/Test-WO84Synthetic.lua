@@ -79,7 +79,13 @@ local function mkEntity(name, x, y, z)
         IsUnconscious = function() return false end,
         GetHealth = function() return 100 end,
     }
-    e.human = { IsWeaponDrawn = function() return false end }
+    e.human = {
+        IsWeaponDrawn = function() return false end,
+        -- The Mannequin fragment path calls this; a real ghost entity has it.
+        PlayAnim = function(self, frag, tag) return true end,
+        DrawWeapon = function() return true end,
+        HolsterWeapon = function() return true end,
+    }
     return e
 end
 
@@ -210,6 +216,38 @@ do
         tostring(#e.anims))
     check("(e) the one-shot window was cleared", ghost.istate.oneShotUntil == nil)
     noErrs("(e)")
+end
+
+-- ===== (e2) the vz-driven jump releases the loop guard too =====
+-- That branch is the one one-shot site in the file that sets NO oneShotUntil,
+-- so the expiry path in (e) never runs for it. A ghost running before and
+-- after the jump would otherwise match on clip name and hold the jump pose.
+do
+    local e, ghost = resetGhost("0", 0, 0, 0)
+    KCD2MP._jumpAnim = "3d_relaxed_jump"
+    ghost.istate.smoothedSpeed = 3.5                    -- running
+    KCD2MP_UpdateAnimation("0", ghost, false)
+    local runClip = e.anims[#e.anims].anim
+    check("(e2) running before the jump", runClip == "3d_relaxed_run_turn_strafe", tostring(runClip))
+    -- Target the vz-driven branch specifically: jumpFragPlayed true is the
+    -- state every airborne tick after the first is already in, and it is the
+    -- only branch that plays a one-shot without setting oneShotUntil.
+    ghost.istate.jumpFragPlayed = true
+    ghost.istate.isAirborne = true
+    NOW = NOW + 0.020
+    KCD2MP_UpdateAnimation("0", ghost, false)
+    check("(e2) the jump clip played", e.anims[#e.anims].anim == "3d_relaxed_jump",
+        tostring(e.anims[#e.anims].anim))
+    check("(e2) the loop guard was released", ghost.istate.animLoopName == nil)
+    ghost.istate.isAirborne = false                     -- landed, still running
+    local before = #e.anims
+    NOW = NOW + 0.020
+    KCD2MP_UpdateAnimation("0", ghost, false)
+    check("(e2) landing re-asserts the run loop on the very next tick, not at the keep-alive",
+        #e.anims == before + 1 and e.anims[#e.anims].anim == "3d_relaxed_run_turn_strafe",
+        tostring(e.anims[#e.anims].anim))
+    KCD2MP._jumpAnim = nil
+    noErrs("(e2)")
 end
 
 -- ===== (f) the rollback lever restores the pre-WO-84 behaviour =====

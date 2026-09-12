@@ -5059,6 +5059,14 @@ function KCD2MP_UpdateAnimation(id, ghost, pumped)
         end
         if KCD2MP._jumpAnim then
             pcall(function() ghost.entity:StartAnimation(0, KCD2MP._jumpAnim, 0, 0.1, 1.0, false) end)
+            -- WO-84: unlike every other one-shot site in this file, this one
+            -- sets no oneShotUntil, so the expiry path above never runs for it
+            -- and cannot clear the loop guard. Clear it here instead: a ghost
+            -- that was running before the jump and is running after would
+            -- otherwise match on clip name, skip the restart, and hold the
+            -- jump pose until the next keep-alive. Under the old per-tick
+            -- restart this could not arise.
+            istate.animLoopName = nil
             if istate.animTag ~= "jump" then
                 mp_log(string.format("Anim: %s %s->jump vz-driven", id, istate.animTag or "?"))
                 istate.animTag = "jump"
