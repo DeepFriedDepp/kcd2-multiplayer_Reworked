@@ -67,6 +67,8 @@
 [CmdletBinding()]
 param(
     [string] $ScriptsPak = '',
+    # Localization\English_xml.pak beside Data\; auto-detected from $ScriptsPak when omitted.
+    [string] $LocalizationPak = '',
     [string] $KdcmpLua = '',
     [string] $CsvOut = '',
     [switch] $NoWrite
@@ -108,6 +110,10 @@ if (-not $ScriptsPak) { $ScriptsPak = Find-ScriptsPak }
 if (-not $ScriptsPak -or -not (Test-Path $ScriptsPak)) { throw "Scripts.pak not found; pass -ScriptsPak" }
 
 $pakHash = (Get-FileHash -Algorithm SHA256 $ScriptsPak).Hash.ToLowerInvariant()
+if (-not $LocalizationPak) {
+    $cand = Join-Path (Split-Path -Parent (Split-Path -Parent $ScriptsPak)) 'Localization\English_xml.pak'
+    if (Test-Path $cand) { $LocalizationPak = $cand }
+}
 Write-Host "=== WO-94 main-quest registry build ===" -ForegroundColor Cyan
 Write-Host "  Scripts.pak : $ScriptsPak"
 Write-Host "  sha256      : $pakHash"
@@ -139,13 +145,46 @@ foreach ($kv in $files.GetEnumerator()) {
     $dir = $kv.Key.Substring(0, $kv.Key.LastIndexOf('/'))
     $level = ($dir -split '/')[-1]          # Quests/Final/Barbora/<level>/<quest>.xml
     if ($level -notin @('trosecko', 'kutnohorsko')) { throw "unexpected level folder '$level' for $($kv.Key)" }
-    $roots += [pscustomobject]@{ Code = $m.Groups[1].Value; Name = $nm.Groups[1].Value; File = $kv.Key; Dir = $dir; Level = $level }
+    # The journal/localisation key the engine writes into questNameOverride
+    # markers ("@qname_semin_u4hm|..."): every M-coded root carries its own
+    # qname_ literal. It is NOT always the lowercased Name -- six of the 32
+    # differ (mucirna -> qname_semin, utokNaMalesov -> qname_utok_na_malesov,
+    # zoufalaObranaZaBohutu -> qname_bitvazabohutu, ...). The marker is matched
+    # on this stem (suffix stripped, lowercased), never on Name.
+    $qk = [regex]::Match($kv.Value, 'qname_[A-Za-z0-9_]+')
+    if (-not $qk.Success) { throw "M-coded root without a qname_ literal: $($kv.Key)" }
+    $qkey = $qk.Value
+    $qstem = ($qkey -replace '^qname_', '')
+    if ($qstem -match '_[A-Za-z0-9]{4}$') { $qstem = $qstem.Substring(0, $qstem.Length - 5) }
+    $qstem = $qstem.Trim('_').ToLowerInvariant()
+    $roots += [pscustomobject]@{ Code = $m.Groups[1].Value; Name = $nm.Groups[1].Value; File = $kv.Key; Dir = $dir; Level = $level; QKey = $qkey; Key = $qstem; Title = '' }
 }
 $roots = @($roots | Sort-Object { [int]($_.Code -replace '[^0-9]', '') }, Code)
 Write-Host ("  main quests : {0} M-coded <Quest> roots" -f $roots.Count)
 if ($roots.Count -ne 32) { throw "expected exactly 32 main quests (M01-M51), found $($roots.Count)" }
 $dlc = @($roots | Where-Object { $_.File -match '(?i)dlc' })
 if ($dlc.Count -gt 0) { throw "a DLC-prefixed file carries an M code: $($dlc.File -join ', ')" }
+$dupKeys = @($roots | Group-Object Key | Where-Object Count -gt 1)
+if ($dupKeys.Count -gt 0) { throw "two main quests share a marker key: $($dupKeys.Name -join ', ')" }
+
+# English titles, so the prompt can say "Via Argentum" instead of kralovskeStribro.
+if ($LocalizationPak -and (Test-Path $LocalizationPak)) {
+    $lz = [System.IO.Compression.ZipFile]::OpenRead($LocalizationPak)
+    try {
+        $le = $lz.Entries | Where-Object { $_.FullName -match 'text_ui_quest\.xml$' } | Select-Object -First 1
+        if ($le) {
+            $sr = New-Object System.IO.StreamReader ($le.Open())
+            try { $lx = $sr.ReadToEnd() } finally { $sr.Dispose() }
+            $titles = @{}
+            foreach ($rm in [regex]::Matches($lx, '<Row>(.*?)</Row>', 'Singleline')) {
+                $cells = @([regex]::Matches($rm.Groups[1].Value, '<Cell>(.*?)</Cell>', 'Singleline') | ForEach-Object { $_.Groups[1].Value })
+                if ($cells.Count -ge 2 -and $cells[0].StartsWith('qname_')) { $titles[$cells[0]] = $cells[$cells.Count - 1] }
+            }
+            foreach ($q in $roots) { if ($titles.ContainsKey($q.QKey)) { $q.Title = [System.Net.WebUtility]::HtmlDecode($titles[$q.QKey]) } }
+            Write-Host ("  titles      : {0} of {1} quests titled from {2}" -f @($roots | Where-Object { $_.Title }).Count, $roots.Count, $LocalizationPak)
+        }
+    } finally { $lz.Dispose() }
+} else { Write-Host "  titles      : English_xml.pak not found; prompt will show internal names" -ForegroundColor Yellow }
 
 # --- parse helpers -------------------------------------------------------------
 function Load-Xml([string]$text) {
@@ -286,7 +325,7 @@ foreach ($q in $roots) {
         $t.Cumulative = ($t.Prereqs.Count -gt 0) -or ($nested -gt 0)
     }
 
-    $questSummaries += [pscustomobject]@{ Code = $q.Code; Name = $q.Name; Level = $q.Level; Files = $sub.Files.Count; Triggers = $qTriggers.Count; Root = $q.File }
+    $questSummaries += [pscustomobject]@{ Code = $q.Code; Name = $q.Name; Level = $q.Level; Files = $sub.Files.Count; Triggers = $qTriggers.Count; Root = $q.File; Key = $q.Key; Title = $q.Title; QKey = $q.QKey }
     foreach ($t in $qTriggers) { [void]$allTriggers.Add($t) }
 }
 
@@ -388,7 +427,7 @@ foreach ($qs in $questSummaries) {
     $qt = @($allTriggers | Where-Object Quest -eq $qs.Name)
     $qp = @($qt | Where-Object { $_.PosKind -ne 'none' }).Count
     $qf = @($fireable | Where-Object Quest -eq $qs.Name).Count
-    Write-Host ("    {0,-4} {1,-26} {2,-11} {3,3} / {4,3} / {5,3}" -f $qs.Code, $qs.Name, $qs.Level, $qt.Count, $qp, $qf)
+    Write-Host ("    {0,-4} {1,-26} {2,-11} {3,3} / {4,3} / {5,3}   key={6}  {7}" -f $qs.Code, $qs.Name, $qs.Level, $qt.Count, $qp, $qf, $qs.Key, $qs.Title)
 }
 
 if ($NoWrite) { Write-Host "`n-NoWrite: nothing written." -ForegroundColor Yellow; exit 0 }
@@ -397,6 +436,8 @@ if ($NoWrite) { Write-Host "`n-NoWrite: nothing written." -ForegroundColor Yello
 $rows = foreach ($t in $allTriggers) {
     [pscustomobject]@{
         code = $t.Code; quest = $t.Quest; level = $t.Level; path = $t.Path; trigger = $t.Trigger
+        markerKey = ($questSummaries | Where-Object Name -eq $t.Quest | Select-Object -First 1).Key
+        title = ($questSummaries | Where-Object Name -eq $t.Quest | Select-Object -First 1).Title
         namespaced = $t.Ns; cumulative = $t.Cumulative; drivesState = $t.DrivesState
         prereqs = $t.Prereqs.Count; ownCmds = $t.Cmds.Count; nestedTriggers = $t.NestedTriggers
         posKind = $t.PosKind; posSrc = $t.PosSrc
@@ -423,12 +464,14 @@ $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('-- AND not one of Warhorse''s own test/debug/gamescom entries')
 [void]$sb.AppendLine('-- (it has Prerequisites or fires other triggers -- a real "set the world up for')
 [void]$sb.AppendLine('-- this point" entry, not a lone setter or a bare teleport). See docs/WO-94-findings.md.')
-[void]$sb.AppendLine('-- Fields: t = trigger name (fire as "<name>.<t>"); x,y,z = fixed point; e = level')
-[void]$sb.AppendLine('-- entity resolved live; src = own|chain (where on the plan the position came from).')
+[void]$sb.AppendLine('-- Fields: key = the questNameOverride marker stem the engine writes (matched')
+[void]$sb.AppendLine('-- case-insensitively; NOT always the lowercased name); title = English journal title;')
+[void]$sb.AppendLine('-- t = trigger name (fire as "<name>.<t>"); x,y,z = fixed point; e = level entity')
+[void]$sb.AppendLine('-- resolved live; src = own|chain (where on the plan the position came from).')
 [void]$sb.AppendLine('KCD2MP_MAINQUESTS = {')
 foreach ($qs in $questSummaries) {
     $qf = @($fireable | Where-Object Quest -eq $qs.Name)
-    [void]$sb.Append(("    {{ code = {0}, name = {1}, level = {2}, triggers = {3}, beats = {{" -f (LuaStr $qs.Code), (LuaStr $qs.Name), (LuaStr $qs.Level), $qs.Triggers))
+    [void]$sb.Append(("    {{ code = {0}, name = {1}, key = {2}, title = {3}, level = {4}, triggers = {5}, beats = {{" -f (LuaStr $qs.Code), (LuaStr $qs.Name), (LuaStr $qs.Key), (LuaStr $qs.Title), (LuaStr $qs.Level), $qs.Triggers))
     if ($qf.Count -eq 0) { [void]$sb.AppendLine(' } },'); continue }
     [void]$sb.AppendLine('')
     foreach ($t in $qf) {

@@ -21,34 +21,34 @@ KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
-KCD2MP.ghostNames = {}          -- id Ã¢â€ â€™ steam name (received via 0x03 Name packet from server)
-KCD2MP.ghostInMenu = {}         -- id Ã¢â€ â€™ true while that player has a menu open (WO-13, set by agent on 0x1D)
+KCD2MP.ghostNames = {}          -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ steam name (received via 0x03 Name packet from server)
+KCD2MP.ghostInMenu = {}         -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ true while that player has a menu open (WO-13, set by agent on 0x1D)
 
 -- ===== Shared player combat (WO-28) =====
--- id Ã¢â€ â€™ {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
+-- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
 -- the agent from a PlayerStateDown (0x20). Rendered, never computed here: a
 -- player's health is authoritative on that player's own machine, and that is
 -- the only rule about it that cannot produce a disagreement which fails to
 -- self-correct (docs/WO-26-shared-combat-design.md s3, Rule 1).
 KCD2MP.ghostHealth = {}
-KCD2MP.ghostDead = {}           -- id Ã¢â€ â€™ true after a PlayerDeathDown (0x24); idempotent
+KCD2MP.ghostDead = {}           -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ true after a PlayerDeathDown (0x24); idempotent
 
--- Flow B damage sensor. id Ã¢â€ â€™ last sampled LOCAL health of that ghost entity in
+-- Flow B damage sensor. id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ last sampled LOCAL health of that ghost entity in
 -- THIS world, and a one-shot skip flag set whenever an inbound authoritative
 -- value is written over it. Only ever populated while KCD2MP.hitSensorOn.
 KCD2MP.ghostHpSeen = {}
 KCD2MP.ghostHpSkip = {}
 
--- Rule 2: only ONE client's NPC simulation may generate NPCÃ¢â€ â€™player hits, or N
+-- Rule 2: only ONE client's NPC simulation may generate NPCÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢player hits, or N
 -- peers produce N independent damage streams for one conceptual fight and the
 -- damage multiplies by N. The relay designates that client and the agent sets
 -- this from a CombatRole (0x25) packet. Off until told otherwise -- a client
 -- that has not been told it holds authority must never assume it does.
 KCD2MP.hitSensorOn = false
-KCD2MP.labelCache = {}          -- id Ã¢â€ â€™ {x,y,z,size,name}  updated by interp, drawn by render loop
+KCD2MP.labelCache = {}          -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
-KCD2MP.horseGhosts = {}         -- id Ã¢â€ â€™ {entity, entityId, isWorldHorse, worldName} horse per player
-KCD2MP.ghostHorseName = {}      -- id Ã¢â€ â€™ authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
+KCD2MP.horseGhosts = {}         -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {entity, entityId, isWorldHorse, worldName} horse per player
+KCD2MP.ghostHorseName = {}      -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
 KCD2MP._mountedHorseName = nil  -- authored name of the horse the LOCAL player is on (riding check, Method 0)
 KCD2MP.horseAdoptEnabled = true -- WO-40 Phase 0: mp_horse_adopt on|off -- field escape hatch for the mount-crash suspect (off = proxy horses only)
 -- WO-40 Phase 9: ghosts are stimulus-deaf BY DEFAULT now. The chain that
@@ -85,7 +85,7 @@ KCD2MP.weaponDrawn = false      -- local player's last polled drawn state
 KCD2MP._weaponPollAt = 0        -- last IsWeaponDrawn poll (throttled to 5 Hz)
 KCD2MP._weaponEmitAt = 0        -- last "combat draw" emission (30s heartbeat while drawn)
 KCD2MP._weaponReadOk = nil      -- nil=not probed, false=IsWeaponDrawn unavailable, true=working
-KCD2MP.ghostWeaponDrawn = {}    -- id Ã¢â€ â€™ true while that peer reports weapon drawn
+KCD2MP.ghostWeaponDrawn = {}    -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ true while that peer reports weapon drawn
 KCD2MP._lastSwingEmit = 0       -- rate limit for swing event emission
 KCD2MP._blockHeld = false       -- edge detector: 'block' only ever fires hold/release
 
@@ -544,7 +544,7 @@ end
 
 -- ===== Outbound Events (WO-2) =====
 -- A second line type on the same log channel, for discrete things the player
--- did rather than continuous state. Accepting an invite has to travel game Ã¢â€ â€™
+-- did rather than continuous state. Accepting an invite has to travel game ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢
 -- agent, and the log tail is the only outbound path (no sockets, no io), so it
 -- rides here instead of resurrecting the sv_servername CVar hack.
 --
@@ -2414,7 +2414,7 @@ KCD2MP._dragScanAt = 0
 -- by packet, expiry on silence -- the drag sensor's mechanism, generalized).
 -- NPCs someone else is already streaming are puppets here and are excluded
 -- by the rescan, so claims only ever target entities nobody is driving.
--- This is the fix for WO-51 Ã‚Â§1.4's radius-gap and engagement-asymmetry rows:
+-- This is the fix for WO-51 Ãƒâ€šÃ‚Â§1.4's radius-gap and engagement-asymmetry rows:
 -- an NPC fighting the non-authority player, previously invisible to sync
 -- because it was far from the host, is now streamed by the machine actually
 -- next to it -- the one simulating it at full fidelity.
@@ -4142,7 +4142,7 @@ function KCD2MP_SetGhostName(id, name)
         KCD2MP_RemoveStaleGhostsForPlayer(name, id)
     end
     if ghost and ghost.entity then
-        -- Ghost already alive when name packet arrives Ã¢â‚¬â€ apply after 300ms
+        -- Ghost already alive when name packet arrives ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â apply after 300ms
         local captId = id
         local captName = name
         Script.SetTimer(300, function()
@@ -4265,7 +4265,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     local pos = {x=x, y=y, z=z}
     local horseName = "kcd2mp_horse_" .. id
 
-    -- Use System.SpawnEntity only (XGenAIModule is async Ã¢â€ â€™ creates orphan second entity)
+    -- Use System.SpawnEntity only (XGenAIModule is async ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ creates orphan second entity)
     local horse = nil
     local ok2, h2 = pcall(System.SpawnEntity, {
         class = "Horse", position = {x=x, y=y, z=z},
@@ -4437,7 +4437,7 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     istate.lastPacketZ = z
 
     -- Log large target jumps; reset velocity on teleport/fast-travel
-    -- Jump detection: XY only Ã¢â‚¬â€ Z changes from terrain must NOT reset velocity
+    -- Jump detection: XY only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Z changes from terrain must NOT reset velocity
     local jumpDist = math.sqrt(ddx*ddx + ddy*ddy)
     if jumpDist > 5.0 then
         istate.vx = 0
@@ -4969,7 +4969,7 @@ local HORSE_ENTITY_WALK_ANIMS = {
     "horse_walk", "horse_trot", "walk", "trot",
 }
 local HORSE_ENTITY_GALLOP_ANIMS = {
-    -- Fastest gaits first Ã¢â‚¬â€ confirmed on KCD2 horse entities:
+    -- Fastest gaits first ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â confirmed on KCD2 horse entities:
     "relaxed_gallop", "relaxed_canter", "relaxed_run",
     -- Other candidates:
     "gallop", "canter", "run",
@@ -5043,7 +5043,7 @@ KCD2MP.combatSwingFragTags = ""
 
 -- WO-43: every prior live attempt on this route (WO-39 empty tags, WO-40
 -- generic tags like "lngsw") used GUESSED fragment/tag data, never a real
--- shipped Mannequin row. docs/WO-42-findings.md Ã‚Â§9.2 extracted real rows
+-- shipped Mannequin row. docs/WO-42-findings.md Ãƒâ€šÃ‚Â§9.2 extracted real rows
 -- straight from Tables.pak; this is one, verbatim, for a human/human sync
 -- attack (not invented -- do not substitute a guessed tag string here):
 --   mp_combat_frag CombatAttackSyncGen l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale
@@ -5907,7 +5907,7 @@ function KCD2MP_InterpTick(arg, gen)
                     -- fell. The horse half is skipped for the same reason.
                 elseif istate.isRiding then
                     -- One-time riding diagnostic when interp tick first sees this ghost riding.
-                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms Ã¢â€ â€™ only even counts seen)
+                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ only even counts seen)
                     if not istate._rideFirstTick then
                         istate._rideFirstTick = true
                         local hd = KCD2MP.horseGhosts[id]
@@ -5927,7 +5927,7 @@ function KCD2MP_InterpTick(arg, gen)
                     end
 
                     -- Engine sync auto-assigns idle rider anim at ForceMount time.
-                    -- For gallop we must set it explicitly Ã¢â‚¬â€ engine does NOT auto-update.
+                    -- For gallop we must set it explicitly ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â engine does NOT auto-update.
                     -- ridingFallback: engine failed to mount, set all anims manually.
                     local isGallop = rendSpeed > 3.0
                     -- WO-84: this ghost is in the saddle, so whatever locomotion
@@ -6000,8 +6000,8 @@ function KCD2MP_InterpTick(arg, gen)
                         horseData.renderR = hr
 
                         -- Play horse entity animation based on speed.
-                        -- relaxed_idle Ã¢â€ â€™ engine sync assigns matching rider idle.
-                        -- relaxed_gallop Ã¢â€ â€™ we explicitly set rider gallop above.
+                        -- relaxed_idle ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ engine sync assigns matching rider idle.
+                        -- relaxed_gallop ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ we explicitly set rider gallop above.
                         local horseAnim
                         if spd > 3.0 then
                             horseAnim = KCD2MP._horseEntityGallopAnim or KCD2MP._horseEntityWalkAnim
@@ -6055,7 +6055,7 @@ function KCD2MP_InterpTick(arg, gen)
                 end
                 -- WO-28 Flow B: sample this ghost's LOCAL health for
                 -- NPC-inflicted damage. No-op unless this client holds
-                -- NPCÃ¢â€ â€™player damage authority.
+                -- NPCÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢player damage authority.
                 sampleGhostHealth(id, ghost)
                 local labelZ = sz + (istate.isRiding and 1.1 or 1.8)
                 local labelSize = 0  -- 0 = hidden (too far)
@@ -6397,7 +6397,7 @@ function KCD2MP_RemoveGhost(id)
     KCD2MP.ghostWeaponDrawn[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
-    -- wrong (false). Re-probe on next riding ghost (free NPC Ã¢â€ â€™ correct results).
+    -- wrong (false). Re-probe on next riding ghost (free NPC ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ correct results).
     KCD2MP._ridingIdleAnim = nil
     KCD2MP._ridingGallopAnim = nil
 end
@@ -7235,7 +7235,7 @@ function KCD2MP_ProbeDialog()
     System.LogAlways("[KCD2-MP] === END ===")
 end
 
--- ===== WO-65 Ã¢â‚¬â€ ghost civic isolation: Phase 0 probe =====
+-- ===== WO-65 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ghost civic isolation: Phase 0 probe =====
 --
 -- WO-34 proved a ghost is a full crime victim (real fines, jail, settlement
 -- rep loss) and the Civilians faction override is inert. KCD2Online's answer
@@ -7358,7 +7358,7 @@ function KCD2MP_ProbeContexts()
     L("=== END CONTEXTS PROBE ===")
 end
 
--- ===== WO-65 Ã¢â‚¬â€ ghost civic isolation (Phase 1) =====
+-- ===== WO-65 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ghost civic isolation (Phase 1) =====
 --
 -- What the live probe settled (2026-08-27, all observed in-game):
 --   - Contexts global is nil; no script-context setter exists under any
@@ -7533,7 +7533,7 @@ KCD2MP.armorPresets = {
     },
 }
 
--- ===== WO-20 Ã¢â‚¬â€ deterministic face roster (guidSharedSoulId) =====
+-- ===== WO-20 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â deterministic face roster (guidSharedSoulId) =====
 --
 -- The appearance lever -- binding a spawned NPC's guidSharedSoulId spawn
 -- property to a real soul's SharedSoulGuid, which makes the engine build a
@@ -8855,7 +8855,7 @@ end
 -- ===== Sneak action handler (shared, installed by both hook paths) =====
 
 -- Toggle-style sneak actions (each press flips state).
--- NOTE: chat_init_with_focus is NOT sneak Ã¢â‚¬â€œ it's the focus/chat key (triggered by Tab/V).
+-- NOTE: chat_init_with_focus is NOT sneak ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ it's the focus/chat key (triggered by Tab/V).
 -- Stance is detected via player:GetStance() polling in KCD2MP_Exchange (reliable fallback).
 local SNEAK_TOGGLE_ACTIONS = {
     sneak_toggle=true, toggle_sneak=true,
@@ -9191,99 +9191,101 @@ local Q = KCD2MP.quest
 -- AND not one of Warhorse's own test/debug/gamescom entries
 -- (it has Prerequisites or fires other triggers -- a real "set the world up for
 -- this point" entry, not a lone setter or a bare teleport). See docs/WO-94-findings.md.
--- Fields: t = trigger name (fire as "<name>.<t>"); x,y,z = fixed point; e = level
--- entity resolved live; src = own|chain (where on the plan the position came from).
+-- Fields: key = the questNameOverride marker stem the engine writes (matched
+-- case-insensitively; NOT always the lowercased name); title = English journal title;
+-- t = trigger name (fire as "<name>.<t>"); x,y,z = fixed point; e = level entity
+-- resolved live; src = own|chain (where on the plan the position came from).
 KCD2MP_MAINQUESTS = {
-    { code = "M01", name = "prepadeni", level = "trosecko", triggers = 22, beats = { } },
-    { code = "M02", name = "zachrana", level = "trosecko", triggers = 32, beats = { } },
-    { code = "M03", name = "socky", level = "trosecko", triggers = 9, beats = {
+    { code = "M01", name = "prepadeni", key = "prepadeni", title = "Easy Riders", level = "trosecko", triggers = 22, beats = { } },
+    { code = "M02", name = "zachrana", key = "zachrana", title = "Fortuna", level = "trosecko", triggers = 32, beats = { } },
+    { code = "M03", name = "socky", key = "socky", title = "Laboratores", level = "trosecko", triggers = 9, beats = {
         { t = "_initAndStart", x = 2342.72, y = 2068.25, z = 112.25, src = "chain" },
     } },
-    { code = "M05", name = "svatba", level = "trosecko", triggers = 25, beats = {
+    { code = "M05", name = "svatba", key = "svatba", title = "Wedding Crashers", level = "trosecko", triggers = 25, beats = {
         { t = "02_init_blacksmith", e = "ttac_blacksmith", src = "own" },
         { t = "03_init_concubine", e = "tvez_concubine", src = "own" },
     } },
-    { code = "M06", name = "naTroskach", level = "trosecko", triggers = 16, beats = { } },
-    { code = "M07", name = "nebakovPruzkum", level = "trosecko", triggers = 24, beats = {
+    { code = "M06", name = "naTroskach", key = "natroskach", title = "For Whom the Bell Tolls", level = "trosecko", triggers = 16, beats = { } },
+    { code = "M07", name = "nebakovPruzkum", key = "nebakovpruzkum", title = "Back in the Saddle", level = "trosecko", triggers = 24, beats = {
         { t = "skipToNebakovPolylog", e = "nebakovPruzkum_tagpoint_cutscene_nebakovArrival_playerHorse", src = "chain" },
         { t = "prepareNebakov", e = "nebakovPruzkum_tagpoint_cutscene_nebakovArrival_playerHorse", src = "own" },
         { t = "skipToNebakov", e = "nebakovPruzkum_tagpoint_cutscene_nebakovArrival_playerHorse", src = "own" },
     } },
-    { code = "M08", name = "mucirna", level = "trosecko", triggers = 34, beats = {
+    { code = "M08", name = "mucirna", key = "semin", title = "Necessary Evil", level = "trosecko", triggers = 34, beats = {
         { t = "InstantTourToSemin", x = 2441.97, y = 2641.28, z = 203.36, src = "chain" },
     } },
-    { code = "M09", name = "utokNaNebakov", level = "trosecko", triggers = 43, beats = {
+    { code = "M09", name = "utokNaNebakov", key = "utoknanebakov", title = "For Victory!", level = "trosecko", triggers = 43, beats = {
         { t = "startQuest_preparedForDialog", x = 2418.77, y = 2611.34, z = 219.15, src = "own" },
     } },
-    { code = "M10", name = "bohutovaVlozka", level = "trosecko", triggers = 30, beats = {
+    { code = "M10", name = "bohutovaVlozka", key = "bohutovavlozka", title = "Divine Messenger", level = "trosecko", triggers = 30, beats = {
         { t = "01_initAndStart", e = "bohutovaVlozka_lastQuestStartingSpot", src = "chain" },
     } },
-    { code = "M11", name = "nebakovObrana", level = "trosecko", triggers = 51, beats = {
+    { code = "M11", name = "nebakovObrana", key = "nebakovobrana", title = "The Finger of God", level = "trosecko", triggers = 51, beats = {
         { t = "97_nebakovObrana_start", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
         { t = "98_nebakovObrana_bitva", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
         { t = "99_nebakovObrana_bitva_withFriends", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
         { t = "99z_nebakovObrana_bitva_withFriends_fast", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
     } },
-    { code = "M12", name = "vezniNaTroskach", level = "trosecko", triggers = 33, beats = {
+    { code = "M12", name = "vezniNaTroskach", key = "vezninatroskach", title = "Storm", level = "trosecko", triggers = 33, beats = {
         { t = "01_initAndStart", x = 1940.78, y = 1126.36, z = 54.04, src = "chain" },
     } },
-    { code = "M30", name = "posledniPomazani", level = "kutnohorsko", triggers = 3, beats = { } },
-    { code = "M31", name = "prijezdNaSuchdol", level = "kutnohorsko", triggers = 10, beats = {
+    { code = "M30", name = "posledniPomazani", key = "poslednipomazani", title = "Last Rites", level = "kutnohorsko", triggers = 3, beats = { } },
+    { code = "M31", name = "prijezdNaSuchdol", key = "prijezdnasuchdol", title = "The Sword and the Quill", level = "kutnohorsko", triggers = 10, beats = {
         { t = "01_initAndStart", e = "prijezdNaSuchdol_startFirstChat", src = "chain" },
     } },
-    { code = "M32", name = "sedmStatecnych", level = "kutnohorsko", triggers = 18, beats = {
+    { code = "M32", name = "sedmStatecnych", key = "sedmstatecnych", title = "Speak of the Devil", level = "kutnohorsko", triggers = 18, beats = {
         { t = "01_initAndStart", e = "sedmStatecnych_playerStartQuest", src = "own" },
     } },
-    { code = "M33", name = "hledaniLichtenstejna", level = "kutnohorsko", triggers = 36, beats = {
+    { code = "M33", name = "hledaniLichtenstejna", key = "hledanilichtenstejna", title = "Into the Underworld", level = "kutnohorsko", triggers = 36, beats = {
         { t = "initAndStart", x = 3165.71, y = 653.04, z = 53.63, src = "chain" },
     } },
-    { code = "M34", name = "kralovskeStribro", level = "kutnohorsko", triggers = 19, beats = {
+    { code = "M34", name = "kralovskeStribro", key = "kralovskestribro", title = "Via Argentum", level = "kutnohorsko", triggers = 19, beats = {
         { t = "01_initAndStart", x = 3228.60, y = 852.93, z = 51.55, src = "own" },
         { t = "02_startMines", x = 2913.14, y = 2226.35, z = 118.37, src = "own" },
         { t = "03_gatheredNumbers", x = 2943.04, y = 2259.88, z = 115.10, src = "own" },
         { t = "04_goToSmelter", x = 2931.86, y = 2239.91, z = 115.27, src = "own" },
         { t = "05_goToSecretMint", x = 3555.39, y = 1797.44, z = 107.00, src = "own" },
     } },
-    { code = "M35", name = "zachranaPtacka", level = "kutnohorsko", triggers = 21, beats = {
+    { code = "M35", name = "zachranaPtacka", key = "zachranaptacka", title = "Taking French Leave", level = "kutnohorsko", triggers = 21, beats = {
         { t = "01_initAndStart", e = "zachranaPtacka_guardWaitingSpotArea", src = "chain" },
         { t = "03_afterDialogueWithRoza", e = "kmal_hastal", src = "own" },
     } },
-    { code = "M37a", name = "setkaniVRatbori1", level = "kutnohorsko", triggers = 53, beats = {
+    { code = "M37a", name = "setkaniVRatbori1", key = "setkanivratbori1", title = "The King's Gambit", level = "kutnohorsko", triggers = 53, beats = {
         { t = "02_initAndStart_cutscene", e = "setkaniVRatbori1_start_cutscene", src = "chain" },
         { t = "04_setTimeTo21", e = "setkaniVRatbori1_test_playerTeleport", src = "own" },
         { t = "36_jumpToZikmundAulitzGameplay", e = "setkaniVRatbori1_councillorsLeaving_playerPoint", src = "own" },
     } },
-    { code = "M37b", name = "setkaniVRatbori2", level = "kutnohorsko", triggers = 16, beats = {
+    { code = "M37b", name = "setkaniVRatbori2", key = "setkanivratbori2", title = "The Feast", level = "kutnohorsko", triggers = 16, beats = {
         { t = "01_init", x = 1423.10, y = 3820.92, z = 126.57, src = "chain" },
     } },
-    { code = "M38", name = "sedmStatecnych2", level = "kutnohorsko", triggers = 48, beats = {
+    { code = "M38", name = "sedmStatecnych2", key = "sedmstatecnych2", title = "The Devil's Pack", level = "kutnohorsko", triggers = 48, beats = {
         { t = "01_initAndStart", e = "kcer_kubenka", src = "own" },
     } },
-    { code = "M42", name = "pogrom", level = "kutnohorsko", triggers = 40, beats = {
+    { code = "M42", name = "pogrom", key = "pogrom", title = "Exodus", level = "kutnohorsko", triggers = 40, beats = {
         { t = "_init_noDialogue", e = "pogrom_startPointPlayer", src = "chain" },
         { t = "_initAndStart", e = "pogrom_startPointPlayer", src = "chain" },
     } },
-    { code = "M44a", name = "zikmunduvTabor", level = "kutnohorsko", triggers = 50, beats = { } },
-    { code = "M44b", name = "utokNaMalesov", level = "kutnohorsko", triggers = 36, beats = {
+    { code = "M44a", name = "zikmunduvTabor", key = "zikmunduvtabor", title = "The Lion's Den", level = "kutnohorsko", triggers = 50, beats = { } },
+    { code = "M44b", name = "utokNaMalesov", key = "utok_na_malesov", title = "Dancing with the Devil", level = "kutnohorsko", triggers = 36, beats = {
         { t = "init", e = "utokNaMalesov_playerInitialCertovkaPosition", src = "chain" },
     } },
-    { code = "M45", name = "papezskyLegat", level = "kutnohorsko", triggers = 27, beats = {
+    { code = "M45", name = "papezskyLegat", key = "papezskylegat", title = "Oratores", level = "kutnohorsko", triggers = 27, beats = {
         { t = "_initAndStart", x = 800.31, y = 3334.47, z = 142.61, src = "chain" },
         { t = "skipToChase", x = 3439.31, y = 992.24, z = 51.44, src = "own" },
     } },
-    { code = "M46", name = "prepadeniVlasskehoDvora", level = "kutnohorsko", triggers = 39, beats = { } },
-    { code = "M47", name = "erik", level = "kutnohorsko", triggers = 15, beats = {
+    { code = "M46", name = "prepadeniVlasskehoDvora", key = "prepadenivlasskehod", title = "The Italian Job", level = "kutnohorsko", triggers = 39, beats = { } },
+    { code = "M47", name = "erik", key = "erik", title = "Civitas Pragensis", level = "kutnohorsko", triggers = 15, beats = {
         { t = "00_erik_init", e = "erik_nocNaHradbach_player", src = "chain" },
         { t = "01_erik_startAndInit", e = "erik_nocNaHradbach_player", src = "chain" },
     } },
-    { code = "M48a", name = "oblehaniSuchdole", level = "kutnohorsko", triggers = 54, beats = {
+    { code = "M48a", name = "oblehaniSuchdole", key = "oblehanisuchdole", title = "So it begins…", level = "kutnohorsko", triggers = 54, beats = {
         { t = "000_oblehaniStart", e = "oblehaniSuchdole_zizkaVezeZasobyAJeNapaden_player", src = "chain" },
     } },
-    { code = "M48b", name = "rutinaAVypad", level = "kutnohorsko", triggers = 66, beats = { } },
-    { code = "M48c", name = "hladAZmar", level = "kutnohorsko", triggers = 29, beats = { } },
-    { code = "M49", name = "stealthMiseZaJindru", level = "kutnohorsko", triggers = 8, beats = { } },
-    { code = "M50", name = "zoufalaObranaZaBohutu", level = "kutnohorsko", triggers = 41, beats = { } },
-    { code = "M51", name = "finale", level = "kutnohorsko", triggers = 66, beats = {
+    { code = "M48b", name = "rutinaAVypad", key = "m48b__rutina_a_vypad", title = "Besieged", level = "kutnohorsko", triggers = 66, beats = { } },
+    { code = "M48c", name = "hladAZmar", key = "m48c__hlad_a_zmar", title = "Hunger and Despair", level = "kutnohorsko", triggers = 29, beats = { } },
+    { code = "M49", name = "stealthMiseZaJindru", key = "stealthmisezajindru", title = "Reckoning", level = "kutnohorsko", triggers = 8, beats = { } },
+    { code = "M50", name = "zoufalaObranaZaBohutu", key = "bitvazabohutu", title = "Last Rites", level = "kutnohorsko", triggers = 41, beats = { } },
+    { code = "M51", name = "finale", key = "finale", title = "Judgement Day", level = "kutnohorsko", triggers = 66, beats = {
         { t = "01_initAndStart_Mikes_Kozlik_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
         { t = "02_initAndStart_Wolfram_Kozlik_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
         { t = "03_initAndStart_Mikes_Dobros_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
@@ -9304,9 +9306,12 @@ KCD2MP_MAINQUESTS = {
 }
 -- @@WO94-MAINQUEST-REGISTRY-END@@
 
--- Lookups over the generated table, built once on first use. Quest names are
--- matched case-insensitively because the engine's @qname_ marker lowercases
--- them ("@qname_poslednipomazani_1DR8" for posledniPomazani, field log).
+-- Lookups over the generated table, built once on first use. The agent hands
+-- us the quest token of the engine's @qname_ marker (suffix stripped,
+-- lowercased) and it is matched against each quest's generated `key`, which
+-- is the qname literal found in that quest's own XML root -- NOT the XML
+-- name: six of the 32 differ (M08 mucirna is "@qname_semin" = Necessary
+-- Evil; M44b utokNaMalesov is "utok_na_malesov"; M50 is "bitvazabohutu").
 -- Beat paths are matched exactly: both ends run the same generated table.
 KCD2MP._questIndex = nil
 local function questIndex()
@@ -9314,7 +9319,7 @@ local function questIndex()
     local byLower, byPath, nQuests, nBeats = {}, {}, 0, 0
     for _, q in ipairs(KCD2MP_MAINQUESTS or {}) do
         nQuests = nQuests + 1
-        byLower[string.lower(q.name)] = q
+        byLower[string.lower(q.key or q.name)] = q
         for _, b in ipairs(q.beats or {}) do
             byPath[q.name .. "." .. b.t] = { quest = q, beat = b }
             nBeats = nBeats + 1
@@ -9354,7 +9359,7 @@ function KCD2MP_QuestSetCurrent(questLower)
         Q.current = s
         mp_log(string.format("QUEST current main quest: %s%s", tostring(s),
             (s and not q) and " (NOT in the main-quest registry -- side content, no detection)"
-            or (q and string.format(" (%s, %d fireable beats)", q.code, #(q.beats or {})) or "")))
+            or (q and string.format(" (%s %s, %d fireable beats)", q.code, tostring(q.title or q.name), #(q.beats or {})) or "")))
     end
 end
 
@@ -9442,8 +9447,10 @@ function KCD2MP_QuestShowPrompt(ghostId, who, beat, diverged)
         mp_log("QUEST-PROMPT not shown for " .. beat .. ": a catch-up is already in progress here")
         return false
     end
+    local hit = questIndex().byPath[beat]
     Q.prompt = { ghostId = tostring(ghostId), who = tostring(who or ("player " .. tostring(ghostId))),
-                 beat = beat, shownAt = os.clock() }
+                 beat = beat, title = (hit and hit.quest.title ~= "" and hit.quest.title) or (hit and hit.quest.name) or beat,
+                 shownAt = os.clock() }
     mp_log(string.format("QUEST-PROMPT shown: %s is nearing %s -- F11 catch up / F12 stay (no timeout)", Q.prompt.who, beat))
     return true
 end
@@ -9502,7 +9509,8 @@ function KCD2MP_QuestFire(beat, who)
     -- (WO-43's lesson) -- whether the trigger fired is in the engine's own
     -- log lines, which is why the fire is logged before and after.
     mp_log(string.format("QUEST-CATCHUP ExecuteCommand returned %s%s", tostring(ok), ok and "" or (": " .. tostring(err))))
-    KCD2MP_ShowNativeToast("Catching up to " .. who .. "'s story...")
+    local hit = questIndex().byPath[beat]
+    KCD2MP_ShowNativeToast("Catching up to " .. who .. "'s story: " .. tostring((hit and hit.quest.title ~= "" and hit.quest.title) or beat))
     return ok
 end
 
@@ -9642,7 +9650,7 @@ end
 function KCD2MP_QuestDrawUI()
     local p = Q.prompt
     if p then
-        System.DrawText(10, 160, p.who .. " is nearing a story beat: " .. p.beat, 2)
+        System.DrawText(10, 160, p.who .. " is nearing a story beat in \"" .. tostring(p.title) .. "\"  (" .. p.beat .. ")", 2)
         System.DrawText(10, 184, "F11 catch up (advance my story)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
     end
     local w, where = KCD2MP_QuestWindow()

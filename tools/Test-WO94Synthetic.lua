@@ -197,20 +197,31 @@ do
     check("(a) M01 and M51 bracket the registry", codes["M01"] and codes["M51"])
     check("(a) no DLC-named quest in the registry", not anyDlc)
     check("(a) every registered beat validates and is positioned", allValid and beats > 0, tostring(beats) .. " beats")
-    check("(a) a real side quest's path is refused (semin.init)", not KCD2MP_QuestIsRegistryBeat("semin.init"))
+    check("(a) a real side quest's path is refused (korenarkaZachrana.init)", not KCD2MP_QuestIsRegistryBeat("korenarkaZachrana.init"))
     check("(a) a tutorial quest's path is refused", not KCD2MP_QuestIsRegistryBeat("combat_tutorial_pro.start"))
     check("(a) a DLC quest's path is refused", not KCD2MP_QuestIsRegistryBeat("dlc2_selling__days_outside_kh_counter.init"))
     check("(a) a main quest with an unregistered trigger is refused", not KCD2MP_QuestIsRegistryBeat("prepadeni.01_init"))
     check("(a) a Lua-injection-shaped string is refused", not KCD2MP_QuestIsRegistryBeat('socky._initAndStart") os.exit() --'))
     check("(a) the empty string and a non-string are refused", not KCD2MP_QuestIsRegistryBeat("") and not KCD2MP_QuestIsRegistryBeat(nil))
     local mark = #LOG
-    KCD2MP_QuestSetCurrent("semin")
+    KCD2MP_QuestSetCurrent("korenarkazachrana")
     check("(a) naming a side quest as current logs it is outside the registry",
         countLog("NOT in the main-quest registry", mark) == 1, lastLog("QUEST current", mark))
     mark = #LOG
     KCD2MP_QuestSetCurrent("kralovskestribro")
     check("(a) naming a main quest (lowercased, as the engine marker does) resolves to its code",
         (lastLog("QUEST current", mark) or ""):find("M34", 1, true) ~= nil, lastLog("QUEST current", mark))
+    mark = #LOG
+    KCD2MP_QuestSetCurrent("semin")                        -- the engine's marker for M08 mucirna (Necessary Evil)
+    check("(a) a marker key that differs from the XML name still resolves (semin -> M08 mucirna)",
+        (lastLog("QUEST current", mark) or ""):find("M08", 1, true) ~= nil, lastLog("QUEST current", mark))
+    mark = #LOG
+    KCD2MP_QuestSetCurrent("bitvazabohutu")               -- M50 zoufalaObranaZaBohutu
+    check("(a) ...and so does bitvazabohutu -> M50", (lastLog("QUEST current", mark) or ""):find("M50", 1, true) ~= nil)
+    mark = #LOG
+    KCD2MP_QuestSetCurrent("mucirna")
+    check("(a) the XML name itself is NOT a marker key when the engine uses another",
+        (lastLog("QUEST current", mark) or ""):find("NOT in the main-quest registry", 1, true) ~= nil)
     noErrs("(a)")
 end
 
@@ -222,7 +233,7 @@ do
     KCD2MP_QuestSetLevel("kutnohorsko")
     PPOS.x, PPOS.y, PPOS.z = 2913.14, 2226.35, 118.37     -- exactly on kralovskeStribro.02_startMines
     local mark = #LOG
-    KCD2MP_QuestSetCurrent("semin")                        -- a side quest
+    KCD2MP_QuestSetCurrent("korenarkazachrana")            -- a side quest (field log 2026-08-25)
     for _ = 1, 3 do second() end
     check("(b) on a side quest, standing on a main-quest beat emits nothing", countEvt("quest_approach", "", mark) == 0)
     KCD2MP_QuestSetCurrent("")                             -- no quest known
@@ -313,14 +324,14 @@ do
     resetQuest()
     local mark = #LOG
     check("(d) a non-registry beat is refused before anything is shown",
-        KCD2MP_QuestShowPrompt("2", "Alice", "semin.init", 1) == false and Q.prompt == nil and countLog("QUEST-PROMPT refused", mark) == 1)
+        KCD2MP_QuestShowPrompt("2", "Alice", "korenarkaZachrana.init", 1) == false and Q.prompt == nil and countLog("QUEST-PROMPT refused", mark) == 1)
     check("(d) a registry beat with objectives not known to differ is not shown",
         KCD2MP_QuestShowPrompt("2", "Alice", "kralovskeStribro.02_startMines", 0) == false and Q.prompt == nil)
     check("(d) a registry beat with differing objectives is shown",
         KCD2MP_QuestShowPrompt("2", "Alice", "kralovskeStribro.02_startMines", 1) == true and Q.prompt ~= nil)
     DRAWS = {}
     KCD2MP_DrawInteractionUI()
-    local d1 = drawn("Alice is nearing a story beat: kralovskeStribro.02_startMines")
+    local d1 = drawn("Alice is nearing a story beat in \"Via Argentum\"  (kralovskeStribro.02_startMines)")
     local d2 = drawn("F11 catch up")
     check("(d) the prompt is drawn by the interaction UI (label loop)", d1 ~= nil and d2 ~= nil)
     check("(d) ...as plain DrawText rows below the ping/invite rows", d1 and d1.y == 160 and d2 and d2.y == 184, d1 and d1.y)
@@ -412,7 +423,7 @@ do
 
     -- mp_quest_fire refuses non-registry beats even from the console.
     resetQuest(); CMDS = {}
-    check("(e) mp_quest_fire refuses a non-registry beat", KCD2MP_QuestFire("semin.init", "console") == false and #CMDS == 0)
+    check("(e) mp_quest_fire refuses a non-registry beat", KCD2MP_QuestFire("korenarkaZachrana.init", "console") == false and #CMDS == 0)
     check("(e) mp_quest_fire fires a registry beat", KCD2MP_QuestFire("socky._initAndStart", "console") == true and CMDS[1] == "wh_concept_HasteTrigger socky._initAndStart")
     check("(e) mp_quest_test_prompt with no argument prompts the first registered beat",
         (function() resetQuest(); return KCD2MP_QuestTestPrompt("") end)() == true and Q.prompt ~= nil and Q.prompt.who == "TestPeer")
