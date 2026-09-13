@@ -629,6 +629,12 @@ namespace KcdMp.Wire;
 /// C→S  0x37  StoryBeatUp:   [kind:1][len:1][text utf8]                  (var)
 /// S→C  0x38  StoryBeatDown: [sourceGhostId:1][kind:1][len:1][text utf8] (var)
 ///
+/// kind 1 = quest objective key (WO-90). WO-94 adds, on the SAME two bytes,
+/// kind 2 = "approaching main-quest beat <quest>.<trigger>", kind 3 =
+/// "catch-up fired for <beat>" and kind 4 = "catch-up window closed for
+/// <beat>". The relay copies the body verbatim whatever the kind; a WO-90
+/// receiver checks kind == 1 and drops the rest, so no version bump.
+///
 /// The first quest-state anything this project has carried. Before WO-90 the
 /// mod synchronized position, animation, vitals, combat, NPCs, appearance,
 /// horses, weather, world time, dropped items, dice and voice -- and nothing
@@ -917,6 +923,25 @@ public static class Protocol
     /// consumer would be a wire commitment made on speculation.
     /// </summary>
     public const byte StoryBeatKindObjective = 1;
+
+    /// <summary>
+    /// WO-94 Shared Quests: the sender's mod saw its player inside the
+    /// proximity radius of a registered main-quest beat. Text is the Haste
+    /// path "<quest>.<trigger>" (letters, digits, '_' and '.' only -- see
+    /// StoryBeat.IsValidBeatPath). The receiver may raise a readiness prompt.
+    /// </summary>
+    public const byte StoryBeatKindApproach = 2;
+
+    /// <summary>
+    /// WO-94: the sender fired wh_concept_HasteTrigger for this beat. Peers
+    /// open a hazard-logging window so deaths, teleports, clock changes and
+    /// chain suspensions on THEIR machine during the replay are logged as
+    /// candidate consequences of it.
+    /// </summary>
+    public const byte StoryBeatKindCatchupBegin = 3;
+
+    /// <summary>WO-94: the sender's catch-up hazard window closed.</summary>
+    public const byte StoryBeatKindCatchupEnd = 4;
 
     public static bool IsNeverSyncedNpcName(string npcName) =>
         npcName.StartsWith(NpcReservedNamePrefix, StringComparison.OrdinalIgnoreCase)

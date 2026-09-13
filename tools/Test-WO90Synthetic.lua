@@ -393,7 +393,7 @@ do
         tostring(#e.writes - writesAtRelease) .. " writes after release")
 
     -- ...and must lapse.
-    NOW = NOW + 61.0
+    NOW = NOW + 181.0   -- WO-94: the stand-off is 180 s now (was 60)
     KCD2MP_ApplyNpcState("tkop_ptacek", 0, 0, 0, 0, 100, 0)
     check("(f) after the cooldown the stream is accepted again", KCD2MP.npcPuppets["tkop_ptacek"] ~= nil)
     check("(f) ...and says so once", countLog("stand-off over, accepting the stream again", logMark) == 1)

@@ -21,34 +21,34 @@ KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
-KCD2MP.ghostNames = {}          -- id → steam name (received via 0x03 Name packet from server)
-KCD2MP.ghostInMenu = {}         -- id → true while that player has a menu open (WO-13, set by agent on 0x1D)
+KCD2MP.ghostNames = {}          -- id Ã¢â€ â€™ steam name (received via 0x03 Name packet from server)
+KCD2MP.ghostInMenu = {}         -- id Ã¢â€ â€™ true while that player has a menu open (WO-13, set by agent on 0x1D)
 
 -- ===== Shared player combat (WO-28) =====
--- id → {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
+-- id Ã¢â€ â€™ {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
 -- the agent from a PlayerStateDown (0x20). Rendered, never computed here: a
 -- player's health is authoritative on that player's own machine, and that is
 -- the only rule about it that cannot produce a disagreement which fails to
 -- self-correct (docs/WO-26-shared-combat-design.md s3, Rule 1).
 KCD2MP.ghostHealth = {}
-KCD2MP.ghostDead = {}           -- id → true after a PlayerDeathDown (0x24); idempotent
+KCD2MP.ghostDead = {}           -- id Ã¢â€ â€™ true after a PlayerDeathDown (0x24); idempotent
 
--- Flow B damage sensor. id → last sampled LOCAL health of that ghost entity in
+-- Flow B damage sensor. id Ã¢â€ â€™ last sampled LOCAL health of that ghost entity in
 -- THIS world, and a one-shot skip flag set whenever an inbound authoritative
 -- value is written over it. Only ever populated while KCD2MP.hitSensorOn.
 KCD2MP.ghostHpSeen = {}
 KCD2MP.ghostHpSkip = {}
 
--- Rule 2: only ONE client's NPC simulation may generate NPC→player hits, or N
+-- Rule 2: only ONE client's NPC simulation may generate NPCÃ¢â€ â€™player hits, or N
 -- peers produce N independent damage streams for one conceptual fight and the
 -- damage multiplies by N. The relay designates that client and the agent sets
 -- this from a CombatRole (0x25) packet. Off until told otherwise -- a client
 -- that has not been told it holds authority must never assume it does.
 KCD2MP.hitSensorOn = false
-KCD2MP.labelCache = {}          -- id → {x,y,z,size,name}  updated by interp, drawn by render loop
+KCD2MP.labelCache = {}          -- id Ã¢â€ â€™ {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
-KCD2MP.horseGhosts = {}         -- id → {entity, entityId, isWorldHorse, worldName} horse per player
-KCD2MP.ghostHorseName = {}      -- id → authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
+KCD2MP.horseGhosts = {}         -- id Ã¢â€ â€™ {entity, entityId, isWorldHorse, worldName} horse per player
+KCD2MP.ghostHorseName = {}      -- id Ã¢â€ â€™ authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
 KCD2MP._mountedHorseName = nil  -- authored name of the horse the LOCAL player is on (riding check, Method 0)
 KCD2MP.horseAdoptEnabled = true -- WO-40 Phase 0: mp_horse_adopt on|off -- field escape hatch for the mount-crash suspect (off = proxy horses only)
 -- WO-40 Phase 9: ghosts are stimulus-deaf BY DEFAULT now. The chain that
@@ -85,7 +85,7 @@ KCD2MP.weaponDrawn = false      -- local player's last polled drawn state
 KCD2MP._weaponPollAt = 0        -- last IsWeaponDrawn poll (throttled to 5 Hz)
 KCD2MP._weaponEmitAt = 0        -- last "combat draw" emission (30s heartbeat while drawn)
 KCD2MP._weaponReadOk = nil      -- nil=not probed, false=IsWeaponDrawn unavailable, true=working
-KCD2MP.ghostWeaponDrawn = {}    -- id → true while that peer reports weapon drawn
+KCD2MP.ghostWeaponDrawn = {}    -- id Ã¢â€ â€™ true while that peer reports weapon drawn
 KCD2MP._lastSwingEmit = 0       -- rate limit for swing event emission
 KCD2MP._blockHeld = false       -- edge detector: 'block' only ever fires hold/release
 
@@ -291,6 +291,11 @@ function KCD2MP_EmitState()
     if KCD2MP.playerSneaking then flags = flags + 2 end
     if dead                 then flags = flags + 4 end
     if unconscious          then flags = flags + 8 end
+    -- WO-94: our own death, edge-detected, inside a catch-up window.
+    if dead and not KCD2MP._questDeadEdge and KCD2MP_QuestHazard then
+        KCD2MP_QuestHazard("player-death", "the local player is reported dead")
+    end
+    KCD2MP._questDeadEdge = dead
 
     KCD2MP.emitSeq = KCD2MP.emitSeq + 1
     System.LogAlways(string.format("[KCD2-MP-DATA] %s %d %.3f %.3f %.3f %.3f %.4f %d %.2f %.2f",
@@ -370,6 +375,7 @@ local function chainMayStart(key, flagField, stampField, restart)
                 mp_log(string.format(
                     "CHAIN %s was suspended, not dead (stamp %.1fs stale when asked; resumed before the probe) -- restart skipped (#%d)",
                     key, mine.staleFor, KCD2MP._chainSuspendedN))
+                if KCD2MP_QuestHazard then KCD2MP_QuestHazard("chain-suspend", string.format("%s chain was suspended (stamp %.1fs stale) -- menu, dialog or cutscene", key, mine.staleFor)) end
                 return
             end
             mine.deadConfirmed = true
@@ -509,6 +515,7 @@ function KCD2MP_EmitTick()
     end
     pcall(KCD2MP_PollWeaponDrawn)   -- WO-39: throttled internally to 5 Hz
     pcall(KCD2MP_PollBedNear)       -- WO-39 Phase 8: throttled internally to 1 Hz
+    if KCD2MP_QuestProximityTick then pcall(KCD2MP_QuestProximityTick) end  -- WO-94: throttled internally to 1 Hz
 end
 
 -- intervalMs is optional; the agent passes its configured rate.
@@ -537,7 +544,7 @@ end
 
 -- ===== Outbound Events (WO-2) =====
 -- A second line type on the same log channel, for discrete things the player
--- did rather than continuous state. Accepting an invite has to travel game →
+-- did rather than continuous state. Accepting an invite has to travel game Ã¢â€ â€™
 -- agent, and the log tail is the only outbound path (no sockets, no io), so it
 -- rides here instead of resurrecting the sv_servername CVar hack.
 --
@@ -695,6 +702,7 @@ function KCD2MP_ApplyTimeSkip(who, kind, target, quiet)
         local ok2, err = pcall(function() Calendar.SetWorldTime(target) end)
         mp_log(string.format("ApplyTimeSkip: %d -> %d (%s)", cur, target,
             ok2 and "written" or ("FAILED " .. tostring(err))))
+        if KCD2MP_QuestHazard then KCD2MP_QuestHazard("clock", string.format("world clock written %d -> %d (+%ds) from %s", cur, target, target - cur, tostring(who))) end
         -- WO-59: a quiet apply that moves the clock more than an hour is a
         -- session-convergence jump (connect-time sync across a multi-day
         -- save gap), and silently changing the sky under the player without
@@ -852,6 +860,9 @@ function KCD2MP_DrawInteractionUI()
     if KCD2MP.diceTurn then
         System.DrawText(10, 134, KCD2MP.diceTurn.text, 1.6)
     end
+
+    -- WO-94: the readiness prompt and the catch-up window, rows 160/184/208.
+    if KCD2MP_QuestDrawUI then pcall(KCD2MP_QuestDrawUI) end
 end
 
 -- ============================================================================
@@ -2255,6 +2266,11 @@ local function mp_npc_death_observe(name, dead, hp, src)
         return false
     end
     if dead and not was then
+        -- WO-94: inside a catch-up window this transition is a candidate
+        -- consequence of the replay (WO-92 s6.4 hazard 2) -- one extra line.
+        if KCD2MP_QuestHazard then
+            KCD2MP_QuestHazard("npc-death", string.format("%s died here (by %s, hp=%s)", name, src, tostring(hp)))
+        end
         local remote = KCD2MP._npcDeathRemote[name]
         local announced = KCD2MP._npcDeathAnnounced[name]
         if remote then
@@ -2290,6 +2306,7 @@ end
 -- announce it back, and flag the puppet entry dead so the puppet tick stops
 -- writing it on this very tick rather than after the stream catches up.
 function KCD2MP_NpcRemoteDeath(name, via)
+    if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-death-remote", tostring(name) .. " killed by a peer's packet via " .. tostring(via)) end
     local e = System.GetEntityByName(name)
     local dead, hp = nil, -1
     if e and e.actor then
@@ -2343,7 +2360,7 @@ KCD2MP.npcDiverge          = true
 local MP_NPC_DIVERGE_M          = 8.0    -- metres in one tick that cannot be footwork
 local MP_NPC_DIVERGE_HITS       = 3      -- far readings needed inside the window
 local MP_NPC_DIVERGE_WINDOW_S   = 30.0   -- sliding window
-local MP_NPC_DIVERGE_COOLDOWN_S = 60.0   -- how long the name refuses to re-puppet
+local MP_NPC_DIVERGE_COOLDOWN_S = 180.0  -- how long the name refuses to re-puppet (WO-90 shipped 60; WO-94 raised to 3 min at the maintainer's direction)
 KCD2MP._npcDivergeUntil    = {}          -- name -> os.clock() the stand-off ends
 KCD2MP._npcDivergeN        = 0
 
@@ -2397,7 +2414,7 @@ KCD2MP._dragScanAt = 0
 -- by packet, expiry on silence -- the drag sensor's mechanism, generalized).
 -- NPCs someone else is already streaming are puppets here and are excluded
 -- by the rescan, so claims only ever target entities nobody is driving.
--- This is the fix for WO-51 §1.4's radius-gap and engagement-asymmetry rows:
+-- This is the fix for WO-51 Ã‚Â§1.4's radius-gap and engagement-asymmetry rows:
 -- an NPC fighting the non-authority player, previously invisible to sync
 -- because it was far from the host, is now streamed by the machine actually
 -- next to it -- the one simulating it at full fidelity.
@@ -3338,6 +3355,8 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                     .. " (WO-90; `mp_npc_diverge off` to restore the pre-WO-90 tug-of-war)",
                                     name, math.sqrt(fx*fx + fy*fy), #keep, MP_NPC_DIVERGE_WINDOW_S,
                                     MP_NPC_DIVERGE_COOLDOWN_S))
+                                -- WO-94: a release inside a catch-up window is the "dragged NPC state" hazard (WO-92 s6.4 hazard 3).
+                                if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-dragged", string.format("%s released by the divergence rule (%.1fm from our write)", name, math.sqrt(fx*fx + fy*fy))) end
                                 KCD2MP.npcPuppets[name] = nil
                                 KCD2MP._npcDivergeUntil[name] = now + MP_NPC_DIVERGE_COOLDOWN_S
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
@@ -4123,7 +4142,7 @@ function KCD2MP_SetGhostName(id, name)
         KCD2MP_RemoveStaleGhostsForPlayer(name, id)
     end
     if ghost and ghost.entity then
-        -- Ghost already alive when name packet arrives — apply after 300ms
+        -- Ghost already alive when name packet arrives Ã¢â‚¬â€ apply after 300ms
         local captId = id
         local captName = name
         Script.SetTimer(300, function()
@@ -4246,7 +4265,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     local pos = {x=x, y=y, z=z}
     local horseName = "kcd2mp_horse_" .. id
 
-    -- Use System.SpawnEntity only (XGenAIModule is async → creates orphan second entity)
+    -- Use System.SpawnEntity only (XGenAIModule is async Ã¢â€ â€™ creates orphan second entity)
     local horse = nil
     local ok2, h2 = pcall(System.SpawnEntity, {
         class = "Horse", position = {x=x, y=y, z=z},
@@ -4418,7 +4437,7 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     istate.lastPacketZ = z
 
     -- Log large target jumps; reset velocity on teleport/fast-travel
-    -- Jump detection: XY only — Z changes from terrain must NOT reset velocity
+    -- Jump detection: XY only Ã¢â‚¬â€ Z changes from terrain must NOT reset velocity
     local jumpDist = math.sqrt(ddx*ddx + ddy*ddy)
     if jumpDist > 5.0 then
         istate.vx = 0
@@ -4950,7 +4969,7 @@ local HORSE_ENTITY_WALK_ANIMS = {
     "horse_walk", "horse_trot", "walk", "trot",
 }
 local HORSE_ENTITY_GALLOP_ANIMS = {
-    -- Fastest gaits first — confirmed on KCD2 horse entities:
+    -- Fastest gaits first Ã¢â‚¬â€ confirmed on KCD2 horse entities:
     "relaxed_gallop", "relaxed_canter", "relaxed_run",
     -- Other candidates:
     "gallop", "canter", "run",
@@ -5024,7 +5043,7 @@ KCD2MP.combatSwingFragTags = ""
 
 -- WO-43: every prior live attempt on this route (WO-39 empty tags, WO-40
 -- generic tags like "lngsw") used GUESSED fragment/tag data, never a real
--- shipped Mannequin row. docs/WO-42-findings.md §9.2 extracted real rows
+-- shipped Mannequin row. docs/WO-42-findings.md Ã‚Â§9.2 extracted real rows
 -- straight from Tables.pak; this is one, verbatim, for a human/human sync
 -- attack (not invented -- do not substitute a guessed tag string here):
 --   mp_combat_frag CombatAttackSyncGen l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale
@@ -5720,6 +5739,7 @@ function KCD2MP_InterpTick(arg, gen)
                          + (istate.tz-istate.cz)*(istate.tz-istate.cz)
             if distSq > 25.0 then
                 mp_log(string.format("TELEPORT id=%s dist=%.1f", id, math.sqrt(distSq)))
+                if KCD2MP_QuestHazard then KCD2MP_QuestHazard("teleport-ghost", string.format("ghost %s snapped %.0fm", tostring(id), math.sqrt(distSq))) end
                 istate.cx = istate.tx
                 istate.cy = istate.ty
                 istate.cz = istate.tz
@@ -5887,7 +5907,7 @@ function KCD2MP_InterpTick(arg, gen)
                     -- fell. The horse half is skipped for the same reason.
                 elseif istate.isRiding then
                     -- One-time riding diagnostic when interp tick first sees this ghost riding.
-                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms → only even counts seen)
+                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms Ã¢â€ â€™ only even counts seen)
                     if not istate._rideFirstTick then
                         istate._rideFirstTick = true
                         local hd = KCD2MP.horseGhosts[id]
@@ -5907,7 +5927,7 @@ function KCD2MP_InterpTick(arg, gen)
                     end
 
                     -- Engine sync auto-assigns idle rider anim at ForceMount time.
-                    -- For gallop we must set it explicitly — engine does NOT auto-update.
+                    -- For gallop we must set it explicitly Ã¢â‚¬â€ engine does NOT auto-update.
                     -- ridingFallback: engine failed to mount, set all anims manually.
                     local isGallop = rendSpeed > 3.0
                     -- WO-84: this ghost is in the saddle, so whatever locomotion
@@ -5980,8 +6000,8 @@ function KCD2MP_InterpTick(arg, gen)
                         horseData.renderR = hr
 
                         -- Play horse entity animation based on speed.
-                        -- relaxed_idle → engine sync assigns matching rider idle.
-                        -- relaxed_gallop → we explicitly set rider gallop above.
+                        -- relaxed_idle Ã¢â€ â€™ engine sync assigns matching rider idle.
+                        -- relaxed_gallop Ã¢â€ â€™ we explicitly set rider gallop above.
                         local horseAnim
                         if spd > 3.0 then
                             horseAnim = KCD2MP._horseEntityGallopAnim or KCD2MP._horseEntityWalkAnim
@@ -6035,7 +6055,7 @@ function KCD2MP_InterpTick(arg, gen)
                 end
                 -- WO-28 Flow B: sample this ghost's LOCAL health for
                 -- NPC-inflicted damage. No-op unless this client holds
-                -- NPC→player damage authority.
+                -- NPCÃ¢â€ â€™player damage authority.
                 sampleGhostHealth(id, ghost)
                 local labelZ = sz + (istate.isRiding and 1.1 or 1.8)
                 local labelSize = 0  -- 0 = hidden (too far)
@@ -6377,7 +6397,7 @@ function KCD2MP_RemoveGhost(id)
     KCD2MP.ghostWeaponDrawn[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
-    -- wrong (false). Re-probe on next riding ghost (free NPC → correct results).
+    -- wrong (false). Re-probe on next riding ghost (free NPC Ã¢â€ â€™ correct results).
     KCD2MP._ridingIdleAnim = nil
     KCD2MP._ridingGallopAnim = nil
 end
@@ -7215,7 +7235,7 @@ function KCD2MP_ProbeDialog()
     System.LogAlways("[KCD2-MP] === END ===")
 end
 
--- ===== WO-65 — ghost civic isolation: Phase 0 probe =====
+-- ===== WO-65 Ã¢â‚¬â€ ghost civic isolation: Phase 0 probe =====
 --
 -- WO-34 proved a ghost is a full crime victim (real fines, jail, settlement
 -- rep loss) and the Civilians faction override is inert. KCD2Online's answer
@@ -7338,7 +7358,7 @@ function KCD2MP_ProbeContexts()
     L("=== END CONTEXTS PROBE ===")
 end
 
--- ===== WO-65 — ghost civic isolation (Phase 1) =====
+-- ===== WO-65 Ã¢â‚¬â€ ghost civic isolation (Phase 1) =====
 --
 -- What the live probe settled (2026-08-27, all observed in-game):
 --   - Contexts global is nil; no script-context setter exists under any
@@ -7513,7 +7533,7 @@ KCD2MP.armorPresets = {
     },
 }
 
--- ===== WO-20 — deterministic face roster (guidSharedSoulId) =====
+-- ===== WO-20 Ã¢â‚¬â€ deterministic face roster (guidSharedSoulId) =====
 --
 -- The appearance lever -- binding a spawned NPC's guidSharedSoulId spawn
 -- property to a real soul's SharedSoulGuid, which makes the engine build a
@@ -8727,7 +8747,15 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
     System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%LINE")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
-    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
+    -- WO-94: Shared Quests (main-story readiness prompt).
+    System.AddCCommand("mp_quest_sync",   'KCD2MP_QuestSetSync("%LINE")',   "WO-94: main-quest readiness prompt on|off (default on); bare = status line")
+    System.AddCCommand("mp_quest_radius", 'KCD2MP_QuestSetRadius("%LINE")', "WO-94: proximity radius in metres for approaching a main-quest beat (default 35)")
+    System.AddCCommand("mp_quest_window", 'KCD2MP_QuestSetWindow("%LINE")', "WO-94: seconds a catch-up hazard window stays open after a fire (default 120)")
+    System.AddCCommand("mp_quest_status", "KCD2MP_QuestStatus()",           "WO-94: log quest sync state and the current quest's beats with distances")
+    System.AddCCommand("mp_quest_yes",    "KCD2MP_QuestAnswer(true)",       "WO-94: answer the readiness prompt YES (same as F11) -- fires wh_concept_HasteTrigger for the peer's beat")
+    System.AddCCommand("mp_quest_no",     "KCD2MP_QuestAnswer(false)",      "WO-94: answer the readiness prompt NO (same as F12)")
+    System.AddCCommand("mp_quest_fire",   'KCD2MP_QuestFire("%LINE", "console")', "WO-94 live probe: fire a REGISTERED main-quest beat <quest>.<trigger> directly (disposable save!)")
+    System.AddCCommand("mp_quest_test_prompt", 'KCD2MP_QuestTestPrompt("%LINE")', "WO-94 live probe: show the readiness prompt for <quest>.<trigger> (default: first registered beat) with no peer, to test F11/F12 and the overlay")    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
     System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%LINE")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
     System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
 
@@ -8827,7 +8855,7 @@ end
 -- ===== Sneak action handler (shared, installed by both hook paths) =====
 
 -- Toggle-style sneak actions (each press flips state).
--- NOTE: chat_init_with_focus is NOT sneak – it's the focus/chat key (triggered by Tab/V).
+-- NOTE: chat_init_with_focus is NOT sneak Ã¢â‚¬â€œ it's the focus/chat key (triggered by Tab/V).
 -- Stance is detected via player:GetStance() polling in KCD2MP_Exchange (reliable fallback).
 local SNEAK_TOGGLE_ACTIONS = {
     sneak_toggle=true, toggle_sneak=true,
@@ -9010,6 +9038,24 @@ local function handleAction(action, activation, value)
         end
     end
 
+    -- Shared Quests readiness prompt (WO-94). Same two actions as the
+    -- dice-invite prompt above (kcd2mp_dice_bank = F11, kcd2mp_dice_yield =
+    -- F12). Reaches here only when no invite is up (that branch returned)
+    -- and no dice board is open (that branch returned for these actions),
+    -- so the three prompts can never double-consume one press. Like every
+    -- branch in this hook it runs AFTER the game's own handler and cannot
+    -- block or intercept any other input.
+    if KCD2MP.quest and KCD2MP.quest.prompt and activation == "press" then
+        if ACCEPT_ACTIONS[action] then
+            pcall(KCD2MP_QuestAnswer, true)
+            return
+        end
+        if DECLINE_ACTIONS[action] then
+            pcall(KCD2MP_QuestAnswer, false)
+            return
+        end
+    end
+
     -- Challenge the nearest player to dice (WO-5, gated to a real table in
     -- WO-6). Unlike accept/decline this has no KCD2MP.invite-style gate to
     -- check first -- see the comment on DICE_INVITE_ACTIONS above for why
@@ -9070,6 +9116,538 @@ local function handleAction(action, activation, value)
             mp_log("SNEAK=" .. tostring(pressed) .. " hold via '" .. action .. "'")
             KCD2MP.logActions = false
         end
+    end
+end
+
+-- ============================================================================
+-- ===== Shared Quests (WO-94) ================================================
+-- ============================================================================
+--
+-- The readiness prompt. Scope is deliberately narrow: the 32 main-story
+-- quests (ProductionCode M01-M51, base game). Side quests, activities,
+-- events and DLC content have no registry entry and therefore trigger none
+-- of this -- no detection, no prompt, no keys. They keep exactly the
+-- behaviour multiplayer already has, with WO-90's divergence release as the
+-- only safety net, unchanged.
+--
+-- Flow (docs/WO-94-findings.md):
+--   1. This client's agent tells the mod which main quest it is on (from the
+--      questNameOverride marker WO-90 already parses) and which level is
+--      loaded (from the engine's "Loading level <name>" log line).
+--   2. KCD2MP_QuestProximityTick (1 Hz, rides the emitter) compares the
+--      player's position against that quest's positioned beats in the
+--      generated registry below. Inside mp_quest_radius it emits ONE
+--      "quest_approach <quest>.<trigger>" event, once per beat.
+--   3. The agent relays it (StoryBeat 0x37 kind 2). On the OTHER machine the
+--      agent decides whether the two objectives differ and, if so, calls
+--      KCD2MP_QuestShowPrompt. The prompt is a persistent DrawText line in
+--      the same 8 ms label loop that draws the ping -- it stays until it is
+--      answered or made moot. It intercepts nothing: the OnAction hook runs
+--      AFTER the game's own handler and cannot consume input.
+--   4. F11 = catch up, F12 = stay. These are kcd2mp_dice_bank / _yield, the
+--      dice minigame's hold-to-bank / hold-to-yield keys, already reused by
+--      the dice-invite prompt for accept/decline (WO-33). Safe by
+--      construction, not by testing: the dice board consumes them ONLY while
+--      KCD2MP.dice.open, and its branch runs first and returns, so a prompt
+--      raised during a live match simply waits until the match ends.
+--   5. Yes fires wh_concept_HasteTrigger <quest>.<trigger> through
+--      System.ExecuteCommand (WO-92 s2.1, in production at closeVisorOn) and
+--      opens a hazard window. Not answering is a first-class choice: nothing
+--      happens, WO-90's divergence release keeps doing its job.
+--   6. Nothing pauses, for anyone, on any path.
+--
+-- Hazard window (required by the maintainer's "fix it when we see it" plan):
+-- while a catch-up fired HERE is draining, or a peer has told us one is
+-- draining THERE, every death, teleport, clock change or chain suspension
+-- this file already notices is ALSO logged as a distinct
+-- "CATCHUP-HAZARD <kind> ..." line naming the beat, who fired it and how
+-- long ago. The ordinary lines still print; this is an extra, greppable one.
+
+KCD2MP.quest = {
+    enabled        = true,     -- mp_quest_sync on|off
+    radius         = 35.0,     -- metres; mp_quest_radius <m>
+    windowS        = 120.0,    -- hazard window after a fire; mp_quest_window <s>
+    rearmS         = 600.0,    -- a beat announces again only after this long
+    level          = nil,      -- lowercase level name, from the agent
+    current        = nil,      -- lowercase main-quest name, from the agent (nil = not on a main quest)
+    announced      = {},       -- "<quest>.<trigger>" -> os.clock() of the last announce
+    declined       = {},       -- "<quest>.<trigger>" -> true (F12 pressed; never re-prompted this session)
+    prompt         = nil,      -- {ghostId, who, beat, shownAt}
+    catchup        = nil,      -- {beat, who, startedAt, untilT}  -- a fire from THIS machine
+    catchupRemote  = {},       -- ghostId -> {beat, who, startedAt, untilT}
+    lastTickAt     = 0,
+    lastPos        = nil,      -- {x,y,z,at} for local teleport detection inside a window
+    hazardN        = 0,
+    approachN      = 0,
+    fireN          = 0,
+}
+local Q = KCD2MP.quest
+
+-- @@WO94-MAINQUEST-REGISTRY-BEGIN@@
+-- GENERATED by tools/Build-MainQuestRegistry.ps1 -- do not edit by hand.
+-- Source: Quests/Final in Scripts.pak sha256 bf3eca1046f4c2cb619a005cada24ea8cb0b2c9a598b5882e4ec3d6160485166
+-- 32 main quests (M01-M51, base game only), 1014 Haste triggers, 138 positioned, 53 fireable.
+-- A beat is fireable when it is positioned (proximity can see it) AND cumulative
+-- AND not one of Warhorse's own test/debug/gamescom entries
+-- (it has Prerequisites or fires other triggers -- a real "set the world up for
+-- this point" entry, not a lone setter or a bare teleport). See docs/WO-94-findings.md.
+-- Fields: t = trigger name (fire as "<name>.<t>"); x,y,z = fixed point; e = level
+-- entity resolved live; src = own|chain (where on the plan the position came from).
+KCD2MP_MAINQUESTS = {
+    { code = "M01", name = "prepadeni", level = "trosecko", triggers = 22, beats = { } },
+    { code = "M02", name = "zachrana", level = "trosecko", triggers = 32, beats = { } },
+    { code = "M03", name = "socky", level = "trosecko", triggers = 9, beats = {
+        { t = "_initAndStart", x = 2342.72, y = 2068.25, z = 112.25, src = "chain" },
+    } },
+    { code = "M05", name = "svatba", level = "trosecko", triggers = 25, beats = {
+        { t = "02_init_blacksmith", e = "ttac_blacksmith", src = "own" },
+        { t = "03_init_concubine", e = "tvez_concubine", src = "own" },
+    } },
+    { code = "M06", name = "naTroskach", level = "trosecko", triggers = 16, beats = { } },
+    { code = "M07", name = "nebakovPruzkum", level = "trosecko", triggers = 24, beats = {
+        { t = "skipToNebakovPolylog", e = "nebakovPruzkum_tagpoint_cutscene_nebakovArrival_playerHorse", src = "chain" },
+        { t = "prepareNebakov", e = "nebakovPruzkum_tagpoint_cutscene_nebakovArrival_playerHorse", src = "own" },
+        { t = "skipToNebakov", e = "nebakovPruzkum_tagpoint_cutscene_nebakovArrival_playerHorse", src = "own" },
+    } },
+    { code = "M08", name = "mucirna", level = "trosecko", triggers = 34, beats = {
+        { t = "InstantTourToSemin", x = 2441.97, y = 2641.28, z = 203.36, src = "chain" },
+    } },
+    { code = "M09", name = "utokNaNebakov", level = "trosecko", triggers = 43, beats = {
+        { t = "startQuest_preparedForDialog", x = 2418.77, y = 2611.34, z = 219.15, src = "own" },
+    } },
+    { code = "M10", name = "bohutovaVlozka", level = "trosecko", triggers = 30, beats = {
+        { t = "01_initAndStart", e = "bohutovaVlozka_lastQuestStartingSpot", src = "chain" },
+    } },
+    { code = "M11", name = "nebakovObrana", level = "trosecko", triggers = 51, beats = {
+        { t = "97_nebakovObrana_start", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
+        { t = "98_nebakovObrana_bitva", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
+        { t = "99_nebakovObrana_bitva_withFriends", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
+        { t = "99z_nebakovObrana_bitva_withFriends_fast", x = 1909.00, y = 1209.00, z = 54.00, src = "own" },
+    } },
+    { code = "M12", name = "vezniNaTroskach", level = "trosecko", triggers = 33, beats = {
+        { t = "01_initAndStart", x = 1940.78, y = 1126.36, z = 54.04, src = "chain" },
+    } },
+    { code = "M30", name = "posledniPomazani", level = "kutnohorsko", triggers = 3, beats = { } },
+    { code = "M31", name = "prijezdNaSuchdol", level = "kutnohorsko", triggers = 10, beats = {
+        { t = "01_initAndStart", e = "prijezdNaSuchdol_startFirstChat", src = "chain" },
+    } },
+    { code = "M32", name = "sedmStatecnych", level = "kutnohorsko", triggers = 18, beats = {
+        { t = "01_initAndStart", e = "sedmStatecnych_playerStartQuest", src = "own" },
+    } },
+    { code = "M33", name = "hledaniLichtenstejna", level = "kutnohorsko", triggers = 36, beats = {
+        { t = "initAndStart", x = 3165.71, y = 653.04, z = 53.63, src = "chain" },
+    } },
+    { code = "M34", name = "kralovskeStribro", level = "kutnohorsko", triggers = 19, beats = {
+        { t = "01_initAndStart", x = 3228.60, y = 852.93, z = 51.55, src = "own" },
+        { t = "02_startMines", x = 2913.14, y = 2226.35, z = 118.37, src = "own" },
+        { t = "03_gatheredNumbers", x = 2943.04, y = 2259.88, z = 115.10, src = "own" },
+        { t = "04_goToSmelter", x = 2931.86, y = 2239.91, z = 115.27, src = "own" },
+        { t = "05_goToSecretMint", x = 3555.39, y = 1797.44, z = 107.00, src = "own" },
+    } },
+    { code = "M35", name = "zachranaPtacka", level = "kutnohorsko", triggers = 21, beats = {
+        { t = "01_initAndStart", e = "zachranaPtacka_guardWaitingSpotArea", src = "chain" },
+        { t = "03_afterDialogueWithRoza", e = "kmal_hastal", src = "own" },
+    } },
+    { code = "M37a", name = "setkaniVRatbori1", level = "kutnohorsko", triggers = 53, beats = {
+        { t = "02_initAndStart_cutscene", e = "setkaniVRatbori1_start_cutscene", src = "chain" },
+        { t = "04_setTimeTo21", e = "setkaniVRatbori1_test_playerTeleport", src = "own" },
+        { t = "36_jumpToZikmundAulitzGameplay", e = "setkaniVRatbori1_councillorsLeaving_playerPoint", src = "own" },
+    } },
+    { code = "M37b", name = "setkaniVRatbori2", level = "kutnohorsko", triggers = 16, beats = {
+        { t = "01_init", x = 1423.10, y = 3820.92, z = 126.57, src = "chain" },
+    } },
+    { code = "M38", name = "sedmStatecnych2", level = "kutnohorsko", triggers = 48, beats = {
+        { t = "01_initAndStart", e = "kcer_kubenka", src = "own" },
+    } },
+    { code = "M42", name = "pogrom", level = "kutnohorsko", triggers = 40, beats = {
+        { t = "_init_noDialogue", e = "pogrom_startPointPlayer", src = "chain" },
+        { t = "_initAndStart", e = "pogrom_startPointPlayer", src = "chain" },
+    } },
+    { code = "M44a", name = "zikmunduvTabor", level = "kutnohorsko", triggers = 50, beats = { } },
+    { code = "M44b", name = "utokNaMalesov", level = "kutnohorsko", triggers = 36, beats = {
+        { t = "init", e = "utokNaMalesov_playerInitialCertovkaPosition", src = "chain" },
+    } },
+    { code = "M45", name = "papezskyLegat", level = "kutnohorsko", triggers = 27, beats = {
+        { t = "_initAndStart", x = 800.31, y = 3334.47, z = 142.61, src = "chain" },
+        { t = "skipToChase", x = 3439.31, y = 992.24, z = 51.44, src = "own" },
+    } },
+    { code = "M46", name = "prepadeniVlasskehoDvora", level = "kutnohorsko", triggers = 39, beats = { } },
+    { code = "M47", name = "erik", level = "kutnohorsko", triggers = 15, beats = {
+        { t = "00_erik_init", e = "erik_nocNaHradbach_player", src = "chain" },
+        { t = "01_erik_startAndInit", e = "erik_nocNaHradbach_player", src = "chain" },
+    } },
+    { code = "M48a", name = "oblehaniSuchdole", level = "kutnohorsko", triggers = 54, beats = {
+        { t = "000_oblehaniStart", e = "oblehaniSuchdole_zizkaVezeZasobyAJeNapaden_player", src = "chain" },
+    } },
+    { code = "M48b", name = "rutinaAVypad", level = "kutnohorsko", triggers = 66, beats = { } },
+    { code = "M48c", name = "hladAZmar", level = "kutnohorsko", triggers = 29, beats = { } },
+    { code = "M49", name = "stealthMiseZaJindru", level = "kutnohorsko", triggers = 8, beats = { } },
+    { code = "M50", name = "zoufalaObranaZaBohutu", level = "kutnohorsko", triggers = 41, beats = { } },
+    { code = "M51", name = "finale", level = "kutnohorsko", triggers = 66, beats = {
+        { t = "01_initAndStart_Mikes_Kozlik_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "02_initAndStart_Wolfram_Kozlik_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "03_initAndStart_Mikes_Dobros_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "04_initAndStart_Wolfram_Dobros_Sam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "05_initAndStart_Mikes_Kozlik_NoSam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "06_initAndStart_Mikes_Kozlik_Sam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "07_initAndStart_Mikes_Kozlik_NoSam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "08_initAndStart_Wolfram_Kozlik_NoSam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "09_initAndStart_Wolfram_Kozlik_Sam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "10_initAndStart_Wolfram_Kozlik_NoSam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "11_initAndStart_Mikes_Dobros_NoSam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "12_initAndStart_Mikes_Dobros_Sam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "13_initAndStart_Mikes_Dobros_NoSam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "14_initAndStart_Wolfram_Dobros_NoSam_Dog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "15_initAndStart_Wolfram_Dobros_Sam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+        { t = "16_initAndStart_Wolfram_Dobros_NoSam_NoDog", e = "finale_previousQuestEnd", src = "chain" },
+    } },
+}
+-- @@WO94-MAINQUEST-REGISTRY-END@@
+
+-- Lookups over the generated table, built once on first use. Quest names are
+-- matched case-insensitively because the engine's @qname_ marker lowercases
+-- them ("@qname_poslednipomazani_1DR8" for posledniPomazani, field log).
+-- Beat paths are matched exactly: both ends run the same generated table.
+KCD2MP._questIndex = nil
+local function questIndex()
+    if KCD2MP._questIndex then return KCD2MP._questIndex end
+    local byLower, byPath, nQuests, nBeats = {}, {}, 0, 0
+    for _, q in ipairs(KCD2MP_MAINQUESTS or {}) do
+        nQuests = nQuests + 1
+        byLower[string.lower(q.name)] = q
+        for _, b in ipairs(q.beats or {}) do
+            byPath[q.name .. "." .. b.t] = { quest = q, beat = b }
+            nBeats = nBeats + 1
+        end
+    end
+    KCD2MP._questIndex = { byLower = byLower, byPath = byPath, nQuests = nQuests, nBeats = nBeats }
+    return KCD2MP._questIndex
+end
+
+-- True only for a beat the generated registry can fire. Everything this
+-- section does downstream of a peer's message goes through here first, so a
+-- string that is not one of the 32 quests' registered beats is refused
+-- before it can reach ExecuteCommand or the screen.
+function KCD2MP_QuestIsRegistryBeat(beat)
+    if type(beat) ~= "string" or beat == "" or #beat > 128 then return false end
+    if not beat:match("^[%w_%.]+$") then return false end
+    return questIndex().byPath[beat] ~= nil
+end
+
+-- Agent -> mod. "Loading level <name>" from kcd.log, lowercased here.
+function KCD2MP_QuestSetLevel(name)
+    local s = tostring(name or ""):lower():gsub("%s+", "")
+    if s == "" then return end
+    if Q.level ~= s then
+        Q.level = s
+        mp_log("QUEST level is now '" .. s .. "'")
+    end
+end
+
+-- Agent -> mod. The main quest this player is on, from the objective marker,
+-- or "" when the marker names a quest outside the registry (side content).
+function KCD2MP_QuestSetCurrent(questLower)
+    local s = tostring(questLower or ""):lower():gsub("%s+", "")
+    if s == "" then s = nil end
+    if Q.current ~= s then
+        local q = s and questIndex().byLower[s] or nil
+        Q.current = s
+        mp_log(string.format("QUEST current main quest: %s%s", tostring(s),
+            (s and not q) and " (NOT in the main-quest registry -- side content, no detection)"
+            or (q and string.format(" (%s, %d fireable beats)", q.code, #(q.beats or {})) or "")))
+    end
+end
+
+-- Distance from the player to one registry beat, or nil when it cannot be
+-- known right now (entity-positioned beat whose entity is not streamed in).
+local function questBeatDist2(b, ppos)
+    local bx, by, bz = b.x, b.y, b.z
+    if b.e then
+        local ent = System.GetEntityByName(b.e)
+        if not ent then return nil end
+        local ok, ep = pcall(function() return ent:GetWorldPos() end)
+        if not ok or not ep then return nil end
+        bx, by, bz = ep.x, ep.y, ep.z
+    end
+    if not bx then return nil end
+    local dx, dy = bx - ppos.x, by - ppos.y
+    return dx * dx + dy * dy      -- planar: a beat on a wall above or a cellar below still counts
+end
+
+-- 1 Hz, from KCD2MP_EmitTick. Announces the nearest un-announced beat of
+-- the current main quest inside the radius. Also closes an expired hazard
+-- window and watches for a local teleport while one is open.
+function KCD2MP_QuestProximityTick()
+    local now = os.clock()
+    if now - (Q.lastTickAt or 0) < 1.0 then return end
+    Q.lastTickAt = now
+
+    KCD2MP_QuestWindowTick(now)
+
+    if not Q.enabled or not Q.current or not player then return end
+    local q = questIndex().byLower[Q.current]
+    if not q or not q.beats or #q.beats == 0 then return end
+    -- Fixed-point beats are per level; the two maps' coordinate ranges
+    -- overlap, so with the level known, a beat on the other map is skipped.
+    -- Entity-positioned beats are level-safe by themselves (the entity is
+    -- simply absent on the other map).
+    local levelKnown = Q.level ~= nil
+    local ppos = nil
+    pcall(function() ppos = player:GetWorldPos() end)
+    if not ppos then return end
+
+    local r2 = Q.radius * Q.radius
+    local best, bestD2 = nil, nil
+    for _, b in ipairs(q.beats) do
+        local skip = (not b.e) and levelKnown and q.level ~= Q.level
+        if not skip then
+            local path = q.name .. "." .. b.t
+            local last = Q.announced[path]
+            if not last or (now - last) >= Q.rearmS then
+                local d2 = questBeatDist2(b, ppos)
+                if d2 and d2 <= r2 and (not bestD2 or d2 < bestD2) then best, bestD2 = b, d2 end
+            end
+        end
+    end
+    if best then
+        local path = q.name .. "." .. best.t
+        Q.announced[path] = now
+        Q.approachN = (Q.approachN or 0) + 1
+        mp_log(string.format("QUEST-APPROACH %s (%s) at %.1fm -- announcing to peers", path, q.code, math.sqrt(bestD2)))
+        KCD2MP_EmitEvent("quest_approach", path)
+    end
+end
+
+-- Agent -> mod, when a peer's approach arrives. diverged is 1 when the agent
+-- knows both objectives and they differ; anything else means "do not prompt".
+function KCD2MP_QuestShowPrompt(ghostId, who, beat, diverged)
+    beat = tostring(beat or "")
+    if not KCD2MP_QuestIsRegistryBeat(beat) then
+        mp_log("QUEST-PROMPT refused: '" .. beat .. "' is not a registered main-quest beat")
+        return false
+    end
+    if not Q.enabled then
+        mp_log("QUEST-PROMPT suppressed (mp_quest_sync off): " .. beat)
+        return false
+    end
+    if tonumber(diverged) ~= 1 then
+        mp_log("QUEST-PROMPT not shown for " .. beat .. ": objectives not known to differ")
+        return false
+    end
+    if Q.declined[beat] then
+        mp_log("QUEST-PROMPT not shown for " .. beat .. ": declined earlier this session")
+        return false
+    end
+    if Q.catchup then
+        mp_log("QUEST-PROMPT not shown for " .. beat .. ": a catch-up is already in progress here")
+        return false
+    end
+    Q.prompt = { ghostId = tostring(ghostId), who = tostring(who or ("player " .. tostring(ghostId))),
+                 beat = beat, shownAt = os.clock() }
+    mp_log(string.format("QUEST-PROMPT shown: %s is nearing %s -- F11 catch up / F12 stay (no timeout)", Q.prompt.who, beat))
+    return true
+end
+
+-- Agent -> mod. The prompt is no longer relevant: the peer left, the two
+-- objectives now agree, or the peer moved on to another beat.
+function KCD2MP_QuestPromptMoot(reason, ghostId)
+    if not Q.prompt then return end
+    if ghostId ~= nil and tostring(ghostId) ~= Q.prompt.ghostId then return end
+    mp_log(string.format("QUEST-PROMPT withdrawn (%s): %s", tostring(reason), Q.prompt.beat))
+    Q.prompt = nil
+end
+
+-- F11 / F12 / mp_quest_yes / mp_quest_no.
+function KCD2MP_QuestAnswer(yes)
+    local p = Q.prompt
+    if not p then
+        mp_log("QUEST-PROMPT: nothing to answer")
+        return false
+    end
+    Q.prompt = nil
+    if not yes then
+        Q.declined[p.beat] = true
+        mp_log("QUEST-PROMPT declined: staying on our own story for " .. p.beat)
+        KCD2MP_EmitEvent("quest_catchup", "decline " .. p.beat)
+        KCD2MP_ShowInteractionMsg("Staying on your own story")
+        return true
+    end
+    return KCD2MP_QuestFire(p.beat, p.who)
+end
+
+-- The one write. Refuses anything outside the registry, fires the Haste
+-- trigger over the console channel already in production, and opens the
+-- hazard window. mp_quest_fire <quest>.<trigger> reaches this directly for
+-- the live probe.
+function KCD2MP_QuestFire(beat, who)
+    beat = tostring(beat or "")
+    if not KCD2MP_QuestIsRegistryBeat(beat) then
+        mp_log("QUEST-CATCHUP refused: '" .. beat .. "' is not a registered main-quest beat")
+        return false
+    end
+    if Q.catchup then
+        mp_log("QUEST-CATCHUP refused: one is already in progress (" .. Q.catchup.beat .. ")")
+        return false
+    end
+    who = tostring(who or "console")
+    local now = os.clock()
+    Q.catchup = { beat = beat, who = who, startedAt = now, untilT = now + Q.windowS }
+    Q.fireN = (Q.fireN or 0) + 1
+    Q.lastPos = nil
+    mp_log(string.format("QUEST-CATCHUP FIRE #%d: wh_concept_HasteTrigger %s (toward %s) -- hazard window %.0fs open",
+        Q.fireN, beat, who, Q.windowS))
+    KCD2MP_EmitEvent("quest_catchup", "begin " .. beat)
+    local ok, err = pcall(function() System.ExecuteCommand("wh_concept_HasteTrigger " .. beat) end)
+    -- A pcall that returns ok proves only that the Lua call did not throw
+    -- (WO-43's lesson) -- whether the trigger fired is in the engine's own
+    -- log lines, which is why the fire is logged before and after.
+    mp_log(string.format("QUEST-CATCHUP ExecuteCommand returned %s%s", tostring(ok), ok and "" or (": " .. tostring(err))))
+    KCD2MP_ShowNativeToast("Catching up to " .. who .. "'s story...")
+    return ok
+end
+
+-- Agent -> mod: a PEER fired a catch-up (begin=1) or its window closed (0).
+function KCD2MP_QuestCatchupRemote(ghostId, who, beat, begin)
+    ghostId = tostring(ghostId)
+    if tonumber(begin) == 1 then
+        local now = os.clock()
+        Q.catchupRemote[ghostId] = { beat = tostring(beat), who = tostring(who or ("player " .. ghostId)),
+                                     startedAt = now, untilT = now + Q.windowS }
+        mp_log(string.format("QUEST-CATCHUP peer %s fired %s -- watching for hazards crossing to us for %.0fs",
+            Q.catchupRemote[ghostId].who, tostring(beat), Q.windowS))
+    else
+        local w = Q.catchupRemote[ghostId]
+        if w then mp_log("QUEST-CATCHUP peer " .. w.who .. " window closed (" .. w.beat .. ")") end
+        Q.catchupRemote[ghostId] = nil
+    end
+end
+
+-- The open window, if any: the local one first, else the most recent remote.
+function KCD2MP_QuestWindow()
+    local now = os.clock()
+    if Q.catchup and now < Q.catchup.untilT then return Q.catchup, "here" end
+    local best = nil
+    for _, w in pairs(Q.catchupRemote) do
+        if now < w.untilT and (not best or w.startedAt > best.startedAt) then best = w end
+    end
+    if best then return best, "peer" end
+    return nil
+end
+
+-- Expiry, and the local teleport watch. Called at 1 Hz from the proximity tick.
+function KCD2MP_QuestWindowTick(now)
+    if Q.catchup and now >= Q.catchup.untilT then
+        mp_log(string.format("QUEST-CATCHUP window closed for %s after %.0fs (%d hazard lines this session)",
+            Q.catchup.beat, now - Q.catchup.startedAt, Q.hazardN or 0))
+        KCD2MP_EmitEvent("quest_catchup", "end " .. Q.catchup.beat)
+        Q.catchup = nil
+    end
+    for id, w in pairs(Q.catchupRemote) do
+        if now >= w.untilT then
+            mp_log("QUEST-CATCHUP peer " .. w.who .. " window expired (" .. w.beat .. ")")
+            Q.catchupRemote[id] = nil
+        end
+    end
+    -- Local teleport: our own position moving faster than any horse between
+    -- two 1 Hz samples while a window is open. 60 m/s is well above a
+    -- gallop (~12 m/s) and below any goto.
+    if KCD2MP_QuestWindow() and player then
+        local ppos = nil
+        pcall(function() ppos = player:GetWorldPos() end)
+        if ppos then
+            local lp = Q.lastPos
+            if lp and (now - lp.at) > 0 then
+                local d = math.sqrt((ppos.x - lp.x)^2 + (ppos.y - lp.y)^2 + (ppos.z - lp.z)^2)
+                local v = d / (now - lp.at)
+                if v > 60 then
+                    KCD2MP_QuestHazard("teleport-local", string.format("player moved %.0fm in %.1fs (%.0f m/s)", d, now - lp.at, v))
+                end
+            end
+            Q.lastPos = { x = ppos.x, y = ppos.y, z = ppos.z, at = now }
+        end
+    else
+        Q.lastPos = nil
+    end
+end
+
+-- The distinct line. Logs nothing outside a window, so every one of these
+-- that appears in kcd.log IS a candidate for "the catch-up caused this".
+function KCD2MP_QuestHazard(kind, detail)
+    local w, where = KCD2MP_QuestWindow()
+    if not w then return false end
+    Q.hazardN = (Q.hazardN or 0) + 1
+    mp_log(string.format("CATCHUP-HAZARD %s during catch-up %s (fired %s by %s %.1fs ago): %s",
+        tostring(kind), w.beat, where, w.who, os.clock() - w.startedAt, tostring(detail)))
+    return true
+end
+
+-- mp_quest_sync on|off, mp_quest_radius <m>, mp_quest_window <s>
+function KCD2MP_QuestSetSync(arg)
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+    if s == "on" then Q.enabled = true
+    elseif s == "off" then Q.enabled = false; Q.prompt = nil
+    elseif s ~= "" and s ~= "%line" then mp_log("mp_quest_sync: expected on|off, got '" .. s .. "'"); return end
+    local ix = questIndex()
+    mp_log(string.format("QUEST sync is %s (%d main quests, %d fireable beats, radius %.0fm, window %.0fs; current=%s level=%s; %d approaches, %d fires, %d hazard lines)",
+        Q.enabled and "ON" or "OFF", ix.nQuests, ix.nBeats, Q.radius, Q.windowS, tostring(Q.current), tostring(Q.level),
+        Q.approachN or 0, Q.fireN or 0, Q.hazardN or 0))
+end
+function KCD2MP_QuestSetRadius(arg)
+    local n = tonumber(arg)
+    if n and n >= 5 and n <= 500 then Q.radius = n; mp_log(string.format("QUEST radius = %.0fm", n))
+    else mp_log("mp_quest_radius: expected 5..500 metres, got '" .. tostring(arg) .. "'") end
+end
+function KCD2MP_QuestSetWindow(arg)
+    local n = tonumber(arg)
+    if n and n >= 10 and n <= 900 then Q.windowS = n; mp_log(string.format("QUEST hazard window = %.0fs", n))
+    else mp_log("mp_quest_window: expected 10..900 seconds, got '" .. tostring(arg) .. "'") end
+end
+
+-- mp_quest_status: everything on one line plus the beats of the current quest.
+function KCD2MP_QuestStatus()
+    KCD2MP_QuestSetSync("")
+    local q = Q.current and questIndex().byLower[Q.current] or nil
+    if q then
+        local ppos = nil
+        pcall(function() ppos = player and player:GetWorldPos() end)
+        for _, b in ipairs(q.beats or {}) do
+            local d2 = ppos and questBeatDist2(b, ppos) or nil
+            mp_log(string.format("  beat %s.%s %s -> %s", q.name, b.t,
+                b.e and ("entity " .. b.e) or string.format("(%.1f, %.1f, %.1f)", b.x, b.y, b.z),
+                d2 and string.format("%.1fm", math.sqrt(d2)) or "position unknown"))
+        end
+    end
+    if Q.prompt then mp_log("  prompt up: " .. Q.prompt.who .. " -> " .. Q.prompt.beat) end
+    local w, where = KCD2MP_QuestWindow()
+    if w then mp_log(string.format("  hazard window open (%s): %s by %s, %.0fs left", where, w.beat, w.who, w.untilT - os.clock())) end
+end
+
+-- mp_quest_test_prompt <beat> -- puts a prompt on screen with no peer, so the
+-- keys and the overlay can be exercised solo. Answering Yes to a test prompt
+-- REALLY fires the beat (that is the point of the live probe); use a
+-- disposable save.
+function KCD2MP_QuestTestPrompt(arg)
+    local beat = tostring(arg or ""):gsub("%s+", "")
+    if beat == "" or beat == "%LINE" then
+        -- default to the first fireable beat in the registry
+        for _, q in ipairs(KCD2MP_MAINQUESTS or {}) do
+            if q.beats and q.beats[1] then beat = q.name .. "." .. q.beats[1].t; break end
+        end
+    end
+    return KCD2MP_QuestShowPrompt("test", "TestPeer", beat, 1)
+end
+
+-- Drawn from KCD2MP_DrawInteractionUI (the 8 ms label loop). Two lines below
+-- the invite/message rows, persistent, DrawText only.
+function KCD2MP_QuestDrawUI()
+    local p = Q.prompt
+    if p then
+        System.DrawText(10, 160, p.who .. " is nearing a story beat: " .. p.beat, 2)
+        System.DrawText(10, 184, "F11 catch up (advance my story)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
+    end
+    local w, where = KCD2MP_QuestWindow()
+    if w then
+        System.DrawText(10, 208, string.format("Catch-up in progress (%s): %s  %.0fs", where, w.beat, w.untilT - os.clock()), 1.4)
     end
 end
 

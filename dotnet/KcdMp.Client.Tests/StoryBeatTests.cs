@@ -154,4 +154,74 @@ public class StoryBeatTests
         Assert.Equal(Protocol.MaxStoryBeatTextLen, payload[1]);
         Assert.Equal(2 + Protocol.MaxStoryBeatTextLen, payload.Length);
     }
+
+    // -------------------------------------------------------------------------
+    // WO-94 Shared Quests
+    // -------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("@qname_prepadeni_KsSs|@prepadeni_nasleduj_ptacka_ZyXB", "prepadeni")]
+    [InlineData("@qname_zachrana_FbKt|@zachrana_zastav_krvaceni__tHDn", "zachrana")]
+    [InlineData("@qname_poslednipomazani_1DR8|@poslednip_objective1_9O8s", "poslednipomazani")]
+    [InlineData("@qname_nebakovpruzkum_UT4P|@nebakovpr_pockej_az_ptace_LlOx", "nebakovpruzkum")]
+    [InlineData("@qname_combat_tutorial_pro_VbON|@jmena_obj_konec_questu_6AkE", "combat_tutorial_pro")]
+    public void QuestName_is_extracted_lowercased_from_real_field_markers(string marker, string expected)
+        => Assert.Equal(expected, StoryBeat.TryQuestNameFromMarker(marker));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("@obj_only")]
+    [InlineData("@qname_")]
+    [InlineData("qname_prepadeni_KsSs|x")]
+    public void QuestName_is_null_for_markers_without_a_quest_half(string? marker)
+        => Assert.Null(StoryBeat.TryQuestNameFromMarker(marker));
+
+    [Theory]
+    [InlineData("hledaniLichtenstejna.initAndStart", true)]
+    [InlineData("kralovskeStribro.02_startMines", true)]
+    [InlineData("finale.01_initAndStart_Mikes_Kozlik_Sam_Dog", true)]
+    [InlineData("a.b", true)]
+    [InlineData("noDot", false)]
+    [InlineData("two.dots.here", false)]
+    [InlineData(".leading", false)]
+    [InlineData("trailing.", false)]
+    [InlineData("quest.trig; os.exit()", false)]
+    [InlineData("quest.trig\")", false)]
+    [InlineData("quest.tříg", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void BeatPath_shape_check_admits_only_flat_haste_paths(string? path, bool ok)
+        => Assert.Equal(ok, StoryBeat.IsValidBeatPath(path));
+
+    [Fact]
+    public void BeatPath_rejects_anything_over_the_wire_text_budget()
+    {
+        string longPath = "q." + new string('a', Protocol.MaxStoryBeatTextLen);
+        Assert.False(StoryBeat.IsValidBeatPath(longPath));
+        Assert.True(StoryBeat.IsValidBeatPath("q." + new string('a', Protocol.MaxStoryBeatTextLen - 2)));
+    }
+
+    [Fact]
+    public void CatchupHazardTag_is_distinct_and_names_beat_actor_and_age()
+    {
+        string tag = StoryBeat.CatchupHazardTag("finale.01_initAndStart_Mikes_Kozlik_Sam_Dog", "Alice", "by a peer", TimeSpan.FromSeconds(12.34));
+        Assert.Contains("CATCHUP-HAZARD", tag);
+        Assert.Contains("finale.01_initAndStart_Mikes_Kozlik_Sam_Dog", tag);
+        Assert.Contains("Alice", tag);
+        Assert.Contains("by a peer", tag);
+        Assert.Contains("12.3s ago", tag);
+        Assert.StartsWith(" [", tag);
+    }
+
+    [Fact]
+    public void UpPayload_carries_the_new_kinds_unchanged()
+    {
+        var p = StoryBeat.BuildUpPayload(Protocol.StoryBeatKindApproach, "socky._initAndStart");
+        Assert.Equal(Protocol.StoryBeatKindApproach, p[0]);
+        Assert.Equal("socky._initAndStart".Length, p[1]);
+        Assert.Equal(2, Protocol.StoryBeatKindApproach);
+        Assert.Equal(3, Protocol.StoryBeatKindCatchupBegin);
+        Assert.Equal(4, Protocol.StoryBeatKindCatchupEnd);
+    }
 }

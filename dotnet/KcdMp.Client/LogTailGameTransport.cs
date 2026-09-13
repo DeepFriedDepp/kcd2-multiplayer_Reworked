@@ -241,6 +241,39 @@ public sealed class LogTailGameTransport : IGameTransport
     public event Action<string>? StoryBeatDetected;
 
     /// <summary>
+    /// WO-94: the engine's own level-load banner,
+    /// "============================ Loading level trosecko ============================"
+    /// (observed twice across the 2026-08-25 field bundles, same text). The
+    /// level name is lowercased. Raised on every occurrence, so a level
+    /// switch mid-session is seen too. The mod uses it to skip fixed-point
+    /// beats of the other map, whose coordinate ranges overlap this one's.
+    /// </summary>
+    public event Action<string>? LevelDetected;
+
+    /// <summary>
+    /// WO-94: the Rendered-cutscene edge on its own (true = PlayCutscene, false
+    /// = OnCutsceneEnd), separate from the aggregate <see cref="PauseStateChanged"/>
+    /// so the catch-up hazard logger can name a cutscene specifically
+    /// (WO-92 s6.4 hazard 6) rather than "some pause-like state".
+    /// </summary>
+    public event Action<bool>? CutsceneStateChanged;
+
+    private const string LevelBanner = " Loading level ";
+
+    private void ProcessLevelMarker(ReadOnlySpan<char> line)
+    {
+        int at = line.IndexOf(LevelBanner, StringComparison.Ordinal);
+        if (at < 0 || line.IndexOf("====", StringComparison.Ordinal) < 0) return;
+        var rest = line[(at + LevelBanner.Length)..];
+        int end = 0;
+        while (end < rest.Length && (char.IsLetterOrDigit(rest[end]) || rest[end] == '_')) end++;
+        if (end == 0 || end > 64) return;
+        string level = rest[..end].ToString().ToLowerInvariant();
+        try { LevelDetected?.Invoke(level); }
+        catch (Exception ex) { Console.WriteLine($"[quest] level handler threw: {ex.Message}"); }
+    }
+
+    /// <summary>
     /// Which trigger action the current/most recent skip came from
     /// (Protocol.TimeSkipKind*). WO-11's live kcd.log diff bracketed bed
     /// sleep, wait and fast travel with the same AfterSkipTime observer and
@@ -335,8 +368,14 @@ public sealed class LogTailGameTransport : IGameTransport
         // freeze there is the existing AfterSkipTime marker above, which this
         // deliberately does not duplicate. Only "Rendered" (the one real
         // instance observed) sat inside the field session's 60.69 s DATA gap.
+        bool cutBefore = _cutsceneActive;
         if (line.IndexOf("CutscenePlayer::PlayCutscene called for Rendered cutscene") >= 0) _cutsceneActive = true;
         else if (line.IndexOf("CutscenePlayer::OnCutsceneEnd called for Rendered cutscene") >= 0) _cutsceneActive = false;
+        if (_cutsceneActive != cutBefore)
+        {
+            try { CutsceneStateChanged?.Invoke(_cutsceneActive); }   // WO-94
+            catch (Exception ex) { Console.WriteLine($"[quest] cutscene handler threw: {ex.Message}"); }
+        }
 
         bool after = AggregatePaused;
         if (after != before)
@@ -489,6 +528,7 @@ public sealed class LogTailGameTransport : IGameTransport
             // the hot (DATA-tagged) path.
             ProcessPauseMarkers(line);
             ProcessStoryMarkers(line);
+            ProcessLevelMarker(line);   // WO-94
             return;
         }
 

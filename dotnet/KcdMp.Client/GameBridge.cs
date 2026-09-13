@@ -305,6 +305,37 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentDictionary<byte, string> _storyDivergenceTold = new();
     private Func<byte, string, Task>? _sendStoryBeat;
 
+    // WO-94 Shared Quests. The agent is a relay between the mod's proximity
+    // detector and the peer's prompt; the decisions that matter (is this a
+    // registered beat, fire or not) are the mod's and the player's. What the
+    // agent adds: "do the two objectives differ" (only it knows both), the
+    // level and quest pushes, and the hazard tags on its own log lines.
+    private string? _localLevel;                       // lowercase, from "Loading level"
+    private string? _localQuest;                       // lowercase quest from our marker (null = side content / unknown)
+    private readonly ConcurrentDictionary<byte, string> _peerApproach = new();   // ghostId -> last approach path
+    private readonly ConcurrentDictionary<byte, (float X, float Y, float Z, DateTime AtUtc)> _ghostLastPos = new();
+    private readonly ConcurrentDictionary<byte, (string Beat, DateTime AtUtc)> _peerCatchup = new();
+    private (string Beat, DateTime AtUtc)? _localCatchup;
+    private static readonly TimeSpan CatchupWindow = TimeSpan.FromSeconds(120);   // mirrors KCD2MP.quest.windowS
+
+    /// <summary>
+    /// WO-94: "" outside any catch-up window, else the distinct hazard tag
+    /// naming the beat, who fired it (here or a peer) and how long ago.
+    /// Appended to the agent's own death / clock / cutscene / teleport lines.
+    /// </summary>
+    private string CatchupTag()
+    {
+        var now = DateTime.UtcNow;
+        if (_localCatchup is { } lc && now - lc.AtUtc < CatchupWindow)
+            return StoryBeat.CatchupHazardTag(lc.Beat, "us", "here", now - lc.AtUtc);
+        (string Beat, DateTime AtUtc)? best = null; byte bestId = 0;
+        foreach (var kv in _peerCatchup)
+            if (now - kv.Value.AtUtc < CatchupWindow && (best is null || kv.Value.AtUtc > best.Value.AtUtc)) { best = kv.Value; bestId = kv.Key; }
+        if (best is null) return string.Empty;
+        string who = _ghostNames.TryGetValue(bestId, out var n) ? n : $"player {bestId}";
+        return StoryBeat.CatchupHazardTag(best.Value.Beat, who, "by a peer", now - best.Value.AtUtc);
+    }
+
     // WO-88 finding 4: a reload convergence is no longer one fire-and-forget
     // ExecuteString. The target stays outstanding until a world-clock reading
     // proves the write landed (or the window closes), and every reading in
@@ -869,7 +900,7 @@ public partial class GameBridge(ClientConfig config)
             // and nothing ever tells it otherwise.
             if (died)
             {
-                Console.WriteLine($"[npcdeath] out: local kill of {soul} (blow -{health:F1}) -- sending FATAL");
+                Console.WriteLine($"[npcdeath] out: local kill of {soul} (blow -{health:F1}) -- sending FATAL{CatchupTag()}");
             }
             else
             // WO-40 Phase 5: the DLL's hit hook fires per contact frame, and
@@ -1014,6 +1045,8 @@ public partial class GameBridge(ClientConfig config)
             tailForPause.PauseStateChanged += OnLocalPauseDetected;
             tailForPause.SkipTimeStateChanged += OnLocalSkipTime;
             tailForPause.StoryBeatDetected += OnLocalStoryBeat;
+            tailForPause.LevelDetected += OnLocalLevel;              // WO-94
+            tailForPause.CutsceneStateChanged += OnLocalCutscene;    // WO-94
 
             // A reconnect keeps the tail (and its last marker) alive, so seed
             // from it rather than waiting for the next checkpoint -- at a
@@ -1102,6 +1135,10 @@ public partial class GameBridge(ClientConfig config)
                         foreach (var kv in _ghostNames)
                             await ExecLuaAsync(
                                 $"if KCD2MP_SetGhostName then KCD2MP_SetGhostName(\"{kv.Key}\", \"{EscapeLua(kv.Value)}\") end");
+                        // WO-94: level and current main quest survive in the
+                        // agent but not in a restarted game's Lua; re-push
+                        // them on the same cadence (idempotent in Lua).
+                        PushQuestContext();
                         // WO-59 Thread C: re-assert stimulus-deafness on every
                         // live ghost. AI.SetIgnorant was applied exactly once
                         // at spawn with its result discarded, so a failed call
@@ -1237,6 +1274,8 @@ public partial class GameBridge(ClientConfig config)
                 tailForPause2.PauseStateChanged -= OnLocalPauseDetected;
                 tailForPause2.SkipTimeStateChanged -= OnLocalSkipTime;
                 tailForPause2.StoryBeatDetected -= OnLocalStoryBeat;   // WO-90
+                tailForPause2.LevelDetected -= OnLocalLevel;            // WO-94
+                tailForPause2.CutsceneStateChanged -= OnLocalCutscene;  // WO-94
             }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
@@ -1898,7 +1937,7 @@ public partial class GameBridge(ClientConfig config)
                 {
                     _fastAdvanceActive = true;
                     _fastAdvanceStartTime = last;
-                    Console.WriteLine($"[timeskip] clock jumping ({last} -> {worldTime}); waiting for it to settle");
+                    Console.WriteLine($"[timeskip] clock jumping ({last} -> {worldTime}); waiting for it to settle{CatchupTag()}");
                 }
             }
             else if (worldTime < last && last - worldTime > TimeJumpThresholdSeconds)
@@ -1907,7 +1946,7 @@ public partial class GameBridge(ClientConfig config)
                 // does that. Never broadcast it (receivers cannot go back);
                 // instead converge this client forward to the session clock.
                 _fastAdvanceActive = false;
-                Console.WriteLine($"[timeskip] clock went backward ({last} -> {worldTime}) -- save reload detected");
+                Console.WriteLine($"[timeskip] clock went backward ({last} -> {worldTime}) -- save reload detected{CatchupTag()}");
                 _ = OnReloadDetectedAsync(last, worldTime);
             }
             else if (_fastAdvanceActive)
@@ -2071,6 +2110,87 @@ public partial class GameBridge(ClientConfig config)
 
         foreach (var kv in _peerObjective)
             ReportStoryDivergence(kv.Key, kv.Value);
+
+        // WO-94: tell the mod which main quest we are on (it decides whether
+        // that name is in its registry), and withdraw any prompt whose pair
+        // no longer differs.
+        _localQuest = StoryBeat.TryQuestNameFromMarker(marker);
+        PushQuestContext();
+        ReevaluateQuestPrompts();
+    }
+
+    // -------------------------------------------------------------------------
+    // Shared Quests (WO-94)
+    // -------------------------------------------------------------------------
+
+    private void OnLocalLevel(string level)
+    {
+        if (string.Equals(level, _localLevel, StringComparison.Ordinal)) return;
+        _localLevel = level;
+        Console.WriteLine($"[quest] level loaded: {level}");
+        PushQuestContext();
+    }
+
+    /// <summary>Level and current quest, to the mod. Idempotent; also re-sent on the 2.5 s re-arm.</summary>
+    private void PushQuestContext()
+    {
+        if (_localLevel is string lvl)
+            _ = ExecLuaAsync($"if KCD2MP_QuestSetLevel then KCD2MP_QuestSetLevel(\"{EscapeLua(lvl)}\") end");
+        if (_localObjective is not null)
+            _ = ExecLuaAsync($"if KCD2MP_QuestSetCurrent then KCD2MP_QuestSetCurrent(\"{EscapeLua(_localQuest ?? string.Empty)}\") end");
+    }
+
+    /// <summary>
+    /// A peer said it is nearing a registered main-quest beat. The agent
+    /// contributes the one fact only it has -- whether the two objectives are
+    /// known to differ -- and hands the rest to the mod, which re-validates the
+    /// path against its registry before anything reaches the screen.
+    /// </summary>
+    private void OnPeerApproach(byte ghostId, string path)
+    {
+        _peerApproach[ghostId] = path;
+        string who = _ghostNames.TryGetValue(ghostId, out var dn) ? dn : $"player {ghostId}";
+        bool diverged = _peerObjective.TryGetValue(ghostId, out var theirs)
+                        && _localObjective is not null
+                        && !string.Equals(theirs, _localObjective, StringComparison.Ordinal);
+        Console.WriteLine($"[quest] {who} is approaching {path}" + (diverged ? " -- objectives differ, prompting" : " -- objectives not known to differ, no prompt"));
+        _ = ExecLuaAsync($"if KCD2MP_QuestShowPrompt then KCD2MP_QuestShowPrompt(\"{ghostId}\", \"{EscapeLua(who)}\", \"{path}\", {(diverged ? 1 : 0)}) end");
+    }
+
+    /// <summary>On any objective change: a prompt whose pair now agrees is withdrawn.</summary>
+    private void ReevaluateQuestPrompts()
+    {
+        foreach (var kv in _peerApproach)
+        {
+            bool diverged = _peerObjective.TryGetValue(kv.Key, out var theirs)
+                            && _localObjective is not null
+                            && !string.Equals(theirs, _localObjective, StringComparison.Ordinal);
+            if (!diverged)
+                _ = ExecLuaAsync($"if KCD2MP_QuestPromptMoot then KCD2MP_QuestPromptMoot(\"objectives now agree\", \"{kv.Key}\") end");
+        }
+    }
+
+    private void OnPeerCatchup(byte ghostId, string path, bool begin)
+    {
+        string who = _ghostNames.TryGetValue(ghostId, out var dn) ? dn : $"player {ghostId}";
+        if (begin)
+        {
+            _peerCatchup[ghostId] = (path, DateTime.UtcNow);
+            Console.WriteLine($"[quest] CATCH-UP FIRED BY PEER {who}: {path} -- hazard window open on this machine for {CatchupWindow.TotalSeconds:F0}s");
+        }
+        else
+        {
+            _peerCatchup.TryRemove(ghostId, out _);
+            Console.WriteLine($"[quest] peer {who} catch-up window closed: {path}");
+        }
+        _ = ExecLuaAsync($"if KCD2MP_QuestCatchupRemote then KCD2MP_QuestCatchupRemote(\"{ghostId}\", \"{EscapeLua(who)}\", \"{path}\", {(begin ? 1 : 0)}) end");
+    }
+
+    private void OnLocalCutscene(bool active)
+    {
+        string tag = CatchupTag();
+        if (tag.Length > 0)
+            Console.WriteLine($"[quest] Rendered cutscene {(active ? "STARTED" : "ended")} on this machine{tag}");
     }
 
     /// <summary>
@@ -2834,6 +2954,22 @@ public partial class GameBridge(ClientConfig config)
                     }
                     _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
                     RefreshDiscordPeerCount();
+                    // WO-94: a peer position that jumps further than any horse
+                    // between two samples, inside a catch-up window, is the
+                    // "untracked teleport" hazard (WO-92 s6.4 hazard 1).
+                    if (_ghostLastPos.TryGetValue(ghostId, out var lastP))
+                    {
+                        float ddx = x - lastP.X, ddy = y - lastP.Y, ddz = z - lastP.Z;
+                        double jump = Math.Sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+                        double dtS = Math.Max(0.05, (DateTime.UtcNow - lastP.AtUtc).TotalSeconds);
+                        if (jump > 50 && jump / dtS > 60)
+                        {
+                            string tag = CatchupTag();
+                            if (tag.Length > 0)
+                                Console.WriteLine($"[quest] ghost {ghostId} teleported {jump:F0} m in {dtS:F1}s{tag}");
+                        }
+                    }
+                    _ghostLastPos[ghostId] = (x, y, z, DateTime.UtcNow);
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
                     await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding);
                 }
@@ -2869,6 +3005,15 @@ public partial class GameBridge(ClientConfig config)
                     // gone ghost has nothing left to detach.
                     _ghostSoulGuidCache.TryRemove(ghostId, out _);
                     _ghostHostileUntilUtc.TryRemove(ghostId, out _);
+                    // WO-94: a gone peer's prompt is moot and its catch-up
+                    // window on our side is closed.
+                    _peerObjective.TryRemove(ghostId, out _);
+                    _storyDivergenceTold.TryRemove(ghostId, out _);
+                    _ghostLastPos.TryRemove(ghostId, out _);
+                    if (_peerApproach.TryRemove(ghostId, out _))
+                        try { await ExecLuaAsync($"if KCD2MP_QuestPromptMoot then KCD2MP_QuestPromptMoot(\"peer left\", \"{ghostId}\") end"); } catch { }
+                    if (_peerCatchup.TryRemove(ghostId, out _))
+                        try { await ExecLuaAsync($"if KCD2MP_QuestCatchupRemote then KCD2MP_QuestCatchupRemote(\"{ghostId}\", \"\", \"\", 0) end"); } catch { }
                     // A peer who disconnects mid-pause must not leave us
                     // slowed forever with no PauseDown(exit) ever coming.
                     await ApplyPeerPauseAsync(ghostId, paused: false, ct);
@@ -2937,7 +3082,8 @@ public partial class GameBridge(ClientConfig config)
                                             + (ndFatal ? " FATAL" : "")
                                             + (localGuid is null ? " -> no local soul answers to that name"
                                                : !ndHasDelta ? " -> no delta to apply"
-                                               : ndApplied ? " -> applied" : " -> pipe apply FAILED"));
+                                               : ndApplied ? " -> applied" : " -> pipe apply FAILED")
+                                            + (ndFatal ? CatchupTag() : string.Empty));
                             if (ndApplied)
                                 _ = TriggerReactiveAggroAsync(ndSource, ct);
                             if (ndFatal)
@@ -3175,6 +3321,23 @@ public partial class GameBridge(ClientConfig config)
                         _peerObjective[sbSource] = sbText;
                         Console.WriteLine($"[story] ghost {sbSource} objective -> {StoryBeat.Humanize(sbText)}");
                         ReportStoryDivergence(sbSource, sbText);
+                        ReevaluateQuestPrompts();   // WO-94
+                    }
+                    else if ((sbKind == Protocol.StoryBeatKindApproach
+                              || sbKind == Protocol.StoryBeatKindCatchupBegin
+                              || sbKind == Protocol.StoryBeatKindCatchupEnd)
+                             && payloadLen == 3 + sbLen && sbLen > 0)
+                    {
+                        // WO-94 Shared Quests. The text is peer-supplied and
+                        // ends up in a Lua literal: shape-checked here (path
+                        // characters only), registry-checked in the mod.
+                        string qText = Encoding.UTF8.GetString(payload, 3, sbLen);
+                        if (!StoryBeat.IsValidBeatPath(qText))
+                            Console.WriteLine($"[quest] ghost {sbSource} sent a malformed beat path (kind {sbKind}); dropped");
+                        else if (sbKind == Protocol.StoryBeatKindApproach)
+                            OnPeerApproach(sbSource, qText);
+                        else
+                            OnPeerCatchup(sbSource, qText, begin: sbKind == Protocol.StoryBeatKindCatchupBegin);
                     }
                 }
                 else if (type == Protocol.ItemDropDown && payloadLen == Protocol.ItemDropDownPayloadLen)
@@ -3380,6 +3543,46 @@ public partial class GameBridge(ClientConfig config)
             return;
         }
 
+        // WO-94 Shared Quests: the mod's proximity detector and its own fire.
+        // Consumed regardless of interaction-session state, like time_now.
+        if (name == "quest_approach")
+        {
+            if (StoryBeat.IsValidBeatPath(arg))
+            {
+                Console.WriteLine($"[quest] approaching {arg} -- telling peers");
+                _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindApproach, arg);
+            }
+            else Console.WriteLine($"[quest] malformed quest_approach '{arg}'");
+            return;
+        }
+        if (name == "quest_catchup")
+        {
+            // "begin <path>" | "end <path>" | "decline <path>"
+            var qp = arg.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+            string qpath = qp.Length == 2 ? qp[1] : string.Empty;
+            if (qp.Length != 2 || !StoryBeat.IsValidBeatPath(qpath)) { Console.WriteLine($"[quest] malformed quest_catchup '{arg}'"); return; }
+            switch (qp[0])
+            {
+                case "begin":
+                    _localCatchup = (qpath, DateTime.UtcNow);
+                    Console.WriteLine($"[quest] CATCH-UP FIRED HERE: wh_concept_HasteTrigger {qpath} -- hazard window open for {CatchupWindow.TotalSeconds:F0}s; peers told");
+                    _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindCatchupBegin, qpath);
+                    break;
+                case "end":
+                    _localCatchup = null;
+                    Console.WriteLine($"[quest] catch-up window closed here: {qpath}");
+                    _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindCatchupEnd, qpath);
+                    break;
+                case "decline":
+                    Console.WriteLine($"[quest] player declined to catch up to {qpath} (staying on own story; WO-90 divergence release remains the safety net)");
+                    break;
+                default:
+                    Console.WriteLine($"[quest] unknown quest_catchup verb '{qp[0]}'");
+                    break;
+            }
+            return;
+        }
+
         if (name == "ghostid")
         {
             // WO-46: "<ghostId> <entityIdHex>" from KCD2MP_SpawnGhost. The hex
@@ -3573,7 +3776,7 @@ public partial class GameBridge(ClientConfig config)
                 string deadSrc  = dp.Length > 2 ? dp[2] : "lua";
                 var sendDeath = _sendNpcDeath;
                 if (sendDeath is null) break;
-                Console.WriteLine($"[npcdeath] out: mod observed '{deadName}' die locally (hp={deadHp}, seen by {deadSrc}) -- sending FATAL");
+                Console.WriteLine($"[npcdeath] out: mod observed '{deadName}' die locally (hp={deadHp}, seen by {deadSrc}) -- sending FATAL{CatchupTag()}");
                 _ = sendDeath(deadName)
                     .ContinueWith(t =>
                     {

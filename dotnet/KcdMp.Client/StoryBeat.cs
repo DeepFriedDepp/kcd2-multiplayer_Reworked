@@ -144,6 +144,67 @@ public static class StoryBeat
         return $"{peerName} is on \"{Humanize(peerMarker)}\" -- you are on \"{Humanize(localMarker)}\"";
     }
 
+    // -------------------------------------------------------------------------
+    // WO-94 Shared Quests
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// WO-94: the quest half of an objective marker, lowercased, or null.
+    /// "@qname_prepadeni_KsSs|@prepadeni_nasleduj_ptacka_ZyXB" -> "prepadeni";
+    /// "@qname_poslednipomazani_1DR8|..." -> "poslednipomazani" (the engine
+    /// lowercases the XML name posledniPomazani here, field log 2026-08-25).
+    /// The trailing four-character disambiguator is dropped by the same rule
+    /// <see cref="Prettify"/> uses. The mod matches this case-insensitively
+    /// against its generated registry.
+    /// </summary>
+    public static string? TryQuestNameFromMarker(string? marker)
+    {
+        if (string.IsNullOrWhiteSpace(marker)) return null;
+        var quest = marker.Split('|', 2)[0].Trim();
+        const string prefix = "@qname_";
+        if (!quest.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        quest = quest[prefix.Length..];
+        if (quest.Length > 5 && quest[^5] == '_')
+        {
+            bool allAlnum = true;
+            for (int i = quest.Length - 4; i < quest.Length; i++)
+                if (!char.IsLetterOrDigit(quest[i])) { allAlnum = false; break; }
+            if (allAlnum) quest = quest[..^5];
+        }
+        quest = quest.Trim('_');
+        if (quest.Length == 0) return null;
+        foreach (char c in quest)
+            if (!(char.IsLetterOrDigit(c) || c == '_')) return null;
+        return quest.ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// WO-94: a Haste path as this project emits it -- "quest.trigger",
+    /// ASCII letters/digits/underscore/dot only, 3..128 chars, exactly one dot
+    /// with non-empty halves. Applied to every kind-2/3/4 text BEFORE it is
+    /// interpolated into a Lua literal; the mod then additionally requires the
+    /// path to be in its generated registry.
+    /// </summary>
+    public static bool IsValidBeatPath(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length < 3 || path.Length > Protocol.MaxStoryBeatTextLen) return false;
+        int dots = 0;
+        foreach (char c in path)
+        {
+            if (c == '.') { dots++; continue; }
+            if (!(c < 128 && (char.IsLetterOrDigit(c) || c == '_'))) return false;
+        }
+        if (dots != 1) return false;
+        return path[0] != '.' && path[^1] != '.';
+    }
+
+    /// <summary>
+    /// WO-94: the suffix appended to an agent log line that fires inside a
+    /// catch-up hazard window. Distinct on purpose: grep "CATCHUP-HAZARD".
+    /// </summary>
+    public static string CatchupHazardTag(string beat, string who, string where, TimeSpan sinceFire) =>
+        $" [CATCHUP-HAZARD during catch-up {beat} (fired {where} by {who} {sinceFire.TotalSeconds:F1}s ago)]";
+
     /// <summary>Builds the 0x37 payload: [kind:1][len:1][text utf8].</summary>
     public static byte[] BuildUpPayload(byte kind, string text)
     {
