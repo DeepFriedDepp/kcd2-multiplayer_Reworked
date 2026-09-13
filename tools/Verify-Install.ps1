@@ -92,7 +92,12 @@ $AsmMarkers = @(
     # 0.21.1 (WO-86). Death sync spans all three artefacts; an agent that
     # predates it ignores the FATAL bit and never kills the peer's copy.
     @{ File = 'KcdMpClient.dll'; Marker = 'KCD2MP_NpcRemoteDeath';  Owner = 'WO-86 NPC death apply (agent half)' },
-    @{ File = 'KcdMpServer.dll'; Marker = '[NPCDEATH]';             Owner = 'WO-86 relay FATAL logging' }
+    @{ File = 'KcdMpServer.dll'; Marker = '[NPCDEATH]';             Owner = 'WO-86 relay FATAL logging' },
+    # 0.21.5 (WO-88, built in WO-89). Agent-only fixes; an agent that predates
+    # these still clears a death tag on a health=0 packet and never re-dresses
+    # a respawned ghost's body.
+    @{ File = 'KcdMpClient.dll'; Marker = 'body respawned';         Owner = 'WO-88 appearance-after-respawn fix' },
+    @{ File = 'KcdMpClient.dll'; Marker = 're-sending the convergence'; Owner = 'WO-88 reload time-sync convergence resend' }
 )
 
 $PakMarkers = @(
@@ -121,7 +126,10 @@ $PakMarkers = @(
     # 0.21.1 (WO-86). A pak without these still lets a locally-dead body follow
     # a living stream and never announces a death.
     @{ Marker = 'NPC-DEATH DIVERGENCE';            Owner = 'WO-86 corpse-drag safeguard' },
-    @{ Marker = 'function KCD2MP_NpcRemoteDeath';  Owner = 'WO-86 NPC death apply (mod half)' }
+    @{ Marker = 'function KCD2MP_NpcRemoteDeath';  Owner = 'WO-86 NPC death apply (mod half)' },
+    # 0.21.5 (WO-88, built in WO-89). Read-only diagnostic; absence just means
+    # mp_probe_dialog is not yet available, no behavior depends on it.
+    @{ Marker = 'function KCD2MP_ProbeDialog';     Owner = 'WO-88 mp_probe_dialog' }
 )
 
 function Test-Assembly($dir, $label) {
