@@ -292,6 +292,31 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentDictionary<byte, DateTime> _peerLastSeenUtc = new();
     private uint _peerWorldTime;               // last clock any peer reported (TimeSkipDown)
     private DateTime _peerWorldTimeUtc = DateTime.MinValue;
+
+    // WO-88 finding 4: a reload convergence is no longer one fire-and-forget
+    // ExecuteString. The target stays outstanding until a world-clock reading
+    // proves the write landed (or the window closes), and every reading in
+    // between re-sends it. Field instance: host reload #5 (2026-09-12
+    // 17:16:13) logged "converging forward to session clock 584692" and no
+    // ApplyTimeSkip ever appeared in kcd.log -- the batch flush met the
+    // post-load REST outage and was dropped silently; the host then ran
+    // 15,808 game-seconds behind until the joiner waited manually.
+    private uint? _reloadConvergeTarget;
+    private DateTime _reloadConvergeDeadlineUtc = DateTime.MinValue;
+    private static readonly TimeSpan ReloadConvergeWindow = TimeSpan.FromSeconds(120);
+
+    // WO-88 finding 4 (secondary): re-announce our clock to the session on a
+    // slow cadence, not only at connect / new peer. Every receiver applies
+    // forward-only and ignores a report within natural skew
+    // (ReloadReconcile.QuietSyncWorthApplying), so this converges the session
+    // onto one clock instead of each reloader chasing a stale private one.
+    private static readonly TimeSpan TimeAnnounceInterval = TimeSpan.FromSeconds(60);
+
+    // WO-88 finding 2: the outfit each peer last sent, kept so a respawned
+    // ghost body (local save load -> RECONCILE -> fresh entity in its spawn
+    // preset) can be dressed again immediately instead of waiting for a
+    // heartbeat that diffs to nothing against the stale applied set.
+    private readonly ConcurrentDictionary<byte, Guid[]> _ghostLastAppearance = new();
     /// <summary>Game-seconds per real second (WO-38 live: ratio 15, confirmed exactly).</summary>
     private const double WorldTimeRatio = 15.0;
 
@@ -716,6 +741,8 @@ public partial class GameBridge(ClientConfig config)
         _ghostAppearance.Clear();
         _ghostKnownItemClasses.Clear();
         _ghostNeverEquips.Clear();
+        _ghostLastAppearance.Clear();      // WO-88: per-connection, like the sets above
+        _reloadConvergeTarget = null;      // WO-88: a convergence belongs to one connection
         // WO-17: ghost ids are reassigned per relay connection; a cached
         // Guid or hold-timer from a previous session would point at nothing.
         // _aggroEnabled itself is a deliberate local user setting and
@@ -979,6 +1006,7 @@ public partial class GameBridge(ClientConfig config)
             long lastGhostReconcile = nowTimestamp;
             long lastAggroSweep = nowTimestamp;
             long lastTimePoll = nowTimestamp;
+            long lastTimeAnnounce = nowTimestamp;   // WO-88: periodic quiet clock announce
             long lastWeatherTick = nowTimestamp;
             long lastPositionHeartbeat = nowTimestamp;
 
@@ -1083,6 +1111,20 @@ public partial class GameBridge(ClientConfig config)
                 // WO-17: cheap when nothing is attached -- see the method doc.
                 if (IntervalElapsed(ref lastAggroSweep, AggroSweepInterval, nowTimestamp))
                     _ = SweepAggroCooldownsAsync(cts.Token);
+
+                // WO-88 finding 4: re-announce our clock about once a minute
+                // while anyone is here. Consumed by the next world-time poll
+                // (below), exactly like the connect-time and new-peer
+                // announces; receivers apply forward-only and ignore reports
+                // inside natural skew, so this is idle when clocks agree and
+                // is what closes the gap when a reloader's own convergence
+                // was lost or aimed at a stale private "session clock".
+                if (IntervalElapsed(ref lastTimeAnnounce, TimeAnnounceInterval, nowTimestamp)
+                    && !_localSkipActive && !_awaitSkipDoneTime
+                    && _peerLastSeenUtc.Any(kv => (DateTime.UtcNow - kv.Value) < TimeSpan.FromMinutes(2)))
+                {
+                    _timeSyncPending = true;
+                }
 
                 // WO-38 Phase 1: poll the world clock on a slow cadence. Feeds
                 // the clock-jump watcher (fast travel emits no confirmed skip
@@ -1772,6 +1814,34 @@ public partial class GameBridge(ClientConfig config)
             return;
         }
 
+        // WO-88 finding 4: an outstanding reload convergence is checked
+        // against every reading before the jump watcher sees it. Until the
+        // clock reads at/past the target the apply is re-sent (forward-only in
+        // Lua, so a late duplicate is harmless); once it does, the reading is
+        // the new baseline and the forward jump it represents is ours.
+        switch (ReloadReconcile.EvaluateConvergence(_reloadConvergeTarget, worldTime,
+                    TimeJumpThresholdSeconds, now, _reloadConvergeDeadlineUtc))
+        {
+            case ReloadReconcile.ConvergeStep.Satisfied:
+                Console.WriteLine($"[timeskip] reload: converged (clock {worldTime} >= target {_reloadConvergeTarget} - {TimeJumpThresholdSeconds})");
+                _reloadConvergeTarget = null;
+                _fastAdvanceActive = false;
+                _lastPolledWorldTime = worldTime;
+                _lastPollUtc = now;
+                return;
+            case ReloadReconcile.ConvergeStep.Resend:
+                Console.WriteLine($"[timeskip] reload: clock still {worldTime}, target {_reloadConvergeTarget} not applied yet -- re-sending the convergence");
+                _ = SendReloadConvergenceAsync(_reloadConvergeTarget!.Value);
+                _suppressJumpUntilUtc = now.AddSeconds(30);
+                _lastPolledWorldTime = worldTime;
+                _lastPollUtc = now;
+                return;
+            case ReloadReconcile.ConvergeStep.Expired:
+                Console.WriteLine($"[timeskip] reload: convergence to {_reloadConvergeTarget} never landed within {ReloadConvergeWindow.TotalSeconds:F0}s -- giving up (clock {worldTime}); the next peer announce will retry");
+                _reloadConvergeTarget = null;
+                break;
+        }
+
         // WO-59: announce our clock to the session (connect-time sync, or a
         // new peer just appeared). Quiet at the relay, forward-only at every
         // receiver -- a behind player converges, an ahead player no-ops.
@@ -1891,19 +1961,41 @@ public partial class GameBridge(ClientConfig config)
         }
 
         Console.WriteLine($"[timeskip] reload: converging forward to session clock {candidate} (reloaded to {currentTime}, was {preReloadTime})");
+        // WO-88 finding 4: keep the target outstanding until a reading proves
+        // the write landed. OnWorldTimeReading re-sends on every poll until
+        // then (see ReloadReconcile.EvaluateConvergence).
+        _reloadConvergeTarget = candidate;
+        _reloadConvergeDeadlineUtc = now + ReloadConvergeWindow;
+        await SendReloadConvergenceAsync(candidate);
+
+        // The convergence write must not read as a fresh local jump.
+        _suppressJumpUntilUtc = DateTime.UtcNow.AddSeconds(30);
+        // WO-88: the baseline stays at the RELOADED value on purpose. The old
+        // code set it to the target here, and OnWorldTimeReading's own tail
+        // then overwrote it with the reloaded reading anyway (this method is
+        // fire-and-forget from there), so a lost apply was never re-detected.
+        // The outstanding target above is what now carries that knowledge.
+        _lastPolledWorldTime = currentTime;
+        _lastPollUtc = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// One forward-only convergence write. Batched like every other Lua call,
+    /// so it rides the next flush -- and a flush that meets the post-load REST
+    /// outage is dropped without a word (HttpGameTransport.FlushAsync is
+    /// fire-and-forget by design). That is why the caller keeps the target
+    /// outstanding and re-sends from each clock reading until it lands.
+    /// </summary>
+    private async Task SendReloadConvergenceAsync(uint target)
+    {
         try
         {
             await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
                 "if KCD2MP_ApplyTimeSkip then KCD2MP_ApplyTimeSkip(\"session\",{0},{1},true) end " +
                 "if KCD2MP_ShowInteractionMsg then KCD2MP_ShowInteractionMsg(\"Clock re-synced to the session's time\") end",
-                Protocol.TimeSkipKindUnknown, candidate));
+                Protocol.TimeSkipKindUnknown, target));
         }
         catch { /* game might have unloaded */ }
-
-        // The convergence write must not read as a fresh local jump.
-        _suppressJumpUntilUtc = DateTime.UtcNow.AddSeconds(30);
-        _lastPolledWorldTime = Math.Max(candidate, currentTime);
-        _lastPollUtc = DateTime.UtcNow;
     }
 
     // -------------------------------------------------------------------------
@@ -2185,6 +2277,20 @@ public partial class GameBridge(ClientConfig config)
         }
 
         string who = _ghostNames.TryGetValue(sourceId, out var dn) ? dn : $"player {sourceId}";
+
+        // WO-88 finding 4: quiet reports now arrive about once a minute from
+        // every peer (periodic announce). One that sits within natural skew of
+        // our own extrapolated clock is not a gap to close -- writing it would
+        // nudge the sky forward for nothing, and two clients doing that to
+        // each other would ratchet. Announced skips (quiet=false) are never
+        // gated: a real sleep/wait is applied as it always was.
+        if (quiet && !ReloadReconcile.QuietSyncWorthApplying(worldTime, _lastPolledWorldTime, _lastPollUtc,
+                DateTime.UtcNow, WorldTimeRatio, TimeJumpThresholdSeconds))
+        {
+            Console.WriteLine($"[timeskip] {who} -> worldTime={worldTime} (quiet) within skew of our clock ({_lastPolledWorldTime}) -- not applied");
+            return;
+        }
+
         Console.WriteLine($"[timeskip] {who} -> worldTime={worldTime} kind={kind}{(quiet ? " (quiet)" : "")}");
         try
         {
@@ -2653,6 +2759,7 @@ public partial class GameBridge(ClientConfig config)
                     _ghostAppearance.TryRemove(ghostId, out _);
                     _ghostKnownItemClasses.TryRemove(ghostId, out _);
                     _ghostNeverEquips.TryRemove(ghostId, out _);
+                    _ghostLastAppearance.TryRemove(ghostId, out _);   // WO-88
                     // WO-17: a respawned ghost gets a fresh Soul.Guid, and a
                     // gone ghost has nothing left to detach.
                     _ghostSoulGuidCache.TryRemove(ghostId, out _);
@@ -3039,6 +3146,10 @@ public partial class GameBridge(ClientConfig config)
                         var items = new Guid[itemCount];
                         for (int i = 0; i < itemCount; i++)
                             items[i] = new Guid(payload.AsSpan(2 + i * Protocol.ItemClassLen, Protocol.ItemClassLen));
+                        // WO-88 finding 2: remember the raw set (ApplyAppearanceAsync
+                        // rewrites aliases in place) so a respawned body can be
+                        // re-dressed from it without waiting for the next heartbeat.
+                        _ghostLastAppearance[sourceId] = (Guid[])items.Clone();
                         _ = ApplyAppearanceAsync(sourceId, items, ct);
                     }
                 }
@@ -3092,7 +3203,15 @@ public partial class GameBridge(ClientConfig config)
             // Health arriving means that player's game is running and they are
             // in a world -- so any death tag from before their reload is stale.
             // Cheap: batched with the call above into the same flush.
-            await ExecLuaAsync($"KCD2MP_SetGhostDead(\"{ghostId}\", false)");
+            //
+            // WO-88 finding 1: only when the vitals say ALIVE. The dying
+            // player's emitter sends health=0 in the same tick as its 0x23;
+            // whichever the relay delivered second used to win, and when it
+            // was the vitals the tag was cleared within milliseconds of being
+            // set (host kcd.log 141413->141416, 164600->164632 on 2026-09-12)
+            // -- a dead player's stand-in then kept walking its stale stream.
+            if (ReloadReconcile.VitalsClearDeathTag(health))
+                await ExecLuaAsync($"KCD2MP_SetGhostDead(\"{ghostId}\", false)");
         }
         catch { /* game might have unloaded */ }
     }
@@ -3145,8 +3264,35 @@ public partial class GameBridge(ClientConfig config)
                 && ulong.TryParse(giParts[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ulong rawId)
                 && rawId is > 0 and <= uint.MaxValue)
             {
+                uint? previousEntityId = _ghostEntityIds.TryGetValue(giParts[0], out uint prevId) ? prevId : null;
                 _ghostEntityIds[giParts[0]] = (uint)rawId;
                 Console.WriteLine($"[combatviz] ghost {giParts[0]} entity id 0x{rawId:X} cached for native swings");
+
+                // WO-88 finding 2: a NEW entity id for a ghost we already
+                // dressed is a respawned body (local save load -> RECONCILE ->
+                // fresh spawn in its preset). The per-ghost applied/known/
+                // blacklist sets describe the destroyed body; drop them and
+                // re-apply the outfit the peer last sent. Without this the
+                // heartbeat diffed to nothing against the stale applied set
+                // and the ghost stayed in default armour for the rest of the
+                // session (both machines, 2026-09-12, after each side's first
+                // reload). Same edge WO-68 uses for civic isolation below.
+                if (ReloadReconcile.RespawnInvalidatesAppearance(previousEntityId, (uint)rawId)
+                    && byte.TryParse(giParts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out byte respawnedId))
+                {
+                    _ghostAppearance.TryRemove(respawnedId, out _);
+                    _ghostKnownItemClasses.TryRemove(respawnedId, out _);
+                    _ghostNeverEquips.TryRemove(respawnedId, out _);
+                    if (_ghostLastAppearance.TryGetValue(respawnedId, out var lastOutfit))
+                    {
+                        Console.WriteLine($"[appearance] ghost {respawnedId}: body respawned (entity 0x{prevId:X} -> 0x{rawId:X}) -- re-applying its last {lastOutfit.Length} item class(es)");
+                        _ = ApplyAppearanceAsync(respawnedId, (Guid[])lastOutfit.Clone(), CancellationToken.None);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[appearance] ghost {respawnedId}: body respawned (entity 0x{prevId:X} -> 0x{rawId:X}) -- no outfit received yet, next packet dresses it");
+                    }
+                }
 
                 // WO-68: this event is the ghost-ready edge -- it fires from
                 // KCD2MP_SpawnGhost, so it also fires on every respawn and

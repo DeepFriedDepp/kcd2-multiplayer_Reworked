@@ -6931,6 +6931,61 @@ function KCD2MP_ProbeStance()
     System.LogAlways("[KCD2-MP] === END ===")
 end
 
+-- ===== WO-88 -- dialogue-state probe (WO-80 s5 item 1), read-only =====
+--
+-- WO-57 documented human:IsInDialog() and Dialog.IsSoulInDialog(wuid); WO-80
+-- could not probe either (no game reachable) and WO-65's rule stands: a
+-- documented bind is not a verified one. This probe is the live check.
+-- It changes nothing -- it reports the bind's type, its pcall result and
+-- the soul-level alternative so a single console command answers "does the
+-- bind exist on this build, and does it read true inside a conversation".
+--
+-- Field context for the next session (docs/WO-88-findings.md s2.3): in the
+-- 2026-09-12 logs, six real player conversations (Ex/Ex participants,
+-- non-bark flags) showed NO gap in the [KCD2-MP-DATA] stream and the NPC
+-- emitter kept sending heartbeats through a 48 s arrest dialogue -- so on
+-- this build a dialogue does NOT suspend the Script.SetTimer chains, and
+-- pumping through one would not have changed what was observed. Run the
+-- probe while in a conversation and read both this and the DATA cadence
+-- before deciding the pump needs a dialogue input at all.
+function KCD2MP_ProbeDialog()
+    if not player then System.LogAlways("[KCD2-MP] ProbeDialog: no player"); return end
+    System.LogAlways("[KCD2-MP] === DIALOG PROBE ===")
+    local hType = type(player.human)
+    System.LogAlways("[KCD2-MP] player.human type=" .. hType)
+    if hType == "table" or hType == "userdata" then
+        local fType = "nil"
+        pcall(function() fType = type(player.human.IsInDialog) end)
+        System.LogAlways("[KCD2-MP] player.human.IsInDialog type=" .. tostring(fType))
+        if fType == "function" then
+            local v = nil
+            local ok, err = pcall(function() v = player.human:IsInDialog() end)
+            System.LogAlways("[KCD2-MP] human:IsInDialog() ok=" .. tostring(ok)
+                .. " val=" .. tostring(v) .. " valtype=" .. type(v)
+                .. (ok and "" or (" err=" .. tostring(err))))
+        end
+    end
+    local dType = type(Dialog)
+    System.LogAlways("[KCD2-MP] Dialog global type=" .. dType)
+    if dType == "table" then
+        local sType = "nil"
+        pcall(function() sType = type(Dialog.IsSoulInDialog) end)
+        System.LogAlways("[KCD2-MP] Dialog.IsSoulInDialog type=" .. tostring(sType))
+        if sType == "function" and player.soul then
+            local wuid = nil
+            pcall(function() wuid = player.soul:GetId() end)
+            System.LogAlways("[KCD2-MP] player.soul:GetId() -> " .. tostring(wuid) .. " (" .. type(wuid) .. ")")
+            if wuid ~= nil then
+                local v = nil
+                local ok, err = pcall(function() v = Dialog.IsSoulInDialog(wuid) end)
+                System.LogAlways("[KCD2-MP] Dialog.IsSoulInDialog(wuid) ok=" .. tostring(ok)
+                    .. " val=" .. tostring(v) .. (ok and "" or (" err=" .. tostring(err))))
+            end
+        end
+    end
+    System.LogAlways("[KCD2-MP] === END ===")
+end
+
 -- ===== WO-65 — ghost civic isolation: Phase 0 probe =====
 --
 -- WO-34 proved a ghost is a full crime victim (real fines, jail, settlement
@@ -8390,6 +8445,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_test_run",     "KCD2MP_TestRunAnim()",   "Test 3d_relaxed_run_turn_strafe on ghost")
     System.AddCCommand("mp_terrain",      "KCD2MP_TerrainCheck()",  "Check player/ghost vs terrain height")
     System.AddCCommand("mp_probe_stance", "KCD2MP_ProbeStance()",   "Log player stance value (for crouch detection calibration)")
+    System.AddCCommand("mp_probe_dialog", "KCD2MP_ProbeDialog()",   "WO-88: log whether human:IsInDialog / Dialog.IsSoulInDialog exist and what they read right now -- run inside and outside a conversation; read-only")
     System.AddCCommand("mp_probe_contexts", "KCD2MP_ProbeContexts()", "WO-65: dump script-context isolation surface (Contexts global, soul/human methods, per-context HasScriptContext on ghost + player) -- read-only")
     System.AddCCommand("mp_ghost_isolate", 'KCD2MP_SetGhostIsolate("%LINE")', "WO-65: ghost civic isolation (default on). On this build: RestrictDialog+InterruptDialogs only -- the script-context crime fix has no Lua setter here: mp_ghost_isolate on|off")
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
