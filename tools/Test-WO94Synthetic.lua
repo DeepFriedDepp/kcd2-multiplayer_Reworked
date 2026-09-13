@@ -314,6 +314,10 @@ do
     second()
     check("(c) mp_quest_sync off: no detection", countEvt("quest_approach", "", mark) == 0 and Q.enabled == false)
     KCD2MP_QuestSetSync("on")
+    -- the console's literal "%LINE" (no argument given on this build) is status, not an error
+    mark = #LOG
+    KCD2MP_QuestSetSync("%LINE")
+    check("(c) the literal %LINE the console passes reads as a bare status request", Q.enabled == true and countLog("QUEST sync is ON", mark) == 1 and countLog("expected on|off", mark) == 0)
     noErrs("(c)")
 end
 
@@ -472,6 +476,21 @@ do
     PPOS.x = 501
     second()
     check("(f) ordinary movement is not", countLog("CATCHUP-HAZARD teleport-local", mark) == 1)
+    -- per-emitter-tick watch: the live gap. A 19.5 m goto between two 20 ms
+    -- emits is caught; a gallop's 0.25 m per tick is not; outside a window
+    -- nothing is watched at all.
+    local tpBefore = countLog("CATCHUP-HAZARD teleport-local", mark)
+    KCD2MP._questTickPos = nil
+    for i = 1, 5 do NOW = NOW + 0.02; PPOS.x = PPOS.x + 0.25; KCD2MP_EmitState() end
+    check("(f) a gallop (0.25 m per 20 ms emit) is not a teleport", countLog("CATCHUP-HAZARD teleport-local", mark) == tpBefore)
+    NOW = NOW + 0.02; PPOS.x = PPOS.x - 4.1; PPOS.y = PPOS.y + 19.0; KCD2MP_EmitState()
+    check("(f) a 19.5 m jump in one 20 ms emit IS tagged (the live gap)",
+        countLog("CATCHUP-HAZARD teleport-local", mark) == tpBefore + 1
+        and (lastLog("CATCHUP-HAZARD teleport-local", mark) or ""):find("in one 20ms tick", 1, true) ~= nil,
+        lastLog("CATCHUP-HAZARD teleport-local", mark))
+    NOW = NOW + 2.0; PPOS.x = PPOS.x + 30; KCD2MP_EmitState()
+    check("(f) two emits 2 s apart are not compared (a suspended chain resuming is not a teleport)",
+        countLog("CATCHUP-HAZARD teleport-local", mark) == tpBefore + 1)
     -- chain suspension: a stale emitter stamp whose probe finds it fresh again
     KCD2MP.emitRunning = true
     KCD2MP._emitAliveAt = NOW - 2.0

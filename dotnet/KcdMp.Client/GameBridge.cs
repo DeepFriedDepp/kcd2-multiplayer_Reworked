@@ -1047,6 +1047,7 @@ public partial class GameBridge(ClientConfig config)
             tailForPause.StoryBeatDetected += OnLocalStoryBeat;
             tailForPause.LevelDetected += OnLocalLevel;              // WO-94
             tailForPause.CutsceneStateChanged += OnLocalCutscene;    // WO-94
+            tailForPause.PlayerTeleported += OnLocalTeleport;        // WO-94
 
             // A reconnect keeps the tail (and its last marker) alive, so seed
             // from it rather than waiting for the next checkpoint -- at a
@@ -1276,6 +1277,7 @@ public partial class GameBridge(ClientConfig config)
                 tailForPause2.StoryBeatDetected -= OnLocalStoryBeat;   // WO-90
                 tailForPause2.LevelDetected -= OnLocalLevel;            // WO-94
                 tailForPause2.CutsceneStateChanged -= OnLocalCutscene;  // WO-94
+                tailForPause2.PlayerTeleported -= OnLocalTeleport;      // WO-94
             }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
@@ -2184,6 +2186,13 @@ public partial class GameBridge(ClientConfig config)
             Console.WriteLine($"[quest] peer {who} catch-up window closed: {path}");
         }
         _ = ExecLuaAsync($"if KCD2MP_QuestCatchupRemote then KCD2MP_QuestCatchupRemote(\"{ghostId}\", \"{EscapeLua(who)}\", \"{path}\", {(begin ? 1 : 0)}) end");
+    }
+
+    private void OnLocalTeleport(string engineLine)
+    {
+        string tag = CatchupTag();
+        if (tag.Length > 0)
+            Console.WriteLine($"[quest] engine teleported the local player: {engineLine}{tag}");
     }
 
     private void OnLocalCutscene(bool active)

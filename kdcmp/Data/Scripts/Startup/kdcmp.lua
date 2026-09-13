@@ -297,6 +297,11 @@ function KCD2MP_EmitState()
     end
     KCD2MP._questDeadEdge = dead
 
+    -- WO-94: the per-tick teleport watch (live-verified gap: a 19 m Haste
+    -- `goto` slipped under the 1 Hz 60 m/s rule). Runs only while a
+    -- catch-up window is open; costs one subtraction otherwise.
+    if KCD2MP_QuestNotePos then KCD2MP_QuestNotePos(pos.x, pos.y, pos.z) end
+
     KCD2MP.emitSeq = KCD2MP.emitSeq + 1
     System.LogAlways(string.format("[KCD2-MP-DATA] %s %d %.3f %.3f %.3f %.3f %.4f %d %.2f %.2f",
         EMIT_VERSION, KCD2MP.emitSeq, os.clock(), pos.x, pos.y, pos.z, rotZ, flags, health, stamina))
@@ -8748,14 +8753,24 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
     System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%LINE")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
     -- WO-94: Shared Quests (main-story readiness prompt).
-    System.AddCCommand("mp_quest_sync",   'KCD2MP_QuestSetSync("%LINE")',   "WO-94: main-quest readiness prompt on|off (default on); bare = status line")
-    System.AddCCommand("mp_quest_radius", 'KCD2MP_QuestSetRadius("%LINE")', "WO-94: proximity radius in metres for approaching a main-quest beat (default 35)")
-    System.AddCCommand("mp_quest_window", 'KCD2MP_QuestSetWindow("%LINE")', "WO-94: seconds a catch-up hazard window stays open after a fire (default 120)")
+    -- LIVE-VERIFIED TRAP (2026-09-13): on this build the console REFUSES an
+    -- argument to any Lua-registered command -- "[Warning] Too many arguments
+    -- for: mp_quest_radius" -- and passes the literal text "%LINE" when
+    -- there is none (mp_enable_aggro answered "got '%LINE'"). That is true of
+    -- every %LINE command in this file, WO-17's included. So: status/toggle
+    -- commands here take NO argument, and anything that needs a value is
+    -- typed as Lua with the console's # prefix, e.g. #KCD2MP_QuestSetRadius(50)
+    System.AddCCommand("mp_quest_sync",   'KCD2MP_QuestSetSync("")',        "WO-94: status line for the main-quest readiness prompt (toggle with mp_quest_on / mp_quest_off)")
+    System.AddCCommand("mp_quest_on",     'KCD2MP_QuestSetSync("on")',      "WO-94: enable the main-quest readiness prompt (default)")
+    System.AddCCommand("mp_quest_off",    'KCD2MP_QuestSetSync("off")',     "WO-94: disable the main-quest readiness prompt (rollback: no detection, no prompt)")
+    System.AddCCommand("mp_quest_radius", 'KCD2MP_QuestSetRadius("%LINE")', "WO-94: the console drops arguments on this build -- type #KCD2MP_QuestSetRadius(50) instead (metres, default 35)")
+    System.AddCCommand("mp_quest_window", 'KCD2MP_QuestSetWindow("%LINE")', "WO-94: the console drops arguments on this build -- type #KCD2MP_QuestSetWindow(180) instead (seconds, default 120)")
     System.AddCCommand("mp_quest_status", "KCD2MP_QuestStatus()",           "WO-94: log quest sync state and the current quest's beats with distances")
     System.AddCCommand("mp_quest_yes",    "KCD2MP_QuestAnswer(true)",       "WO-94: answer the readiness prompt YES (same as F11) -- fires wh_concept_HasteTrigger for the peer's beat")
     System.AddCCommand("mp_quest_no",     "KCD2MP_QuestAnswer(false)",      "WO-94: answer the readiness prompt NO (same as F12)")
-    System.AddCCommand("mp_quest_fire",   'KCD2MP_QuestFire("%LINE", "console")', "WO-94 live probe: fire a REGISTERED main-quest beat <quest>.<trigger> directly (disposable save!)")
-    System.AddCCommand("mp_quest_test_prompt", 'KCD2MP_QuestTestPrompt("%LINE")', "WO-94 live probe: show the readiness prompt for <quest>.<trigger> (default: first registered beat) with no peer, to test F11/F12 and the overlay")    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
+    System.AddCCommand("mp_quest_fire",   'KCD2MP_QuestFire("%LINE", "console")', "WO-94 live probe: the console drops arguments on this build -- type #KCD2MP_QuestFire(\"quest.trigger\") (disposable save!)")
+    System.AddCCommand("mp_quest_test_prompt", 'KCD2MP_QuestTestPrompt("")', "WO-94 live probe: show the readiness prompt for the first registered beat with no peer (F11/F12 + overlay test); a specific beat: #KCD2MP_QuestTestPrompt(\"quest.trigger\")")
+    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
     System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%LINE")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
     System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
 
@@ -9578,6 +9593,27 @@ function KCD2MP_QuestWindowTick(now)
     end
 end
 
+-- Per-emitter-tick teleport watch (20 ms). A gallop covers ~0.25 m per tick;
+-- a `goto` covers the whole distance in one. Anything over 4 m between two
+-- consecutive emits less than 0.3 s apart is a teleport, whatever its size.
+-- Live-verified need: the first real catch-up moved the player 19.5 m
+-- (2346.8,2087.3 -> 2342.7,2068.3) and the 1 Hz / 60 m/s rule missed it.
+KCD2MP._questTickPos = nil
+function KCD2MP_QuestNotePos(x, y, z)
+    if not KCD2MP_QuestWindow() then KCD2MP._questTickPos = nil; return end
+    local now = os.clock()
+    local lp = KCD2MP._questTickPos
+    KCD2MP._questTickPos = { x = x, y = y, z = z, at = now }
+    if not lp then return end
+    local dt = now - lp.at
+    if dt <= 0 or dt > 0.3 then return end
+    local d = math.sqrt((x - lp.x)^2 + (y - lp.y)^2 + (z - lp.z)^2)
+    if d > 4.0 then
+        KCD2MP_QuestHazard("teleport-local", string.format("player jumped %.1fm in one %.0fms tick (%.1f,%.1f,%.1f -> %.1f,%.1f,%.1f)",
+            d, dt * 1000, lp.x, lp.y, lp.z, x, y, z))
+    end
+end
+
 -- The distinct line. Logs nothing outside a window, so every one of these
 -- that appears in kcd.log IS a candidate for "the catch-up caused this".
 function KCD2MP_QuestHazard(kind, detail)
@@ -9592,6 +9628,7 @@ end
 -- mp_quest_sync on|off, mp_quest_radius <m>, mp_quest_window <s>
 function KCD2MP_QuestSetSync(arg)
     local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+    if s == "%line" then s = "" end   -- the console passes the literal when no argument is given
     if s == "on" then Q.enabled = true
     elseif s == "off" then Q.enabled = false; Q.prompt = nil
     elseif s ~= "" and s ~= "%line" then mp_log("mp_quest_sync: expected on|off, got '" .. s .. "'"); return end

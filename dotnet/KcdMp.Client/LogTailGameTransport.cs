@@ -260,6 +260,24 @@ public sealed class LogTailGameTransport : IGameTransport
 
     private const string LevelBanner = " Loading level ";
 
+    /// <summary>
+    /// WO-94: the engine's own player-teleport line,
+    /// "TeleportPlayer Player 'Dude' (alive, health=  100.00/  100.00) BEFORE pos=&lt;2346.77 2087.35 111.57&gt; ..."
+    /// (observed live 2026-09-13 on the first real catch-up fire). Raised with
+    /// the raw line so the hazard logger can quote it; a `goto` of any size
+    /// produces exactly one of these, which the position-delta rules cannot
+    /// promise.
+    /// </summary>
+    public event Action<string>? PlayerTeleported;
+
+    private void ProcessTeleportMarker(ReadOnlySpan<char> line)
+    {
+        int at = line.IndexOf("TeleportPlayer Player 'Dude'", StringComparison.Ordinal);
+        if (at < 0) return;
+        try { PlayerTeleported?.Invoke(line[at..].ToString()); }
+        catch (Exception ex) { Console.WriteLine($"[quest] teleport handler threw: {ex.Message}"); }
+    }
+
     private void ProcessLevelMarker(ReadOnlySpan<char> line)
     {
         int at = line.IndexOf(LevelBanner, StringComparison.Ordinal);
@@ -529,6 +547,7 @@ public sealed class LogTailGameTransport : IGameTransport
             ProcessPauseMarkers(line);
             ProcessStoryMarkers(line);
             ProcessLevelMarker(line);   // WO-94
+            ProcessTeleportMarker(line); // WO-94
             return;
         }
 
