@@ -2330,6 +2330,55 @@ function KCD2MP_SetNpcDeathSync(arg)
     mp_log("NPC-DEATH sync " .. (KCD2MP.npcDeathSync and "enabled" or "disabled (pre-WO-86 behaviour: corpse body-follow on either source, no announce, no apply)"))
     KCD2MP_EmitEvent("npc_deathsync", KCD2MP.npcDeathSync and "on" or "off")
 end
+-- WO-90: divergence release. When the local engine repeatedly drags a
+-- puppeted NPC far away from where the inbound stream is putting it, the two
+-- worlds are at different story beats and no amount of position smoothing can
+-- reconcile them -- the body belongs to whichever world is actually using it.
+-- The receiver gives up, releases the puppet and stands off for a cooldown.
+-- Thresholds are set from the 2026-09-12 field numbers: ordinary brain
+-- contention displaces 0.05-0.6 m, the story divergence displaced 57.24 m.
+-- `mp_npc_diverge on|off|<metres>`; off restores the pre-WO-90 behaviour
+-- (fight forever, log every 5 s) exactly, for a live A/B.
+KCD2MP.npcDiverge          = true
+local MP_NPC_DIVERGE_M          = 8.0    -- metres in one tick that cannot be footwork
+local MP_NPC_DIVERGE_HITS       = 3      -- far readings needed inside the window
+local MP_NPC_DIVERGE_WINDOW_S   = 30.0   -- sliding window
+local MP_NPC_DIVERGE_COOLDOWN_S = 60.0   -- how long the name refuses to re-puppet
+KCD2MP._npcDivergeUntil    = {}          -- name -> os.clock() the stand-off ends
+KCD2MP._npcDivergeN        = 0
+
+-- `mp_npc_diverge on|off|<metres>`. A bare number sets the distance threshold
+-- and leaves the release enabled, so the field can widen or tighten it without
+-- a rebuild.
+function KCD2MP_SetNpcDiverge(arg)
+    local s = tostring(arg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    local n = tonumber(s)
+    if s == "" or s == "%line" then
+        -- Bare invocation reports, like mp_weather. The console substitutes
+        -- the literal "%LINE" when no argument was typed.
+        mp_log(string.format("NPC-DIVERGE release is %s (threshold %.1fm, %d hits in %.0fs,"
+            .. " %.0fs stand-off; released %d so far). Usage: mp_npc_diverge on|off|<metres>",
+            KCD2MP.npcDiverge and "ON" or "OFF", MP_NPC_DIVERGE_M, MP_NPC_DIVERGE_HITS,
+            MP_NPC_DIVERGE_WINDOW_S, MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN or 0))
+        return
+    elseif n and n > 0 then
+        MP_NPC_DIVERGE_M = n
+        KCD2MP.npcDiverge = true
+    elseif s == "on" or s == "1" or s == "true" then
+        KCD2MP.npcDiverge = true
+    elseif s == "off" or s == "0" or s == "false" then
+        KCD2MP.npcDiverge = false
+        KCD2MP._npcDivergeUntil = {}   -- drop stand-offs so the rollback is immediate
+    else
+        mp_log("mp_npc_diverge: expected 'on', 'off' or a distance in metres, got '" .. tostring(arg) .. "'")
+        return
+    end
+    mp_log(string.format("NPC-DIVERGE release %s (threshold %.1fm, %d hits in %.0fs, %.0fs stand-off; released %d so far)",
+        KCD2MP.npcDiverge and "enabled" or "disabled (pre-WO-90: fight forever)",
+        MP_NPC_DIVERGE_M, MP_NPC_DIVERGE_HITS, MP_NPC_DIVERGE_WINDOW_S,
+        MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN or 0))
+end
+
 KCD2MP.npcPuppetRunning  = false
 KCD2MP._npcPuppetAliveAt = nil
 
@@ -2434,6 +2483,46 @@ function KCD2MP_EnableNpcProximity(arg)
     return true
 end
 
+-- WO-90: entity-name families that must NEVER enter NPC sync, in any role --
+-- not tracked, not claimed, not puppeted, not accepted inbound.
+--
+-- "DialogTwin_<soul>": the engine spawns one of these per participant for
+-- every staged conversation, INCLUDING "DialogTwin_Dude" for the local
+-- player's own character, and hangs the conversation camera off it. The
+-- 2026-09-12 field logs show the link explicitly, on both machines:
+--   MasterSlaveManager is setting context: '5' for entities 'DialogTwin_Dude'
+--   -> 'DialogTwin_DudeCharacterCameraAttachment'
+-- These are class NPC and their names pass the ^[%w_]+$ authored-name test,
+-- so before this change they were tracked, claimed and puppeted exactly like
+-- a world NPC. Because both machines name them identically, one player's
+-- conversation rig was driven by the OTHER player's copy: the host's own
+-- DialogTwin_Dude became a puppet 1.2 s after the host opened a conversation
+-- with Hans (host kcd.log 234102, 21:02:30.6) and was immediately rendered at
+-- "anim DialogTwin_Dude -> sprint spd=10.62" -- a camera rig snapped across
+-- the staging area. The joiner's own twin took the same treatment four times
+-- (j2 kcd.log 158503/159446/160164/162965, apparent speeds 7.6 to 28.1 m/s).
+-- The relay granted eight claims on DialogTwin_* names, held up to 618 s.
+-- Nothing about a per-conversation stand-in is shareable: each world stages
+-- its own conversation. See docs/WO-90-findings.md finding 3.
+--
+-- "kcd2mp_<id>": this mod's own ghost bodies. mp_is_mod_entity below tests by
+-- entity REFERENCE, which goes stale after a save load while a same-named
+-- body still exists in the world -- so a reloaded client tracked its peer's
+-- ghost as if it were a world NPC (relay log, 15 attempts at 21:58:19-23,
+-- all refused by WO-66's reserved-name gate). The relay already rejects
+-- these (Protocol.NpcReservedNamePrefix); this stops the local side spending
+-- one of only maxTracked=5 slots on a body it spawned itself.
+local MP_NPC_NAME_EXCLUDE = { "DialogTwin_", "kcd2mp_" }
+
+local function mp_is_excluded_npc_name(name)
+    if not name or name == "" then return true end
+    for i = 1, #MP_NPC_NAME_EXCLUDE do
+        local prefix = MP_NPC_NAME_EXCLUDE[i]
+        if string.sub(name, 1, #prefix) == prefix then return true end
+    end
+    return false
+end
+
 -- Is this entity one of ours (a ghost or a ghost's horse)? Checked by
 -- reference against the registries, NOT by name -- KCD2MP_ApplyGhostName
 -- renames ghost entities to the player's nick (WO-26), so a name prefix
@@ -2496,8 +2585,10 @@ local function mp_npc_rescan()
             local name = e:GetName()
             -- Only plain authored names travel: they are the cross-client
             -- key, and anything else (spaces, renames) could not be looked
-            -- up on the other side anyway.
-            if name and string.find(name, "^[%w_]+$") then
+            -- up on the other side anyway. WO-90: and never an engine
+            -- conversation stand-in or one of our own ghost bodies.
+            if name and string.find(name, "^[%w_]+$")
+               and not mp_is_excluded_npc_name(name) then
                 local ep = e:GetWorldPos()
                 local dx, dy = ep.x - pp.x, ep.y - pp.y
                 local d = math.sqrt(dx*dx + dy*dy)
@@ -2558,7 +2649,8 @@ local function mp_drag_sensor()
             local cls = e.class
             if (cls == "NPC" or cls == "NPC_Female") and not mp_is_mod_entity(e) then
                 local name = e:GetName()
-                if name and string.find(name, "^[%w_]+$") then
+                if name and string.find(name, "^[%w_]+$")
+                   and not mp_is_excluded_npc_name(name) then   -- WO-90
                     local dead, ko = false, false
                     if e.actor then
                         pcall(function() dead = e.actor:IsDead() == true end)
@@ -2780,6 +2872,22 @@ end
 -- Receiving side. Called by the agent for each NpcStateDown (0x27). Never
 -- spawns anything: an NPC not loaded in this world is simply not ours to move.
 function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
+    -- WO-90: refuse an inbound stream for a name that must never be synced,
+    -- whatever the sender believes. The send-side exclusion above stops US
+    -- emitting these; this stops a peer on an older build (or with the
+    -- exclusion rolled back) from driving our conversation camera rig or our
+    -- own ghost body. Logged once per name so a mixed-version session is
+    -- visible in the field log rather than silent.
+    if mp_is_excluded_npc_name(name) then
+        KCD2MP._npcNameRefused = KCD2MP._npcNameRefused or {}
+        if not KCD2MP._npcNameRefused[name] then
+            KCD2MP._npcNameRefused[name] = true
+            mp_log("NPC-SYNC refusing inbound stream for excluded name '" .. tostring(name)
+                .. "' (WO-90: engine conversation stand-in or our own ghost body)")
+        end
+        return
+    end
+
     local e = System.GetEntityByName(name)
     if not e then return end
 
@@ -2791,6 +2899,21 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     end
 
     local p = KCD2MP.npcPuppets[name]
+
+    -- WO-90: while a divergence stand-off is running for this name, do not
+    -- build a new puppet for it -- that is what makes the release stick
+    -- rather than being undone by the very next inbound packet. An existing
+    -- puppet is never touched here (there is none: the release deleted it),
+    -- and once the stand-off lapses the name resumes normally.
+    if not p then
+        local standoff = KCD2MP._npcDivergeUntil[name]
+        if standoff then
+            if os.clock() < standoff then return end
+            KCD2MP._npcDivergeUntil[name] = nil
+            mp_log("NPC-DIVERGE " .. tostring(name) .. ": stand-off over, accepting the stream again")
+        end
+    end
+
     if not p then
         local cur = e:GetWorldPos()
         p = { cx = cur.x, cy = cur.y, cz = cur.z, cr = rot, animTag = "idle" }
@@ -3161,6 +3284,81 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         end
                         if not matched and #p.attr < 6 then
                             p.attr[#p.attr + 1] = { x = ap.x, y = ap.y, n = 1 }
+                        end
+
+                        -- WO-90: stop fighting a world that disagrees.
+                        --
+                        -- The counter above has always measured exactly the
+                        -- thing that hurts and has never acted on it. In the
+                        -- 2026-09-12 field session the host's copy of Hans
+                        -- read 57.24 m from our last write, over and over,
+                        -- for 38 s (host kcd.log 391403-393871, 21:40:50 to
+                        -- 21:41:28) while the joiner -- nine and a half
+                        -- minutes further along the same quest -- held the
+                        -- claim on him and streamed him from the lake. The
+                        -- local engine wanted Hans at the camp because the
+                        -- host's own quest needed him there. Neither side was
+                        -- wrong: the two worlds were at different story
+                        -- beats, and one NPC cannot be in both.
+                        --
+                        -- Displacements at this scale are not combat
+                        -- footwork (the ordinary contention this counter sees
+                        -- is 0.05-0.6 m). They mean the local brain is
+                        -- driving this body somewhere else entirely, and
+                        -- every tick we spend dragging it back is the "severe
+                        -- jitter" the field reported -- and, worse, it is what
+                        -- made the NPC unusable for the player whose own
+                        -- progression needed it (findings 5, 6 and 8).
+                        --
+                        -- So: hand the body back. Release the puppet, let the
+                        -- local world own it, and refuse to re-puppet that
+                        -- name for a cooldown so the release is not undone by
+                        -- the next inbound packet. Deliberately receiver-side
+                        -- and one-sided -- it needs no agreement from the
+                        -- other client, no wire change and no quest model,
+                        -- and it self-heals when the worlds converge again.
+                        --
+                        -- Counted in a sliding window rather than on
+                        -- consecutive ticks because that is the shape the
+                        -- field data actually has: 10 far readings in 38 s,
+                        -- not 760 (we write every tick, so most ticks read
+                        -- back exactly where we put it; the engine yanks it
+                        -- away intermittently).
+                        if KCD2MP.npcDiverge and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
+                            local keep = {}
+                            for _, t0 in ipairs(p.farHits or {}) do
+                                if (now - t0) <= MP_NPC_DIVERGE_WINDOW_S then keep[#keep + 1] = t0 end
+                            end
+                            keep[#keep + 1] = now
+                            p.farHits = keep
+                            if #keep >= MP_NPC_DIVERGE_HITS then
+                                mp_log(string.format(
+                                    "NPC-DIVERGE %s: local world moved it %.1fm from our write, %d times in %.0fs"
+                                    .. " -- releasing the puppet and leaving it to this world for %.0fs"
+                                    .. " (WO-90; `mp_npc_diverge off` to restore the pre-WO-90 tug-of-war)",
+                                    name, math.sqrt(fx*fx + fy*fy), #keep, MP_NPC_DIVERGE_WINDOW_S,
+                                    MP_NPC_DIVERGE_COOLDOWN_S))
+                                KCD2MP.npcPuppets[name] = nil
+                                KCD2MP._npcDivergeUntil[name] = now + MP_NPC_DIVERGE_COOLDOWN_S
+                                KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
+                                -- Tell the player, at most once a minute: an
+                                -- NPC that suddenly stops matching the other
+                                -- player's world is otherwise inexplicable,
+                                -- and this is the one moment where saying
+                                -- "you are at different points in the story"
+                                -- actually helps. The agent's own story layer
+                                -- (WO-90, 0x37/0x38) names WHICH points when
+                                -- both clients are new enough to carry it.
+                                if (now - (KCD2MP._npcDivergeToastAt or -1e9)) >= 60.0 then
+                                    KCD2MP._npcDivergeToastAt = now
+                                    pcall(function()
+                                        KCD2MP_ShowNativeToast(
+                                            "KCD2-MP: " .. tostring(name) .. " is at a different point in your"
+                                            .. " friend's story -- following your own quest instead")
+                                    end)
+                                end
+                                return
+                            end
                         end
                     end
                 end
@@ -3572,6 +3770,37 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         "[KCD2-MP] spawn verify ghost '%s': requested class=%s soul=%s guid=%s | resolved class=%s soul=%s",
         tostring(id), facePick.className, facePick.soulName, facePick.guid,
         tostring(resolvedClass), tostring(resolvedSoul)))
+
+    -- WO-90: does this body actually HAVE a model?
+    --
+    -- The 2026-09-12 prologue report was "nametags only, no model", and the
+    -- logs bear it out: the prologue ghost could not resolve a single
+    -- animation by name (GetAnimationLength(0, ...) = 0 for all four probe
+    -- clips, host kcd.log 100655/100717) while the same probe succeeded on a
+    -- post-switch ghost, and the engine printed "Combat actor init failed for
+    -- actor 'kcd2mp_1'" 24 times against that one entity -- the only body in
+    -- the whole session that ever failed it (24/24, vs 106/106 and 340/340
+    -- successes for the two later ghosts). An entity with a transform, an
+    -- inventory and script contexts but no character instance on slot 0 is
+    -- exactly what "nametag, no model" looks like.
+    --
+    -- Every mod-side call around that spawn reported success, because nothing
+    -- ever asked the one question that distinguishes the two cases. This does.
+    -- Read-only, one call, at a spawn that already logs four other lines --
+    -- and it turns a whole class of "the ghost was invisible" report from a
+    -- log-archaeology exercise into a fact recorded at the moment it happens.
+    -- docs/WO-90-findings.md finding 1.
+    local cdf = nil
+    pcall(function() cdf = entity:GetCharacterFileName(0) end)
+    if cdf == nil or tostring(cdf) == "" then
+        System.LogAlways(string.format(
+            "[KCD2-MP] SPAWN NO MODEL ghost '%s': GetCharacterFileName(0) is %s -- the body has no"
+            .. " character instance on slot 0 and will render as nothing (nameplate only)."
+            .. " This is the WO-90 finding-1 signature; report it with the kcd.log.",
+            tostring(id), cdf == nil and "nil" or "empty"))
+    else
+        System.LogAlways("[KCD2-MP] spawn model ghost '" .. tostring(id) .. "': " .. tostring(cdf))
+    end
 
     if resolvedClass ~= nil and tostring(resolvedClass) ~= facePick.className then
         -- Loud: this is the failure mode that produced the field report and
@@ -7173,9 +7402,26 @@ function KCD2MP_ApplyGhostIsolation(id, stage)
     end
 
     -- Dialog half (live-verified writes).
+    --
+    -- WO-90: the readback takes the ASKER's entity id. It was being called
+    -- with no argument, which the engine rejected at every single ghost spawn
+    -- on all three machines of the 2026-09-12 session:
+    --   [Warning] Validator: [Script Error] Wrong parameter type. Function
+    --   .IsDialogRestricted() expect parameter 1 of type Pointer
+    --   (Provided type Null)  > ... (scripts/startup/kdcmp.lua: 7178)
+    -- The pcall swallowed it, isR stayed nil, and the line still printed
+    -- "applied-but-not-readable" -- so the "verified" half of this check has
+    -- never actually run. The game's own use is the reference:
+    -- Scripts/Entities/AI/Shared/BasicAIActions.lua asks
+    -- `self.soul:IsDialogRestricted(player.id)` on the NPC being approached,
+    -- and returns a disabled talk hint when it is true. Restriction is
+    -- directional -- it gates being spoken TO by a given asker -- so "is this
+    -- body restricted against the local player" is the only question worth
+    -- asking here, and it is the one that decides whether the ghost can be
+    -- talked to.
     local okR = pcall(function() e.soul:RestrictDialog(true) end)
     local isR = nil
-    pcall(function() isR = e.soul:IsDialogRestricted() end)
+    pcall(function() isR = e.soul:IsDialogRestricted(player and player.id) end)
     mp_log("Isolate[" .. tostring(id) .. "] RestrictDialog(true): ok=" .. tostring(okR)
         .. " readback=" .. tostring(isR)
         .. (isR == true and " (applied-and-verified)" or " (applied-but-not-readable)"))
@@ -7215,7 +7461,8 @@ function KCD2MP_SetGhostIsolate(arg)
                 ghost.isolated = nil
                 pcall(function() ghost.entity.soul:RestrictDialog(false) end)
                 local isR = nil
-                pcall(function() isR = ghost.entity.soul:IsDialogRestricted() end)
+                -- WO-90: same malformed readback as the apply half above.
+                pcall(function() isR = ghost.entity.soul:IsDialogRestricted(player and player.id) end)
                 mp_log("Isolate[" .. tostring(id) .. "] RestrictDialog(false): readback=" .. tostring(isR))
             end
             n = n + 1
@@ -8479,6 +8726,7 @@ local ok, err = pcall(function()
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
+    System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%LINE")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
     System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
     System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%LINE")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
     System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")

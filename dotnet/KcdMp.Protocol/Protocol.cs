@@ -624,7 +624,44 @@ namespace KcdMp.Wire;
 /// immediately cannot help, so the agent stops reconnecting on sight of this
 /// rather than looping.
 ///
-/// Free type bytes for new features: 0x37 and up.
+/// ---- Story progress layer (WO-90) ----
+///
+/// C→S  0x37  StoryBeatUp:   [kind:1][len:1][text utf8]                  (var)
+/// S→C  0x38  StoryBeatDown: [sourceGhostId:1][kind:1][len:1][text utf8] (var)
+///
+/// The first quest-state anything this project has carried. Before WO-90 the
+/// mod synchronized position, animation, vitals, combat, NPCs, appearance,
+/// horses, weather, world time, dropped items, dice and voice -- and nothing
+/// whatsoever about where each player was in the story. Two players ran two
+/// independent campaigns in one shared NPC name space, which is what the
+/// 2026-09-12 session's story-beat findings are all downstream of.
+///
+/// `text` is the engine's own quest+objective localisation key, taken
+/// verbatim from the line kcd.log already writes at every checkpoint save:
+///
+///   InitiateSaveGame() type: AutoSave, overwriteSaveId: -1,
+///     questNameOverride: '@qname_prepadeni_KsSs|@prepadeni_nasleduj_ptacka_ZyXB'
+///
+/// Verbatim on purpose: the key is byte-identical on both machines for the
+/// same objective (confirmed across every shared beat in that session), so
+/// exact string equality is a sound "are we at the same point" test, while
+/// any prettifying is display-only and cannot affect the comparison.
+///
+/// **This layer is pure telemetry and deliberately changes no behaviour.** It
+/// exists so each client can NAME the divergence it is already reacting to
+/// locally (the receiver-side divergence release in kdcmp.lua, which needs no
+/// agreement from anyone). A checkpoint save is a coarse clock -- six markers
+/// in ninety minutes in the field logs -- which is precisely why it is not
+/// used to gate anything: for most of the session in which one player dragged
+/// the other's NPCs around, both clients' last-known objective was the SAME
+/// string. Anything that gated NPC sync on this comparison would have been
+/// silent through the actual damage. See docs/WO-90-findings.md.
+///
+/// Relayed verbatim to every other client with the sender prefixed, like
+/// HorseInfo and Weather: a fact about the sender, not about the shared
+/// world, with no arbitration to do.
+///
+/// Free type bytes for new features: 0x39 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -678,6 +715,7 @@ public static class Protocol
     public const byte NpcDamageUp    = 0x30;
     public const byte ItemDropUp     = 0x32;
     public const byte ItemClaimUp    = 0x34;
+    public const byte StoryBeatUp    = 0x37;
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -711,6 +749,7 @@ public static class Protocol
     public const byte ItemDropDown     = 0x33;
     public const byte ItemClaimDown    = 0x35;
     public const byte ServerFull       = 0x36;
+    public const byte StoryBeatDown    = 0x38;
     public const byte Ack              = 0xFF;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
@@ -823,6 +862,65 @@ public static class Protocol
     /// this constant and the "kcd2mp_" spawn names in kdcmp.lua.
     /// </summary>
     public const string NpcReservedNamePrefix = "kcd2mp_";
+
+    /// <summary>
+    /// WO-90: entity-name prefix the ENGINE reserves for per-conversation
+    /// stand-ins. Every staged conversation spawns one
+    /// "DialogTwin_&lt;soulName&gt;" per participant, including
+    /// "DialogTwin_Dude" for the local player's own character, and the
+    /// conversation camera is attached to it (the 2026-09-12 field logs show
+    /// <c>MasterSlaveManager is setting context: '5' for entities
+    /// 'DialogTwin_Dude' -&gt; 'DialogTwin_DudeCharacterCameraAttachment'</c> on
+    /// both machines).
+    ///
+    /// They are class NPC with plain authored names, so the mod's scanner
+    /// treated them as world NPCs: both clients emitted state for
+    /// identically-named twins and each drove the other's conversation rig.
+    /// Observed: the host's own DialogTwin_Dude became a puppet 1.2 s after
+    /// the host opened a conversation, rendered at an apparent 10.6 m/s; the
+    /// joiner's own twin took the same treatment four times, up to 28.1 m/s.
+    /// Eight claims were granted on DialogTwin_* names, held up to 618 s.
+    ///
+    /// A conversation stand-in is private to the world that staged it and is
+    /// never shareable, so the relay refuses it on EVERY path -- including
+    /// the damage authority's ambient stream, which the reserved-name gate
+    /// above never covered because the authority returns before reaching it.
+    /// </summary>
+    public const string NpcDialogTwinNamePrefix = "DialogTwin_";
+
+    /// <summary>
+    /// WO-90: true for an entity name that must never cross the wire in an
+    /// NpcState packet, whoever sends it and whatever their role. Covers this
+    /// mod's own spawns (<see cref="NpcReservedNamePrefix"/>) and the engine's
+    /// conversation stand-ins (<see cref="NpcDialogTwinNamePrefix"/>).
+    ///
+    /// Checked before any claim bookkeeping, so a refused packet mutates
+    /// nothing -- WO-66's invariant. The Lua side excludes the same families
+    /// on both the send and apply paths (mp_is_excluded_npc_name in
+    /// kdcmp.lua); this is the defence that still holds when one client runs
+    /// an older build.
+    /// </summary>
+    /// <summary>
+    /// WO-90: upper bound on a StoryBeat (0x37/0x38) text field. The engine's
+    /// quest+objective keys in the field logs run to 47 characters
+    /// ("@qname_prepadeni_KsSs|@prepadeni_nasleduj_ptacka_ZyXB" is 52); 128
+    /// leaves generous room for longer quest names without letting a peer
+    /// push an unbounded string at the toast layer.
+    /// </summary>
+    public const int MaxStoryBeatTextLen = 128;
+
+    /// <summary>
+    /// WO-90: StoryBeat kind byte. 1 is the engine's quest+objective
+    /// localisation key from a checkpoint save. Deliberately the only kind
+    /// defined: cutscene and dialogue edges are detectable on the same log
+    /// channel but nothing consumes them yet, and shipping a kind with no
+    /// consumer would be a wire commitment made on speculation.
+    /// </summary>
+    public const byte StoryBeatKindObjective = 1;
+
+    public static bool IsNeverSyncedNpcName(string npcName) =>
+        npcName.StartsWith(NpcReservedNamePrefix, StringComparison.OrdinalIgnoreCase)
+        || npcName.StartsWith(NpcDialogTwinNamePrefix, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// NpcStateUp (0x26) payload bytes after the variable-length name:

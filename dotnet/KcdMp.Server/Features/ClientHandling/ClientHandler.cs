@@ -396,7 +396,12 @@ public class ClientHandler
 		MutedEcho,
 		/// <summary>WO-66: claimed-NPC update implying implausible movement.</summary>
 		RejectSpeed,
-		/// <summary>WO-66: NPC claim for one of the mod's own spawn names.</summary>
+		/// <summary>WO-66: NPC state for one of the mod's own spawn names.
+		/// WO-90 widened this to every never-synced name family (see
+		/// Protocol.IsNeverSyncedNpcName -- mod spawns plus the engine's
+		/// "DialogTwin_*" conversation stand-ins) and moved the check ahead
+		/// of the damage-authority branch, so it now refuses the authority's
+		/// ambient stream too, not only a non-authority's claim.</summary>
 		RejectReservedName,
 		/// <summary>WO-66: update for a claimed NPC from a sender who is not
 		/// the current claim holder (a rival, or a former owner's late
@@ -491,6 +496,19 @@ public class ClientHandler
 	{
 		lock (_lock)
 		{
+			// WO-90: names that are never shareable at all, checked FIRST so
+			// the packet mutates nothing -- no claim, no timestamp, no
+			// baseline (the WO-66 invariant). Deliberately ahead of the
+			// damage-authority branch below: that branch returns Broadcast
+			// without ever reaching the old reserved-name gate, which is why
+			// the authority's ambient stream carried conversation stand-ins
+			// across all session (docs/WO-90-findings.md finding 3).
+			if (Protocol.IsNeverSyncedNpcName(npcName))
+			{
+				Interlocked.Increment(ref _rejectReservedName);
+				return NpcRoute.RejectReservedName;
+			}
+
 			var now = DateTime.UtcNow;
 			bool claimed = _npcClaims.TryGetValue(npcName, out var claim);
 			if (claimed
@@ -544,13 +562,10 @@ public class ClientHandler
 
 			if (!claimed)
 			{
-				// A new claim. Never for one of our own spawns: see
-				// Protocol.NpcReservedNamePrefix.
-				if (npcName.StartsWith(Protocol.NpcReservedNamePrefix, StringComparison.OrdinalIgnoreCase))
-				{
-					Interlocked.Increment(ref _rejectReservedName);
-					return NpcRoute.RejectReservedName;
-				}
+				// (The never-synced name families -- our own spawns and the
+				// engine's conversation stand-ins -- were refused at the top
+				// of this method, on every path rather than only here.)
+				//
 				// First claim wins, by relay arrival order. This packet seeds
 				// the speed-gate baseline; it is deliberately not speed-checked
 				// (there is nothing of THIS owner's to check it against).

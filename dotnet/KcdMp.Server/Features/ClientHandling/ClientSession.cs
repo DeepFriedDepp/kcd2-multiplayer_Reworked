@@ -325,7 +325,7 @@ public class ClientSession
                                 Name, Id, npcName);
                             break;
                         case ClientHandler.NpcRoute.RejectReservedName:
-                            _logger.Information("[WO66-REJECT] reserved-name '{Name}' (id={Id}) npc '{Npc}': claim refused for mod-spawned entity name.",
+                            _logger.Information("[WO66-REJECT] reserved-name '{Name}' (id={Id}) npc '{Npc}': refused, never-synced entity name (mod spawn or engine conversation stand-in).",
                                 Name, Id, npcName);
                             break;
                         case ClientHandler.NpcRoute.RejectStaleOwner:
@@ -452,6 +452,22 @@ public class ClientSession
                     await ReadExactAsync(body);
                     if (body[0] == payloadLen - 3)
                         _broadcastService.BroadcastWeather(this, body);
+                    continue;
+                }
+
+                // --- Story progress layer (WO-90) ---
+                // [kind:1][len:1][text]. A fact about the sender's own
+                // campaign, like HorseInfo -- nothing to arbitrate, so it is
+                // relayed verbatim with no authority gate. Receivers only
+                // report it.
+                if (type == Protocol.StoryBeatUp
+                    && payloadLen >= 2
+                    && payloadLen <= 2 + Protocol.MaxStoryBeatTextLen)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (body[1] == payloadLen - 2)
+                        _broadcastService.BroadcastStoryBeat(this, body);
                     continue;
                 }
 
@@ -681,6 +697,18 @@ public class ClientSession
         payload[0] = claimerId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.ItemClaimDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue a StoryBeatDown (0x38, WO-90). The body is the
+    /// upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueStoryBeat(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.StoryBeatDown, payload));
     }
 
     /// <summary>

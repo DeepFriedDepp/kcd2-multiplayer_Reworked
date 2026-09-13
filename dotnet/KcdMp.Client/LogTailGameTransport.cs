@@ -225,6 +225,22 @@ public sealed class LogTailGameTransport : IGameTransport
     public event Action<bool>? SkipTimeStateChanged;
 
     /// <summary>
+    /// Raised with the engine's quest+objective localisation key whenever the
+    /// local player crosses a checkpoint save (WO-90). The key is the
+    /// <c>questNameOverride</c> the game already writes to kcd.log and is
+    /// byte-identical on two machines at the same objective, which is what
+    /// makes it comparable across clients at all.
+    ///
+    /// Story progress is otherwise entirely untracked by this mod, so this is
+    /// the only signal of its kind. It is coarse -- a handful of markers an
+    /// hour -- and is used to REPORT divergence, never to gate anything.
+    ///
+    /// Raised on the tail loop's thread like the other events here;
+    /// subscribers must not block.
+    /// </summary>
+    public event Action<string>? StoryBeatDetected;
+
+    /// <summary>
     /// Which trigger action the current/most recent skip came from
     /// (Protocol.TimeSkipKind*). WO-11's live kcd.log diff bracketed bed
     /// sleep, wait and fast travel with the same AfterSkipTime observer and
@@ -329,6 +345,38 @@ public sealed class LogTailGameTransport : IGameTransport
             catch (Exception ex) { Console.WriteLine($"[pause] handler threw: {ex.Message}"); }
         }
     }
+
+    /// <summary>
+    /// WO-90: scans one raw engine log line for a quest-objective checkpoint
+    /// and raises <see cref="StoryBeatDetected"/> when the key CHANGES.
+    ///
+    /// Change-gated here rather than at the sender because the same objective
+    /// is saved repeatedly through a session (an autosave, then a manual
+    /// save, then a death reload's autosave all carry it), and a peer does
+    /// not need to hear the same string again. The parse itself is in
+    /// <see cref="StoryBeat.TryParseObjectiveMarker"/>, which is pinned by
+    /// tests to the real field lines.
+    /// </summary>
+    private void ProcessStoryMarkers(ReadOnlySpan<char> line)
+    {
+        if (!StoryBeat.TryParseObjectiveMarker(line, out string marker)) return;
+        if (string.Equals(marker, _lastStoryMarker, StringComparison.Ordinal)) return;
+
+        _lastStoryMarker = marker;
+        try { StoryBeatDetected?.Invoke(marker); }
+        catch (Exception ex) { Console.WriteLine($"[story] handler threw: {ex.Message}"); }
+    }
+
+    private string? _lastStoryMarker;
+
+    /// <summary>
+    /// The most recent quest objective this client crossed, or null before
+    /// the first checkpoint of the session. Read by the agent when a new peer
+    /// arrives, so a late joiner is told where we are rather than waiting for
+    /// our next checkpoint -- which, at a handful an hour, could be a long
+    /// wait.
+    /// </summary>
+    public string? LastStoryMarker => _lastStoryMarker;
 
     // -------------------------------------------------------------------------
 
@@ -440,6 +488,7 @@ public sealed class LogTailGameTransport : IGameTransport
             // on a [KCD2-MP-...] line, so checking only here costs nothing on
             // the hot (DATA-tagged) path.
             ProcessPauseMarkers(line);
+            ProcessStoryMarkers(line);
             return;
         }
 

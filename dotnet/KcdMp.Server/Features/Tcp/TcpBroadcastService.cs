@@ -170,6 +170,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays a StoryBeatUp (0x37) from <paramref name="source"/> to all other
+    /// ready clients as a StoryBeatDown (0x38) (WO-90). A fact about the
+    /// sender's own campaign -- no authority gate, nothing to arbitrate, and
+    /// receivers only report it.
+    /// </summary>
+    public void BroadcastStoryBeat(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueStoryBeat(source.Id, body);
+    }
+
+    /// <summary>
     /// Relays a WeatherUp (0x2E) from <paramref name="source"/> to all other
     /// ready clients as a WeatherDown (0x2F) (WO-40 Phase 3). Cosmetic and
     /// idempotent at the receiver (applied only on profile change), so no

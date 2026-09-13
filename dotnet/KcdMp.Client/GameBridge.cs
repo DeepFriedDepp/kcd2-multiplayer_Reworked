@@ -293,6 +293,18 @@ public partial class GameBridge(ClientConfig config)
     private uint _peerWorldTime;               // last clock any peer reported (TimeSkipDown)
     private DateTime _peerWorldTimeUtc = DateTime.MinValue;
 
+    // WO-90 story progress. The mod had no notion of where either player was
+    // in the campaign; these three fields are all of it. _localObjective is
+    // the last quest+objective key this client crossed, _peerObjective is the
+    // same per peer, and _storyDivergenceTold stops the same "you are at
+    // different points" line being repeated for an unchanged pair. Reporting
+    // only -- nothing in this class gates on them, deliberately (the marker
+    // is a checkpoint-coarse clock; see StoryBeat's class notes).
+    private string? _localObjective;
+    private readonly ConcurrentDictionary<byte, string> _peerObjective = new();
+    private readonly ConcurrentDictionary<byte, string> _storyDivergenceTold = new();
+    private Func<byte, string, Task>? _sendStoryBeat;
+
     // WO-88 finding 4: a reload convergence is no longer one fire-and-forget
     // ExecuteString. The target stays outstanding until a world-clock reading
     // proves the write landed (or the window closes), and every reading in
@@ -767,6 +779,13 @@ public partial class GameBridge(ClientConfig config)
         // packet of every body is a "first packet" again (freeze-only rule).
         _npcLastDead.Clear();
         _npcDeathAppliedUtc.Clear();
+        // WO-90: a peer's story position and the "we have diverged" latch are
+        // both keyed by per-connection ghost id, so neither survives a
+        // reconnect. Our OWN objective deliberately does survive -- it is a
+        // fact about this playthrough, not about the socket, and re-deriving
+        // it would mean waiting for the next checkpoint save.
+        _peerObjective.Clear();
+        _storyDivergenceTold.Clear();
         // WO-59: announce our clock once this connection's first world-time
         // reading arrives, so saves that sit days apart converge without
         // anyone having to sleep first (Thread B: the day/night split).
@@ -985,10 +1004,21 @@ public partial class GameBridge(ClientConfig config)
                 _ = ExecLuaAsync("if KCD2MP_ReportWorldTime then KCD2MP_ReportWorldTime() end");
             }
         }
+        // Story progress (WO-90): log-tail only, like pause and skip-time
+        // detection -- the marker is a raw engine log line and there is no
+        // other surface that carries it.
+        _sendStoryBeat = (kind, text) => SendStoryBeatAsync(stream, kind, text, cts.Token);
+
         if (_transport is LogTailGameTransport tailForPause)
         {
             tailForPause.PauseStateChanged += OnLocalPauseDetected;
             tailForPause.SkipTimeStateChanged += OnLocalSkipTime;
+            tailForPause.StoryBeatDetected += OnLocalStoryBeat;
+
+            // A reconnect keeps the tail (and its last marker) alive, so seed
+            // from it rather than waiting for the next checkpoint -- at a
+            // handful of markers an hour that wait can be most of a session.
+            _localObjective ??= tailForPause.LastStoryMarker;
         }
 
         var receiveTask     = ReceiveLoopAsync(stream, cts.Token);
@@ -1206,6 +1236,7 @@ public partial class GameBridge(ClientConfig config)
             {
                 tailForPause2.PauseStateChanged -= OnLocalPauseDetected;
                 tailForPause2.SkipTimeStateChanged -= OnLocalSkipTime;
+                tailForPause2.StoryBeatDetected -= OnLocalStoryBeat;   // WO-90
             }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
@@ -2006,6 +2037,73 @@ public partial class GameBridge(ClientConfig config)
     /// Puts one HorseInfoUp (0x2A) on the wire. An empty name means
     /// dismounted, or a mount whose identity the mod could not read.
     /// </summary>
+    // -------------------------------------------------------------------------
+    // Story progress (WO-90)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Puts one StoryBeatUp (0x37) on the wire: this client just crossed a
+    /// quest objective. Pure telemetry -- the receiver only ever reports it.
+    /// </summary>
+    private async Task SendStoryBeatAsync(NetworkStream stream, byte kind, string text, CancellationToken ct)
+    {
+        var body = StoryBeat.BuildUpPayload(kind, text);
+        var packet = new byte[3 + body.Length];
+        packet[0] = Protocol.StoryBeatUp;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)body.Length);
+        Buffer.BlockCopy(body, 0, packet, 3, body.Length);
+        await WritePacketAsync(stream, packet, ct);
+    }
+
+    /// <summary>
+    /// Our own checkpoint. Records it, tells the session, and re-checks every
+    /// known peer for divergence -- crossing a beat can just as easily CLOSE
+    /// a gap as open one, and a player who has caught up should stop being
+    /// told they are behind.
+    /// </summary>
+    private void OnLocalStoryBeat(string marker)
+    {
+        if (string.Equals(marker, _localObjective, StringComparison.Ordinal)) return;
+        _localObjective = marker;
+        Console.WriteLine($"[story] local objective -> {StoryBeat.Humanize(marker)}");
+
+        _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindObjective, marker);
+
+        foreach (var kv in _peerObjective)
+            ReportStoryDivergence(kv.Key, kv.Value);
+    }
+
+    /// <summary>
+    /// Says once, on screen, when this client and a peer are at different
+    /// objectives -- and says so again only when the pair changes. The point
+    /// is to make an NPC behaving oddly explicable: the receiver-side
+    /// divergence release in kdcmp.lua is already handing such NPCs back to
+    /// the local world, silently, and this is the sentence that explains why.
+    /// </summary>
+    private void ReportStoryDivergence(byte ghostId, string peerMarker)
+    {
+        string who = _ghostNames.TryGetValue(ghostId, out var dn) ? dn : $"player {ghostId}";
+        string? line = StoryBeat.DescribeDivergence(_localObjective, peerMarker, who);
+
+        if (line is null)
+        {
+            // Same beat (or one side unknown): clear the latch so a later
+            // divergence is reported afresh.
+            if (_storyDivergenceTold.TryRemove(ghostId, out _) && _localObjective is not null)
+                Console.WriteLine($"[story] {who} is on the same objective as us again");
+            return;
+        }
+
+        string key = $"{_localObjective}{peerMarker}";
+        if (_storyDivergenceTold.TryGetValue(ghostId, out var told)
+            && string.Equals(told, key, StringComparison.Ordinal)) return;
+        _storyDivergenceTold[ghostId] = key;
+
+        Console.WriteLine($"[story] divergence: {line}");
+        _ = ExecLuaAsync(
+            $"if KCD2MP_ShowNativeToast then KCD2MP_ShowNativeToast(\"{EscapeLua(line)}\") end");
+    }
+
     private async Task SendHorseInfoAsync(NetworkStream stream, string horseName, CancellationToken ct)
     {
         try
@@ -2726,7 +2824,14 @@ public partial class GameBridge(ClientConfig config)
                     // world-time poll (<=10 s), which is also a natural
                     // debounce against their position stream.
                     if (!_peerLastSeenUtc.ContainsKey(ghostId))
+                    {
                         _timeSyncPending = true;
+                        // WO-90: and tell the new arrival where we are in the
+                        // story. Checkpoints are rare enough that waiting for
+                        // our next one could mean they never hear it.
+                        if (_localObjective is string mine)
+                            _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindObjective, mine);
+                    }
                     _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
                     RefreshDiscordPeerCount();
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
@@ -3046,6 +3151,30 @@ public partial class GameBridge(ClientConfig config)
                         ushort wBlend = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(2 + wNameLen));
                         if (WeatherNamePattern.IsMatch(wProfile))
                             await ApplyWeatherAsync(wProfile, wBlend);
+                    }
+                }
+                else if (type == Protocol.StoryBeatDown
+                         && payloadLen >= 1 + 2
+                         && payloadLen <= 1 + 2 + Protocol.MaxStoryBeatTextLen)
+                {
+                    // Story progress (WO-90):
+                    // [sourceGhostId:1][kind:1][len:1][text utf8].
+                    //
+                    // The text is a peer-supplied string that ends up inside a
+                    // Lua literal, so it is length-checked here and escaped at
+                    // the call site (ReportStoryDivergence -> EscapeLua). It
+                    // drives a toast and a console line and nothing else --
+                    // deliberately: this layer reports divergence, it never
+                    // gates behaviour on it.
+                    byte sbSource = payload[0];
+                    byte sbKind   = payload[1];
+                    int  sbLen    = payload[2];
+                    if (sbKind == Protocol.StoryBeatKindObjective && payloadLen == 3 + sbLen && sbLen > 0)
+                    {
+                        string sbText = Encoding.UTF8.GetString(payload, 3, sbLen);
+                        _peerObjective[sbSource] = sbText;
+                        Console.WriteLine($"[story] ghost {sbSource} objective -> {StoryBeat.Humanize(sbText)}");
+                        ReportStoryDivergence(sbSource, sbText);
                     }
                 }
                 else if (type == Protocol.ItemDropDown && payloadLen == Protocol.ItemDropDownPayloadLen)
