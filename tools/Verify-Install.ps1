@@ -97,7 +97,11 @@ $AsmMarkers = @(
     # these still clears a death tag on a health=0 packet and never re-dresses
     # a respawned ghost's body.
     @{ File = 'KcdMpClient.dll'; Marker = 'body respawned';         Owner = 'WO-88 appearance-after-respawn fix' },
-    @{ File = 'KcdMpClient.dll'; Marker = 're-sending the convergence'; Owner = 'WO-88 reload time-sync convergence resend' }
+    @{ File = 'KcdMpClient.dll'; Marker = 're-sending the convergence'; Owner = 'WO-88 reload time-sync convergence resend' },
+    # 0.22.0 (WO-94). Shared Quests spans agent + pak; an agent that predates
+    # it drops StoryBeat kinds 2-4 and never raises the prompt.
+    @{ File = 'KcdMpClient.dll'; Marker = 'CATCH-UP FIRED HERE';    Owner = 'WO-94 Shared Quests (agent half)' },
+    @{ File = 'KcdMpClient.dll'; Marker = 'CATCHUP-HAZARD';         Owner = 'WO-94 catch-up hazard tagging' }
 )
 
 $PakMarkers = @(
@@ -129,7 +133,14 @@ $PakMarkers = @(
     @{ Marker = 'function KCD2MP_NpcRemoteDeath';  Owner = 'WO-86 NPC death apply (mod half)' },
     # 0.21.5 (WO-88, built in WO-89). Read-only diagnostic; absence just means
     # mp_probe_dialog is not yet available, no behavior depends on it.
-    @{ Marker = 'function KCD2MP_ProbeDialog';     Owner = 'WO-88 mp_probe_dialog' }
+    @{ Marker = 'function KCD2MP_ProbeDialog';     Owner = 'WO-88 mp_probe_dialog' },
+    # 0.22.0 (WO-94). The registry, the prompt and the hazard window live
+    # only in the pak; without a rebuild the agent talks to a mod that has
+    # no KCD2MP_QuestShowPrompt and every approach is a silent no-op.
+    @{ Marker = '@@WO94-MAINQUEST-REGISTRY-BEGIN@@'; Owner = 'WO-94 main-quest registry' },
+    @{ Marker = 'function KCD2MP_QuestShowPrompt'; Owner = 'WO-94 readiness prompt' },
+    @{ Marker = 'CATCHUP-HAZARD';                 Owner = 'WO-94 hazard window (mod half)' },
+    @{ Marker = 'MP_NPC_DIVERGE_COOLDOWN_S = 180'; Owner = 'WO-94 180 s divergence stand-off' }
 )
 
 function Test-Assembly($dir, $label) {
