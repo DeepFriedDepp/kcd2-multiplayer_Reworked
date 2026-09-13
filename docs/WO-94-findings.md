@@ -17,14 +17,18 @@ install root.
 
 ## 0. Answer first
 
-* **Built, wired end to end, 497 checks green, not run in a live game.**
-  Every live check reached a STOP point (§8) and the maintainer was not at
-  the keyboard. No game process existed at any point this session
-  **(observed: `tasklist` empty for KingdomCome/KcdMp at start; no live
-  channel was opened)**.
+* **Built, wired end to end, and the solo live ladder ran with the
+  maintainer at the keyboard on a disposable save (§7.2).** Observed in
+  `kcd.log`: the cheat gate is open, Haste is armed, proximity fires at the
+  radius with 7 s of lead at a run, **F11 fires exactly the prompted beat
+  and the engine drains a 14-trigger Haste plan**, F12 declines, the window
+  closes at 120 s, the rows draw and nothing else stops working
+  (maintainer's report). **Not live:** the two-machine path (approach
+  crossing the wire, peer prompt, peer-side hazard tags) and the two fixes
+  the ladder produced (§9), which are synthetic-only.
 * **Scope held.** The registry is exactly the 32 M-coded main quests; side
   quests, activities, events and DLC files have no entry and are refused on
-  every path (§3, §7a–b) **(synthetic 94/94)**.
+  every path (§3, §7.1 a–b) **(synthetic 101/101)**.
 * **Coverage is honest and smaller than the quest count.** 1,014 Haste
   triggers across the 32 quests; 138 carry a position; **53 are fireable**
   (positioned AND cumulative AND not namespaced AND not a Warhorse
@@ -426,21 +430,38 @@ Whole suite this session, all green: Lua 48 + 35 + 72 + 47 + 70 + **94** =
 `dotnet build KCD2-MP.sln`: 0 errors, the same 8 warnings as WO-89
 **(observed)**.
 
-### 7.2 Live — every one a STOP point, none run
+### 7.2 Live — the solo ladder, run 2026-09-13
 
-None of the following has happened. See §8 for exactly what the maintainer
-must do.
+Maintainer at the keyboard, disposable save near Troskovice (Trosky map),
+agent connected (the **0.21.5 agent** — the new agent was not deployed;
+only the pak was swapped, game closed, `Build-And-Install-Mod.ps1`,
+relaunch). Console commands were sent from the coding shell over the
+`:1403` channel and every result below was read from `kcd.log`; the key
+presses and the screen report are the maintainer's.
 
-1. `wh_concept_HasteEnable` bare query → does the cheat gate let it through.
-2. `mp_quest_test_prompt` → the two rows render at 160/184 and persist;
-   walking, looking, opening the inventory and fighting all still work
-   with the rows up.
-3. F11 / F12 on a real keyboard → `QUEST-CATCHUP FIRE` / `QUEST-PROMPT
-   declined` in `kcd.log`.
-4. `mp_quest_fire <beat>` on a **disposable save** → the engine's own
-   lines after the fire (WO-92 §10 rungs 1–3 apply verbatim).
-5. Two machines, real objectives differing → the approach crosses, the
-   prompt appears on the right side only, lead time is usable.
+| # | Check | Result **(observed)** |
+|---|---|---|
+| 0 | `wh_concept_HasteEnable` bare | engine printed `wh_concept_HasteEnable = 1 [REQUIRE_APP_RESTART]` — Haste armed at runtime |
+| 1 | inert trigger `03_debug.99_debug_home_NOT_IMPLEMENTED` | `[CONSOLE] Executing console command …` → `<HasteTrigger> name:'Haste.03_debug.99_debug_home_NOT_IMPLEMENTED' is being triggered from haste` → `<Trace> name:'Haste.03_debug.trace2' not implemented`. **No `[VF_CHEAT]` refusal — WO-92 §9 open question 1 is closed: the cheat gate is open under the launcher.** |
+| 2 | mod loaded, `mp_quest_status` | `QUEST sync is ON (32 main quests, 53 fireable beats, radius 35m, window 120s; current=nil level=nil …)` — nil because the old agent pushes neither |
+| 3 | context pushed by hand (`#KCD2MP_QuestSetLevel("trosecko")`, `#KCD2MP_QuestSetCurrent("socky")`) | `QUEST level is now 'trosecko'`, `QUEST current main quest: socky (M03 Laboratores, 1 fireable beats)`, then within one tick `QUEST-APPROACH socky._initAndStart (M03) at 19.5m -- announcing to peers` + the `quest_approach` event line — **proximity detection fires live** |
+| 4 | prompt raised (`#KCD2MP_QuestTestPrompt("socky._initAndStart")`) | `QUEST-PROMPT shown: TestPeer is nearing socky._initAndStart -- F11 catch up / F12 stay (no timeout)`; maintainer saw the rows and answered them by key |
+| 5 | **F11** (pressed by the maintainer — by accident, twice) | `QUEST-CATCHUP FIRE #1: wh_concept_HasteTrigger socky._initAndStart` → `[CONSOLE] Executing console command 'wh_concept_HasteTrigger socky._initAndStart'` → `QUEST-CATCHUP ExecuteCommand returned true` → the engine drained **14 Haste triggers** in planner order: `socky.haste.teleportBeforeEndPreviousQuest` (`goto 2342.72 2068.25 112.25 …`, `TeleportPlayer Player 'Dude' … BEFORE pos=<2346.77 2087.35 111.57>`), `JanPtacek.stream`, `JanPtacek.setNaked`, `level_barrier.stream`, `nakup_koni__trosecko….ActivateSedivka`, `vezicko_kemp_banditu.stream`, **`prepadeni.endQuest`**, `zachrana.hastes.endPreviousQuest`, `bozena.stream`, `jindrich….basicEquip`, `JanPtacek.setBasicChlothingAndWeaponPreset`, **`zachrana.hastes.endQuest`**, `socky.haste.endPreviousQuest`, `socky.haste._initAndStart`; each with a `Readiness observer … started async waiting` / `… is ready` pair. Window closed itself: `QUEST-CATCHUP window closed for socky._initAndStart after 121s (0 hazard lines this session)`. The second press replayed the identical 14-trigger chain including the teleport — **WO-92 §6.3's "state-idempotent, side-effect-repeating" now observed.** |
+| 6 | screen while rows up | maintainer: "nothing seemed out of the ordinary" — walking, inventory etc. unaffected. One visible effect of the replay: Henry appeared "a few feet in the air" — the `goto` z is 112.25 against ground ≈110.6 in the engine's own camera lines; Warhorse's coordinate, not ours |
+| 7 | **F12** | `QUEST-PROMPT declined: staying on our own story for socky._initAndStart`, `quest_catchup decline` event, prompt nil, beat remembered as declined |
+| 8 | walk-in lead time (announce memory cleared, maintainer walked out to 76.6 m and back at a run) | `QUEST-APPROACH socky._initAndStart (M03) at 35.8m`; emitter stream shows arrival within 3 m **7.0 s later** (≈4.7 m/s). At a walk that is roughly 12 s; on a galloping horse under 3 s |
+| 9 | hazard lines during the two windows | **0** — no death, clock write, chain suspension or divergence release occurred, and the 19.5 m teleport was **missed** by the 1 Hz / 60 m/s rule (§9). The agent-side tags could not fire: old agent |
+
+**Not live:** the two-machine path (kind 2/3/4 on the wire, the peer's
+prompt and its `diverged` gate, peer-side hazard tags, ghost-teleport tag),
+and the two fixes in §9 (rebuilt into the pak, not installed).
+
+Engine lines worth knowing for future log reading (all observed): the
+console echoes `[CONSOLE] Executing console command '<cmd>'`; a fire
+produces `<HasteTrigger> name:'<full dotted path>' is being triggered from
+haste` per trigger — note the **full** `Barbora.trosecko.<quest>.<module>.<trigger>`
+path, resolved by the engine from the flat `<quest>.<trigger>` we send; a
+relocation produces `TeleportPlayer Player 'Dude' … BEFORE pos=<x y z>`.
 
 ### 7.3 What only a real two-player session can confirm
 
@@ -457,45 +478,31 @@ must do.
 
 ## 8. STOP-rule compliance
 
-**No live game was launched, attached to, or commanded. No Lua was injected.
-Neither `:1403` nor `:4600` was used. No file in either game install was
-modified. No save was touched.** The Modding Tools' `Scripts.pak` and the
-scriptbind docs zip were *read* (copied to the session scratchpad and read
-there) **(observed)**.
+The session ran in two parts. **Part 1 (maintainer absent):** no game was
+launched, attached to or commanded; neither `:1403` nor `:4600` was used;
+no install file or save was touched; `Scripts.pak`, `English_xml.pak` and
+the scriptbind docs were read from scratchpad copies. Every live point was
+reached and **stopped**, and the session ended its turn with the procedure
+written out. **Part 2 (maintainer present, "Go", disposable save):** the
+same points were run, in order, with the maintainer doing the parts that
+need hands and the session reading `kcd.log` — nothing was assumed.
 
-Points reached and stopped, in order:
+| # | Point | Part 1 | Part 2 |
+|---|---|---|---|
+| 1 | Overlay does not intercept input (Phase 2.2) | stopped; static proof §4.3 | maintainer: nothing stopped working while the rows were up |
+| 2 | F11/F12 reach the prompt (Phase 3.2) | stopped | F11 fired the prompted beat (twice, by accident); F12 declined |
+| 3 | Overlay renders and persists | stopped | rows seen and answered by key |
+| 4 | Proximity fires with lead time | stopped | 35.8 m, 7.0 s at a run |
+| 5 | Force-advance does what WO-92 verified | stopped | 14-trigger plan drained, repeat replay observed |
+| 6 | Pak install (needs the game closed) | — | maintainer closed the game on request; session installed; maintainer relaunched |
+| 7 | Phase 4 release cut | not started | proceeds after this doc |
 
-| # | Point | State |
-|---|---|---|
-| 1 | Phase 2.2 — confirm the overlay does not intercept input: static proof done (§4.3), live confirmation needed | **Stopped.** Built everything that does not need it first. |
-| 2 | Phase 3.2 — F11/F12 reach the prompt | **Stopped.** |
-| 3 | Phase 3.2 — overlay renders and persists | **Stopped.** |
-| 4 | Phase 3.2 — proximity fires with lead time | **Stopped.** |
-| 5 | Phase 3.2 — the force-advance does what WO-92 verified | **Stopped.** |
-| 6 | Phase 4 — release cut | **Not started.** It follows Phase 3 in the work order and the release notes must state Phase 3's outcome; the maintainer may direct "skip live, cut it" and it proceeds. |
-
-**What the maintainer needs to do, solo, on a disposable save, agent
-connected (so the label loop runs):**
-
-1. Launch through the launcher as usual. In the console: `wh_concept_HasteEnable`
-   (bare). Then in `kcd.log` grep `HasteEnable`. A value line = the gate is
-   open; a `[VF_CHEAT]` refusal = report it, the fix is one launcher line.
-2. `mp_quest_status` — expect the "QUEST sync is ON (32 main quests, 53
-   fireable beats …)" line and your current quest, if it is a main quest.
-3. `mp_quest_test_prompt` — two text rows appear under the ping. Walk, look
-   around, open and close the inventory, draw a weapon, sit at a table.
-   Report anything that stops working while they are up.
-4. Press **F12**. The rows disappear; `kcd.log` has `QUEST-PROMPT declined`.
-5. `mp_quest_test_prompt socky._initAndStart` (M03's start, Troskovice;
-   any registered beat works) then press **F11**. Expect
-   `QUEST-CATCHUP FIRE #1: wh_concept_HasteTrigger socky._initAndStart`,
-   the toast, the "Catch-up in progress" row, and then — this is the real
-   test — whatever the engine logs next. Any `CATCHUP-HAZARD` lines in the
-   following 120 s are the point of the feature; paste them.
-6. Bundle `kcd.log` and the agent log via COLLECT LOGS as usual.
-
-Then say "go" for Phase 4, or "skip live" to cut the release with Phase 3
-recorded as not run.
+Two things were done **by hand from the shell** during part 2 and are
+recorded so nobody mistakes them for shipped behaviour: the level and
+current quest were pushed with `#KCD2MP_QuestSetLevel/SetCurrent` (the old
+agent does not), and one catch-up window was cleared with
+`#KCD2MP.quest.catchup=nil` to run the F12 test without waiting 120 s (the
+line `QUEST test: window cleared by hand` marks it in the log).
 
 ---
 
@@ -518,10 +525,45 @@ recorded as not run.
   now has a local half. It is still not on the wire.
 * **The 8 build warnings are unchanged from WO-89**; none is in WO-94 code.
 
+### Found live, fixed synthetic-only (pak rebuilt, not re-installed)
+
+* **The console refuses arguments to Lua-registered commands on this
+  build.** `mp_quest_radius 35` → `[Warning] Too many arguments for:
+  mp_quest_radius`, and nothing runs; `mp_enable_aggro on` (WO-17) → the
+  same warning; bare `mp_enable_aggro` → the Lua receives the literal
+  string `%LINE` ("got '%LINE'") **(observed)**. This is true of **every**
+  `%LINE` command in `kdcmp.lua`, including WO-17/32/77/90's `on|off|<n>`
+  toggles — so the field rollbacks documented for those work only as
+  `#KCD2MP_…(…)` Lua, not as console commands. WO-94 ships argless
+  `mp_quest_on` / `mp_quest_off` / `mp_quest_sync` (status) /
+  `mp_quest_test_prompt`, treats the literal `%LINE` as "no argument", and
+  its help text gives the `#` form for values. The older commands are left
+  as they are and named here for their owners.
+* **A Haste `goto` of 19.5 m was invisible to the local-teleport rule.** It
+  sampled at 1 Hz and asked for > 60 m/s; the replay moved the player 19.5 m
+  in one frame and the next 1 Hz sample saw 19.5 m/s **(observed)**. Fixed:
+  `KCD2MP_QuestNotePos` runs on every emitter tick while a window is open
+  and tags any > 4 m jump between two emits < 0.3 s apart (a gallop is
+  ~0.25 m per 20 ms tick); the agent additionally tags the engine's own
+  `TeleportPlayer Player 'Dude'` line. Both **(synthetic: WO-94 scenario f,
+  +4 checks)**, neither re-run live.
+* **The spreadsheet's titles found a real bug** (§3.1 note, committed
+  `62c0e7e`): six quests' journal keys are not their XML names; matching on
+  the key each root carries is what made M08/M44b/M46/M48b/M48c/M50
+  resolvable at all.
+* **Warhorse's `goto` points can float.** `socky.haste.teleportBeforeEndPreviousQuest`
+  puts the player at z=112.25 where the engine's camera lines read the
+  ground at ≈110.6; the maintainer landed "a few feet in the air"
+  **(observed)**. Cosmetic, Warhorse's data, noted so it is not reported as
+  a mod bug.
+
 ## 10. Named, not attempted
 
-1. The live ladder (§8) — the whole of Phase 3.2.
-2. Phase 4 — the release cut, blocked on the STOP rule, ready to run.
+1. The two-machine live path: kinds 2/3/4 crossing the relay, the peer's
+   `diverged` gate, peer-side hazard tags, the ghost-teleport tag, and the
+   new agent deployed at both ends.
+2. Re-running the solo ladder against the pak that carries §9's two fixes
+   (installed only after the release cut).
 3. Putting the level on the wire (hazard 1's other half).
 4. Pruning same-position variants (finale) in the registry — a data edit
    the maintainer can make in `KCD2MP_MAINQUESTS` or by adding a filter to
@@ -529,3 +571,24 @@ recorded as not run.
 5. A wider fireable rule (+11 single setters) if the 53 prove too sparse.
 6. `SaveGame`-node hazard (WO-92 hazard 4) — no runtime hook exists; the
    post-hoc detector from WO-84 is the only coverage.
+
+---
+
+## 11. Phase 4 — the release cut (0.22.0)
+
+| Step | Result **(observed)** |
+|---|---|
+| `VERSION` | `0.21.5` → `0.22.0`, the string the work order stated |
+| Pak | `Build-And-Install-Mod.ps1` rebuilt `kdcmp.pak` (644,915 bytes) from the post-fix Lua; the copy installed for the live ladder predates §9's two fixes |
+| Agent / C# changed? | Yes — `GameBridge.cs`, `LogTailGameTransport.cs`, `StoryBeat.cs`, `Protocol.cs` (shared) → full republish through `Build-Installer.ps1` (launcher, agent, relay, master server as one set) |
+| Native DLL | **Unchanged.** `git log -- native/` ends at WO-86 `d7da56a` (shipped in 0.21.1); the published `KCDMP.dll` sha256 is `be76ba6a578a…872c8984`, identical to the hash the 0.21.5 notes recorded |
+| Installer | `release\KCDMP-Setup-0.22.0.exe`, 100,418,531 bytes (Inno reports 95.8 MB), sha256 `9827b7938b61aaa2be7d1e061e270b09785bad872b67e44efb74b3262588d63e`. **No DirectInstall ZIP built** — retired from this release on, recorded in `docs/VERSIONING.md` |
+| Install matrix | `Test-InstallerDetect.ps1` **21/21**; `Test-InstallerUpgrade.ps1` **33/33** (virgin, upgrade from `KCDMP-Setup-0.21.5.exe`, idempotent re-run, half-applied repair, damaged-mod repair, unreplaceable-file negative control); `Test-Installer.ps1 -SteamRoot <fixture>` **43/43**, Add/Remove version `0.22.0`. **97/97.** Fixture-based, as WO-82/85/89: this shell's `%LocalAppData%` is sandbox-redirected. One invalid run preceded the 43/43 — a wrong fixture path made Setup abort at its Modding-Tools gate and every assertion fail on an absent install; it is recorded here so the log is not misread |
+| `Verify-Install.ps1` | all six WO-94 markers `present` in `[BUILT app]` and `[BUILT pak]`; the two agent markers `ABSENT` in `[INSTALLED]`, correctly — the maintainer's machine still runs the 0.21.5 agent |
+| README badges | **Main** badge is a hard-coded shields.io image + link: updated to `0.22.0` / `RELEASE-NOTES-0.22.0.md`. **Release** badge is shields.io's *dynamic* `github/v/release/...latest` image: it shows whatever GitHub's latest release is and is not edited by any file change here — it will read 0.22.0 once the maintainer publishes the GitHub release with the Setup exe. No script updates either; both confirmed by reading `README.md:9-10` |
+| Release notes | `docs/releases/RELEASE-NOTES-0.22.0.md`, verification status stated as above |
+| Totals this session | Lua 373 + C# 131 = **504 checks**; install matrix 97; **601 checks, 0 failures** |
+
+Distributing the Setup exe — the GitHub release, the Discord post — is the
+maintainer's, per `docs/VERSIONING.md`.
+

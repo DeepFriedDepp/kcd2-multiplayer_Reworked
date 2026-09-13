@@ -71,6 +71,7 @@ Confirmed from `git log --follow -- VERSION`, not assumed:
 | `0.20.9` | WO-83 | + WO-83 — seven authority-class roster souls (guard, soldier_crimeAuthority, huntsman_crimeAuthority; crime role 2) replaced in place by live-verified commoners, fallback moved off a guard. User-chosen. Setup exe only, no DirectInstall zip, by the user's instruction. See `docs/releases/RELEASE-NOTES-0.20.9.md`. |
 | `0.21.1` | WO-85 | + WO-86 — NPC death on the wire for the first time (FATAL flag on `0x30`/`0x31`, DLL `died` byte, Lua death observer, receiver-side `ApplyDeath`), the corpse-drag safeguard in the puppet tick, `mp_npc_deathsync` (default on), NPC-death logging on mod/agent/relay. WO-85 is the release-cut session: full rebuild (pak, native `KCDMP.dll`, agent, relay, Setup exe, DirectInstall zip) so this label also carries WO-83's and WO-84's already-merged changes packaged together for the first time. User-chosen; `0.21.0` skipped by the user. See `docs/releases/RELEASE-NOTES-0.21.1.md`. |
 | `0.21.5` | WO-89 | + WO-88 — post-reload/death agent fixes: death-tag race (vitals-gated clear), appearance-after-respawn (per-ghost cache reset on the `ghostid` respawn edge), reload time-sync convergence (outstanding-until-confirmed resend + periodic quiet clock announce), and `mp_probe_dialog` (read-only Lua diagnostic, no behavior change). WO-85's dialogue-suspends-chains premise refuted on field evidence, not fixed. No native or protocol change; `KCDMP.dll` confirmed byte-identical to the 0.21.1 build. User-chosen; `0.21.2`–`0.21.4` skipped by the user. See `docs/releases/RELEASE-NOTES-0.21.5.md`. |
+| `0.22.0` | WO-94 | + WO-94 — **Shared Quests**: the main-story readiness prompt (32 M-coded quests, 53 fireable Haste beats, F11/F12 reuse of the dice bank/yield keys, `wh_concept_HasteTrigger` catch-up on Yes, `CATCHUP-HAZARD` logging on both machines), WO-90's divergence stand-off 60 s → 180 s, and the console-argument trap found live (argless `mp_quest_on/off`). Solo ladder live-verified on 2026-09-13 (cheat gate, proximity, F11 fire with a 14-trigger replay, F12, overlay); two-machine path not yet run. No native change: `KCDMP.dll` is the WO-86 build 0.21.1 shipped. Stated by the work order (`0.22.0` exactly). **Setup exe only — the DirectInstall ZIP is retired from this release on.** See `docs/releases/RELEASE-NOTES-0.22.0.md`. |
 
 `0.9.2` was stated by the user explicitly. It is the label for everything on
 `main` as of WO-14 — WO-9, WO-10 and WO-13 together — not an increment
@@ -84,10 +85,11 @@ publish the first already did:
 
 ```
 powershell -ExecutionPolicy Bypass -File tools\Build-Installer.ps1
-powershell -ExecutionPolicy Bypass -File tools\Build-DirectInstall.ps1 -SkipPublish
 ```
 
-Produces `release\KCDMP-Setup-<version>.exe` (full install) and
-`release\KCDMP-DirectInstall-<version>.zip` (update-only, `App\` +
-`Mod\`). Building them is a session's job when asked; **uploading, publishing
-or otherwise distributing them is the user's, always.**
+Produces `release\KCDMP-Setup-<version>.exe` (full install). **From 0.22.0
+(WO-94) the DirectInstall ZIP is retired** — the installer does the same job
+with less effort, so `Build-DirectInstall.ps1` is no longer part of a release
+cut (the script remains for anyone who needs an update-only bundle by hand).
+Building the Setup exe is a session's job when asked; **uploading, publishing
+or otherwise distributing it is the user's, always.**
