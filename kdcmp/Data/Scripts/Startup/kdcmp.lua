@@ -9543,6 +9543,7 @@ function KCD2MP_QuestPromptMoot(reason, ghostId)
         mp_log(string.format("WAITING_FOR_PEER exit (peer left): %s after %.0fs", w.who, os.clock() - w.since))
         Q.waiting[tostring(ghostId)] = nil
     end
+    if tostring(reason) == "peer left" and ghostId ~= nil and Q.gap then Q.gap[tostring(ghostId)] = nil end
     if not Q.prompt then return end
     if ghostId ~= nil and tostring(ghostId) ~= Q.prompt.ghostId then return end
     mp_log(string.format("QUEST-PROMPT withdrawn (%s): %s", tostring(reason), Q.prompt.beat))
@@ -9743,6 +9744,38 @@ function KCD2MP_QuestConverged(ghostId)
         mp_log("QUEST-PROMPT withdrawn (objectives now agree): " .. Q.prompt.beat)
         Q.prompt = nil
     end
+end
+
+-- Agent -> mod (WO-96 Phase 2): the objective-level gap between us and a
+-- peer inside one main quest, from the two machines' story fingerprints
+-- (docs/WO-96-findings.md s3). theyHave = objectives the peer has reached
+-- that we have not started; weHave = the reverse. Empty strings = no gap.
+-- Logged as QUEST-GAP, toasted when it changes, and shown on that peer's
+-- waiting row. Read-only: nothing here changes any state.
+Q.gap = Q.gap or {}
+function KCD2MP_QuestObjectiveGap(ghostId, who, questTitle, theyHave, weHave)
+    ghostId = tostring(ghostId)
+    who = tostring(who or ("player " .. ghostId))
+    theyHave, weHave = tostring(theyHave or ""), tostring(weHave or "")
+    local key = theyHave .. "|" .. weHave
+    local prev = Q.gap[ghostId]
+    if theyHave == "" and weHave == "" then
+        if prev then
+            mp_log(string.format("QUEST-GAP closed with %s in \"%s\"", who, tostring(questTitle)))
+            Q.gap[ghostId] = nil
+            local w = Q.waiting[ghostId]; if w then w.gap = nil end
+        end
+        return "none"
+    end
+    Q.gap[ghostId] = { who = who, title = tostring(questTitle), theyHave = theyHave, weHave = weHave, key = key, at = os.clock() }
+    local w = Q.waiting[ghostId]
+    if w then w.gap = (theyHave ~= "" and ("they have: " .. theyHave) or "") .. ((theyHave ~= "" and weHave ~= "") and "; " or "") .. (weHave ~= "" and ("you have: " .. weHave) or "") end
+    if prev and prev.key == key then return "same" end
+    mp_log(string.format("QUEST-GAP with %s in \"%s\": they have [%s] you lack; you have [%s] they lack", who, tostring(questTitle), theyHave, weHave))
+    if theyHave ~= "" then
+        KCD2MP_ShowNativeToast(who .. " has an objective you do not: " .. theyHave)
+    end
+    return "changed"
 end
 
 -- The waiting line the player can currently see, if any (the first
@@ -10018,6 +10051,7 @@ function KCD2MP_QuestDrawUI()
         elseif wt.rel == "ahead" then head = "WAITING FOR PEER -- " .. wt.who .. " is behind you: they are on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\""
         else head = "STORY DIVERGED -- " .. wt.who .. " is on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\"" end
         System.DrawText(10, 232, head .. ".  " .. tostring(wt.why) .. ".  (F12 hides)", 1.4)
+        if wt.gap then System.DrawText(10, 256, "Objectives: " .. tostring(wt.gap), 1.4) end
     end
 end
 

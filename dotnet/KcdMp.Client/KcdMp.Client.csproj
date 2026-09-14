@@ -32,6 +32,11 @@
     <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
   </ItemGroup>
 
+  <!-- WO-96: the generated main-quest objective registry (tools/Build-MainQuestObjectives.ps1). -->
+  <ItemGroup>
+    <EmbeddedResource Include="mainquest-objectives.json" LogicalName="KcdMp.Client.mainquest-objectives.json" />
+  </ItemGroup>
+
   <ItemGroup>
     <Using Include="KcdMp.Wire" />
   </ItemGroup>

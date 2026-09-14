@@ -66,6 +66,39 @@ if (args.Contains("--dump-swing-catalog"))
     return 0;
 }
 
+// --fingerprint <save.whs> [questKey] (WO-96) reads a save's ConceptState tree
+// and prints every registered objective's state for the named main quest (or
+// for every quest that has started), plus the wire text. Offline, read-only:
+// the known-answer probe against a save whose journal the player can see.
+if (args.Contains("--fingerprint"))
+{
+    int at = Array.IndexOf(args, "--fingerprint");
+    if (at + 1 >= args.Length) { Console.WriteLine("usage: --fingerprint <save.whs> [questKey]"); return 2; }
+    string savePath = args[at + 1];
+    string? onlyKey = at + 2 < args.Length ? args[at + 2].ToLowerInvariant() : null;
+    var reg = KcdMp.Client.QuestObjectiveRegistry.Embedded;
+    if (reg is null) return 1;
+    var desc = KcdMp.Client.SaveGameReader.TryReadDescription(savePath);
+    Console.WriteLine($"registry id {reg.Id} (pak {reg.PakSha256[..12]}...), {reg.Quests.Count} quests");
+    Console.WriteLine(desc is null ? "description: unreadable" : $"description: {desc.SaveType} #{desc.SaveId} level={desc.LevelName} marker='{desc.QuestNameOverride}' -> {KcdMp.Client.StoryBeat.Humanize(desc.QuestNameOverride)}");
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var doc = KcdMp.Client.SaveGameReader.TryReadConceptState(savePath);
+    if (doc is null) { Console.WriteLine("ConceptState: not found / framing mismatch"); return 1; }
+    Console.WriteLine($"ConceptState parsed in {sw.ElapsedMilliseconds} ms");
+    foreach (var q in reg.Quests)
+    {
+        if (onlyKey is not null && !string.Equals(q.Key, onlyKey, StringComparison.OrdinalIgnoreCase)) continue;
+        var st = KcdMp.Client.StoryFingerprint.Read(doc, q);
+        if (st is null) continue;
+        if (onlyKey is null && st.All(s => s == KcdMp.Client.StoryFingerprint.None)) continue;
+        Console.WriteLine($"== {q.Code} {q.Name} \"{q.Label}\"  wire: {KcdMp.Client.StoryFingerprint.Encode(reg.Id, q.Key, st)}");
+        for (int i = 0; i < q.Objectives.Length; i++)
+            if (onlyKey is not null || st[i] != KcdMp.Client.StoryFingerprint.None)
+                Console.WriteLine($"   [{i,2}] {KcdMp.Client.StoryFingerprint.StateName(st[i]),-6} {q.Objectives[i].Name,-40} {q.Objectives[i].Label}{(q.Objectives[i].Optional ? " (optional)" : "")}  nodes={q.Objectives[i].Paths.Length}");
+    }
+    return 0;
+}
+
 // --benchmark measures the game channel and exits; it never touches the relay,
 // so it needs no name resolution and no server.
 if (args.Contains("--benchmark"))

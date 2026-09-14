@@ -316,6 +316,22 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentDictionary<byte, string> _lastSharedObjective = new();
     private Func<byte, string, Task>? _sendStoryBeat;
 
+    // WO-96 Phase 2: story fingerprints. After each own marker the engine has
+    // just written an autosave; the agent finds it, reads the ConceptState
+    // tree and sends the current quest's objective states (kind 5). A peer's
+    // fingerprint is compared against OUR newest save's states for THAT quest
+    // -- the save holds every started quest -- and the objective-level gap is
+    // told to the mod. Read-only throughout; nothing writes a save or a node.
+    private string? _savesRoot;                                        // <user folder>\saves
+    private string? _latestSavePath;                                   // newest save this agent has parsed
+    private DateTime _latestSaveWriteUtc = DateTime.MinValue;
+    private System.Xml.XmlDocument? _latestConcept;                    // its ConceptState tree
+    private readonly object _saveLock = new();
+    private readonly ConcurrentDictionary<byte, string> _peerFingerprint = new();   // ghostId -> last kind-5 text
+    private readonly ConcurrentDictionary<byte, string> _peerGapTold = new();       // ghostId -> last gap key told to the mod
+    private readonly ConcurrentDictionary<byte, bool> _peerRegistryMismatchTold = new();
+    private int _fingerprintSeq;
+
     // WO-94 Shared Quests. The agent is a relay between the mod's proximity
     // detector and the peer's prompt; the decisions that matter (is this a
     // registered beat, fire or not) are the mod's and the player's. What the
@@ -2131,6 +2147,10 @@ public partial class GameBridge(ClientConfig config)
         _localQuest = StoryBeat.TryQuestNameFromMarker(marker);
         PushQuestContext();
         ReevaluateQuestPrompts();
+
+        // WO-96 Phase 2: the marker line IS the engine writing an autosave;
+        // read it once it has landed and tell peers our objective states.
+        _ = Task.Run(() => FingerprintAfterSaveAsync(marker));
     }
 
     // -------------------------------------------------------------------------
@@ -2165,6 +2185,153 @@ public partial class GameBridge(ClientConfig config)
         foreach (var kv in _peerObjective)
             if (!string.Equals(kv.Value, mine, StringComparison.Ordinal))
                 SendQuestDivergence(kv.Key, kv.Value);
+    }
+
+    // -------------------------------------------------------------------------
+    // Story fingerprints (WO-96 Phase 2)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Where the engine keeps saves: kcd.log's "User folder is '…'" line (read
+    /// from the head of the log, since the tail starts at its end) + \saves,
+    /// else the engine default under the user's profile.
+    /// </summary>
+    private string SavesRoot()
+    {
+        if (_savesRoot is not null) return _savesRoot;
+        string? userFolder = null;
+        if (_transport is LogTailGameTransport t) userFolder = SaveGameReader.TryReadUserFolderFromLogHead(t.LogPath);
+        userFolder ??= SaveGameReader.DefaultUserFolder();
+        _savesRoot = Path.Combine(userFolder, "saves");
+        Console.WriteLine($"[quest] saves root: {_savesRoot}" + (Directory.Exists(_savesRoot) ? "" : " (not found -- fingerprints disabled until it appears)"));
+        return _savesRoot;
+    }
+
+    /// <summary>
+    /// Parses a save's ConceptState tree once and keeps the newest. Returns
+    /// null when no save is readable. The file is read with sharing, never
+    /// written.
+    /// </summary>
+    private System.Xml.XmlDocument? LoadConceptState(string path)
+    {
+        lock (_saveLock)
+        {
+            DateTime w = File.GetLastWriteTimeUtc(path);
+            if (_latestConcept is not null && string.Equals(path, _latestSavePath, StringComparison.OrdinalIgnoreCase) && w == _latestSaveWriteUtc)
+                return _latestConcept;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var doc = SaveGameReader.TryReadConceptState(path);
+            if (doc is null) { Console.WriteLine($"[quest] save unreadable (still being written?): {Path.GetFileName(path)}"); return null; }
+            _latestConcept = doc; _latestSavePath = path; _latestSaveWriteUtc = w;
+            Console.WriteLine($"[quest] parsed save {Path.GetFileName(path)} in {sw.ElapsedMilliseconds} ms");
+            return doc;
+        }
+    }
+
+    /// <summary>
+    /// Our newest save's ConceptState tree, or null. Used to answer a peer's
+    /// fingerprint for a quest we may not be on: the tree holds every quest
+    /// that has ever started.
+    /// </summary>
+    private System.Xml.XmlDocument? LatestConceptState()
+    {
+        string? newest = SaveGameReader.FindNewestSave(SavesRoot());
+        return newest is null ? null : LoadConceptState(newest);
+    }
+
+    /// <summary>
+    /// After an own marker: wait (up to 20 s) for the autosave carrying exactly
+    /// that marker to land, read our current quest's objective states from it
+    /// and send them as kind 5. Silent when the quest is outside the registry.
+    /// </summary>
+    private async Task FingerprintAfterSaveAsync(string marker)
+    {
+        try
+        {
+            var reg = QuestObjectiveRegistry.Embedded;
+            if (reg is null) return;
+            var quest = reg.ByMarkerKey(StoryBeat.TryQuestNameFromMarker(marker));
+            if (quest is null) return;           // side content: no fingerprint
+            int seq = Interlocked.Increment(ref _fingerprintSeq);
+            DateTime since = DateTime.UtcNow.AddSeconds(-30);
+            string? path = null;
+            for (int i = 0; i < 40 && path is null; i++)
+            {
+                path = SaveGameReader.FindNewestSaveForMarker(SavesRoot(), marker, since);
+                if (path is null) await Task.Delay(500);
+            }
+            if (path is null)
+            {
+                Console.WriteLine($"[quest] no save carrying this marker appeared within 20 s -- fingerprint #{seq} skipped (marker {StoryBeat.Humanize(marker)})");
+                return;
+            }
+            if (seq != _fingerprintSeq) return;   // a newer marker superseded this one
+            // the file may still be closing: retry the parse briefly
+            System.Xml.XmlDocument? doc = null;
+            for (int i = 0; i < 6 && doc is null; i++) { doc = LoadConceptState(path); if (doc is null) await Task.Delay(500); }
+            if (doc is null) return;
+            var states = StoryFingerprint.Read(doc, quest);
+            if (states is null) { Console.WriteLine("[quest] save has no ConceptState roots -- fingerprint skipped"); return; }
+            string text = StoryFingerprint.Encode(reg.Id, quest.Key, states);
+            int active = states.Count(s => s == StoryFingerprint.Active), done = states.Count(s => s == StoryFingerprint.Done);
+            Console.WriteLine($"[quest] fingerprint #{seq} {quest.Code} \"{quest.Label}\" from {Path.GetFileName(path)}: {active} active, {done} done of {states.Length} -- telling peers ({text.Length} chars)");
+            _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindFingerprint, text);
+            // and re-check every peer whose fingerprint we hold against the fresh save
+            foreach (var kv in _peerFingerprint) ComparePeerFingerprint(kv.Key, kv.Value);
+        }
+        catch (Exception ex) { Console.WriteLine($"[quest] fingerprint failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// A peer's fingerprint against our newest save for the same quest. Refuses
+    /// across a registry-id mismatch (told once per peer). Tells the mod the
+    /// objective-level gap; the mod toasts on change and shows it on the
+    /// waiting row.
+    /// </summary>
+    private void ComparePeerFingerprint(byte ghostId, string text)
+    {
+        try
+        {
+            var reg = QuestObjectiveRegistry.Embedded;
+            if (reg is null) return;
+            string who = _ghostNames.TryGetValue(ghostId, out var dn) ? dn : $"player {ghostId}";
+            if (!StoryFingerprint.TryDecode(text, out var regId, out var questKey, out var packed))
+            {
+                Console.WriteLine($"[quest] {who} sent a malformed fingerprint; dropped");
+                return;
+            }
+            if (!string.Equals(regId, reg.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_peerRegistryMismatchTold.TryAdd(ghostId, true))
+                {
+                    Console.WriteLine($"[quest] {who} runs a different objective registry ({regId} vs ours {reg.Id}) -- objective comparison refused; only the quest marker is compared");
+                    _ = ExecLuaAsync($"if KCD2MP_ShowNativeToast then KCD2MP_ShowNativeToast(\"{EscapeLua(who)} runs a different mod build -- objective comparison off\") end");
+                }
+                return;
+            }
+            var quest = reg.ByMarkerKey(questKey);
+            if (quest is null) { Console.WriteLine($"[quest] {who} fingerprinted unknown quest '{questKey}'; dropped"); return; }
+            var theirs = StoryFingerprint.Unpack(packed, quest.Objectives.Length);
+            var doc = LatestConceptState();
+            if (doc is null) { Console.WriteLine($"[quest] {who} sent a {quest.Code} fingerprint but we have no readable save to compare against"); return; }
+            var ours = StoryFingerprint.Read(doc, quest);
+            if (ours is null) return;
+            var (theyHave, weHave, differ) = StoryFingerprint.Compare(ours, theirs);
+            string theyStr = StoryFingerprint.Labels(quest, theyHave);
+            string weStr = StoryFingerprint.Labels(quest, weHave);
+            string gapKey = $"{quest.Key}|{theyStr}|{weStr}";
+            bool changed = !_peerGapTold.TryGetValue(ghostId, out var told) || !string.Equals(told, gapKey, StringComparison.Ordinal);
+            _peerGapTold[ghostId] = gapKey;
+            if (changed)
+            {
+                if (differ.Count == 0)
+                    Console.WriteLine($"[quest] objectives agree with {who} in {quest.Code} \"{quest.Label}\" ({quest.Objectives.Length} compared, save {Path.GetFileName(_latestSavePath ?? "?")})");
+                else
+                    Console.WriteLine($"[quest] OBJECTIVE GAP with {who} in {quest.Code} \"{quest.Label}\": they have [{theyStr}] we lack; we have [{weStr}] they lack; {differ.Count} differ in all: {StoryFingerprint.Labels(quest, differ, theirs)} (theirs) vs {StoryFingerprint.Labels(quest, differ, ours)} (ours)");
+            }
+            _ = ExecLuaAsync($"if KCD2MP_QuestObjectiveGap then KCD2MP_QuestObjectiveGap(\"{ghostId}\", \"{EscapeLua(who)}\", \"{EscapeLua(quest.Label)}\", \"{EscapeLua(theyStr)}\", \"{EscapeLua(weStr)}\") end");
+        }
+        catch (Exception ex) { Console.WriteLine($"[quest] fingerprint compare failed: {ex.Message}"); }
     }
 
     /// <summary>
@@ -3082,6 +3249,10 @@ public partial class GameBridge(ClientConfig config)
                     // window on our side is closed.
                     _peerObjective.TryRemove(ghostId, out _);
                     _storyDivergenceTold.TryRemove(ghostId, out _);
+                    _lastSharedObjective.TryRemove(ghostId, out _);      // WO-96
+                    _peerFingerprint.TryRemove(ghostId, out _);          // WO-96
+                    _peerGapTold.TryRemove(ghostId, out _);
+                    _peerRegistryMismatchTold.TryRemove(ghostId, out _);
                     _ghostLastPos.TryRemove(ghostId, out _);
                     if (_peerApproach.TryRemove(ghostId, out _))
                         try { await ExecLuaAsync($"if KCD2MP_QuestPromptMoot then KCD2MP_QuestPromptMoot(\"peer left\", \"{ghostId}\") end"); } catch { }
@@ -3411,6 +3582,15 @@ public partial class GameBridge(ClientConfig config)
                             OnPeerApproach(sbSource, qText);
                         else
                             OnPeerCatchup(sbSource, qText, begin: sbKind == Protocol.StoryBeatKindCatchupBegin);
+                    }
+                    else if (sbKind == Protocol.StoryBeatKindFingerprint && payloadLen == 3 + sbLen && sbLen > 0)
+                    {
+                        // WO-96 Phase 2: a peer's per-quest objective fingerprint.
+                        // Shape-checked by TryDecode before anything else looks
+                        // at it; compared off the receive thread.
+                        string fpText = Encoding.UTF8.GetString(payload, 3, sbLen);
+                        _peerFingerprint[sbSource] = fpText;
+                        _ = Task.Run(() => ComparePeerFingerprint(sbSource, fpText));
                     }
                 }
                 else if (type == Protocol.ItemDropDown && payloadLen == Protocol.ItemDropDownPayloadLen)

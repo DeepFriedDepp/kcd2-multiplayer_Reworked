@@ -943,6 +943,15 @@ public static class Protocol
     /// <summary>WO-94: the sender's catch-up hazard window closed.</summary>
     public const byte StoryBeatKindCatchupEnd = 4;
 
+    /// <summary>
+    /// WO-96: a per-quest story fingerprint, "&lt;registryId&gt;:&lt;questKey&gt;:&lt;hex&gt;"
+    /// -- the state of every registered journal objective of the sender's
+    /// current main quest, two bits each, read from the sender's newest save
+    /// (StoryFingerprint). A receiver compares only when its own objective
+    /// registry id matches; a WO-94 receiver drops the unknown kind.
+    /// </summary>
+    public const byte StoryBeatKindFingerprint = 5;
+
     public static bool IsNeverSyncedNpcName(string npcName) =>
         npcName.StartsWith(NpcReservedNamePrefix, StringComparison.OrdinalIgnoreCase)
         || npcName.StartsWith(NpcDialogTwinNamePrefix, StringComparison.OrdinalIgnoreCase);

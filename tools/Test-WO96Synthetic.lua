@@ -474,6 +474,41 @@ check("(p) no command fired without the player's F11", #CMDS == 0)
 noErrs("(p)")
 
 -- ---------------------------------------------------------------------------
+-- (q) Phase 2: the objective gap the agent computes from two story
+--     fingerprints -- logged, toasted on change only, shown on the waiting
+--     row, cleared on convergence / peer left. Read-only: no command.
+-- ---------------------------------------------------------------------------
+resetQuest()
+KCD2MP_QuestSetCurrent("socky")
+Q.gap = {}
+diverge("behind", "socky", "socky: nos pytle 05", "socky: rekni ptackovi o pr")
+local t0 = #TOASTS
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.", "")
+check("(q) first gap report: changed", r == "changed", r)
+check("(q) QUEST-GAP logged with both sides", lastLog("QUEST-GAP with Joiner") ~= nil and lastLog("QUEST-GAP with Joiner"):find("Carry the sacks", 1, true) ~= nil)
+check("(q) one toast naming the missing objective", #TOASTS == t0 + 1 and TOASTS[#TOASTS]:find("Carry the sacks", 1, true) ~= nil, TOASTS[#TOASTS])
+draw()
+check("(q) the waiting row shows the gap", drawn("Objectives: they have: Carry the sacks") ~= nil)
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.", "")
+check("(q) the same gap again is silent", r == "same" and #TOASTS == t0 + 1)
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.; Defend Capon!", "")
+check("(q) a grown gap toasts once more", r == "changed" and #TOASTS == t0 + 2)
+-- the reverse direction: something WE have that they lack is logged but not toasted at them
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "", "Find out more about the Semine wedding.")
+check("(q) we-have-they-lack: logged, no toast", r == "changed" and #TOASTS == t0 + 2 and lastLog("QUEST-GAP"):find("you have [Find out more", 1, true) ~= nil)
+draw()
+check("(q) row wording flips to you have", drawn("Objectives: you have: Find out more") ~= nil)
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "", "")
+check("(q) an empty gap closes it", r == "none" and Q.gap["7"] == nil and lastLog("QUEST-GAP closed") ~= nil)
+draw()
+check("(q) row drops the objectives line", drawn("Objectives:") == nil)
+KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.", "")
+KCD2MP_QuestPromptMoot("peer left", "7")
+check("(q) peer left clears the gap", Q.gap["7"] == nil)
+check("(q) no command on any gap path", #CMDS == 0)
+noErrs("(q)")
+
+-- ---------------------------------------------------------------------------
 -- (o) nothing pauses; only wh_concept_HasteTrigger; the game's handler ran
 -- ---------------------------------------------------------------------------
 local bad = {}
