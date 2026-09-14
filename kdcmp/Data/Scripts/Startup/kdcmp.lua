@@ -2203,7 +2203,10 @@ end
 -- a cadence nobody has measured. Summarised on a 5 s cadence rather than
 -- logged per packet -- a per-packet line at 4 Hz x N puppets is exactly the
 -- log volume that changed what it was measuring in WO-39.
-KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, dumpAt = 0 }
+-- WO-95: `n/sum/min/max` now cover MOTION-to-MOTION gaps only; `idleN`
+-- counts the emitter's idle heartbeats, which are by design `heartbeatS`
+-- apart and must not be averaged into the cadence a jitter fix tunes on.
+KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, idleN = 0, dumpAt = 0 }
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
@@ -2957,6 +2960,14 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
         local hexid = string.match(tostring(e.id), "(%x+)%s*$")
         if hexid then KCD2MP_EmitEvent("npcid", name .. " " .. hexid) end
     end
+    -- WO-95: did this packet carry MOTION, or is it the emitter's idle
+    -- heartbeat? The emitter gate (KCD2MP_NpcSyncTick) sends a moving NPC
+    -- every `emitMs` and a still one every `heartbeatS`; both arrive here.
+    -- Decided against the PREVIOUS target, before it is overwritten below.
+    local eps = (KCD2MP.npcSync and KCD2MP.npcSync.moveEps) or 0.05
+    local hadPrevTarget = p.tx ~= nil
+    local pktMoved = hadPrevTarget
+        and (math.abs(x - p.tx) > eps or math.abs(y - p.ty) > eps or math.abs(z - (p.tz or z)) > eps)
     p.tx, p.ty, p.tz, p.tr = x, y, z, rot
     p.hp = hp
     local f = tonumber(flags) or 0
@@ -2972,18 +2983,34 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     -- dropped rather than averaged in: they are a puppet resuming after a
     -- release, a save load or a menu, not a stream cadence, and a handful of
     -- them would drag the mean far off the thing being measured.
+    --
+    -- WO-95: only gaps between two consecutive MOTION packets are averaged.
+    -- The 2026-09-13 field logs reported a mean of 1,738 ms (host) and
+    -- 1,887 ms (joiner) against `emitter is 100ms`, which reads as a stream
+    -- starved 17x. It was not: the sample was dominated by the 2 s idle
+    -- heartbeats of NPCs standing still, which are correct and cost nothing
+    -- to render. Mixing the two makes the one number a jitter work order is
+    -- meant to tune against meaningless, so they are counted apart.
+    -- The very first packet of a puppet's life has no previous target to
+    -- compare against, so it is neither motion nor heartbeat: `nil`, and the
+    -- gap that ends on the packet after it is skipped rather than guessed.
     local nowPkt = os.clock()
-    if p.lastPacketAt then
+    if p.lastPacketAt and p.lastPacketMoved ~= nil then
         local dtMs = (nowPkt - p.lastPacketAt) * 1000
         if dtMs > 0 and dtMs < 5000 then
             local s = KCD2MP.npcPacketStats
-            s.n   = s.n + 1
-            s.sum = s.sum + dtMs
-            if dtMs < s.min then s.min = dtMs end
-            if dtMs > s.max then s.max = dtMs end
+            if pktMoved and p.lastPacketMoved then
+                s.n   = s.n + 1
+                s.sum = s.sum + dtMs
+                if dtMs < s.min then s.min = dtMs end
+                if dtMs > s.max then s.max = dtMs end
+            else
+                s.idleN = (s.idleN or 0) + 1
+            end
         end
     end
     p.lastPacketAt = nowPkt
+    if hadPrevTarget then p.lastPacketMoved = pktMoved else p.lastPacketMoved = nil end
     -- WO-77 Step 1: stamp and ring the sample. Pushed regardless of
     -- mp_npc_smooth so a live toggle-on has data to render from.
     mp_npc_ring_push(p, x, y, z, rot, nowPkt)
@@ -3111,15 +3138,17 @@ function KCD2MP_NpcPuppetTick(arg, gen)
     -- WO-69: dump the measured inbound cadence every 5 s. This is the number
     -- WO-70 needs and the one nothing has ever recorded.
     local st = KCD2MP.npcPacketStats
-    if st.n > 0 and (now - (st.dumpAt or 0)) >= 5.0 then
+    if (st.n > 0 or (st.idleN or 0) > 0) and (now - (st.dumpAt or 0)) >= 5.0 then
         st.dumpAt = now
         mp_log(string.format(
-            "NPC-SYNC packet cadence: n=%d mean=%.0fms min=%.0fms max=%.0fms (emitter is %dms;"
+            "NPC-SYNC packet cadence: moving n=%d mean=%.0fms min=%.0fms max=%.0fms; idle-heartbeat n=%d"
+            .. " (emitter is %dms, heartbeat %.0fms;"
             .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d corpse writes suppressed=%d)",
-            st.n, st.sum / st.n, st.min, st.max, KCD2MP.npcSync.emitMs or 250,
+            st.n, st.n > 0 and (st.sum / st.n) or 0, st.n > 0 and st.min or 0, st.max, st.idleN or 0,
+            KCD2MP.npcSync.emitMs or 250, ((KCD2MP.npcSync.heartbeatS or 2.0) * 1000),
             KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0,
             KCD2MP._npcDeathSuppressedN or 0))
-        st.n, st.sum, st.min, st.max = 0, 0, 1e9, 0
+        st.n, st.sum, st.min, st.max, st.idleN = 0, 0, 1e9, 0, 0
     end
     local any = false
     for name, p in pairs(KCD2MP.npcPuppets) do
