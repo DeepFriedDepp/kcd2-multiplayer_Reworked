@@ -21,34 +21,34 @@ KCD2MP.running = false
 KCD2MP.interpRunning = false
 KCD2MP.tickCount = 0
 KCD2MP.ghosts = {}
-KCD2MP.ghostNames = {}          -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ steam name (received via 0x03 Name packet from server)
-KCD2MP.ghostInMenu = {}         -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ true while that player has a menu open (WO-13, set by agent on 0x1D)
+KCD2MP.ghostNames = {}          -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ steam name (received via 0x03 Name packet from server)
+KCD2MP.ghostInMenu = {}         -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ true while that player has a menu open (WO-13, set by agent on 0x1D)
 
 -- ===== Shared player combat (WO-28) =====
--- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
+-- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ {h, s, flags, at}  the OWNER's own authoritative health/stamina, set by
 -- the agent from a PlayerStateDown (0x20). Rendered, never computed here: a
 -- player's health is authoritative on that player's own machine, and that is
 -- the only rule about it that cannot produce a disagreement which fails to
 -- self-correct (docs/WO-26-shared-combat-design.md s3, Rule 1).
 KCD2MP.ghostHealth = {}
-KCD2MP.ghostDead = {}           -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ true after a PlayerDeathDown (0x24); idempotent
+KCD2MP.ghostDead = {}           -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ true after a PlayerDeathDown (0x24); idempotent
 
--- Flow B damage sensor. id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ last sampled LOCAL health of that ghost entity in
+-- Flow B damage sensor. id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ last sampled LOCAL health of that ghost entity in
 -- THIS world, and a one-shot skip flag set whenever an inbound authoritative
 -- value is written over it. Only ever populated while KCD2MP.hitSensorOn.
 KCD2MP.ghostHpSeen = {}
 KCD2MP.ghostHpSkip = {}
 
--- Rule 2: only ONE client's NPC simulation may generate NPCÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢player hits, or N
+-- Rule 2: only ONE client's NPC simulation may generate NPCÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢player hits, or N
 -- peers produce N independent damage streams for one conceptual fight and the
 -- damage multiplies by N. The relay designates that client and the agent sets
 -- this from a CombatRole (0x25) packet. Off until told otherwise -- a client
 -- that has not been told it holds authority must never assume it does.
 KCD2MP.hitSensorOn = false
-KCD2MP.labelCache = {}          -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {x,y,z,size,name}  updated by interp, drawn by render loop
+KCD2MP.labelCache = {}          -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ {x,y,z,size,name}  updated by interp, drawn by render loop
 KCD2MP.labelRunning = false
-KCD2MP.horseGhosts = {}         -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ {entity, entityId, isWorldHorse, worldName} horse per player
-KCD2MP.ghostHorseName = {}      -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
+KCD2MP.horseGhosts = {}         -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ {entity, entityId, isWorldHorse, worldName} horse per player
+KCD2MP.ghostHorseName = {}      -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ authored name of the horse that player is riding (WO-38 Phase 5, via 0x2B); "" / absent = unknown
 KCD2MP._mountedHorseName = nil  -- authored name of the horse the LOCAL player is on (riding check, Method 0)
 KCD2MP.horseAdoptEnabled = true -- WO-40 Phase 0: mp_horse_adopt on|off -- field escape hatch for the mount-crash suspect (off = proxy horses only)
 -- WO-40 Phase 9: ghosts are stimulus-deaf BY DEFAULT now. The chain that
@@ -85,7 +85,7 @@ KCD2MP.weaponDrawn = false      -- local player's last polled drawn state
 KCD2MP._weaponPollAt = 0        -- last IsWeaponDrawn poll (throttled to 5 Hz)
 KCD2MP._weaponEmitAt = 0        -- last "combat draw" emission (30s heartbeat while drawn)
 KCD2MP._weaponReadOk = nil      -- nil=not probed, false=IsWeaponDrawn unavailable, true=working
-KCD2MP.ghostWeaponDrawn = {}    -- id ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ true while that peer reports weapon drawn
+KCD2MP.ghostWeaponDrawn = {}    -- id ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ true while that peer reports weapon drawn
 KCD2MP._lastSwingEmit = 0       -- rate limit for swing event emission
 KCD2MP._blockHeld = false       -- edge detector: 'block' only ever fires hold/release
 
@@ -549,7 +549,7 @@ end
 
 -- ===== Outbound Events (WO-2) =====
 -- A second line type on the same log channel, for discrete things the player
--- did rather than continuous state. Accepting an invite has to travel game ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢
+-- did rather than continuous state. Accepting an invite has to travel game ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢
 -- agent, and the log tail is the only outbound path (no sockets, no io), so it
 -- rides here instead of resurrecting the sv_servername CVar hack.
 --
@@ -2422,7 +2422,7 @@ KCD2MP._dragScanAt = 0
 -- by packet, expiry on silence -- the drag sensor's mechanism, generalized).
 -- NPCs someone else is already streaming are puppets here and are excluded
 -- by the rescan, so claims only ever target entities nobody is driving.
--- This is the fix for WO-51 Ãƒâ€šÃ‚Â§1.4's radius-gap and engagement-asymmetry rows:
+-- This is the fix for WO-51 ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§1.4's radius-gap and engagement-asymmetry rows:
 -- an NPC fighting the non-authority player, previously invisible to sync
 -- because it was far from the host, is now streamed by the machine actually
 -- next to it -- the one simulating it at full fidelity.
@@ -4176,7 +4176,7 @@ function KCD2MP_SetGhostName(id, name)
         KCD2MP_RemoveStaleGhostsForPlayer(name, id)
     end
     if ghost and ghost.entity then
-        -- Ghost already alive when name packet arrives ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â apply after 300ms
+        -- Ghost already alive when name packet arrives ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â apply after 300ms
         local captId = id
         local captName = name
         Script.SetTimer(300, function()
@@ -4299,7 +4299,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
     local pos = {x=x, y=y, z=z}
     local horseName = "kcd2mp_horse_" .. id
 
-    -- Use System.SpawnEntity only (XGenAIModule is async ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ creates orphan second entity)
+    -- Use System.SpawnEntity only (XGenAIModule is async ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ creates orphan second entity)
     local horse = nil
     local ok2, h2 = pcall(System.SpawnEntity, {
         class = "Horse", position = {x=x, y=y, z=z},
@@ -4471,7 +4471,7 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     istate.lastPacketZ = z
 
     -- Log large target jumps; reset velocity on teleport/fast-travel
-    -- Jump detection: XY only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Z changes from terrain must NOT reset velocity
+    -- Jump detection: XY only ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Z changes from terrain must NOT reset velocity
     local jumpDist = math.sqrt(ddx*ddx + ddy*ddy)
     if jumpDist > 5.0 then
         istate.vx = 0
@@ -5003,7 +5003,7 @@ local HORSE_ENTITY_WALK_ANIMS = {
     "horse_walk", "horse_trot", "walk", "trot",
 }
 local HORSE_ENTITY_GALLOP_ANIMS = {
-    -- Fastest gaits first ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â confirmed on KCD2 horse entities:
+    -- Fastest gaits first ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â confirmed on KCD2 horse entities:
     "relaxed_gallop", "relaxed_canter", "relaxed_run",
     -- Other candidates:
     "gallop", "canter", "run",
@@ -5077,7 +5077,7 @@ KCD2MP.combatSwingFragTags = ""
 
 -- WO-43: every prior live attempt on this route (WO-39 empty tags, WO-40
 -- generic tags like "lngsw") used GUESSED fragment/tag data, never a real
--- shipped Mannequin row. docs/WO-42-findings.md Ãƒâ€šÃ‚Â§9.2 extracted real rows
+-- shipped Mannequin row. docs/WO-42-findings.md ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§9.2 extracted real rows
 -- straight from Tables.pak; this is one, verbatim, for a human/human sync
 -- attack (not invented -- do not substitute a guessed tag string here):
 --   mp_combat_frag CombatAttackSyncGen l_halberd+r_halberd+clinch1+eZ1+aZ2+attack_special+oppMale
@@ -5941,7 +5941,7 @@ function KCD2MP_InterpTick(arg, gen)
                     -- fell. The horse half is skipped for the same reason.
                 elseif istate.isRiding then
                     -- One-time riding diagnostic when interp tick first sees this ghost riding.
-                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ only even counts seen)
+                    -- (% 50 == 1 never fires: interp=20ms, packets=10ms ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ only even counts seen)
                     if not istate._rideFirstTick then
                         istate._rideFirstTick = true
                         local hd = KCD2MP.horseGhosts[id]
@@ -5961,7 +5961,7 @@ function KCD2MP_InterpTick(arg, gen)
                     end
 
                     -- Engine sync auto-assigns idle rider anim at ForceMount time.
-                    -- For gallop we must set it explicitly ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â engine does NOT auto-update.
+                    -- For gallop we must set it explicitly ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â engine does NOT auto-update.
                     -- ridingFallback: engine failed to mount, set all anims manually.
                     local isGallop = rendSpeed > 3.0
                     -- WO-84: this ghost is in the saddle, so whatever locomotion
@@ -6034,8 +6034,8 @@ function KCD2MP_InterpTick(arg, gen)
                         horseData.renderR = hr
 
                         -- Play horse entity animation based on speed.
-                        -- relaxed_idle ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ engine sync assigns matching rider idle.
-                        -- relaxed_gallop ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ we explicitly set rider gallop above.
+                        -- relaxed_idle ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ engine sync assigns matching rider idle.
+                        -- relaxed_gallop ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ we explicitly set rider gallop above.
                         local horseAnim
                         if spd > 3.0 then
                             horseAnim = KCD2MP._horseEntityGallopAnim or KCD2MP._horseEntityWalkAnim
@@ -6089,7 +6089,7 @@ function KCD2MP_InterpTick(arg, gen)
                 end
                 -- WO-28 Flow B: sample this ghost's LOCAL health for
                 -- NPC-inflicted damage. No-op unless this client holds
-                -- NPCÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢player damage authority.
+                -- NPCÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢player damage authority.
                 sampleGhostHealth(id, ghost)
                 local labelZ = sz + (istate.isRiding and 1.1 or 1.8)
                 local labelSize = 0  -- 0 = hidden (too far)
@@ -6431,7 +6431,7 @@ function KCD2MP_RemoveGhost(id)
     KCD2MP.ghostWeaponDrawn[id] = nil
     System.LogAlways("[KCD2-MP] Removed ghost: " .. id)
     -- Reset riding anim probes: if they were cached while NPC was ForceMount'd they may be
-    -- wrong (false). Re-probe on next riding ghost (free NPC ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ correct results).
+    -- wrong (false). Re-probe on next riding ghost (free NPC ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ correct results).
     KCD2MP._ridingIdleAnim = nil
     KCD2MP._ridingGallopAnim = nil
 end
@@ -7269,7 +7269,7 @@ function KCD2MP_ProbeDialog()
     System.LogAlways("[KCD2-MP] === END ===")
 end
 
--- ===== WO-65 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ghost civic isolation: Phase 0 probe =====
+-- ===== WO-65 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ghost civic isolation: Phase 0 probe =====
 --
 -- WO-34 proved a ghost is a full crime victim (real fines, jail, settlement
 -- rep loss) and the Civilians faction override is inert. KCD2Online's answer
@@ -7392,7 +7392,7 @@ function KCD2MP_ProbeContexts()
     L("=== END CONTEXTS PROBE ===")
 end
 
--- ===== WO-65 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ghost civic isolation (Phase 1) =====
+-- ===== WO-65 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ghost civic isolation (Phase 1) =====
 --
 -- What the live probe settled (2026-08-27, all observed in-game):
 --   - Contexts global is nil; no script-context setter exists under any
@@ -7567,7 +7567,7 @@ KCD2MP.armorPresets = {
     },
 }
 
--- ===== WO-20 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â deterministic face roster (guidSharedSoulId) =====
+-- ===== WO-20 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â deterministic face roster (guidSharedSoulId) =====
 --
 -- The appearance lever -- binding a spawned NPC's guidSharedSoulId spawn
 -- property to a real soul's SharedSoulGuid, which makes the engine build a
@@ -8901,7 +8901,7 @@ end
 -- ===== Sneak action handler (shared, installed by both hook paths) =====
 
 -- Toggle-style sneak actions (each press flips state).
--- NOTE: chat_init_with_focus is NOT sneak ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ it's the focus/chat key (triggered by Tab/V).
+-- NOTE: chat_init_with_focus is NOT sneak ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ it's the focus/chat key (triggered by Tab/V).
 -- Stance is detected via player:GetStance() polling in KCD2MP_Exchange (reliable fallback).
 local SNEAK_TOGGLE_ACTIONS = {
     sneak_toggle=true, toggle_sneak=true,
@@ -9347,7 +9347,7 @@ KCD2MP_MAINQUESTS = {
         { t = "00_erik_init", e = "erik_nocNaHradbach_player", src = "chain" },
         { t = "01_erik_startAndInit", e = "erik_nocNaHradbach_player", src = "chain" },
     } },
-    { code = "M48a", name = "oblehaniSuchdole", key = "oblehanisuchdole", title = "So it begins…", level = "kutnohorsko", triggers = 54, beats = {
+    { code = "M48a", name = "oblehaniSuchdole", key = "oblehanisuchdole", title = "So it beginsâ€¦", level = "kutnohorsko", triggers = 54, beats = {
         { t = "000_oblehaniStart", e = "oblehaniSuchdole_zizkaVezeZasobyAJeNapaden_player", src = "chain" },
     } },
     { code = "M48b", name = "rutinaAVypad", key = "m48b__rutina_a_vypad", title = "Besieged", level = "kutnohorsko", triggers = 66, beats = { } },
@@ -9374,6 +9374,58 @@ KCD2MP_MAINQUESTS = {
     } },
 }
 -- @@WO94-MAINQUEST-REGISTRY-END@@
+
+-- @@WO96-OBJECTIVE-FIXES-BEGIN@@
+-- GENERATED by tools/Find-ObjectiveTriggers.ps1 -- do not edit by hand.
+-- 22 of 626 main-quest objectives have a CLEAN narrow Haste trigger that grants them
+-- (its OnTrigger drives only that objective's State node, no Prerequisites, no
+-- ConsoleCommands, no other targets; WO-92 s6.1's targeted-setter population).
+-- The mod offers one only when the local player is IN that quest and the peer's
+-- fingerprint shows the objective in exactly that state. Everything else --
+-- 600-odd objectives, the sacks of M03 among them -- has no such trigger and is
+-- reported as a gap only. See docs/WO-96-findings.md s4.
+KCD2MP_OBJECTIVE_FIXES = {
+    { q = "zachrana", o = "goToSleep_visual", dir = "active", t = "zachrana.goToSleep_activate" },
+    { q = "mucirna", o = "jed_s_vojaky_a_ptackem_na_semin", dir = "active", t = "mucirna._activateRideToSeminObjective" },
+    { q = "nebakovObrana", o = "odraz_utok_na_branu", dir = "done", t = "nebakovObrana.bitva_7_branaOdrazeno" },
+    { q = "vezniNaTroskach", o = "doprovod_zizku_katerinu_a_bohutu_na_konec_chodby", dir = "done", t = "vezniNaTroskach.startApolenaGameplay" },
+    { q = "sedmStatecnych", o = "pomoz_kubenkovi_v_bitce", dir = "done", t = "sedmStatecnych.sedmStatecnych_kubenkaZachranen" },
+    { q = "sedmStatecnych", o = "zachran_sucheho_certa", dir = "done", t = "sedmStatecnych.certZachranen" },
+    { q = "hledaniLichtenstejna", o = "searchForKozina", dir = "done", t = "hledaniLichtenstejna.05___complete_searchForKozina_baths" },
+    { q = "hledaniLichtenstejna", o = "talkToKaterina", dir = "done", t = "hledaniLichtenstejna.03___complete_talkToKaterina" },
+    { q = "kralovskeStribro", o = "jdi_do_ruthardky", dir = "done", t = "kralovskeStribro.complete_findRuthard" },
+    { q = "zachranaPtacka", o = "dostan_se_tajnou_chodbou_na_malesov", dir = "done", t = "zachranaPtacka.07_startMalesovMeetupCutscene" },
+    { q = "setkaniVRatbori1", o = "getDocument", dir = "done", t = "setkaniVRatbori1.06_getDocument" },
+    { q = "setkaniVRatbori2", o = "sezen_dzbanek_vina", dir = "done", t = "setkaniVRatbori2.pickWineSkip" },
+    { q = "pogrom", o = "probij_se_domem", dir = "done", t = "pogrom.03b_completeMothersPart" },
+    { q = "pogrom", o = "vydrz_napor_pred_synagogou", dir = "done", t = "pogrom.04a_cutscene_blockadeFire" },
+    { q = "zikmunduvTabor", o = "bring_deserters_report", dir = "active", t = "zikmunduvTabor.deserters_getItem" },
+    { q = "prepadeniVlasskehoDvora", o = "jdi_do_vlasskeho_dvora", dir = "done", t = "prepadeniVlasskehoDvora.init_end2" },
+    { q = "prepadeniVlasskehoDvora", o = "prones_zaverecnou_rec", dir = "active", t = "prepadeniVlasskehoDvora.courtHall_finalVerdict" },
+    { q = "oblehaniSuchdole", o = "odraz_nepratelsky_utok", dir = "done", t = "oblehaniSuchdole.012_konecBitvy" },
+    { q = "hladAZmar", o = "dones_ptackovi_neco_k_jidlu", dir = "done", t = "hladAZmar.hideBeforeBattleMainObjective" },
+    { q = "finale", o = "dojdi_nabrousit_hanusovi_mec", dir = "active", t = "finale._sharpenSwordObjectiveActive" },
+    { q = "finale", o = "dojdi_nabrousit_hanusovi_mec", dir = "done", t = "finale._returnSwordToHanus" },
+    { q = "finale", o = "setkej_se_s_rackem", dir = "active", t = "finale.talkToRacekObjective" },
+}
+-- @@WO96-OBJECTIVE-FIXES-END@@
+
+-- Lookup over the generated fix table: "<quest>|<objective>|<active|done>" -> entry,
+-- and the set of fix trigger paths (a second, equally bounded registry that
+-- KCD2MP_QuestIsRegistryBeat accepts, so a fix fires through the same
+-- KCD2MP_QuestFire channel, hazard window and spent-gate as a catch-up beat).
+KCD2MP._fixIndex = nil
+local function fixIndex()
+    if KCD2MP._fixIndex then return KCD2MP._fixIndex end
+    local byKey, byPath, n = {}, {}, 0
+    for _, f in ipairs(KCD2MP_OBJECTIVE_FIXES or {}) do
+        byKey[f.q .. "|" .. f.o .. "|" .. f.dir] = f
+        byPath[f.t] = f
+        n = n + 1
+    end
+    KCD2MP._fixIndex = { byKey = byKey, byPath = byPath, n = n }
+    return KCD2MP._fixIndex
+end
 
 -- Lookups over the generated table, built once on first use. The agent hands
 -- us the quest token of the engine's @qname_ marker (suffix stripped,
@@ -9405,7 +9457,7 @@ end
 function KCD2MP_QuestIsRegistryBeat(beat)
     if type(beat) ~= "string" or beat == "" or #beat > 128 then return false end
     if not beat:match("^[%w_%.]+$") then return false end
-    return questIndex().byPath[beat] ~= nil
+    return questIndex().byPath[beat] ~= nil or fixIndex().byPath[beat] ~= nil   -- WO-96: or a generated narrow fix
 end
 
 -- Agent -> mod. "Loading level <name>" from kcd.log, lowercased here.
@@ -9752,11 +9804,20 @@ end
 -- that we have not started; weHave = the reverse. Empty strings = no gap.
 -- Logged as QUEST-GAP, toasted when it changes, and shown on that peer's
 -- waiting row. Read-only: nothing here changes any state.
+-- theyHaveSpec is the machine half of theyHave: "objectiveName=active;name=done",
+-- in the same order as the labels. Phase 3 (WO-96 s4): when the local player
+-- is IN that quest and the generated fix table has a clean narrow trigger for
+-- one of those (objective, state) pairs, the readiness prompt offers it --
+-- "F11 grants <objective>" -- through the same KCD2MP_QuestFire channel as a
+-- catch-up beat (registry gate, hazard window, spent/declined). Whichever
+-- player lacks the objective gets the offer: each side computes its own gap.
 Q.gap = Q.gap or {}
-function KCD2MP_QuestObjectiveGap(ghostId, who, questTitle, theyHave, weHave)
+function KCD2MP_QuestObjectiveGap(ghostId, who, questKey, questTitle, theyHave, weHave, theyHaveSpec)
     ghostId = tostring(ghostId)
     who = tostring(who or ("player " .. ghostId))
+    questKey = tostring(questKey or ""):lower()
     theyHave, weHave = tostring(theyHave or ""), tostring(weHave or "")
+    theyHaveSpec = tostring(theyHaveSpec or "")
     local key = theyHave .. "|" .. weHave
     local prev = Q.gap[ghostId]
     if theyHave == "" and weHave == "" then
@@ -9764,18 +9825,64 @@ function KCD2MP_QuestObjectiveGap(ghostId, who, questTitle, theyHave, weHave)
             mp_log(string.format("QUEST-GAP closed with %s in \"%s\"", who, tostring(questTitle)))
             Q.gap[ghostId] = nil
             local w = Q.waiting[ghostId]; if w then w.gap = nil end
+            if Q.prompt and Q.prompt.ghostId == ghostId and Q.prompt.reason == "gap" then
+                mp_log("QUEST-PROMPT withdrawn (gap closed): " .. Q.prompt.beat)
+                Q.prompt = nil
+            end
         end
         return "none"
     end
-    Q.gap[ghostId] = { who = who, title = tostring(questTitle), theyHave = theyHave, weHave = weHave, key = key, at = os.clock() }
+    Q.gap[ghostId] = { who = who, quest = questKey, title = tostring(questTitle), theyHave = theyHave, weHave = weHave, key = key, at = os.clock() }
     local w = Q.waiting[ghostId]
     if w then w.gap = (theyHave ~= "" and ("they have: " .. theyHave) or "") .. ((theyHave ~= "" and weHave ~= "") and "; " or "") .. (weHave ~= "" and ("you have: " .. weHave) or "") end
-    if prev and prev.key == key then return "same" end
-    mp_log(string.format("QUEST-GAP with %s in \"%s\": they have [%s] you lack; you have [%s] they lack", who, tostring(questTitle), theyHave, weHave))
-    if theyHave ~= "" then
-        KCD2MP_ShowNativeToast(who .. " has an objective you do not: " .. theyHave)
+    local changed = not (prev and prev.key == key)
+    if changed then
+        mp_log(string.format("QUEST-GAP with %s in \"%s\": they have [%s] you lack; you have [%s] they lack", who, tostring(questTitle), theyHave, weHave))
+        if theyHave ~= "" then
+            KCD2MP_ShowNativeToast(who .. " has an objective you do not: " .. theyHave)
+        end
     end
-    return "changed"
+
+    -- Phase 3: is there a clean narrow trigger for something they have and we lack?
+    local q = questKey ~= "" and questIndex().byLower[questKey] or nil
+    if not Q.enabled or not q or theyHaveSpec == "" then return changed and "changed" or "same" end
+    if Q.current ~= questKey then
+        if changed then mp_log("QUEST-GAP fix not considered: we are not in " .. questKey .. " (current " .. tostring(Q.current) .. ")") end
+        return changed and "changed" or "same"
+    end
+    local fx = fixIndex()
+    local offer, offerLabel, noFix = nil, nil, {}
+    local i = 0
+    for pair in theyHaveSpec:gmatch("[^;]+") do
+        i = i + 1
+        local oname, ostate = pair:match("^([%w_]+)=(%w+)$")
+        if oname then
+            local f = fx.byKey[q.name .. "|" .. oname .. "|" .. ostate]
+            if f and not Q.fired[f.t] and not Q.declined[f.t] and not offer then
+                offer = f
+                -- the i-th label of theyHave belongs to this pair
+                local j = 0
+                for lab in theyHave:gmatch("[^;]+") do j = j + 1; if j == i then offerLabel = lab:gsub("^%s+", "") end end
+            elseif not f then
+                noFix[#noFix + 1] = oname .. "=" .. ostate
+            end
+        end
+    end
+    if #noFix > 0 and changed then
+        mp_log("QUEST-GAP no narrow trigger exists for: " .. table.concat(noFix, ", ") .. " -- reported only")
+    end
+    if not offer then return changed and "changed" or "same" end
+    if Q.prompt then
+        if Q.prompt.beat == offer.t then return "prompt-up" end
+        if Q.prompt.reason ~= "gap" then return "prompt-up" end   -- a catch-up offer stands; do not replace it
+    end
+    if Q.catchup then return changed and "changed" or "same" end
+    Q.prompt = { ghostId = ghostId, who = who, beat = offer.t, title = tostring(questTitle), shownAt = os.clock(),
+                 reason = "gap", fixLabel = tostring(offerLabel or offer.o), fixDir = offer.dir }
+    Q.lastPromptAt[ghostId] = os.clock()
+    mp_log(string.format("QUEST-PROMPT shown (gap): %s has \"%s\" (%s) and we do not -- F11 fires the narrow trigger %s / F12 stay",
+        who, Q.prompt.fixLabel, offer.dir, offer.t))
+    return "fix-offered"
 end
 
 -- The waiting line the player can currently see, if any (the first
@@ -9861,7 +9968,12 @@ function KCD2MP_QuestFire(beat, who)
     -- log lines, which is why the fire is logged before and after.
     mp_log(string.format("QUEST-CATCHUP ExecuteCommand returned %s%s", tostring(ok), ok and "" or (": " .. tostring(err))))
     local hit = questIndex().byPath[beat]
-    KCD2MP_ShowNativeToast("Catching up to " .. who .. "'s story: " .. tostring((hit and hit.quest.title ~= "" and hit.quest.title) or beat))
+    local fix = fixIndex().byPath[beat]
+    if fix then
+        KCD2MP_ShowNativeToast("Granting objective " .. fix.o .. " (" .. fix.dir .. ") via " .. beat)
+    else
+        KCD2MP_ShowNativeToast("Catching up to " .. who .. "'s story: " .. tostring((hit and hit.quest.title ~= "" and hit.quest.title) or beat))
+    end
     return ok
 end
 
@@ -10034,7 +10146,11 @@ end
 -- the invite/message rows, persistent, DrawText only.
 function KCD2MP_QuestDrawUI()
     local p = Q.prompt
-    if p then
+    if p and p.reason == "gap" then
+        -- WO-96 Phase 3: a narrow fix. Nothing moves the player; it flips one journal objective.
+        System.DrawText(10, 160, p.who .. " has \"" .. tostring(p.fixLabel) .. "\" (" .. tostring(p.fixDir) .. ") in \"" .. tostring(p.title) .. "\" and you do not", 2)
+        System.DrawText(10, 184, "F11 grant it to me (narrow trigger " .. p.beat .. ", no teleport)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
+    elseif p then
         System.DrawText(10, 160, p.who .. " is ahead of you in \"" .. tostring(p.title) .. "\"  -- catch up to " .. p.beat .. "?", 2)
         System.DrawText(10, 184, "F11 catch up (advance my story; you will be moved)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
     end

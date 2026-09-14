@@ -119,6 +119,24 @@ public static class StoryFingerprint
         return (a, b, d);
     }
 
+    /// <summary>
+    /// The machine half of a gap for the mod's fix lookup:
+    /// "objectiveName=active;objectiveName=done", same order as <see cref="Labels"/>.
+    /// Names are the XML identifiers (letters, digits, underscore), states the
+    /// short words above -- nothing that needs escaping inside a Lua literal.
+    /// </summary>
+    public static string Spec(QuestObjectiveRegistry.Quest quest, IEnumerable<int> idx, byte[] states)
+    {
+        var sb = new StringBuilder();
+        foreach (int i in idx)
+        {
+            if (i < 0 || i >= quest.Objectives.Length || i >= states.Length) continue;
+            if (sb.Length > 0) sb.Append(';');
+            sb.Append(quest.Objectives[i].Name).Append('=').Append(StateName(states[i]));
+        }
+        return sb.ToString();
+    }
+
     public static string Labels(QuestObjectiveRegistry.Quest quest, IEnumerable<int> idx, byte[]? states = null)
     {
         var sb = new StringBuilder();

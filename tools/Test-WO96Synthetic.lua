@@ -483,30 +483,95 @@ KCD2MP_QuestSetCurrent("socky")
 Q.gap = {}
 diverge("behind", "socky", "socky: nos pytle 05", "socky: rekni ptackovi o pr")
 local t0 = #TOASTS
-r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.", "")
-check("(q) first gap report: changed", r == "changed", r)
+local l1 = #LOG
+-- the bag case, exactly: the joiner has the sacks (active), the host does not
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "socky", "Laboratores", "Carry the sacks to the pantry.", "", "nos_pytle_05=active")
+check("(q) first gap report: changed (no fix exists for the sacks)", r == "changed", r)
 check("(q) QUEST-GAP logged with both sides", lastLog("QUEST-GAP with Joiner") ~= nil and lastLog("QUEST-GAP with Joiner"):find("Carry the sacks", 1, true) ~= nil)
+check("(q) the missing narrow trigger is named honestly", countLog("no narrow trigger exists for: nos_pytle_05=active", l1) == 1)
 check("(q) one toast naming the missing objective", #TOASTS == t0 + 1 and TOASTS[#TOASTS]:find("Carry the sacks", 1, true) ~= nil, TOASTS[#TOASTS])
+check("(q) no prompt for the sacks -- nothing to fire", Q.prompt == nil)
 draw()
 check("(q) the waiting row shows the gap", drawn("Objectives: they have: Carry the sacks") ~= nil)
-r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.", "")
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "socky", "Laboratores", "Carry the sacks to the pantry.", "", "nos_pytle_05=active")
 check("(q) the same gap again is silent", r == "same" and #TOASTS == t0 + 1)
-r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.; Defend Capon!", "")
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "socky", "Laboratores", "Carry the sacks to the pantry.; Defend Capon!", "", "nos_pytle_05=active;bran_ptacka=active")
 check("(q) a grown gap toasts once more", r == "changed" and #TOASTS == t0 + 2)
 -- the reverse direction: something WE have that they lack is logged but not toasted at them
-r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "", "Find out more about the Semine wedding.")
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "socky", "Laboratores", "", "Find out more about the Semine wedding.", "")
 check("(q) we-have-they-lack: logged, no toast", r == "changed" and #TOASTS == t0 + 2 and lastLog("QUEST-GAP"):find("you have [Find out more", 1, true) ~= nil)
 draw()
 check("(q) row wording flips to you have", drawn("Objectives: you have: Find out more") ~= nil)
-r = KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "", "")
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "socky", "Laboratores", "", "", "")
 check("(q) an empty gap closes it", r == "none" and Q.gap["7"] == nil and lastLog("QUEST-GAP closed") ~= nil)
 draw()
 check("(q) row drops the objectives line", drawn("Objectives:") == nil)
-KCD2MP_QuestObjectiveGap("7", "Joiner", "Laboratores", "Carry the sacks to the pantry.", "")
+KCD2MP_QuestObjectiveGap("7", "Joiner", "socky", "Laboratores", "Carry the sacks to the pantry.", "", "nos_pytle_05=active")
 KCD2MP_QuestPromptMoot("peer left", "7")
 check("(q) peer left clears the gap", Q.gap["7"] == nil)
 check("(q) no command on any gap path", #CMDS == 0)
 noErrs("(q)")
+
+-- ---------------------------------------------------------------------------
+-- (r) Phase 3: a clean narrow fix exists -> F11 grants exactly that objective
+--     through the same channel; direction, quest and spent gates hold
+-- ---------------------------------------------------------------------------
+local FIXN = 0; for _ in ipairs(KCD2MP_OBJECTIVE_FIXES or {}) do FIXN = FIXN + 1 end
+check("(r) the generated fix table is bounded and small", FIXN > 0 and FIXN < 60, FIXN)
+local fx = nil
+for _, f in ipairs(KCD2MP_OBJECTIVE_FIXES or {}) do if f.q == "finale" and f.o == "setkej_se_s_rackem" and f.dir == "active" then fx = f end end
+check("(r) finale.setkej_se_s_rackem has an 'active' fix (talkToRacekObjective)", fx ~= nil and fx.t == "finale.talkToRacekObjective", fx and fx.t)
+check("(r) a fix path passes the registry gate; the sacks module does not", KCD2MP_QuestIsRegistryBeat("finale.talkToRacekObjective") and not KCD2MP_QuestIsRegistryBeat("socky.pytle_a_hadka"))
+resetQuest()
+Q.gap = {}
+-- not in the quest: reported only
+KCD2MP_QuestSetCurrent("socky")
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+check("(r) a fix for a quest we are not in is not offered", r == "changed" and Q.prompt == nil and lastLog("fix not considered") ~= nil)
+-- in the quest, direction matches: offered
+KCD2MP_QuestSetCurrent("finale")
+Q.gap = {}
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+check("(r) in the quest: the fix is offered", r == "fix-offered" and Q.prompt ~= nil and Q.prompt.reason == "gap" and Q.prompt.beat == "finale.talkToRacekObjective", r)
+draw()
+check("(r) prompt says what it grants and that nothing moves", drawn("has \"Meet Racek.\" (active)") ~= nil and drawn("no teleport") ~= nil)
+before = #CMDS
+press("kcd2mp_dice_bank")
+check("(r) F11 fires exactly the narrow trigger", #CMDS == before + 1 and CMDS[#CMDS] == "wh_concept_HasteTrigger finale.talkToRacekObjective", CMDS[#CMDS])
+check("(r) hazard window opened, begin event out, toast says granting", Q.catchup ~= nil and countEvt("quest_catchup", "begin finale.talkToRacekObjective") == 1 and TOASTS[#TOASTS]:find("Granting objective setkej_se_s_rackem", 1, true) ~= nil, TOASTS[#TOASTS])
+check("(r) the fix is spent", Q.fired["finale.talkToRacekObjective"] == true)
+Q.catchup = nil
+Q.gap = {}
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+check("(r) a spent fix is not offered again", r == "changed" and Q.prompt == nil)
+-- direction mismatch: the peer has it DONE, only an 'active' fix exists
+resetQuest(); Q.gap = {}
+KCD2MP_QuestSetCurrent("finale")
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=done")
+check("(r) a state the table cannot produce is not offered", r == "changed" and Q.prompt == nil and lastLog("no narrow trigger exists for: setkej_se_s_rackem=done") ~= nil)
+-- decline is remembered for the fix like for a beat
+resetQuest(); Q.gap = {}
+KCD2MP_QuestSetCurrent("finale")
+KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+press("kcd2mp_dice_yield")
+check("(r) F12 declines the fix and remembers it", Q.prompt == nil and Q.declined["finale.talkToRacekObjective"] == true)
+Q.gap = {}
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+check("(r) a declined fix is not re-offered", Q.prompt == nil)
+-- a standing catch-up offer is not replaced by a fix
+resetQuest(); Q.gap = {}
+KCD2MP_QuestSetCurrent("finale")
+Q.prompt = { ghostId = "7", who = "Joiner", beat = "svatba.02_init_blacksmith", title = "x", shownAt = NOW, reason = "divergence" }
+r = KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+check("(r) a catch-up offer already up is kept", r == "prompt-up" and Q.prompt.beat == "svatba.02_init_blacksmith")
+-- gap closes while the fix prompt is up: withdrawn
+resetQuest(); Q.gap = {}
+KCD2MP_QuestSetCurrent("finale")
+KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "Meet Racek.", "", "setkej_se_s_rackem=active")
+check("(r) fix prompt up", Q.prompt ~= nil)
+KCD2MP_QuestObjectiveGap("7", "Joiner", "finale", "Finale", "", "", "")
+check("(r) the fix prompt is withdrawn when the gap closes", Q.prompt == nil and lastLog("withdrawn (gap closed)") ~= nil)
+noErrs("(r)")
 
 -- ---------------------------------------------------------------------------
 -- (o) nothing pauses; only wh_concept_HasteTrigger; the game's handler ran

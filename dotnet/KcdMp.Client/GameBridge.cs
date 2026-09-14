@@ -2329,7 +2329,8 @@ public partial class GameBridge(ClientConfig config)
                 else
                     Console.WriteLine($"[quest] OBJECTIVE GAP with {who} in {quest.Code} \"{quest.Label}\": they have [{theyStr}] we lack; we have [{weStr}] they lack; {differ.Count} differ in all: {StoryFingerprint.Labels(quest, differ, theirs)} (theirs) vs {StoryFingerprint.Labels(quest, differ, ours)} (ours)");
             }
-            _ = ExecLuaAsync($"if KCD2MP_QuestObjectiveGap then KCD2MP_QuestObjectiveGap(\"{ghostId}\", \"{EscapeLua(who)}\", \"{EscapeLua(quest.Label)}\", \"{EscapeLua(theyStr)}\", \"{EscapeLua(weStr)}\") end");
+            string theySpec = StoryFingerprint.Spec(quest, theyHave, theirs);
+            _ = ExecLuaAsync($"if KCD2MP_QuestObjectiveGap then KCD2MP_QuestObjectiveGap(\"{ghostId}\", \"{EscapeLua(who)}\", \"{EscapeLua(quest.Key)}\", \"{EscapeLua(quest.Label)}\", \"{EscapeLua(theyStr)}\", \"{EscapeLua(weStr)}\", \"{theySpec}\") end");
         }
         catch (Exception ex) { Console.WriteLine($"[quest] fingerprint compare failed: {ex.Message}"); }
     }
