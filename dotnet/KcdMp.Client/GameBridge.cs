@@ -300,9 +300,20 @@ public partial class GameBridge(ClientConfig config)
     // different points" line being repeated for an unchanged pair. Reporting
     // only -- nothing in this class gates on them, deliberately (the marker
     // is a checkpoint-coarse clock; see StoryBeat's class notes).
+    //
+    // WO-96 amends the last sentence: the divergence signal now DOES gate one
+    // thing -- the Shared Quests readiness prompt / WAITING_FOR_PEER status in
+    // the mod (SendQuestDivergence). It still gates no NPC, movement or input
+    // behaviour, and the mod side is informational plus an opt-in F11.
     private string? _localObjective;
     private readonly ConcurrentDictionary<byte, string> _peerObjective = new();
     private readonly ConcurrentDictionary<byte, string> _storyDivergenceTold = new();
+    // WO-96: the last marker this client and each peer were BOTH on. When the
+    // pair then differs, whichever side still sits on it is the one behind --
+    // the markers themselves carry no order, so this is the only ordering the
+    // agent can give without a registry. Reset on convergence to the new
+    // shared marker; absent for a peer that has never agreed with us.
+    private readonly ConcurrentDictionary<byte, string> _lastSharedObjective = new();
     private Func<byte, string, Task>? _sendStoryBeat;
 
     // WO-94 Shared Quests. The agent is a relay between the mod's proximity
@@ -1140,6 +1151,7 @@ public partial class GameBridge(ClientConfig config)
                         // agent but not in a restarted game's Lua; re-push
                         // them on the same cadence (idempotent in Lua).
                         PushQuestContext();
+                        RepushQuestDivergences();   // WO-96
                         // WO-59 Thread C: re-assert stimulus-deafness on every
                         // live ghost. AI.SetIgnorant was applied exactly once
                         // at spawn with its result discarded, so a failed call
@@ -2143,6 +2155,19 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>
+    /// WO-96: a standing divergence survives in the agent but not in a
+    /// restarted game's Lua. Re-pushed on the 2.5 s re-arm only (idempotent
+    /// per pair in the mod); the live path is ReportStoryDivergence.
+    /// </summary>
+    private void RepushQuestDivergences()
+    {
+        if (_localObjective is not string mine) return;
+        foreach (var kv in _peerObjective)
+            if (!string.Equals(kv.Value, mine, StringComparison.Ordinal))
+                SendQuestDivergence(kv.Key, kv.Value);
+    }
+
+    /// <summary>
     /// A peer said it is nearing a registered main-quest beat. The agent
     /// contributes the one fact only it has -- whether the two objectives are
     /// known to differ -- and hands the rest to the mod, which re-validates the
@@ -2150,26 +2175,58 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private void OnPeerApproach(byte ghostId, string path)
     {
+        // WO-96: an approach is a HINT for which beat to offer, not a trigger.
+        // WO-95 s5: M03 has one registered beat, so an approach-gated prompt
+        // fired three times across five divergence windows. The trigger is
+        // now the divergence signal; the hint only refines the destination.
         _peerApproach[ghostId] = path;
         string who = _ghostNames.TryGetValue(ghostId, out var dn) ? dn : $"player {ghostId}";
         bool diverged = _peerObjective.TryGetValue(ghostId, out var theirs)
                         && _localObjective is not null
                         && !string.Equals(theirs, _localObjective, StringComparison.Ordinal);
-        Console.WriteLine($"[quest] {who} is approaching {path}" + (diverged ? " -- objectives differ, prompting" : " -- objectives not known to differ, no prompt"));
-        _ = ExecLuaAsync($"if KCD2MP_QuestShowPrompt then KCD2MP_QuestShowPrompt(\"{ghostId}\", \"{EscapeLua(who)}\", \"{path}\", {(diverged ? 1 : 0)}) end");
+        Console.WriteLine($"[quest] {who} is approaching {path}" + (diverged ? " -- objectives differ, re-evaluating the offer with this beat as the hint" : " -- objectives not known to differ, hint recorded only"));
+        if (diverged) SendQuestDivergence(ghostId, theirs!);
     }
 
-    /// <summary>On any objective change: a prompt whose pair now agrees is withdrawn.</summary>
+    /// <summary>On any objective change: a prompt or waiting state whose pair now agrees is withdrawn.</summary>
     private void ReevaluateQuestPrompts()
     {
-        foreach (var kv in _peerApproach)
+        foreach (var kv in _peerObjective)
         {
-            bool diverged = _peerObjective.TryGetValue(kv.Key, out var theirs)
-                            && _localObjective is not null
-                            && !string.Equals(theirs, _localObjective, StringComparison.Ordinal);
+            bool diverged = _localObjective is not null
+                            && !string.Equals(kv.Value, _localObjective, StringComparison.Ordinal);
             if (!diverged)
-                _ = ExecLuaAsync($"if KCD2MP_QuestPromptMoot then KCD2MP_QuestPromptMoot(\"objectives now agree\", \"{kv.Key}\") end");
+                _ = ExecLuaAsync($"if KCD2MP_QuestConverged then KCD2MP_QuestConverged(\"{kv.Key}\") end");
         }
+    }
+
+    /// <summary>
+    /// WO-96: the one gate. Both markers known and different -> tell the mod
+    /// who is behind, which quest the peer is on, and the peer's last approach
+    /// hint; the mod decides between a readiness prompt and WAITING_FOR_PEER
+    /// against its registry. "behind"/"ahead" come from the last marker the
+    /// pair shared (whoever still sits on it is behind); "unknown" when both
+    /// have moved or the pair never agreed, and the mod's production-code
+    /// order takes over. Idempotent in the mod, so it is also re-pushed on the
+    /// 2.5 s re-arm for a restarted game's fresh Lua.
+    /// </summary>
+    private void SendQuestDivergence(byte ghostId, string peerMarker)
+    {
+        if (_localObjective is not string mine) return;
+        if (string.Equals(mine, peerMarker, StringComparison.Ordinal)) return;
+        string who = _ghostNames.TryGetValue(ghostId, out var dn) ? dn : $"player {ghostId}";
+        string rel = "unknown";
+        if (_lastSharedObjective.TryGetValue(ghostId, out var shared))
+        {
+            if (string.Equals(mine, shared, StringComparison.Ordinal)) rel = "behind";
+            else if (string.Equals(peerMarker, shared, StringComparison.Ordinal)) rel = "ahead";
+        }
+        string peerQuest = StoryBeat.TryQuestNameFromMarker(peerMarker) ?? string.Empty;
+        string hint = _peerApproach.TryGetValue(ghostId, out var h) && StoryBeat.IsValidBeatPath(h) ? h : string.Empty;
+        Console.WriteLine($"[quest] divergence -> mod: {who} rel={rel} peerQuest='{peerQuest}' ours='{_localQuest ?? string.Empty}' hint='{hint}'");
+        _ = ExecLuaAsync(
+            $"if KCD2MP_QuestDivergence then KCD2MP_QuestDivergence(\"{ghostId}\", \"{EscapeLua(who)}\", \"{EscapeLua(peerQuest)}\", " +
+            $"\"{EscapeLua(StoryBeat.Humanize(peerMarker))}\", \"{EscapeLua(StoryBeat.Humanize(mine))}\", \"{rel}\", \"{hint}\") end");
     }
 
     private void OnPeerCatchup(byte ghostId, string path, bool begin)
@@ -2220,6 +2277,10 @@ public partial class GameBridge(ClientConfig config)
             // divergence is reported afresh.
             if (_storyDivergenceTold.TryRemove(ghostId, out _) && _localObjective is not null)
                 Console.WriteLine($"[story] {who} is on the same objective as us again");
+            // WO-96: remember the marker the pair agrees on -- it decides who
+            // is "behind" the next time they differ.
+            if (_localObjective is string agreed && string.Equals(agreed, peerMarker, StringComparison.Ordinal))
+                _lastSharedObjective[ghostId] = agreed;
             return;
         }
 
@@ -2231,6 +2292,9 @@ public partial class GameBridge(ClientConfig config)
         Console.WriteLine($"[story] divergence: {line}");
         _ = ExecLuaAsync(
             $"if KCD2MP_ShowNativeToast then KCD2MP_ShowNativeToast(\"{EscapeLua(line)}\") end");
+        // WO-96: the prompt / WAITING_FOR_PEER decision rides this signal, once
+        // per new pair (the latch above); the mod is idempotent per pair.
+        SendQuestDivergence(ghostId, peerMarker);
     }
 
     private async Task SendHorseInfoAsync(NetworkStream stream, string horseName, CancellationToken ct)

@@ -8799,6 +8799,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_quest_no",     "KCD2MP_QuestAnswer(false)",      "WO-94: answer the readiness prompt NO (same as F12)")
     System.AddCCommand("mp_quest_fire",   'KCD2MP_QuestFire("%LINE", "console")', "WO-94 live probe: the console drops arguments on this build -- type #KCD2MP_QuestFire(\"quest.trigger\") (disposable save!)")
     System.AddCCommand("mp_quest_test_prompt", 'KCD2MP_QuestTestPrompt("")', "WO-94 live probe: show the readiness prompt for the first registered beat with no peer (F11/F12 + overlay test); a specific beat: #KCD2MP_QuestTestPrompt(\"quest.trigger\")")
+    System.AddCCommand("mp_quest_gap",    'KCD2MP_QuestSetGap("%LINE")',    "WO-96: the console drops arguments on this build -- type #KCD2MP_QuestSetGap(60) instead (minimum seconds between prompts per peer, default 60)")
+    System.AddCCommand("mp_quest_hide",   "KCD2MP_QuestWaitingDismiss()",    "WO-96: hide the WAITING FOR PEER line until the story positions change (same as F12 with no prompt up)")
     System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
     System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%LINE")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
     System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
@@ -9099,6 +9101,13 @@ local function handleAction(action, activation, value)
             return
         end
     end
+    -- WO-96: with no prompt up, F12 hides a visible WAITING_FOR_PEER line
+    -- (until the divergence pair changes). F11 alone does nothing here.
+    if KCD2MP.quest and not KCD2MP.quest.prompt and activation == "press" and DECLINE_ACTIONS[action]
+       and KCD2MP_QuestWaitingVisible and KCD2MP_QuestWaitingVisible() then
+        pcall(KCD2MP_QuestWaitingDismiss)
+        return
+    end
 
     -- Challenge the nearest player to dice (WO-5, gated to a real table in
     -- WO-6). Unlike accept/decline this has no KCD2MP.invite-style gate to
@@ -9181,13 +9190,17 @@ end
 --   2. KCD2MP_QuestProximityTick (1 Hz, rides the emitter) compares the
 --      player's position against that quest's positioned beats in the
 --      generated registry below. Inside mp_quest_radius it emits ONE
---      "quest_approach <quest>.<trigger>" event, once per beat.
---   3. The agent relays it (StoryBeat 0x37 kind 2). On the OTHER machine the
---      agent decides whether the two objectives differ and, if so, calls
---      KCD2MP_QuestShowPrompt. The prompt is a persistent DrawText line in
---      the same 8 ms label loop that draws the ping -- it stays until it is
---      answered or made moot. It intercepts nothing: the OnAction hook runs
---      AFTER the game's own handler and cannot consume input.
+--      "quest_approach <quest>.<trigger>" event, once per beat. Since WO-96
+--      this is a HINT for which beat to offer, never the trigger.
+--   3. WO-96: the trigger is the agent's story-divergence signal -- both
+--      markers known and different, computed on every objective change with
+--      no proximity condition (docs/WO-95-findings.md s5). The agent calls
+--      KCD2MP_QuestDivergence with who is behind; the mod picks the peer
+--      quest's beat (or enters WAITING_FOR_PEER when there is none to offer)
+--      and calls KCD2MP_QuestShowPrompt. The prompt is a persistent DrawText
+--      line in the same 8 ms label loop that draws the ping -- it stays until
+--      it is answered or made moot. It intercepts nothing: the OnAction hook
+--      runs AFTER the game's own handler and cannot consume input.
 --   4. F11 = catch up, F12 = stay. These are kcd2mp_dice_bank / _yield, the
 --      dice minigame's hold-to-bank / hold-to-yield keys, already reused by
 --      the dice-invite prompt for accept/decline (WO-33). Safe by
@@ -9224,6 +9237,18 @@ KCD2MP.quest = {
     hazardN        = 0,
     approachN      = 0,
     fireN          = 0,
+    -- WO-96: divergence-gated prompting. The prompt is raised when the two
+    -- players' story markers DIFFER (the agent's [story] divergence signal),
+    -- not when a peer walks past a beat; proximity is now only a hint for
+    -- WHICH beat to offer. When there is nothing left to offer the mod
+    -- enters WAITING_FOR_PEER -- a status line, never a lock.
+    promptGapS     = 60.0,     -- minimum interval between prompts per peer (debounce)
+    fired          = {},       -- "<quest>.<trigger>" -> true: fired HERE this session (spent; never offered again)
+    lastPromptAt   = {},       -- ghostId -> os.clock() of the last prompt raised for that peer
+    hint           = {},       -- ghostId -> last quest_approach beat that peer announced (beat hint only)
+    waiting        = {},       -- ghostId -> {who, rel, key, peerObj, localObj, title, why, since, dismissed, pendingBeat}
+    divergeN       = 0,
+    waitN          = 0,
 }
 local Q = KCD2MP.quest
 
@@ -9432,6 +9457,7 @@ function KCD2MP_QuestProximityTick()
     Q.lastTickAt = now
 
     KCD2MP_QuestWindowTick(now)
+    if KCD2MP_QuestWaitingTick then pcall(KCD2MP_QuestWaitingTick, now) end   -- WO-96: deferred offers
 
     if not Q.enabled or not Q.current or not player then return end
     local q = questIndex().byLower[Q.current]
@@ -9467,9 +9493,11 @@ function KCD2MP_QuestProximityTick()
     end
 end
 
--- Agent -> mod, when a peer's approach arrives. diverged is 1 when the agent
--- knows both objectives and they differ; anything else means "do not prompt".
-function KCD2MP_QuestShowPrompt(ghostId, who, beat, diverged)
+-- Agent -> mod. diverged is 1 when the agent knows both objectives and they
+-- differ; anything else means "do not prompt". Since WO-96 the agent calls
+-- this from the divergence path (KCD2MP_QuestDivergence below), not from a
+-- peer's proximity announce; reason is "divergence" or "test".
+function KCD2MP_QuestShowPrompt(ghostId, who, beat, diverged, reason)
     beat = tostring(beat or "")
     if not KCD2MP_QuestIsRegistryBeat(beat) then
         mp_log("QUEST-PROMPT refused: '" .. beat .. "' is not a registered main-quest beat")
@@ -9491,21 +9519,266 @@ function KCD2MP_QuestShowPrompt(ghostId, who, beat, diverged)
         mp_log("QUEST-PROMPT not shown for " .. beat .. ": a catch-up is already in progress here")
         return false
     end
+    if Q.fired[beat] then
+        mp_log("QUEST-PROMPT not shown for " .. beat .. ": already fired here this session (spent)")
+        return false
+    end
     local hit = questIndex().byPath[beat]
     Q.prompt = { ghostId = tostring(ghostId), who = tostring(who or ("player " .. tostring(ghostId))),
                  beat = beat, title = (hit and hit.quest.title ~= "" and hit.quest.title) or (hit and hit.quest.name) or beat,
-                 shownAt = os.clock() }
-    mp_log(string.format("QUEST-PROMPT shown: %s is nearing %s -- F11 catch up / F12 stay (no timeout)", Q.prompt.who, beat))
+                 shownAt = os.clock(), reason = tostring(reason or "divergence") }
+    Q.lastPromptAt[Q.prompt.ghostId] = os.clock()
+    Q.waiting[Q.prompt.ghostId] = nil      -- an offer replaces the waiting line for that peer
+    mp_log(string.format("QUEST-PROMPT shown (%s): %s is ahead in \"%s\" -- F11 catch up to %s / F12 stay (no timeout)",
+        Q.prompt.reason, Q.prompt.who, tostring(Q.prompt.title), beat))
     return true
 end
 
 -- Agent -> mod. The prompt is no longer relevant: the peer left, the two
--- objectives now agree, or the peer moved on to another beat.
+-- objectives now agree, or the peer moved on to another beat. "peer left"
+-- also ends that peer's WAITING_FOR_PEER state (WO-96).
 function KCD2MP_QuestPromptMoot(reason, ghostId)
+    if tostring(reason) == "peer left" and ghostId ~= nil and Q.waiting[tostring(ghostId)] then
+        local w = Q.waiting[tostring(ghostId)]
+        mp_log(string.format("WAITING_FOR_PEER exit (peer left): %s after %.0fs", w.who, os.clock() - w.since))
+        Q.waiting[tostring(ghostId)] = nil
+    end
     if not Q.prompt then return end
     if ghostId ~= nil and tostring(ghostId) ~= Q.prompt.ghostId then return end
     mp_log(string.format("QUEST-PROMPT withdrawn (%s): %s", tostring(reason), Q.prompt.beat))
     Q.prompt = nil
+end
+
+-- ---------------------------------------------------------------------------
+-- WO-96: divergence-gated prompting and WAITING_FOR_PEER
+-- ---------------------------------------------------------------------------
+--
+-- Why: in the 2026-09-13 session (docs/WO-95-findings.md s5) the prompt was
+-- raised only when a peer walked within 35 m of a registry beat of ITS
+-- current quest. M03 has exactly one such beat, so across five divergence
+-- windows the players got three prompts, and for the whole stretch in which
+-- one player was stuck the mechanism had nothing to say. The agent's
+-- "[story] divergence" line, computed on every objective change with no
+-- proximity condition, was correct every time. It is now the trigger.
+--
+-- Decision table (rel = who is behind, decided by the agent from the last
+-- marker both players shared, refined here by production-code order when the
+-- agent cannot tell):
+--   we are BEHIND, peer's quest differs from ours, an unspent, undeclined
+--     fireable beat of the peer's quest exists  -> readiness prompt (F11/F12)
+--   we are BEHIND, same quest                   -> WAITING_FOR_PEER (reach it by play)
+--   we are BEHIND, nothing fireable / all spent -> WAITING_FOR_PEER
+--   we are AHEAD                                -> WAITING_FOR_PEER (peer is behind)
+--   cannot tell                                 -> WAITING_FOR_PEER (diverged, unordered)
+-- A beat fired HERE this session is spent: the 2026-09-13 host fired
+-- socky._initAndStart twice and landed on the same point twice; a second
+-- fire of a quest-start entry advances nothing. WAITING_FOR_PEER is a
+-- status line: it blocks nothing, pauses nothing, gates no input. It exits
+-- on convergence (the agent's next marker on either side agrees), on the
+-- peer leaving, or on F12 (hidden until the divergence pair changes).
+-- Scope: right for BEAT divergence only -- a sub-objective the ahead player
+-- earned through ordinary play (dialogue, discovery) cannot be re-earned by
+-- waiting; that is WO-96 Phase 2/3's problem, not this state's.
+
+-- Numeric order of a quest from its production code: "M37a" -> 37.1.
+local function questOrder(q)
+    if not q or not q.code then return nil end
+    local n, suffix = tostring(q.code):match("^M(%d+)(%a?)$")
+    if not n then return nil end
+    n = tonumber(n)
+    if suffix and suffix ~= "" then n = n + (string.byte(suffix:lower()) - 96) / 10 end
+    return n
+end
+
+-- "behind" / "ahead" / "unknown". The agent's verdict wins; production-code
+-- order breaks a tie only when the two quests differ.
+local function questRel(rel, peerQ, localQ)
+    rel = tostring(rel or "unknown"):lower()
+    if rel == "behind" or rel == "ahead" then return rel end
+    if peerQ and localQ and peerQ ~= localQ then
+        local a, b = questOrder(peerQ), questOrder(localQ)
+        if a and b then
+            if a > b then return "behind" elseif a < b then return "ahead" end
+        end
+    end
+    return "unknown"
+end
+
+-- Distance^2 from a ghost's live position to a beat, or nil.
+local function questGhostDist2(ghostId, b)
+    local g = KCD2MP.ghosts and KCD2MP.ghosts[ghostId]
+    if not g or not g.entity then return nil end
+    local ok, gp = pcall(function() return g.entity:GetWorldPos() end)
+    if not ok or not gp then return nil end
+    return questBeatDist2(b, gp)
+end
+
+-- The beat to offer for a peer's quest: the peer's own approach hint when it
+-- names a usable beat of that quest, else the usable beat nearest the peer's
+-- ghost, else the first usable one. nil when every beat is spent/declined.
+local function questPickBeat(ghostId, peerQ, hintBeat)
+    local usable = {}
+    for _, b in ipairs(peerQ.beats or {}) do
+        local path = peerQ.name .. "." .. b.t
+        if not Q.fired[path] and not Q.declined[path] then usable[#usable + 1] = { path = path, b = b } end
+    end
+    if #usable == 0 then return nil end
+    if hintBeat and hintBeat ~= "" then
+        for _, u in ipairs(usable) do if u.path == hintBeat then return u.path, "peer approach hint" end end
+    end
+    local best, bestD2 = nil, nil
+    for _, u in ipairs(usable) do
+        local d2 = questGhostDist2(ghostId, u.b)
+        if d2 and (not bestD2 or d2 < bestD2) then best, bestD2 = u, d2 end
+    end
+    if best then return best.path, string.format("nearest to the peer, %.0fm", math.sqrt(bestD2)) end
+    return usable[1].path, "first usable beat"
+end
+
+-- Agent -> mod on every [story] divergence (and re-pushed on the agent's
+-- re-arm so a restarted game's fresh Lua gets it back). peerQuestLower is the
+-- peer's marker quest token; peerObj / localObj are the humanised objective
+-- strings for the screen; rel is the agent's behind|ahead|unknown; hintBeat
+-- is the peer's last quest_approach path or "".
+function KCD2MP_QuestDivergence(ghostId, who, peerQuestLower, peerObj, localObj, rel, hintBeat)
+    ghostId = tostring(ghostId)
+    who = tostring(who or ("player " .. ghostId))
+    peerObj, localObj = tostring(peerObj or "?"), tostring(localObj or "?")
+    hintBeat = tostring(hintBeat or ""):gsub("%s+", "")
+    if not Q.enabled then
+        mp_log("QUEST-DIVERGENCE ignored (mp_quest_sync off): " .. who)
+        return "off"
+    end
+    local now = os.clock()
+    local ix = questIndex()
+    local pq = tostring(peerQuestLower or ""):lower():gsub("%s+", "")
+    local peerQ  = pq ~= "" and ix.byLower[pq] or nil
+    local localQ = Q.current and ix.byLower[Q.current] or nil
+    rel = questRel(rel, peerQ, localQ)
+    Q.divergeN = (Q.divergeN or 0) + 1
+    local key = peerObj .. "|" .. localObj .. "|" .. rel
+
+    -- 1. Is there a catch-up destination?
+    local beat, pickWhy, why = nil, nil, nil
+    if rel == "behind" then
+        if not peerQ then
+            why = "their quest is outside the main-quest registry"
+        elseif localQ == peerQ then
+            why = "same quest -- reach their objective through ordinary play"
+        elseif #(peerQ.beats or {}) == 0 then
+            why = string.format("%s \"%s\" has no fireable beat", peerQ.code, tostring(peerQ.title or peerQ.name))
+        else
+            beat, pickWhy = questPickBeat(ghostId, peerQ, hintBeat)
+            if not beat then
+                why = string.format("every fireable beat of %s \"%s\" is already used or declined here", peerQ.code, tostring(peerQ.title or peerQ.name))
+            end
+        end
+    elseif rel == "ahead" then
+        why = "they are behind you"
+    else
+        why = "cannot tell who is ahead"
+    end
+    mp_log(string.format("QUEST-DIVERGENCE #%d: %s (%s) is on \"%s\", we are on \"%s\" (%s) -- %s",
+        Q.divergeN, who, rel, peerObj, localObj, tostring(Q.current), beat and ("offer " .. beat .. " [" .. pickWhy .. "]") or why))
+
+    -- 2. Offer it, unless the debounce says wait.
+    if beat then
+        local last = Q.lastPromptAt[ghostId]
+        if Q.prompt and Q.prompt.ghostId == ghostId and Q.prompt.beat == beat then
+            return "prompt-up"
+        end
+        if last and (now - last) < Q.promptGapS and not (Q.prompt and Q.prompt.ghostId == ghostId) then
+            local w = Q.waiting[ghostId]
+            if not w or w.key ~= key then
+                Q.waiting[ghostId] = { who = who, rel = rel, key = key, peerObj = peerObj, localObj = localObj,
+                    title = peerQ and (peerQ.title or peerQ.name) or "", since = now, dismissed = false,
+                    pendingBeat = beat, why = string.format("prompt cooling down, %.0fs", Q.promptGapS - (now - last)) }
+                mp_log(string.format("QUEST-DIVERGENCE prompt for %s deferred %.0fs (debounce %.0fs)", beat, Q.promptGapS - (now - last), Q.promptGapS))
+            else
+                w.pendingBeat = beat
+            end
+            return "deferred"
+        end
+        if KCD2MP_QuestShowPrompt(ghostId, who, beat, 1, "divergence") then return "prompt" end
+        -- refused (catch-up running, declined meanwhile): fall through to waiting
+        why = "prompt refused -- see the QUEST-PROMPT line above"
+    end
+
+    -- 3. Nothing to offer: WAITING_FOR_PEER, entered once per pair, updated in place.
+    if Q.prompt and Q.prompt.ghostId == ghostId then
+        -- the pair changed while an offer was up; the agent withdraws prompts on
+        -- convergence, so an offer still standing is still valid -- keep it.
+        return "prompt-up"
+    end
+    local w = Q.waiting[ghostId]
+    if w and w.key == key then
+        w.why = why; w.pendingBeat = nil
+        return "waiting"
+    end
+    local relChanged = (not w) or (w.rel ~= rel)
+    Q.waiting[ghostId] = { who = who, rel = rel, key = key, peerObj = peerObj, localObj = localObj,
+        title = peerQ and (peerQ.title or peerQ.name) or (localQ and (localQ.title or localQ.name)) or "",
+        since = (w and w.since) or now, dismissed = false, pendingBeat = nil, why = why }
+    Q.waitN = (Q.waitN or 0) + 1
+    mp_log(string.format("WAITING_FOR_PEER %s: %s is %s -- they are on \"%s\", we are on \"%s\" (%s)",
+        w and "updated" or "entered", who, rel == "behind" and "ahead of us" or (rel == "ahead" and "behind us" or "elsewhere"), peerObj, localObj, why))
+    if relChanged then
+        KCD2MP_ShowNativeToast(rel == "behind" and (who .. " is ahead of you: \"" .. peerObj .. "\". Waiting for you to catch up.")
+            or (rel == "ahead" and (who .. " is behind you: \"" .. peerObj .. "\". Waiting for them.")
+            or (who .. " is on a different objective: \"" .. peerObj .. "\".")))
+    end
+    return "waiting"
+end
+
+-- Agent -> mod when the two markers agree again (either side's next
+-- checkpoint): the prompt for that peer is moot and the waiting state ends.
+function KCD2MP_QuestConverged(ghostId)
+    ghostId = tostring(ghostId)
+    local w = Q.waiting[ghostId]
+    if w then
+        mp_log(string.format("WAITING_FOR_PEER exit (converged): %s after %.0fs", w.who, os.clock() - w.since))
+        Q.waiting[ghostId] = nil
+    end
+    if Q.prompt and Q.prompt.ghostId == ghostId then
+        mp_log("QUEST-PROMPT withdrawn (objectives now agree): " .. Q.prompt.beat)
+        Q.prompt = nil
+    end
+end
+
+-- The waiting line the player can currently see, if any (the first
+-- undismissed one). Dismissal is per divergence pair: a new pair shows again.
+function KCD2MP_QuestWaitingVisible()
+    for id, w in pairs(Q.waiting) do
+        if not w.dismissed then return w, id end
+    end
+    return nil
+end
+
+-- F12 with no prompt up hides the visible waiting line for this pair.
+function KCD2MP_QuestWaitingDismiss()
+    local w = KCD2MP_QuestWaitingVisible()
+    if not w then return false end
+    w.dismissed = true
+    mp_log("WAITING_FOR_PEER hidden by the player (F12) for " .. w.who .. "; it returns if the divergence changes")
+    KCD2MP_ShowInteractionMsg("Hidden until the story positions change")
+    return true
+end
+
+-- 1 Hz from the proximity tick: a deferred offer is raised once its debounce
+-- has elapsed and nothing else is up.
+function KCD2MP_QuestWaitingTick(now)
+    if Q.prompt or Q.catchup then return end
+    for id, w in pairs(Q.waiting) do
+        if w.pendingBeat then
+            local last = Q.lastPromptAt[id]
+            if not last or (now - last) >= Q.promptGapS then
+                local beat = w.pendingBeat
+                w.pendingBeat = nil
+                if KCD2MP_QuestShowPrompt(id, w.who, beat, 1, "divergence") then return end
+                w.why = "prompt refused -- see the QUEST-PROMPT line above"
+            end
+        end
+    end
 end
 
 -- F11 / F12 / mp_quest_yes / mp_quest_no.
@@ -9544,6 +9817,7 @@ function KCD2MP_QuestFire(beat, who)
     local now = os.clock()
     Q.catchup = { beat = beat, who = who, startedAt = now, untilT = now + Q.windowS }
     Q.fireN = (Q.fireN or 0) + 1
+    Q.fired[beat] = true       -- WO-96: spent for this session; never offered again
     Q.lastPos = nil
     mp_log(string.format("QUEST-CATCHUP FIRE #%d: wh_concept_HasteTrigger %s (toward %s) -- hazard window %.0fs open",
         Q.fireN, beat, who, Q.windowS))
@@ -9662,9 +9936,15 @@ function KCD2MP_QuestSetSync(arg)
     elseif s == "off" then Q.enabled = false; Q.prompt = nil
     elseif s ~= "" and s ~= "%line" then mp_log("mp_quest_sync: expected on|off, got '" .. s .. "'"); return end
     local ix = questIndex()
-    mp_log(string.format("QUEST sync is %s (%d main quests, %d fireable beats, radius %.0fm, window %.0fs; current=%s level=%s; %d approaches, %d fires, %d hazard lines)",
-        Q.enabled and "ON" or "OFF", ix.nQuests, ix.nBeats, Q.radius, Q.windowS, tostring(Q.current), tostring(Q.level),
-        Q.approachN or 0, Q.fireN or 0, Q.hazardN or 0))
+    mp_log(string.format("QUEST sync is %s (%d main quests, %d fireable beats, radius %.0fm, window %.0fs, prompt gap %.0fs; current=%s level=%s; %d approaches, %d divergences, %d waits, %d fires, %d hazard lines)",
+        Q.enabled and "ON" or "OFF", ix.nQuests, ix.nBeats, Q.radius, Q.windowS, Q.promptGapS, tostring(Q.current), tostring(Q.level),
+        Q.approachN or 0, Q.divergeN or 0, Q.waitN or 0, Q.fireN or 0, Q.hazardN or 0))
+end
+-- WO-96: #KCD2MP_QuestSetGap(<seconds>) -- minimum interval between prompts per peer.
+function KCD2MP_QuestSetGap(arg)
+    local n = tonumber(arg)
+    if n and n >= 0 and n <= 3600 then Q.promptGapS = n; mp_log(string.format("QUEST prompt gap = %.0fs", n))
+    else mp_log("mp_quest_gap: expected 0..3600 seconds, got '" .. tostring(arg) .. "'") end
 end
 function KCD2MP_QuestSetRadius(arg)
     local n = tonumber(arg)
@@ -9692,6 +9972,12 @@ function KCD2MP_QuestStatus()
         end
     end
     if Q.prompt then mp_log("  prompt up: " .. Q.prompt.who .. " -> " .. Q.prompt.beat) end
+    for id, wt in pairs(Q.waiting) do
+        mp_log(string.format("  WAITING_FOR_PEER %s: %s (%s) they=\"%s\" we=\"%s\" %s%s since %.0fs%s",
+            tostring(id), wt.who, wt.rel, wt.peerObj, wt.localObj, tostring(wt.why),
+            wt.pendingBeat and (" pending " .. wt.pendingBeat) or "", os.clock() - wt.since, wt.dismissed and " (hidden)" or ""))
+    end
+    for beat in pairs(Q.fired) do mp_log("  spent this session: " .. beat) end
     local w, where = KCD2MP_QuestWindow()
     if w then mp_log(string.format("  hazard window open (%s): %s by %s, %.0fs left", where, w.beat, w.who, w.untilT - os.clock())) end
 end
@@ -9708,7 +9994,7 @@ function KCD2MP_QuestTestPrompt(arg)
             if q.beats and q.beats[1] then beat = q.name .. "." .. q.beats[1].t; break end
         end
     end
-    return KCD2MP_QuestShowPrompt("test", "TestPeer", beat, 1)
+    return KCD2MP_QuestShowPrompt("test", "TestPeer", beat, 1, "test")
 end
 
 -- Drawn from KCD2MP_DrawInteractionUI (the 8 ms label loop). Two lines below
@@ -9716,12 +10002,22 @@ end
 function KCD2MP_QuestDrawUI()
     local p = Q.prompt
     if p then
-        System.DrawText(10, 160, p.who .. " is nearing a story beat in \"" .. tostring(p.title) .. "\"  (" .. p.beat .. ")", 2)
-        System.DrawText(10, 184, "F11 catch up (advance my story)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
+        System.DrawText(10, 160, p.who .. " is ahead of you in \"" .. tostring(p.title) .. "\"  -- catch up to " .. p.beat .. "?", 2)
+        System.DrawText(10, 184, "F11 catch up (advance my story; you will be moved)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
     end
     local w, where = KCD2MP_QuestWindow()
     if w then
         System.DrawText(10, 208, string.format("Catch-up in progress (%s): %s  %.0fs", where, w.beat, w.untilT - os.clock()), 1.4)
+    end
+    -- WO-96: WAITING_FOR_PEER, one row, informational. Not drawn under an
+    -- open prompt for the same peer (ShowPrompt clears it).
+    local wt = KCD2MP_QuestWaitingVisible and KCD2MP_QuestWaitingVisible() or nil
+    if wt then
+        local head
+        if wt.rel == "behind" then head = "WAITING FOR PEER -- " .. wt.who .. " is ahead: they are on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\""
+        elseif wt.rel == "ahead" then head = "WAITING FOR PEER -- " .. wt.who .. " is behind you: they are on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\""
+        else head = "STORY DIVERGED -- " .. wt.who .. " is on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\"" end
+        System.DrawText(10, 232, head .. ".  " .. tostring(wt.why) .. ".  (F12 hides)", 1.4)
     end
 end
 

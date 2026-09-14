@@ -147,6 +147,7 @@ local function resetQuest()
     Q.enabled = true; Q.radius = 35.0; Q.windowS = 120.0
     Q.level = nil; Q.current = nil
     Q.announced = {}; Q.declined = {}; Q.prompt = nil
+    Q.fired = {}; Q.lastPromptAt = {}; Q.waiting = {}   -- WO-96 state
     Q.catchup = nil; Q.catchupRemote = {}; Q.lastTickAt = 0; Q.lastPos = nil
     KCD2MP.invite = nil; KCD2MP.interactionMsg = nil
     if KCD2MP.dice then KCD2MP.dice.open = false end
@@ -335,21 +336,21 @@ do
         KCD2MP_QuestShowPrompt("2", "Alice", "kralovskeStribro.02_startMines", 1) == true and Q.prompt ~= nil)
     DRAWS = {}
     KCD2MP_DrawInteractionUI()
-    local d1 = drawn("Alice is nearing a story beat in \"Via Argentum\"  (kralovskeStribro.02_startMines)")
+    local d1 = drawn("Alice is ahead of you in \"Via Argentum\"  -- catch up to kralovskeStribro.02_startMines?")
     local d2 = drawn("F11 catch up")
     check("(d) the prompt is drawn by the interaction UI (label loop)", d1 ~= nil and d2 ~= nil)
     check("(d) ...as plain DrawText rows below the ping/invite rows", d1 and d1.y == 160 and d2 and d2.y == 184, d1 and d1.y)
     NOW = NOW + 3600
     DRAWS = {}
     KCD2MP_DrawInteractionUI()
-    check("(d) an hour later, unanswered, it is still drawn (no timeout)", drawn("Alice is nearing") ~= nil and Q.prompt ~= nil)
+    check("(d) an hour later, unanswered, it is still drawn (no timeout)", drawn("Alice is ahead of you") ~= nil and Q.prompt ~= nil)
     KCD2MP_QuestPromptMoot("objectives now agree", "9")
     check("(d) a moot for a different ghost leaves it up", Q.prompt ~= nil)
     KCD2MP_QuestPromptMoot("objectives now agree", "2")
     check("(d) a moot for its ghost withdraws it, logged", Q.prompt == nil and countLog("QUEST-PROMPT withdrawn (objectives now agree)", mark) == 1)
     DRAWS = {}
     KCD2MP_DrawInteractionUI()
-    check("(d) ...and nothing is drawn afterwards", drawn("is nearing") == nil)
+    check("(d) ...and nothing is drawn afterwards", drawn("is ahead of you") == nil)
     -- decline memory
     KCD2MP_QuestShowPrompt("2", "Alice", "kralovskeStribro.02_startMines", 1)
     KCD2MP_QuestAnswer(false)
