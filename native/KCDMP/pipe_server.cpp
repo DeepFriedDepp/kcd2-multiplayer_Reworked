@@ -4,6 +4,7 @@
 #include "combat_swing.h"
 #include "lua_closure.h"
 #include "script_context.h"
+#include "concept_read.h"
 #include "log.h"
 
 #include <windows.h>
@@ -342,6 +343,30 @@ void serve(HANDLE h) {
                 if (!ran) logf("PIPE: GhostIsolate timed out waiting for a frame");
                 logf("PIPE: GhostIsolate on=%s -> %s", on ? "true" : "false",
                      ok ? "all contexts in state" : "not fully applied (see SCTX lines)");
+                send_result(h, ran && ok, seq);
+                break;
+            }
+
+            // WO-97: read-only probe of the quest concept tree. Runs on the
+            // game's main thread like every other engine touch here, and
+            // reports only through the native log -- the payload that matters
+            // (root module names, node vs null) is many lines of text, not a
+            // wire field. Result byte says whether the probe ran, not what it
+            // found.
+            case kConceptProbe: {
+                if (len > kConceptProbeMaxLen) {
+                    logf("PIPE: ConceptProbe path too long (%u > %d)", len, kConceptProbeMaxLen);
+                    send_result(h, false, seq);
+                    break;
+                }
+                std::string path(reinterpret_cast<const char*>(body), len);
+                bool ok = false;
+                const bool ran = run_sync_bounded<bool>(
+                    [path](bool& result) { result = conceptread::probe(path.c_str()); },
+                    "ConceptProbe", ok);
+                if (!ran) logf("PIPE: ConceptProbe timed out waiting for a frame");
+                logf("PIPE: ConceptProbe(\"%s\") -> %s", path.c_str(),
+                     ok ? "ran" : "failed (see CONCEPT lines)");
                 send_result(h, ran && ok, seq);
                 break;
             }

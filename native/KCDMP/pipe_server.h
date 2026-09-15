@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // The agent <-> DLL channel.
 //
 // The DLL hosts, the agent connects. The DLL's lifetime is the game's, which is
@@ -38,6 +38,17 @@
 //                        is left alone) and fail-closed (the first fault
 //                        disarms the feature for the rest of the process; a
 //                        ghost spawn is never blocked by it).
+//
+//     0x08 ConceptProbe [path:N utf8, no NUL, may be empty]        (0..480)
+//                        WO-97: read-only probe of the quest concept tree.
+//                        Enumerates C_ConceptManager's root modules by name
+//                        (pure pointer reads, no engine call) and, when path
+//                        is non-empty, resolves it through
+//                        C_ConceptManager::FindNode and reports node vs null.
+//                        Results go to the native log, not the wire: this is a
+//                        diagnostic run from tools/Probe-ConceptRead.ps1 with
+//                        the agent stopped, exactly like 0x05/0x07's probes.
+//                        NOTHING IS TRIGGERED -- see concept_read.h.
 //
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
@@ -84,6 +95,7 @@ constexpr uint8_t kSetFactionHostile  = 0x04;
 constexpr uint8_t kResolveLuaClosure  = 0x05;
 constexpr uint8_t kGhostSwing         = 0x06;
 constexpr uint8_t kGhostIsolate       = 0x07;
+constexpr uint8_t kConceptProbe       = 0x08;   // WO-97, read-only
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;
@@ -97,6 +109,7 @@ constexpr int kResolveLuaClosureLen     = 8;
 constexpr int kGhostSwingMinLen         = 4 + 1;      // entityId + at least one spec byte
 constexpr int kGhostSwingMaxLen         = 4 + 191;    // spec cap matches combat_swing.h
 constexpr int kGhostIsolateLen          = kGuidLen + 1;
+constexpr int kConceptProbeMaxLen       = 480;    // matches concept_read.cpp's kMaxPath
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not
