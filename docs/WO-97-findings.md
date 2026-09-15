@@ -539,3 +539,192 @@ be reported as unfireable rather than fired and hoped over.
    port.
 5. **Anything needing disassembly beyond this session** — no. Nothing was
    guessed and nothing was left ambiguous.
+
+---
+
+## 4. Phase 3 — the target, the predicted effect, and the live-fire procedure
+
+**Nothing in this section was fired.** No native write was performed this
+session. Everything below is **(code-verified)** except where marked.
+
+### 4.1 The target is two in-ports, not the out-port the prompt names
+
+`v_hospode.xml` has exactly **two** consumers of `druhy_dialog_s_ptackem.nos_pytle`
+**(code-verified)**:
+
+```
+<pytle_a_hadka Name="pytle_a_hadka">
+    <Edge From="druhy_dialog_s_ptackem.nos_pytle" To="start"/>
+<State Name="rekniPtackoviOPraci" TypeT="Progress">
+    <Edge From="druhy_dialog_s_ptackem.nos_pytle" To="SetDone"/>
+```
+
+The prompt aims at `nos_pytle` itself. Phase 2 §3.4 rules that out: `nos_pytle`
+is an **out**-port (direction 2) and `CanTrigger` refuses direction 2. The
+triggerable objects are the two **in**-ports it drives. Firing both reproduces
+the dialogue's effect exactly, and does so without depending on out-port
+triggering at all — strictly better than the route the prompt assumed.
+
+| # | node path (as `FindNode` needs it) | port | what it is |
+|---|---|---|---|
+| **T1** | `Barbora.trosecko.socky.hibernable.v_hospode.pytle_a_hadka` | `start` | the gameplay |
+| **T2** | `Barbora.trosecko.socky.hibernable.v_hospode.rekniPtackoviOPraci` | `SetDone` | the journal |
+
+T1's node was **resolved live in Phase 1** (`QuestModule.dll+0x93DE0`). T2's node
+was not probed and must be resolved before firing.
+
+### 4.2 Predicted effect — the paired effect, in full
+
+**T1 — `pytle_a_hadka.start`** drives exactly three things **(code-verified)**:
+
+1. `backuptimer.SetRunning` — a Timer.
+2. `savegame17.EnqueueSave` — a save **write**.
+3. `sackcarrying.start_minigame` — and this is the whole point.
+
+`sackcarrying` is a shared library module (`Namespace="utils.minigames"`,
+`Barbora/utils/minigames/sackcarrying.xml`) with `source_piles = pytle_start`
+and `target_piles = pytle_end`. Its `start_minigame` in-port does one thing:
+
+```
+start_minigame -> sackCaryying.SetZvedniPytelZeZdrojeStart
+```
+
+**That is precisely the state WO-96 §4.3 read out of the joiner's save and not
+the host's.** From there the state fans out:
+
+```
+sackCaryying.State -> switch7.Switch -> switch7.Value1 -> IsActive on
+      ActorCarryItemTrigger (source_piles)
+      CarryItemSource       (source_piles)
+      CarryItemTarget       (target_piles)      <-- the sacks become grabbable
+sackCaryying.State -> Output.states -> pytle_a_hadka's nos_pytle_05
+                      objectiveVisual43.Progress <-- the journal line appears
+sackCaryying.OnDone -> Output.target_is_filled -> vratSeZaPtackem.SetActive
+```
+
+**This refutes the prompt's stated worry.** The prompt warns that writing the
+objective alone "would fix the journal and leave the sacks ungrabbable — worse
+than the current state, because it looks fixed". True of writing the objective.
+But the objective `nos_pytle_05` is not a `State` node at all — its `Progress`
+is fed **from `sackcarrying.states`**, i.e. the journal line is a *readout of
+the minigame's own state*, not an independent flag. Starting the module
+therefore produces both halves from one pulse: sacks grabbable **and** journal
+correct. There is no way to get the journal without the gameplay on this path.
+
+**T2 — `rekniPtackoviOPraci.SetDone`.** Transitive walk of `Done` and `OnDone`:
+**zero consumers, at any depth** **(code-verified)**. It is a pure journal line
+("tell Hans about the work" → Done). This is the *paired* effect the prompt
+asked to have named: it comes with T1 in the original dialogue, and firing T1
+alone leaves this objective stuck Active.
+
+### 4.3 Downstream hazard enumeration
+
+Against the seven classes `tools/Audit-ObjectiveFixHazards.py` uses (Phase 0
+§1.1), over the transitive reach of both targets:
+
+| class | T1 `pytle_a_hadka.start` | T2 `rekniPtackoviOPraci.SetDone` |
+|---|---|---|
+| CUTSCENE | **none** | none (no consumers) |
+| TELEPORT | **none** | none |
+| ITEM | **none** — carry-piles are world props, not inventory | none |
+| DIALOG | **none** | none |
+| SAVE | **`savegame17.EnqueueSave`** | none |
+| CLOTHING | **none** | none |
+| MOVE | **none** | none |
+
+So the only hazard on either target is **one enqueued save**. Per Phase 0 note
+B: a save *write* is harmless here; it is a save *load* that kills every Lua
+timer chain (WO-13, WO-78). Worth stating anyway because it fires an autosave
+mid-session on one machine.
+
+**Named limits of this enumeration, so nobody rounds it up:**
+
+* The walker could not follow into `sackcarrying` automatically — a shared
+  library module is not a child file — so that subtree was walked **by hand**
+  and is reported above from a direct read, not from the tool.
+* `treti_faze` in `pytle_a_hadka.xml` contains `forced_zacatek_bitky` ("forced
+  start of the brawl"). The tavern brawl is a **later phase**, reached by
+  *completing* the minigame, not by starting it. It is not in T1's fire chain,
+  but it is where this quest is heading, and a brawl starting on one machine
+  only is a real MP hazard for whoever takes the next step.
+* Depth limit 7; bool-latch second-order effects are not traced (Phase 0 §1.5's
+  limit applies unchanged).
+
+### 4.4 Live-fire procedure for the next session
+
+Not run this session. This is the written procedure the WO asked for.
+
+**Preconditions**
+
+1. Game running with `KCDMP.dll` injected; `KcdMpClient` stopped so the pipe is
+   free (`nMaxInstances = 1`).
+2. A save loaded where M03 `socky` is live and the player is past the first Hans
+   dialogue but has not had the second — i.e. the WO-95 host's position.
+3. `Probe-ConceptRead.ps1` with no `-Path` returns the two roots. If it does
+   not, stop: the layout has moved.
+
+**Step 0 — resolve and inspect, no fire.** A new read-only probe (`0x08`
+extended, or a sibling command) must report, for each target:
+
+* `FindNode(<path>)` non-null — T1 already confirmed live, T2 unproven;
+* `C_Node::GetPort("<port>")` (`0x2B62E0`) non-null;
+* the port's **vtable pointer**, compared against
+  `C_ActiveTriggerPort::vftable` = `ConceptModule.dll+0x3F3130`;
+* `GetDirection()` (slot 8, `0x2B1A30`) — must be **1**.
+
+**Do not fire unless the vtable matches `C_ActiveTriggerPort`.** Phase 2 §3.5:
+`C_TriggerPort`, `C_EdgePort` and `C_DataPort` inherit an **empty** slot 15, so
+a call on one of those returns cleanly having done nothing whatsoever. This is
+the whole reason step 0 exists.
+
+**Step 1 — fire T1 first.** `port->vtbl[15](port)` on
+`pytle_a_hadka` / `start`. T1 before T2, deliberately: T1 is the gameplay. If
+only one of the two ever lands, the one worth having is the one that makes the
+sacks grabbable. T2 alone is exactly the "looks fixed but isn't" state the
+prompt warns about.
+
+**Step 2 — fire T2.** `rekniPtackoviOPraci` / `SetDone`.
+
+**What to watch, and what each line proves**
+
+| signal | where | means |
+|---|---|---|
+| `CONCEPT: FindNode returned a NODE` | native log | the path resolved |
+| port vtable == `+0x3F3130` | native log | it is an active trigger port — the call can do something |
+| `Infinite loop detected at port:'%s', stopping execution!` | engine log | the depth guard refused the fire (Phase 2 §3.5) — **the fire did not happen** |
+| `ZvedniPytelZeZdrojeStart` | quest/tracker log | the minigame state actually advanced |
+| journal shows "Carry the sacks to the pantry" | screen | `sackcarrying.states` reached `objectiveVisual43` |
+| **the sacks can be picked up** | screen | `CarryItemSource`/`Target` went active — the real test |
+
+**"It worked" versus "it didn't throw" (WO-43, in native form).**
+
+WO-43's lesson was that a `pcall` returning true proves only that Lua did not
+throw. The native equivalent is sharper and worse: `C_PortRef::Trigger` and the
+empty `I_Port::Trigger` both **return void**. There is no success value to read,
+no exception, and no log line on the empty path. A call that did nothing is
+byte-for-byte indistinguishable, from the caller's side, from a call that fired.
+
+So the *only* admissible evidence that this worked is **the sacks becoming
+grabbable in the game world**, with the journal line as corroboration. Not the
+call returning. Not the probe reporting "ran". Not the absence of a crash. If
+the sacks cannot be picked up, the fire did not work, whatever the logs say.
+
+**Rollback.** None. There is no inverse pulse; the minigame state machine has no
+"un-start". The rollback is the save made before firing — take one manually
+first, and do not rely on `savegame17` to be that save, because it fires *as
+part of* T1.
+
+**MP scope.** This fires on one machine. It closes a gap where the local player
+is behind; it does not and cannot push the state to a peer. Two players both
+needing it means firing on both.
+
+### 4.5 What this leaves for WO-98
+
+* The fire itself, on a live game, with a manual save taken first.
+* T2's node has never been resolved; only T1's has.
+* The `Haste` root (Phase 1 §2.1a) and `C_DebuggerPort`'s inlined `CanTrigger`
+  (Phase 2 §3.5) together suggest a second, parallel addressing scheme beside
+  the one WO-94 fires blind. Unmapped, **(inconclusive)**, and the single most
+  promising thread this WO turned up that it did not chase.
+* Whether `IsHidden=true` hides a trigger from `wh_concept_HasteTrigger` by
+  name (Phase 0 note C) — two shipped fix-table entries may be inert.

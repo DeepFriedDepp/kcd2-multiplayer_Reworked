@@ -5,7 +5,7 @@
 | 0 — audit the 22 shipped fix-table entries | **done** — 5 withdrawn, 17 ship, 160/160 synthetic |
 | 1 — confirm the live read | **done** — node resolution confirmed live; port-value read still open |
 | 2 — map `C_PortRef::Trigger` statically | **done** — mapped; C_PortRef route stalls, slot-15 route does not |
-| 3 — identify target port, predict effect | pending |
+| 3 — identify target port, predict effect | **done** — two IN-ports, effect chain predicted, live-fire procedure written |
 | End gate — build 0.22.4 from a fresh clone | pending |
 
 ## Phase 0
@@ -80,6 +80,40 @@ The stall the WO asked me to name: there is no public `C_PortRef` constructor,
 and building one needs a fabricated `I_PortDef`. But `C_PortRef::Trigger`'s
 whole payload is `port->vtbl[0x78](port)`, so the write path bypasses
 `C_PortRef` entirely: FindNode -> C_Node::GetPort -> slot 15.
+
+## Phase 3
+
+Target is **two in-ports**, not the out-port the prompt names (Phase 2 ruled
+out-ports untriggerable):
+
+* T1 `Barbora.trosecko.socky.hibernable.v_hospode.pytle_a_hadka` port `start`
+* T2 `Barbora.trosecko.socky.hibernable.v_hospode.rekniPtackoviOPraci` port `SetDone`
+
+T1 -> `sackcarrying.start_minigame` -> `sackCaryying.SetZvedniPytelZeZdrojeStart`,
+which is exactly the state WO-96 read out of the joiner's save. From there the
+state drives BOTH the carry triggers (sacks become grabbable) AND, via
+`Output.states`, the `nos_pytle_05` objective display.
+
+**The prompt's premise here is wrong in our favour.** It warns that writing the
+objective would fix the journal and leave the sacks ungrabbable. True of writing
+the objective -- but `nos_pytle_05` is not a State node; its Progress is fed from
+`sackcarrying.states`, so the journal line is a readout of the minigame's state.
+Starting the module gives both halves from one pulse, and there is no way on
+this path to get the journal without the gameplay.
+
+T2 has **zero** Done/OnDone consumers at any depth -- a pure journal line, and
+the paired effect that firing T1 alone would leave stuck Active.
+
+Hazards over both chains: one `EnqueueSave`. No cutscene, teleport, item,
+dialogue, clothing or move. Named limits: the shared library module was walked
+by hand (the tool cannot follow a non-child file), and the tavern brawl in
+`treti_faze` is reached by COMPLETING the minigame, not starting it.
+
+Live-fire procedure written (findings s4.4), including the step-0 vtable check
+against `C_ActiveTriggerPort::vftable` without which a fire is unfalsifiable:
+both `C_PortRef::Trigger` and the empty `I_Port::Trigger` return void, so a
+call that did nothing is indistinguishable from one that fired. The only
+admissible evidence is the sacks becoming grabbable.
 
 ## Deviations
 
