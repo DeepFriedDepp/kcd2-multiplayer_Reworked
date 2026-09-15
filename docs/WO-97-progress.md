@@ -6,7 +6,7 @@
 | 1 — confirm the live read | **done** — node resolution confirmed live; port-value read still open |
 | 2 — map `C_PortRef::Trigger` statically | **done** — mapped; C_PortRef route stalls, slot-15 route does not |
 | 3 — identify target port, predict effect | **done** — two IN-ports, effect chain predicted, live-fire procedure written |
-| End gate — build 0.22.4 from a fresh clone | pending |
+| End gate — build 0.22.4 from a fresh clone | **done** — built from a clean clone of origin/main at d2609a7 |
 
 ## Phase 0
 
@@ -114,6 +114,33 @@ against `C_ActiveTriggerPort::vftable` without which a fire is unfalsifiable:
 both `C_PortRef::Trigger` and the empty `I_Port::Trigger` return void, so a
 call that did nothing is indistinguishable from one that fired. The only
 admissible evidence is the sacks becoming grabbable.
+
+## End gate
+
+Ran. All WO-97 work was committed and pushed to `origin main` first, then a
+fresh `--depth 1` clone of the upstream repo was taken and the build run from
+**that**, not from the working tree, so the artifact matches what is on `main`.
+
+* clone HEAD `d2609a7`, `VERSION` 0.22.4, README badge 0.22.4
+* `kdcmp.pak` rebuilt from source: 685,352 bytes
+* `KCDMP.dll` rebuilt in the clone: 332,288 bytes
+* **`KCDMP-Setup-0.22.4.exe`, 100,483,252 bytes (95.8 MB)**,
+  sha256 `5cf876ee19e2c5eeb9016dee07716e3cc15134cf7a2b15220098008c44a3c0aa`
+* copied to `release\KCDMP-Setup-0.22.4.exe` in the working tree
+
+**Stated because it matters:** the `KCDMP.dll` inside this installer is *not*
+byte-identical to the one that was deployed and live-probed during Phase 1.
+MSVC builds are not byte-deterministic, so the same sources produce different
+bytes. The four native files were diffed between the working tree and the
+clone and are **identical modulo CRLF** -- source-identical, not
+binary-identical. What ran live was that source; what ships is that source.
+
+**Not verified here:** the installer was never *run*. This session's AppData is
+sandbox-redirected ([[appdata-sandbox-redirection]]), so an install performed
+from this shell would not exercise the real target and a PASS from it would be
+meaningless. Setup and `tools\Verify-Install.ps1` are the maintainer's step, as
+they have been since WO-74. The wizard itself remains unobserved by this
+session.
 
 ## Deviations
 
