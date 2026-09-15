@@ -3,7 +3,7 @@
 | Phase | State |
 |---|---|
 | 0 — audit the 22 shipped fix-table entries | **done** — 5 withdrawn, 17 ship, 160/160 synthetic |
-| 1 — confirm the live read | **failed (premise wrong)** — static half done; no callable surface exists to fire |
+| 1 — confirm the live read | **done** — node resolution confirmed live; port-value read still open |
 | 2 — map `C_PortRef::Trigger` statically | pending |
 | 3 — identify target port, predict effect | pending |
 | End gate — build 0.22.4 from a fresh clone | pending |
@@ -47,10 +47,15 @@ Also recovered: `ConceptModule.dll` carries full mangled symbols, so
 named, not inferred. `C_PortRef::Read` is the concrete way past WO-96 s7's
 `I_Port::Read` export trap.
 
-**Open with the maintainer:** a DEVIATION REQUEST to implement the read as an
-eighth read-only pipe command, build it here, hand off for deploy, then fire
-the known-answer check. Unanswered at the time of this commit; nothing was
-built or deployed.
+**Deviation approved and carried out.** The read shipped as pipe command
+`0x08` (read-only), built here, deployed by the maintainer, fired live.
+`FindNode` resolves real nodes at every depth; the roots are `Barbora` and
+`Haste`; the second Hans dialogue is addressable. One bug on the way: a
+negative CryString refCount makes the engine substitute the empty string, so
+the first build read nothing and returned null for everything (findings
+s2.1b). Port *values* are still unread -- that needs `C_Node::GetPort` and the
+concrete `C_PortRef::Read`, neither implemented, so the sacks known-answer
+check stays inconclusive.
 
 ## Deviations
 

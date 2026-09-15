@@ -157,7 +157,7 @@ Neither correction was reachable from the CSV; both needed the XML.
 
 ## 2. Phase 1 — the live read
 
-### 2.1 Verdict: **failed — not attempted, because there is nothing to call**
+### 2.1 Verdict: **node resolution CONFIRMED LIVE; port-value read not yet attempted**
 
 Stated plainly, per the WO's instruction not to manufacture a partial success.
 
@@ -192,6 +192,83 @@ function has never been written.
 
 The known-answer check against the 2026-09-13 host save's sacks objective is
 therefore still **(inconclusive)**, unchanged from WO-96 §3.3.
+
+### 2.1a How it got there, and the honest scope of "confirmed"
+
+The first half of this section, written before the maintainer approved a
+deviation, stands as the record of why Phase 1 could not run as written: the
+environment was perfect and `KCDMP.dll` had no ConceptModule code. With
+approval that code was written (`native/KCDMP/concept_read.cpp`, pipe command
+`0x08`, read-only), built, deployed by the maintainer, and fired.
+
+**Confirmed (observed), 2026-09-15:**
+
+| path | result |
+|---|---|
+| `Barbora.zzz_not_a_level` | NULL -- the negative control holds, so null is meaningful |
+| `Barbora.trosecko` | node, vtable `ConceptModule.dll+0x41E868` |
+| `Barbora.trosecko.svatba` | node, vtable `QuestModule.dll+0x93FA8` |
+| `Barbora.trosecko.socky` | node, vtable `QuestModule.dll+0x93FA8` |
+| `Barbora.trosecko.socky.hibernable` | node, `QuestModule.dll+0x93DE0` |
+| `...v_hospode` | node, `QuestModule.dll+0x93DE0` |
+| `...v_hospode.pytle_a_hadka` | node, `QuestModule.dll+0x93DE0` |
+| `...v_hospode.druhy_dialog_s_ptackem` | node, `DialogModule.dll+0x23C288` |
+
+So: **the separator is `.` live**, **the first segment is the database name and
+the manager has exactly two roots, `Barbora` and `Haste`**, the descent resolves
+at every depth, and the node this whole WO is aimed at -- the second Hans
+dialogue -- is addressable. WO-96 s3.1's handoff is closed.
+
+**A free type oracle.** A node's vtable names the module that implements it, so
+a quest (`QuestModule+0x93FA8`), a plain module (`+0x93DE0`), a level container
+(`ConceptModule+0x41E868`) and a dialogue (`DialogModule+0x23C288`) are
+distinguishable *before* anything is done to them. Phase 3 uses this to check it
+is holding a dialogue module and not something that merely shares a name.
+
+**What is NOT confirmed.** Only node *resolution*. No port has been read: that
+needs `C_Node::GetPort` (`0x2B62E0`) and the concrete `C_PortRef::Read`
+(`0x34E500`), neither implemented yet. The WO's known-answer target was the
+sacks objective reading `none`; the node exists, but its **state has not been
+read**, so that specific check stays **(inconclusive)**. Nothing here separates
+"objective is None" from "objective is Done" -- it proves the address resolves,
+no more.
+
+**The two roots.** `Haste` sitting beside `Barbora` as a top-level root is worth
+recording: `C_ModuleBase::IsHasteNamespace` exists in the symbol table and
+`wh_concept_HasteTrigger` addresses triggers by "debug name". How the `Haste`
+root relates to the `quest.trigger` paths WO-94 fires is unmapped, and is a
+**WO-98 candidate**, not chased here.
+
+### 2.1b The bug that made the first attempt read nothing
+
+Recorded because it failed silently and looked like a negative result. The first
+build set the path string's `refCount` to **-1**, reasoning that a negative
+refCount marks a CryString immortal, so the engine could neither free our buffer
+nor retain a pointer into it. The immortality half is true. The consequence was
+backwards. `C_ConceptPath`'s constructor (`0xC6D70`) reads:
+
+```
+if (refCount < 0) { str = <the shared empty string>; }   // and NO _Assign
+else              { str = ours; ++refCount; }
+```
+
+There is no deep copy on the negative branch -- the engine substitutes `""` and
+tokenizes that. The root scan then compared `""` against `Barbora`/`Haste`,
+matched nothing, and **FindNode returned null for every path**, first hops
+included. That uniformity is what exposed it: a real "no such node" would not
+have swallowed `Barbora.trosecko` as well.
+
+Fixed with `refCount = 0x40000000` -- positive, so the engine reads our bytes;
+large, so `Release` (which frees only on the 1 -> 0 transition) can never get
+there. The probe now also reads its own header back after the call and logs
+`refCount/len/cap/text`, so a null can never again be ambiguous between "bad
+string" and "no such node". The confirming run read back `refCount=0x40000000
+len=54` with the text intact.
+
+**General lesson:** a guard that makes an engine call *safe* is not the same as
+one that makes it *correct*, and this one silently degraded the call to a no-op.
+The read-back check is the pattern to copy for any future hand-built engine
+struct.
 
 ### 2.2 What *was* settled: both of WO-96 §3.1's open items
 

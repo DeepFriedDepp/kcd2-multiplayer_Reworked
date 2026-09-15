@@ -104,15 +104,31 @@ void describe(const void* p, char* out, size_t n) {
     }
 }
 
-// --- CryStringT<char>, built immortal --------------------------------------
+// --- CryStringT<char> -------------------------------------------------------
 // The object is a single `char* m_str` pointing at the data; the header sits
-// at m_str[-12] as {int32 refCount, int32 length, int32 capacity}. refCount < 0
-// means "static": the engine's AddRef/Release are both guarded by
-// `if (refCount >= 0)`, so our buffer is never freed, and its copy constructor
-// takes the deep-copy branch, so no pointer into our storage outlives the call.
-// (WO-97 s2.2: the engine's own shared empty string is built exactly this way,
-// refCount 0xFFFFFFFF.)
-constexpr size_t kMaxPath = 480;
+// at m_str[-12] as {int32 refCount, int32 length, int32 capacity} (verified in
+// FUN_180002fd0 and FUN_180011200).
+//
+// The refCount convention matters more than it looks, and WO-97's first attempt
+// got its CONSEQUENCE backwards. Corrected here from the observed result (every
+// path returned null, including first hops that must exist) plus a re-read of
+// the C_ConceptPath constructor at 0xC6D70:
+//
+//     if (refCount < 0) { str = <the shared empty string>; }   // NO _Assign
+//     else              { str = ours; ++refCount; }
+//
+// A NEGATIVE refCount does not mean "immortal, deep-copied when retained". In
+// this path it means the engine silently substitutes "" and tokenizes THAT; the
+// root scan then compares "" against "Barbora"/"Haste", matches nothing, and
+// FindNode returns null for every path. That is exactly what was observed.
+//
+// A LARGE POSITIVE refCount takes the branch we want -- the engine reads our
+// bytes -- and is still unfreeable: Release frees only on the 1 -> 0
+// transition, which a sentinel this size cannot reach, and the add/release
+// pairs inside one call are balanced. Storage is function-static rather than
+// stack so that even a pointer retained past the call stays valid.
+constexpr size_t  kMaxPath     = 480;
+constexpr int32_t kRefSentinel = 0x40000000;   // huge, positive, never reaches 0
 
 struct CryStr {
     alignas(8) char storage[12 + kMaxPath + 1]{};
@@ -121,7 +137,7 @@ struct CryStr {
     bool init(const char* s) {
         const size_t n = strnlen(s, kMaxPath);
         if (n == 0) return false;
-        const int32_t hdr[3] = { -1, static_cast<int32_t>(n), static_cast<int32_t>(n) };
+        const int32_t hdr[3] = { kRefSentinel, static_cast<int32_t>(n), static_cast<int32_t>(n) };
         std::memcpy(storage, hdr, sizeof(hdr));
         std::memcpy(storage + 12, s, n);
         storage[12 + n] = '\0';
@@ -224,7 +240,7 @@ bool probe(const char* path) {
     }
 
     // --- the call itself ------------------------------------------------------
-    CryStr s;
+    static CryStr s;                    // static: outlives the call (see above)
     if (!s.init(path)) {
         logf("CONCEPT: path is empty or longer than %zu bytes -- not calling", kMaxPath);
         return false;
@@ -238,6 +254,15 @@ bool probe(const char* path) {
              "layout as unproven and do not call again until it is re-derived");
         return false;
     }
+    // Read our own header back. If refCount moved off the sentinel, or the text
+    // changed, the engine did something to the string -- and then a null result
+    // is a fact about the STRING, not about the tree. This is the check whose
+    // absence made the first attempt's null ambiguous.
+    int32_t back[3]{};
+    std::memcpy(back, s.storage, sizeof(back));
+    logf("CONCEPT: string after the call: refCount=0x%08X len=%d cap=%d text=\"%s\"",
+         back[0], back[1], back[2], s.data ? s.data : "<null>");
+
     if (!node) {
         logf("CONCEPT: FindNode returned NULL -- no node at that path. Either the first "
              "segment names no root above, or a hop below it does not exist.");
