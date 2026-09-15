@@ -574,6 +574,37 @@ check("(r) the fix prompt is withdrawn when the gap closes", Q.prompt == nil and
 noErrs("(r)")
 
 -- ---------------------------------------------------------------------------
+-- (w97) WO-97 Phase 0: the five withdrawn entries are gone from the table and
+--       refused by the registry gate even when named directly
+-- ---------------------------------------------------------------------------
+check("(w97) the audited table is 17 entries", FIXN == 17, FIXN)
+local WITHDRAWN = {
+    "vezniNaTroskach.startApolenaGameplay",
+    "sedmStatecnych.sedmStatecnych_kubenkaZachranen",
+    "setkaniVRatbori2.pickWineSkip",
+    "pogrom.04a_cutscene_blockadeFire",
+    "prepadeniVlasskehoDvora.init_end2",
+}
+local nHaz = 0; for _ in pairs(KCD2MP_OBJECTIVE_FIX_HAZARDS or {}) do nHaz = nHaz + 1 end
+check("(w97) the hazard blocklist names all five", nHaz == 5, nHaz)
+for _, path in ipairs(WITHDRAWN) do
+    local inTable = false
+    for _, f in ipairs(KCD2MP_OBJECTIVE_FIXES or {}) do if f.t == path then inTable = true end end
+    check("(w97) not in the fix table: " .. path, not inTable)
+    check("(w97) refused by the registry gate: " .. path, KCD2MP_QuestIsRegistryBeat(path) == false)
+end
+-- and a withdrawn path cannot be fired even if a peer names it
+resetQuest()
+local beforeW = #CMDS
+check("(w97) QuestFire refuses a withdrawn path", KCD2MP_QuestFire("pogrom.04a_cutscene_blockadeFire", "Joiner") == false)
+check("(w97) no console command was issued for it", #CMDS == beforeW)
+check("(w97) the refusal says why", lastLog("WO-97 hazard") ~= nil)
+-- the survivors still pass
+check("(w97) a surviving fix still passes the gate", KCD2MP_QuestIsRegistryBeat("finale.talkToRacekObjective"))
+check("(w97) pogrom keeps its non-cutscene fix", KCD2MP_QuestIsRegistryBeat("pogrom.03b_completeMothersPart"))
+noErrs("(w97)")
+
+-- ---------------------------------------------------------------------------
 -- (o) nothing pauses; only wh_concept_HasteTrigger; the game's handler ran
 -- ---------------------------------------------------------------------------
 local bad = {}
