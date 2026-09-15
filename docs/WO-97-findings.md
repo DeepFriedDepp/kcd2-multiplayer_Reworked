@@ -152,3 +152,129 @@ Neither correction was reachable from the CSV; both needed the XML.
   non-zero if any shipped entry has a cutscene on a pulse path. Currently 0.
 * `tools/Test-WO96Synthetic.lua` — new `(w97)` block, 18 checks. Suite
   **160/160** **(synthetic)**.
+
+---
+
+## 2. Phase 1 — the live read
+
+### 2.1 Verdict: **failed — not attempted, because there is nothing to call**
+
+Stated plainly, per the WO's instruction not to manufacture a partial success.
+
+The maintainer launched the game, loaded the save, and completed the launcher's
+Connect flow. Verified from this shell **(observed)**:
+
+* `KingdomCome.exe` pid 13840, Modding Tools build, RemoteConsole on `:4600`
+  equivalent `localhost:1403` open, `kdcmp.pak` mounted, `[KCD2-MP] MOD INIT`
+  in `kcd.log`;
+* `KCDMP.dll` injected — 189 modules, `ModuleMemorySize=364544`, loaded from
+  `%LOCALAPPDATA%\KCDMP\KCDMP.dll`;
+* `kcdmp-native.mirror.log` written at 19:44:58 (it had been stale since
+  2026-09-13), i.e. the native side initialised;
+* `ConceptModule.dll` present in the process at its own base.
+
+The environment was therefore exactly what WO-96 §3.1's handoff asked for, and
+the read still could not be attempted:
+
+**`KCDMP.dll` contains no ConceptModule code.** Its pipe dispatch accepts seven
+commands — `kPing`, `kApplyDamage`, `kApplyDeath`, `kSetFactionHostile`,
+`kGhostSwing`, `kGhostIsolate`, `kResolveLuaClosure`
+(`native/KCDMP/pipe_server.cpp:239-349`) — and a case-insensitive grep for
+`FindNode|ConceptModule|ConceptManager|GetPort|concept` across all of
+`native/KCDMP/` returns **zero hits** **(code-verified)**.
+
+WO-96 *decompiled* the read path. It never *implemented* it. Its handoff
+sentence — "a live known-answer call … needs a deployed DLL and a maintainer at
+the keyboard" — reads as though the code existed and only the environment was
+missing. It did not. **Correction to standing belief:** the blocker on the
+native read was never deployment or maintainer availability; it is that the
+function has never been written.
+
+The known-answer check against the 2026-09-13 host save's sacks objective is
+therefore still **(inconclusive)**, unchanged from WO-96 §3.3.
+
+### 2.2 What *was* settled: both of WO-96 §3.1's open items
+
+Ghidra 12.1.3, headless, on MT `ConceptModule.dll` (6.28 MB). The DLL carries
+**full MSVC mangled symbols** — 114 functions matched the WO-97 needle sweep by
+name alone, so nothing here rests on pattern-matching an unnamed `FUN_`.
+
+**Item 1 — the tokenizer's segment separator is `.` (0x2E)** **(code-verified)**.
+
+Chain, all three steps read out of the binary:
+
+1. `FUN_1800c6d70(path, &CryString)` is the `C_ConceptPath` constructor: it
+   stores `C_ConceptPath::vftable`, initialises the deque at `+8`, and calls
+   the tokenizer.
+2. `FUN_1800c7110(path, str)` calls
+   `wh::framework::SimpleTokenize(str, DAT_18058cdf8, out_vector)` and pushes
+   each token onto the path's deque. `DAT_18058cdf8` is the separator.
+3. `DAT_18058cdf8` is a global `CryStringT<char>` built at static init by
+   `FUN_180002fd0`: allocates `0xe` bytes, sets refcount 1, **length 1,
+   capacity 1**, terminates at index 1, and copies **one** character from
+   `DAT_1803ed4e4`. That address is `.rdata` RVA `0x3ED4E4`, file offset
+   `0x3EC6E4`, byte **`2E`** — `'.'`.
+
+The `.data` word itself is null in the file image (the global is
+runtime-constructed), which is why this needed the initializer and not a
+memory dump. Dotted paths — `finale.talkToRacekObjective`,
+`druhy_dialog_s_ptackem.nos_pytle` — are the right spelling, now for a reason
+rather than by analogy with the Haste console command.
+
+**Item 2 — the `C_ModuleBase::GetNode` descent** **(code-verified)**.
+
+`FindNode` (`0x16530`) default-constructs a `C_ConceptPath` from the R8 string,
+**pops the front segment** (`FUN_1800c6eb0`, which both returns the front and
+decrements the count at `path+0x28`), and linear-scans the root module list at
+`this+0x48 .. this+0x50`, comparing each module's name at `*(char**)(module+0x10)`
+by inline `strcmp`. No root matches → it writes a **null smart_ptr** into the
+hidden return slot and returns. So the **first segment is the database name**,
+which WO-96 guessed as `Barbora` — the guess is now supported by the code, but
+remains **(inconclusive)** until a call returns non-null, because nothing here
+proves what the root list actually contains at runtime.
+
+Otherwise it calls the second overload:
+
+| Function | RVA | Shape |
+|---|---|---|
+| `C_ModuleBase::GetNode(C_ConceptPath&&)` | `0x241300` | **virtual**; `this` RCX, hidden `_smart_ptr<C_Node>*` RDX, `C_ConceptPath&&` R8 |
+| `C_ModuleBase::GetNode(CryStringT<char> const&)` | `0x241280` | virtual; a different, visitor-shaped entry through vtable slot `+0xD0` with a `std::function` — **not** the one `FindNode` uses |
+
+The descent at `0x241300` is a loop, not a single lookup:
+
+```
+node = (*this->vtbl[0x48])(this, &ret, path.pop_front())   // child by name
+while (path.remaining /* path+0x28 */ != 0 && node != null)
+    node = (*node->vtbl[0x48])(node, &ret, path.pop_front())
+    release the previous smart_ptr
+return ret
+```
+
+So **vtable slot `+0x48` is "resolve one child by name"**, uniform across
+`C_ModuleBase` and `C_Node`, and `C_ConceptPath` is a `std::deque<CryStringT>`
+with `+0x10` bucket array, `+0x18` bucket count, `+0x20` front index,
+`+0x28` remaining count.
+
+### 2.3 Amendments to WO-96 §3.1's table
+
+* `C_ConceptManager::FindNode` — the mangled name
+  `?FindNode@C_ConceptManager@conceptmodule@wh@@QEBA?AV?$_smart_ptr@VC_Node@…@@AEBV?$CryStringT@D@@@Z`
+  **confirms** WO-96's register layout: one explicit `const CryStringT<char>&`
+  argument, non-trivial return ⇒ `this` RCX, hidden return RDX, string R8.
+* `C_Node::GetPort` (`0x2B62E0`) — confirmed verbatim: hidden return nulled
+  first, R8 string, linear scan of `this+0x30..this+0x38`, port name via the
+  port's **vtable slot `+0x48`**, C-string compare.
+* **The `Read` trap has a named way out.** WO-96 warned that the exported
+  `I_Port::Read` (`0x2B1CF0`) is the empty base virtual. The symbol sweep found
+  a **concrete `C_PortRef::Read` at `0x34E500`** (`__thiscall`, one argument —
+  just `this`). That, not the export, is the read to call. Recorded here
+  because it belongs to the read path; its use is Phase 2/3's business.
+
+### 2.4 Tooling added
+
+* `native/ghidra_scripts/DumpWo97Concept.java` — needle sweep over function
+  names, `__FUNCTION__`-style strings and their referrers, then decompiles
+  every hit with its callers.
+* `native/ghidra_scripts/DumpWo97Refs.java` — every reference to a data address
+  plus the decompiled referrers; this is what recovered a runtime-constructed
+  global that is null in the file image.
