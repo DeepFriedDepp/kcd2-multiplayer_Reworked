@@ -4,7 +4,7 @@
 |---|---|
 | 0 — audit the 22 shipped fix-table entries | **done** — 5 withdrawn, 17 ship, 160/160 synthetic |
 | 1 — confirm the live read | **done** — node resolution confirmed live; port-value read still open |
-| 2 — map `C_PortRef::Trigger` statically | pending |
+| 2 — map `C_PortRef::Trigger` statically | **done** — mapped; C_PortRef route stalls, slot-15 route does not |
 | 3 — identify target port, predict effect | pending |
 | End gate — build 0.22.4 from a fresh clone | pending |
 
@@ -56,6 +56,30 @@ the first build read nothing and returned null for everything (findings
 s2.1b). Port *values* are still unread -- that needs `C_Node::GetPort` and the
 concrete `C_PortRef::Read`, neither implemented, so the sacks known-answer
 check stays inconclusive.
+
+## Phase 2
+
+`C_PortRef::Trigger` = RVA 0x34E610, `void __thiscall(C_PortRef*)`, virtual
+slot [15] / +0x78. Convention trivial, nothing guessed.
+
+Three results that change the plan:
+
+* **`I_Port::Trigger` is an empty base virtual**, exactly like the
+  `I_Port::Read` export WO-96 s7 warned about -- the trap generalises.
+* **Only `C_ActiveTriggerPort` actually propagates.** `C_TriggerPort`,
+  `C_EdgePort` and `C_DataPort` inherit the empty base, so triggering one
+  returns cleanly having done nothing -- WO-43's lesson in native form. Phase 3
+  must check the port's vtable against `C_ActiveTriggerPort::vftable`
+  (ConceptModule+0x3F3130) before believing a fire.
+* **Out-ports are not triggerable.** `PortDef::InTrigger` sets direction 1,
+  `OutTrigger` sets 2, and `CanTrigger` refuses 2. The prompt's
+  `druhy_dialog_s_ptackem.nos_pytle` is an OUT-port; the real targets are the
+  in-ports it drives (`pytle_a_hadka.start`, `rekniPtackoviOPraci.SetDone`).
+
+The stall the WO asked me to name: there is no public `C_PortRef` constructor,
+and building one needs a fabricated `I_PortDef`. But `C_PortRef::Trigger`'s
+whole payload is `port->vtbl[0x78](port)`, so the write path bypasses
+`C_PortRef` entirely: FindNode -> C_Node::GetPort -> slot 15.
 
 ## Deviations
 

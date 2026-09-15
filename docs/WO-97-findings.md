@@ -355,3 +355,187 @@ with `+0x10` bucket array, `+0x18` bucket count, `+0x20` front index,
 * `native/ghidra_scripts/DumpWo97Refs.java` — every reference to a data address
   plus the decompiled referrers; this is what recovered a runtime-constructed
   global that is null in the file image.
+
+---
+
+## 3. Phase 2 — `C_PortRef::Trigger`, mapped statically
+
+Nothing in this section was called. Every line is **(code-verified)** from MT
+`ConceptModule.dll` (sha256 `ab4032ac…`), Ghidra 12.1.3.
+
+### 3.1 The function
+
+```
+public: virtual void __cdecl wh::conceptmodule::C_PortRef::Trigger(void) const
+?Trigger@C_PortRef@conceptmodule@wh@@UEBAXXZ        RVA 0x34E610
+```
+
+| | |
+|---|---|
+| convention | `__thiscall`, **RCX = `this`, nothing else** |
+| arguments | none |
+| return | void |
+| virtual | yes — **vtable slot [15], byte offset +0x78** |
+
+No ambiguity to flag: this is the simplest possible signature. The register
+layout needed no inference — the mangled name gives one `void(void) const` and
+the vtable dump pins the slot.
+
+Body, in full:
+
+```
+port = resolve(this+0x38, this)      // cached; FUN_180362700
+if (!port) return                    // silent no-op
+if (port->activationId16 /*+0x0C*/ == 0)
+    port->id /*+0x08*/ = conceptManager->vtbl[0](mgr, port)   // register on first use
+InterlockedIncrement16(&port->+0x0C)
+port->vtbl[0x78](port)               // <-- THE ACTUAL FIRE
+C_SharedResource::Release(port)
+```
+
+So `C_PortRef::Trigger` is a **forwarder**. It resolves a port and calls that
+port's own slot-15. `C_PortRef` is itself an `I_Port` subclass — its vtable
+overrides only `GetName` [9], `Trigger` [15] and `Read` [16] — i.e. a proxy.
+
+### 3.2 The `I_Port` vtable (the map everything else hangs off)
+
+| slot | offset | member |
+|---|---|---|
+| 8 | +0x40 | `GetDirection` |
+| 9 | +0x48 | `GetName` |
+| 10 | +0x50 | `IsEmpty` |
+| 13 | +0x68 | `IsTrigger` |
+| **15** | **+0x78** | **`Trigger`** |
+| 16 | +0x80 | `Read` |
+| 18 | +0x90 | `ConnectedPorts` |
+
+This retires a guess: WO-96 §7 warned that the exported `I_Port::Read` is the
+empty base virtual. **`I_Port::Trigger` (`0x2B1DB0`) is the same** — its whole
+body is the debugger-check stub and `return`. The trap generalises; the export
+is a decoy in both directions.
+
+### 3.3 What a `C_PortRef` is, and the honest stall
+
+Layout recovered from `C_PortRef::Trigger`, `::Read` and the resolver
+`FUN_180362700`:
+
+| offset | holds |
+|---|---|
+| +0x10 | a node reference (resolved by `FUN_18002f080`) |
+| +0x20 | `I_PortDef*` — the port's **definition** (name, type, direction) |
+| +0x28 | a refcounted owner handle |
+| +0x38 | cache: `[0]` resolved flag, `[8]` the resolved `I_Port*` |
+
+Resolution is: resolve the node from +0x10, ask the **def** for the port name
+(`def->vtbl[8]`), then linear-scan the node's port list at `node+0x30..+0x38`
+comparing names — the identical scan `C_Node::GetPort` performs.
+
+**The stall, stated plainly as the WO asked.** There is **no public
+`C_PortRef` constructor in the symbol table**, and building one by hand would
+require fabricating an `I_PortDef` — engine-authored metadata that carries the
+port's rttr type and direction. Manufacturing one is not something this project
+should attempt.
+
+**But it is not needed.** `C_PortRef::Trigger`'s entire payload is
+`port->vtbl[0x78](port)`, and that `port` is obtainable directly:
+
+```
+FindNode(path)              ->  C_Node*        (Phase 1, confirmed live)
+C_Node::GetPort(name)       ->  I_Port*        (0x2B62E0, same scan)
+port->vtbl[15]()            ->  the fire
+```
+
+So the write path **bypasses `C_PortRef` entirely**. The WO named
+`C_PortRef::Trigger` as the lever; the accurate statement is that it is the
+*public face* of a lever whose working end is `I_Port` slot 15, and the working
+end is the reachable one.
+
+### 3.4 In-ports vs out-ports — they differ, and it is enforced
+
+`PortDef::InTrigger` (`0x2B0C80`) sets `def+0x14 = 1`.
+`PortDef::OutTrigger` (`0x2B0CD0`) sets `def+0x14 = 2`.
+
+`I_Port::GetDirection` (slot 8) returns that value. `I_Port::CanTrigger`
+(`0x2B1E30`, protected virtual) is:
+
+```
+if (!IsEmpty() && def != null && def->GetDirection() != 2 && FUN_180021f20(def))
+    return true
+return false
+```
+
+**Direction 2 (Out) is refused; direction 1 (In) is allowed.** So an
+out-port — e.g. `druhy_dialog_s_ptackem.nos_pytle`, which is what the session
+prompt's prose points at — is *not* the triggerable object. The triggerable
+objects are the **in-ports it drives**: `pytle_a_hadka.start` and
+`rekniPtackoviOPraci.SetDone`. Phase 3 targets those.
+
+Caveat, because it cuts the other way: **`C_PortRef::Trigger` does not call
+`CanTrigger`.** The direction guard is only as real as the concrete port's own
+slot-15 implementation choosing to consult it.
+
+### 3.5 Guards and preconditions — and a native WO-43 trap
+
+Of the **17** genuine `I_Port` subclasses in `ConceptModule.dll` (filtered by
+`GetDirection` occupying slot 8), only **two** have a real slot-15:
+
+| port class | slot 15 |
+|---|---|
+| `C_ActiveTriggerPort` | `FUN_1800C78E0` — **the real propagation** |
+| `C_DebuggerPort` | `FUN_1800CB230` |
+| `C_TriggerPort` | `I_Port::Trigger` — **EMPTY** |
+| `C_EdgePort`, `C_DataPort`, `I_Port` | **EMPTY** |
+| `C_PortRef`, 10× `C_TypedPortRef<T>`/`C_TypedArrayPortRef<T>` | the forwarder |
+
+**`FUN_1800C78E0` self-identifies** — it builds a trace scope from the literal
+string `"C_ActiveTriggerPort::Trigger"`, so this is a name read out of the
+binary, not a guess (WO-42's observation that MT builds keep `__FUNCTION__`).
+What it does:
+
+1. **Re-entrancy depth guard.** A global depth counter is compared against a
+   configured maximum. Over the limit it calls
+   `C_Node::TraceHint(node, 4, "Infinite loop detected at port:'%s', stopping
+   execution!")` **and does not fire**. That string is an engine-side signal a
+   live fire can be watched for.
+2. Otherwise: registers the port if unregistered, collects its outgoing
+   connections into a vector (stride `0x58`), sorts them, then for each one
+   increments the depth counter and invokes the connection's handler through
+   `handler->vtbl[0x10]` (a `std::function`-shaped call — `std::_Xbad_function_call`
+   is the null path), decrementing afterwards.
+
+So a trigger *propagates* by walking connections and invoking handlers. That is
+the primitive the whole quest graph runs on.
+
+`C_DebuggerPort::Trigger` inlines `CanTrigger`'s test verbatim (`!IsEmpty &&
+def && direction != 2 && …`) and then builds an `S_NodeExecuteContext`. Its
+existence next to the `Haste` root Phase 1 found is suggestive of the
+`wh_concept_HasteTrigger` path, but that link is **(inconclusive)** and is a
+WO-98 candidate, not chased.
+
+**The trap, and it is WO-43's in native clothing.** Calling slot 15 on a
+`C_TriggerPort`, `C_EdgePort` or `C_DataPort` runs the empty base and returns
+cleanly, having done **nothing at all**. There is no error, no log line, no
+return value. "The call succeeded" would prove exactly as much as "`pcall`
+returned true" did in WO-43 — which is nothing.
+
+**Consequence for Phase 3:** before believing any fire, the port's **vtable
+pointer must be compared against `C_ActiveTriggerPort::vftable`**
+(`ConceptModule.dll+0x3F3130`). A port that is not an active trigger port must
+be reported as unfireable rather than fired and hoped over.
+
+### 3.6 Phase 2 answers, against the questions asked
+
+1. **Signature / convention** — `void __thiscall C_PortRef::Trigger(C_PortRef*)`,
+   RCX only, virtual slot 15. Nothing unclear; no stop needed.
+2. **What a `C_PortRef` is / how obtained** — a proxy over (node-ref, PortDef).
+   **No public constructor; building one needs a fabricated `I_PortDef`, and
+   that is where the `C_PortRef` route stalls.** The route around it —
+   `FindNode` → `C_Node::GetPort` → slot 15 — needs no `C_PortRef`.
+3. **In vs out** — direction 1 = In (triggerable), 2 = Out (refused by
+   `CanTrigger`). The prompt's `nos_pytle` is an out-port; the in-ports it
+   drives are the real targets.
+4. **Guards** — port class (only `C_ActiveTriggerPort` propagates), a
+   re-entrancy depth limit with a named log line, and a silent return on a null
+   port.
+5. **Anything needing disassembly beyond this session** — no. Nothing was
+   guessed and nothing was left ambiguous.
