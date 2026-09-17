@@ -789,6 +789,18 @@ public static class Protocol
     /// <summary>Exact Position (0x01) payload length.</summary>
     public const int PositionPayloadLen = 17;
 
+    /// <summary>Position/Ghost flags bit: the sender is mounted.</summary>
+    public const byte PositionFlagRiding = 0x01;
+    /// <summary>
+    /// WO-99 Phase 1: Position/Ghost flags bit: this is a STALE heartbeat --
+    /// the sender's mod is suspended (menu, loading, cutscene, dialogue halt
+    /// every Script.SetTimer chain) so no fresh sample exists; the position is
+    /// the last one read, re-sent at the heartbeat cadence so a receiver can
+    /// tell "paused" from "gone". The relay forwards the byte verbatim; a
+    /// pre-WO-99 receiver masks bit 0 only and sees an ordinary packet.
+    /// </summary>
+    public const byte PositionFlagStale  = 0x02;
+
     /// <summary>Exact Ghost (0x02) payload length.</summary>
     public const int GhostPayloadLen = 18;
 

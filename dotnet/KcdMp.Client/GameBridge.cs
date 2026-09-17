@@ -39,7 +39,10 @@ public partial class GameBridge(ClientConfig config)
 
     // Last pushed position (for change detection)
     private float _lastX, _lastY, _lastZ, _lastRotZ;
+    private bool _lastRiding;
     private bool _hasPushed;
+    // WO-99 Phase 1: stale heartbeats sent in the current suspension (0 = mod is live).
+    private int _staleRun;
 
     // Ping: maps sent timestamp (ticks) → Stopwatch timestamp at send time
     private readonly ConcurrentDictionary<long, long> _pingsSent = new();
@@ -417,14 +420,14 @@ public partial class GameBridge(ClientConfig config)
         public long Pongs, SwingsSent, SwingsRecv, SwingsQueued, SwingsFailed, SwingsNoEntity,
                     DmgOut, DmgOutFatal, DmgIn, DmgInApplied, DmgInFailed, DmgOutDropped, DmgInRefused,
                     NpcStateOut, NpcClaimOut, NpcDragOut, StoryDivergencesPushed,
-                    CutsceneLocalEdges, CutscenePeerEdges, GhostPackets;
+                    CutsceneLocalEdges, CutscenePeerEdges, GhostPackets, PosStaleOut, GhostStaleIn;
         public double RttMin = double.PositiveInfinity, RttMax, RttSum;
         public readonly long StartedTs = Stopwatch.GetTimestamp();
         public readonly long StartedLines = TeeTextWriter.LinesWritten;
 
         private sealed class GhostAgg
         {
-            public long N, Snaps, WinN, WinSnaps, LastTs, WinStartTs;
+            public long N, Snaps, WinN, WinSnaps, LastTs, WinStartTs, Stale, WinStale;
             public double IaSum, IaMax, DSum, DMax, WinIaSum, WinIaMax, WinDSum, WinDMax;
             public float X, Y, Z;
         }
@@ -437,13 +440,14 @@ public partial class GameBridge(ClientConfig config)
         }
 
         /// <summary>One inbound Ghost packet: inter-arrival and position delta, windowed per 10 s.</summary>
-        public string? OnGhostPacket(byte id, float x, float y, float z, out string? raw)
+        public string? OnGhostPacket(byte id, float x, float y, float z, bool stale, out string? raw)
         {
             long now = Stopwatch.GetTimestamp();
             raw = null;
             lock (_g)
             {
                 GhostPackets++;
+                if (stale) GhostStaleIn++;
                 if (!_ghosts.TryGetValue(id, out var g))
                 {
                     _ghosts[id] = new GhostAgg { LastTs = now, WinStartTs = now, X = x, Y = y, Z = z };
@@ -454,12 +458,13 @@ public partial class GameBridge(ClientConfig config)
                 g.LastTs = now; g.X = x; g.Y = y; g.Z = z;
                 g.N++; g.IaSum += ia; if (ia > g.IaMax) g.IaMax = ia; g.DSum += d; if (d > g.DMax) g.DMax = d; if (d > 5.0) g.Snaps++;
                 g.WinN++; g.WinIaSum += ia; if (ia > g.WinIaMax) g.WinIaMax = ia; g.WinDSum += d; if (d > g.WinDMax) g.WinDMax = d; if (d > 5.0) g.WinSnaps++;
+                if (stale) { g.Stale++; g.WinStale++; }
                 if (VerboseLog)
-                    raw = FormattableString.Invariant($"MP-GHOSTPKT-RAW ghost={id} ia_ms={ia:F1} d_m={d:F3} snap={(d > 5.0 ? 1 : 0)}");
+                    raw = FormattableString.Invariant($"MP-GHOSTPKT-RAW ghost={id} ia_ms={ia:F1} d_m={d:F3} snap={(d > 5.0 ? 1 : 0)} stale={(stale ? 1 : 0)}");
                 if (now - g.WinStartTs < Stopwatch.Frequency * 10) return null;
                 string line = FormattableString.Invariant(
-                    $"MP-GHOSTPKT ghost={id} n={g.WinN} ia_mean_ms={g.WinIaSum / g.WinN:F1} ia_max_ms={g.WinIaMax:F1} d_mean_m={g.WinDSum / g.WinN:F2} d_max_m={g.WinDMax:F2} snaps={g.WinSnaps}");
-                g.WinN = 0; g.WinSnaps = 0; g.WinIaSum = 0; g.WinIaMax = 0; g.WinDSum = 0; g.WinDMax = 0; g.WinStartTs = now;
+                    $"MP-GHOSTPKT ghost={id} n={g.WinN} ia_mean_ms={g.WinIaSum / g.WinN:F1} ia_max_ms={g.WinIaMax:F1} d_mean_m={g.WinDSum / g.WinN:F2} d_max_m={g.WinDMax:F2} snaps={g.WinSnaps} stale={g.WinStale}");
+                g.WinN = 0; g.WinSnaps = 0; g.WinIaSum = 0; g.WinIaMax = 0; g.WinDSum = 0; g.WinDMax = 0; g.WinStale = 0; g.WinStartTs = now;
                 return line;
             }
         }
@@ -473,7 +478,7 @@ public partial class GameBridge(ClientConfig config)
                     var g = kv.Value;
                     if (g.N == 0) continue;
                     yield return FormattableString.Invariant(
-                        $"MP-SUMMARY section=ghost ghost={kv.Key} packets={g.N} ia_mean_ms={g.IaSum / g.N:F1} ia_max_ms={g.IaMax:F1} d_mean_m={g.DSum / g.N:F2} d_max_m={g.DMax:F2} snaps={g.Snaps}");
+                        $"MP-SUMMARY section=ghost ghost={kv.Key} packets={g.N} ia_mean_ms={g.IaSum / g.N:F1} ia_max_ms={g.IaMax:F1} d_mean_m={g.DSum / g.N:F2} d_max_m={g.DMax:F2} snaps={g.Snaps} stale={g.Stale}");
                 }
             }
         }
@@ -495,6 +500,8 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=session reason={reason} duration_s={secs:F0} agent_lines={lines} agent_lines_per_s={lines / secs:F2} clock_offset_ms={off} clock_rtt_ms={rttm} clock_samples={_clockSampleCount}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=ping pongs={s.Pongs} rtt_min_ms={(s.Pongs > 0 ? s.RttMin : 0):F0} rtt_avg_ms={(s.Pongs > 0 ? s.RttSum / s.Pongs : 0):F1} rtt_max_ms={s.RttMax:F0}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=position stale_out={s.PosStaleOut} ghost_stale_in={s.GhostStaleIn}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=swings sent={s.SwingsSent} recv={s.SwingsRecv} queued={s.SwingsQueued} failed={s.SwingsFailed} no_entity={s.SwingsNoEntity}"));
         Console.WriteLine(FormattableString.Invariant(
@@ -1000,6 +1007,7 @@ public partial class GameBridge(ClientConfig config)
         _myOpenDrops.Clear();
 
         _hasPushed = false;
+        _staleRun = 0;                              // WO-99 Phase 1
         _lastSentAppearance = null;
         _ghostAppearance.Clear();
         _ghostKnownItemClasses.Clear();
@@ -1475,6 +1483,30 @@ public partial class GameBridge(ClientConfig config)
                 if (IntervalElapsed(ref lastWeatherTick, WeatherTickInterval, nowTimestamp))
                     WeatherArbiterTick();
 
+                if (state.HasValue && _staleRun > 0)
+                {
+                    // WO-99 Phase 1: the mod's emitter is back (menu closed,
+                    // load finished, cutscene over). One line per suspension.
+                    Console.WriteLine($"[pos] mod emitter resumed after {_staleRun} stale heartbeat(s)");
+                    _staleRun = 0;
+                }
+                if (!state.HasValue && _hasPushed
+                    && IntervalElapsed(ref lastPositionHeartbeat, PositionHeartbeatInterval, nowTimestamp))
+                {
+                    // WO-99 Phase 1: no fresh sample -- the mod's emitter chain
+                    // is halted (every Script.SetTimer stops in a menu, a
+                    // loading screen, a cutscene, a dialogue: WO-78 "suspended
+                    // != dead"). 2026-09-16: 100% of the >2.3 s inbound ghost
+                    // gaps on both machines were this (the only packets that
+                    // crossed were the 2.5 s re-arm running the emitter once,
+                    // hence the observed ~20 s cadence), zero were transport.
+                    // Re-send the last sample at the heartbeat cadence, flagged
+                    // STALE, so a receiver can tell "paused" from "gone".
+                    await SendPositionAsync(stream, _lastX, _lastY, _lastZ, _lastRotZ, _lastRiding, stale: true);
+                    _stats.PosStaleOut++;
+                    if (++_staleRun == 1)
+                        Console.WriteLine("[pos] mod emitter silent -- sending stale heartbeats until it resumes");
+                }
                 if (state.HasValue)
                 {
                     var st = state.Value;
@@ -1501,7 +1533,7 @@ public partial class GameBridge(ClientConfig config)
                     {
                         bool moved = !_hasPushed || HasChanged(x, y, z, rotZ);
                         _hasPushed = true;
-                        _lastX = x; _lastY = y; _lastZ = z; _lastRotZ = rotZ;
+                        _lastX = x; _lastY = y; _lastZ = z; _lastRotZ = rotZ; _lastRiding = riding;
                         await SendPositionAsync(stream, x, y, z, rotZ, riding);
                         if (moved)
                             Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
@@ -3479,7 +3511,8 @@ public partial class GameBridge(ClientConfig config)
                     float y        = ReadFloat(payload, 5);
                     float z        = ReadFloat(payload, 9);
                     float rotZ     = ReadFloat(payload, 13);
-                    bool  isRiding = (payload[17] & 0x01) != 0;
+                    bool  isRiding = (payload[17] & Protocol.PositionFlagRiding) != 0;
+                    bool  isStale  = (payload[17] & Protocol.PositionFlagStale) != 0;   // WO-99 Phase 1
                     // WO-59: a ghost id we have never seen this connection is
                     // a newly-arrived peer -- re-announce our clock so THEY
                     // converge too (our connect-time sync went out before
@@ -3497,7 +3530,7 @@ public partial class GameBridge(ClientConfig config)
                     }
                     _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
                     RefreshDiscordPeerCount();
-                    if (_stats.OnGhostPacket(ghostId, x, y, z, out string? rawPkt) is string pktAgg) Console.WriteLine(pktAgg);   // WO-98 Phase 6
+                    if (_stats.OnGhostPacket(ghostId, x, y, z, isStale, out string? rawPkt) is string pktAgg) Console.WriteLine(pktAgg);   // WO-98 Phase 6
                     if (rawPkt is not null) Console.WriteLine(rawPkt);
                     // WO-94: a peer position that jumps further than any horse
                     // between two samples, inside a catch-up window, is the
@@ -4979,7 +5012,7 @@ public partial class GameBridge(ClientConfig config)
         await WritePacketAsync(stream, packet);
     }
 
-    private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ, bool isRiding)
+    private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ, bool isRiding, bool stale = false)
     {
         // 3 header + 17 payload = 20 bytes
         var packet = new byte[3 + Protocol.PositionPayloadLen];
@@ -4989,7 +5022,7 @@ public partial class GameBridge(ClientConfig config)
         WriteFloat(packet, 7,  y);
         WriteFloat(packet, 11, z);
         WriteFloat(packet, 15, rotZ);
-        packet[19] = isRiding ? (byte)0x01 : (byte)0x00;
+        packet[19] = (byte)((isRiding ? Protocol.PositionFlagRiding : 0) | (stale ? Protocol.PositionFlagStale : 0));
         await WritePacketAsync(stream, packet);
     }
 
