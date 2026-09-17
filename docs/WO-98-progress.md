@@ -47,6 +47,29 @@ two fixes deliberately not landed (native situation context; sub-8 m puppet
 yield), one synthetic wire test taken, six premises of the prompt corrected
 in place with the evidence.
 
+## End gate — 0.22.5 built from a fresh clone
+
+Version `0.22.5` chosen by the maintainer (Setup exe only, no DirectInstall
+ZIP). `VERSION`, README badge and `docs/releases/RELEASE-NOTES-0.22.5.md`
+committed and pushed first (`cad2a02`); then a fresh `--depth 1` clone of
+`origin/main` at that commit built the installer, not the working tree.
+
+* `kdcmp.pak` rebuilt in the clone: 698,577 bytes (the clone checks out
+  `kdcmp.lua` with CRLF, so its entry is 10,455 bytes larger than the working
+  tree's LF build — line endings only, as in WO-97)
+* `KCDMP.dll` rebuilt in the clone: 332,288 bytes (source unchanged since
+  0.22.4; MSVC output is not byte-deterministic)
+* **`KCDMP-Setup-0.22.5.exe`, 100,487,884 bytes (95.8 MB)**,
+  sha256 `7645d290b33d149d0bd42e0b604a724b553f860c40f373e2cdb4b87e5b13c345`
+* copied to `release\KCDMP-Setup-0.22.5.exe` in the working tree
+* Phase 0 proven on the real artifact: the clone's full release output (the
+  bytes inside this Setup) was grepped for the build machine's profile path
+  — **zero first-party hits**. 0.22.4's equivalent output had 14.
+
+**Not verified here:** the installer was not run (this shell's AppData is
+sandbox-redirected; Setup + `tools\Verify-Install.ps1` are the maintainer's
+step). Nothing in 0.22.5 is live-verified.
+
 ## Next session starts here
 
 1. Two-machine run with this build; pull both bundles. The `MP-SUMMARY` /
