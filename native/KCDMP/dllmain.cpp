@@ -3,6 +3,7 @@
 // Loaded by KCDMP_LauncherInjector.exe via CreateRemoteThread(LoadLibraryA),
 // which is what KCDMP_launcher's LaunchGame already expects.
 
+#include "concept_read.h"
 #include "dice_hook.h"
 #include "log.h"
 #include "main_thread.h"
@@ -150,6 +151,13 @@ DWORD WINAPI plugin_main(LPVOID) {
     // WO-68: same live-reload treatment, so a soul guid can be dropped into
     // kcdmp-contexts.txt after a ghost is already standing in the world.
     kcdmp::main_thread::post_repeating(&kcdmp::sctx::probe_contexts_watch);
+    // WO-99.5: the quest-port probe. Same live-reload treatment, and the same
+    // reason -- a node path is chosen after looking at what the running game
+    // actually has. File-watched rather than pipe-driven on purpose: the pipe
+    // has nMaxInstances = 1, so a pipe command would mean disconnecting the
+    // client first (WO-97 s4.4's precondition), and this needs to run while a
+    // session is live.
+    kcdmp::main_thread::post_repeating(&kcdmp::conceptread::port_watch);
 
     kcdmp::pipe::start();
     return 0;

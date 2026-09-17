@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // WO-97: the ConceptModule read path -- the first native reach into the quest
 // concept tree.
 //
@@ -51,5 +51,27 @@ namespace kcdmp::conceptread {
 /// root module names this same call prints. Pass nullptr or "" to enumerate
 /// the roots only, which touches no engine code at all.
 bool probe(const char* path);
+
+// --- WO-99.5: the port surface ---------------------------------------------
+/// Resolve <path> to a node, then <portName> to an I_Port, and report what is
+/// actually there: the vtable, every slot resolved against ConceptModule's
+/// exported symbols, the direction, the name and IsEmpty.
+///
+/// `actionCode`: 0 = probe (read-only), 1 = read the port's value through the
+/// concrete slot-16 Read, 2 = fire the port through slot 15.
+///
+/// A trigger is REFUSED unless `confirmed` is true AND slot 15 is
+/// C_ActiveTriggerPort::Trigger AND the vptr matches C_ActiveTriggerPort's
+/// vftable AND the direction is not Out. The empty base virtuals return void
+/// having done nothing, so an unchecked fire is unfalsifiable (WO-97 s3.5);
+/// this refuses rather than producing a story.
+///
+/// MUST run on the game's main thread.
+bool port_op(const char* path, const char* portName, int actionCode, bool confirmed);
+
+/// Live-reload driver: re-reads kcdmp-concept.txt (game working directory
+/// first, then beside the DLL) and runs port_op when its content changes.
+/// One line: "<probe|read|trigger> <node.path> <portName> [FIRE]".
+void port_watch();
 
 } // namespace kcdmp::conceptread
