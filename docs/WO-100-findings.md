@@ -128,48 +128,6 @@ values, not the animation-driven ones. So Phase 0 item 2d has no Lua route.
 
 ---
 
-## 2. Phase 1 — where an attack is accepted
-
-### 2.1 The combat vocabulary is also shipped data
-
-`Libs/Tables/combat/*` in `Data/Tables.pak` (**code-verified**):
-
-| table | rows | shape |
-|---|---|---|
-| `combat_input_class` | 8 | `id` −1..7, `name` ∈ {`none`,`attack_light`,`attack_heavy`,`attack_special`,`move_left`,`move_right`,`move_back`,`move_forward`,`block`}, plus `mn_tag` |
-| `combat_zone` | 7 | `id` −1..5, `name` ∈ {`undefined`,`head`,`upper_left`,`upper_right`,`lower_left`,`lower_right`,`lower`}, with `attack_mn_tag` `aZ0`…`aZ5`, `defense_mn_tag` `dZ0`…, `start_mn_tag` `sZ0`…, and `master_strike_combat_zone_id` |
-| `combat_attack_type` | 11 | `id` −1..9, `name` ∈ {`stab`,`slash`,`smash`,`throw`,`kick`,`punch`,`hook`,`direct`,`bite`,`backoff`} |
-| `combat_action_type` | ~35 | `attack`=3, `block`=6, `perfectBlock`=14, `syncAttack`=16, `dodge`=25, `comboAttack`=18 … |
-| `combat_action_attack` | **221** | the attack database itself |
-
-**Phase 1 item 2, answered: the combat-star zone is a row index into a
-game-owned table, and the table carries a name column.** `combat_zone_id` 0..5
-is `head / upper_left / upper_right / lower_left / lower_right / lower`. It is
-not a computed value; the angles (`angle_from`/`angle_to`) are *columns on the
-row*, not the identity.
-
-### 2.2 The attack row carries a GUID — so it needs no row index
-
-Every `combat_action_attack` row has 59 columns, among them:
-
-```
-mn_fragment_guid = 840a4cef-ab44-727a-03d4-d81a171dca77
-mn_fragment_id   = CombatAttack
-mn_option_index  = 0
-mn_tags          = oppLying+aZ1+bite+attack_heavy+oppMale+oppFemale
-input_class_id   = 1      attack_zone_id = 1     attack_type_id = 8
-action_type_id   = 3      charged_attack = false  combo_step = -1
-actor_class_hash = 20967892   player = false
-```
-
-There is **no `combat_action_attack_id` column**. A row is identified either by
-its `mn_fragment_guid` (16 bytes, authored, build-stable) or by the selector
-tuple the game itself matches on. **Phase 1 item 3, answered: an attack row is
-not addressed by index, so a build mismatch cannot silently select a different
-attack** — provided the wire carries the guid or the *names*, never the small
-integer ids, which are table positions.
-
-
 ### 1.5 What is and is not in the global tag state — the honest boundary
 
 The tag state reached above is the **global** one, defined by
@@ -219,9 +177,21 @@ Consecutive identical lines are collapsed with an explicit
 player stood still" and "the probe stopped" stay distinguishable (WO-99.5
 §1.5's lesson).
 
-**Runbook — needs the maintainer, ~2 minutes in game.** The DLL is
-maintainer-deploy (WO-45); verify it by `ModuleMemorySize` on the loaded
-module, never by the file on disk (WO-99.5 §6.1).
+**Runbook — needs the maintainer, ~2 minutes in game.**
+
+> **Superseded by §10.** This runbook was written before the live session and
+> assumes the DLL has to be deployed by copying it into `%LocalAppData%`. It
+> does not. Launch the Modding Tools game normally and inject straight from the
+> build directory:
+>
+> ```
+> KCDMP_LauncherInjector.exe --pid <pid> --dll <abs path>
+ativeuild\KCDMP\KCDMP.dll
+> ```
+>
+> Verify by `ModuleMemorySize` on the **loaded module**, never by the file on
+> disk (WO-99.5 §6.1). Nothing is installed, and the DLL's own log lands beside
+> it inside the repo. The trigger file below is unchanged.
 
 1. In the **game root** (`…\KCD2Mod\`, next to `kcd.log`), create
    `kcdmp-mannequin.txt` containing one line:
@@ -246,6 +216,56 @@ Expected refusals worth reporting rather than ignoring: a `controller vptr
 … != CActionController::vftable` line means the animated-actor hop lands on a
 class this WO did not map, and the whole Phase 0 verdict is
 **(inconclusive)** rather than positive.
+
+---
+
+---
+
+## 2. Phase 1 — where an attack is accepted
+
+### 2.1 The combat vocabulary is also shipped data
+
+`Libs/Tables/combat/*` in `Data/Tables.pak` (**code-verified**):
+
+| table | rows | shape |
+|---|---|---|
+| `combat_input_class` | 8 | `id` −1..7, `name` ∈ {`none`,`attack_light`,`attack_heavy`,`attack_special`,`move_left`,`move_right`,`move_back`,`move_forward`,`block`}, plus `mn_tag` |
+| `combat_zone` | 7 | `id` −1..5, `name` ∈ {`undefined`,`head`,`upper_left`,`upper_right`,`lower_left`,`lower_right`,`lower`}, with `attack_mn_tag` `aZ0`…`aZ5`, `defense_mn_tag` `dZ0`…, `start_mn_tag` `sZ0`…, and `master_strike_combat_zone_id` |
+| `combat_attack_type` | 11 | `id` −1..9, `name` ∈ {`stab`,`slash`,`smash`,`throw`,`kick`,`punch`,`hook`,`direct`,`bite`,`backoff`} |
+| `combat_action_type` | ~35 | `attack`=3, `block`=6, `perfectBlock`=14, `syncAttack`=16, `dodge`=25, `comboAttack`=18 … |
+| `combat_action_attack` | **221** | the attack database itself |
+
+**Phase 1 item 2, answered: the combat-star zone is a row index into a
+game-owned table, and the table carries a name column.** `combat_zone_id` 0..5
+is `head / upper_left / upper_right / lower_left / lower_right / lower`. It is
+not a computed value; the angles (`angle_from`/`angle_to`) are *columns on the
+row*, not the identity.
+
+### 2.2 The attack row carries a GUID — so it needs no row index
+
+Every `combat_action_attack` row has 59 columns, among them:
+
+```
+mn_fragment_guid = 840a4cef-ab44-727a-03d4-d81a171dca77
+mn_fragment_id   = CombatAttack
+mn_option_index  = 0
+mn_tags          = oppLying+aZ1+bite+attack_heavy+oppMale+oppFemale
+input_class_id   = 1      attack_zone_id = 1     attack_type_id = 8
+action_type_id   = 3      charged_attack = false  combo_step = -1
+actor_class_hash = 20967892   player = false
+```
+
+There is **no `combat_action_attack_id` column**. A row is identified either by
+its `mn_fragment_guid` (16 bytes, authored, build-stable) or by the selector
+tuple the game itself matches on. **Phase 1 item 3, answered: an attack row is
+not addressed by index, so a build mismatch cannot silently select a different
+attack** — provided the wire carries the guid or the *names*, never the small
+integer ids, which are table positions.
+
+> **Phase 1 continues in §4**, after the Phase 4 section. §2 is the
+> shipped-data half (the vocabulary); §4 is the engine half (the live
+> model). They were written at different points in the session and are
+> left in place rather than renumbered.
 
 ---
 
