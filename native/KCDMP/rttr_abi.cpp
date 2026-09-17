@@ -1631,6 +1631,23 @@ void sample_health(void (*on_hit)(const unsigned char[16], float, bool)) {
 
             void* live = read_object_property(api, "wh::rpgmodule::SoulList",
                                               g_souls, "PlayerSoul", g_layout);
+
+            // Positive instrumentation, added after the 2026-09-17 live run.
+            // Logging only on change made "no line" ambiguous between "the
+            // refresh ran and found nothing to do" and "the refresh never ran"
+            // -- the same silent-guard shape this whole WO exists to stamp out
+            // (WO-97's refCount trap, WO-99 s0). Report the first check of each
+            // session and one per ~5 min thereafter, so the field session can
+            // tell those two apart without a debugger.
+            static int  refresh_checks = 0;
+            const bool  first_check    = (refresh_checks++ == 0);
+            if (first_check || (refresh_checks % 100) == 0) {
+                logf("SAMPLE: player refresh check #%d -- SoulList.PlayerSoul=%p, "
+                     "cached g_player=%p%s",
+                     refresh_checks, live, g_player,
+                     plausible_pointer(live) ? "" : "  (READ FAILED -- keeping the cached one)");
+            }
+
             if (plausible_pointer(live) && live != g_player) {
                 logf("SAMPLE: PlayerSoul moved %p -> %p (save load?) -- refreshed",
                      g_player, live);
