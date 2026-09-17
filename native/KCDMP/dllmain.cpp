@@ -7,6 +7,7 @@
 #include "dice_hook.h"
 #include "log.h"
 #include "main_thread.h"
+#include "mannequin_read.h"
 #include "pipe_server.h"
 #include "script_context.h"
 
@@ -158,6 +159,11 @@ DWORD WINAPI plugin_main(LPVOID) {
     // client first (WO-97 s4.4's precondition), and this needs to run while a
     // session is live.
     kcdmp::main_thread::post_repeating(&kcdmp::conceptread::port_watch);
+    // WO-100 Phase 0: the Mannequin tag-state read. Same file-watched,
+    // opt-in convention and the same reason -- it has to run during a live
+    // session while the maintainer walks, jogs, sprints and crouches, and the
+    // pipe (nMaxInstances = 1) is occupied by the agent for the whole session.
+    kcdmp::main_thread::post_repeating(&kcdmp::mannequin::tag_watch);
 
     kcdmp::pipe::start();
     return 0;

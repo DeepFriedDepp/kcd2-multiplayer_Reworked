@@ -10,6 +10,7 @@
     dice_hook.cpp
     lua_closure.cpp
     concept_read.cpp
+    mannequin_read.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
