@@ -1549,6 +1549,28 @@ Tracked* find_tracked(const unsigned char guid[16]) {
     return nullptr;
 }
 
+// Snapshot of the tracked set, kept across a rebuild so per-soul state is
+// keyed by guid rather than by array slot. WO-99 found the echo running at
+// 12 s to 3 min instead of instantly: credit was zeroed by the 3 s rescan
+// before the health drop it was meant to cancel was ever observed, because
+// the soul's GetState(health) lags actor health by roughly 12 s.
+struct Carry {
+    unsigned char guid[16];
+    void*         soul;
+    float         health;
+    float         credit;
+    bool          dead;
+};
+
+Carry g_carry[kMaxTracked];
+int   g_carry_count = 0;
+
+const Carry* find_carry(const unsigned char guid[16]) {
+    for (int i = 0; i < g_carry_count; ++i)
+        if (std::memcmp(g_carry[i].guid, guid, 16) == 0) return &g_carry[i];
+    return nullptr;
+}
+
 } // namespace
 
 void note_remote_damage(const unsigned char guid[16], float health_delta) {
@@ -1574,8 +1596,74 @@ void sample_health(void (*on_hit)(const unsigned char[16], float, bool)) {
     // and out. Doing it every tick would mean walking 1500 souls at frame rate.
     if (g_tracked_count == 0 || now - g_last_rescan > 3000) {
         g_last_rescan = now;
+
+        // Refresh the walk's cached objects before anything reads them.
+        // g_player was captured once during the RTTR walk and never refreshed;
+        // a save load rebuilds the player soul at a new address, so the
+        // `soul != g_player` test below silently stopped matching and the local
+        // player started being reported as an NPC named "Dude" (WO-99,
+        // code-verified). g_combat hangs off the same object and inherits the
+        // same defect; g_rpg/g_souls are re-read as cheap insurance and to turn
+        // "SoulList looks stable across a load" into something observed rather
+        // than assumed -- a change logs loudly instead of going quiet.
+        //
+        // Every refresh is keep-on-failure: a transient read must never null
+        // out a pointer that is still working.
+        bool player_changed = false;
+        {
+            void* root = nullptr;
+            if (call_game_interface(api.game_interface, &root) && plausible_pointer(root)) {
+                void* rpg = read_object_property(api, "wh::shared::GameInterface",
+                                                 root, "RPGModule", g_layout);
+                if (plausible_pointer(rpg)) {
+                    if (rpg != g_rpg) {
+                        logf("SAMPLE: RPGModule moved %p -> %p -- refreshed", g_rpg, rpg);
+                        g_rpg = rpg;
+                    }
+                    void* souls = read_object_property(api, "wh::rpgmodule::RPGModule",
+                                                       rpg, "SoulList", g_layout);
+                    if (plausible_pointer(souls) && souls != g_souls) {
+                        logf("SAMPLE: SoulList moved %p -> %p -- refreshed", g_souls, souls);
+                        g_souls = souls;
+                    }
+                }
+            }
+
+            void* live = read_object_property(api, "wh::rpgmodule::SoulList",
+                                              g_souls, "PlayerSoul", g_layout);
+            if (plausible_pointer(live) && live != g_player) {
+                logf("SAMPLE: PlayerSoul moved %p -> %p (save load?) -- refreshed",
+                     g_player, live);
+                g_player = live;
+                player_changed = true;
+
+                void* cs = read_object_property(api, "wh::rpgmodule::Soul",
+                                                live, "CombatSoul", g_layout);
+                if (plausible_pointer(cs)) {
+                    logf("SAMPLE: CombatSoul %p -> %p -- refreshed", g_combat, cs);
+                    g_combat = cs;
+                }
+            }
+        }
+
         float ppos[3]{};
         if (!read_vec3(api, t_soul, g_player, "Position", g_layout, ppos)) return;
+
+        // Snapshot the outgoing set so credit (and health continuity) survive
+        // the rebuild, keyed by guid instead of by slot. A save load is the one
+        // case where carrying is wrong: every soul pointer in the old set is
+        // dead, and credit owed for damage in a world that no longer exists
+        // would cancel the first real hit in the new one.
+        g_carry_count = 0;
+        for (int i = 0; !player_changed && i < g_tracked_count && g_carry_count < kMaxTracked; ++i) {
+            Carry& c = g_carry[g_carry_count++];
+            std::memcpy(c.guid, g_tracked[i].guid, 16);
+            c.soul   = g_tracked[i].soul;
+            c.health = g_tracked[i].health;
+            c.credit = g_tracked[i].credit;
+            c.dead   = g_tracked[i].dead;
+        }
+
         g_tracked_count = 0;
 
         // Reuse the map walk; only souls with a real position are candidates.
@@ -1618,8 +1706,25 @@ void sample_health(void (*on_hit)(const unsigned char[16], float, bool)) {
                             if (dx*dx + dy*dy + dz*dz < kTrackRadius * kTrackRadius) {
                                 Tracked& t = g_tracked[g_tracked_count++];
                                 std::memcpy(t.guid, ka, 16);
-                                t.soul = soul; t.credit = 0.0f; t.dead = false; t.seen = false;
-                                t.health = -1.0f;   // primed on the next pass
+                                t.soul = soul; t.seen = false;
+
+                                const Carry* c = find_carry(t.guid);
+                                // Credit is carried unconditionally: it is our
+                                // own bookkeeping and does not depend on the
+                                // engine object staying put.
+                                t.credit = c ? c->credit : 0.0f;
+                                // Health continuity is only meaningful while
+                                // the soul object is the same one. If the guid
+                                // came back on a new pointer (save load), the
+                                // old reading describes a different object --
+                                // re-prime instead of inventing a drop.
+                                if (c && c->soul == soul) {
+                                    t.health = c->health;
+                                    t.dead   = c->dead;
+                                } else {
+                                    t.health = -1.0f;   // primed on the next pass
+                                    t.dead   = false;
+                                }
                             }
                         }
                     }
