@@ -17,6 +17,20 @@ public sealed class TeeTextWriter(TextWriter primary, TextWriter secondary) : Te
 {
     private bool _secondaryDead;
 
+    // WO-98 Phase 6: every file line also carries a monotonic stamp (ms since
+    // the agent started, immune to wall-clock steps) and the current relay
+    // clock offset from GameBridge's estimator ("off=?" until the first
+    // sample). Cross-machine correlation of the 2026-09-15 logs was only
+    // possible because story beats happened to appear on both sides; with
+    // the offset on every line it is arithmetic.
+    private static readonly System.Diagnostics.Stopwatch Mono = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>Relay clock minus this machine's clock, ms; NaN until measured.</summary>
+    public static double ClockOffsetMs = double.NaN;
+
+    /// <summary>Milliseconds since the agent process started (monotonic).</summary>
+    public static long MonotonicMs => Mono.ElapsedMilliseconds;
+
     public override Encoding Encoding => primary.Encoding;
 
     public override void Write(char value)
@@ -44,7 +58,10 @@ public sealed class TeeTextWriter(TextWriter primary, TextWriter secondary) : Te
             // Timestamp the file copy only -- the console stays byte-identical
             // to what it always printed, but a log without times is much less
             // useful when correlating against kcd.log and app.log.
-            secondary.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {value}");
+            // Format (docs/WO-98-log-format.md): "HH:mm:ss.fff m=<mono ms> off=<+ms|?> <text>".
+            double off = ClockOffsetMs;
+            string offText = double.IsNaN(off) ? "?" : off.ToString("+0;-0", System.Globalization.CultureInfo.InvariantCulture);
+            secondary.WriteLine($"{DateTime.Now:HH:mm:ss.fff} m={Mono.ElapsedMilliseconds} off={offText} {value}");
         }
         catch { _secondaryDead = true; }
     }

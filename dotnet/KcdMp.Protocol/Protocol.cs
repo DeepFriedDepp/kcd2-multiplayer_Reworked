@@ -667,7 +667,28 @@ namespace KcdMp.Wire;
 /// HorseInfo and Weather: a fact about the sender, not about the shared
 /// world, with no arbitration to do.
 ///
-/// Free type bytes for new features: 0x39 and up.
+/// ---- Clock-offset sampling (WO-98 Phase 1) ----
+///
+/// C→S  0x39  ClockSyncUp:   [clientSendUtcTicks:8 LE int64]                                   (8)
+/// S→C  0x3A  ClockSyncDown: [clientSendUtcTicks:8][relayRecvUtcTicks:8][relaySendUtcTicks:8]  (24)
+///
+/// NTP-shaped: the client stamps t0 on send, the relay stamps t1 on receipt
+/// and t2 on reply, the client stamps t3 on receipt, and
+///   offset = ((t1 - t0) + (t2 - t3)) / 2      (relay clock minus client clock)
+///   rtt    = (t3 - t0) - (t2 - t1)
+/// The relay runs on the host's machine, so a joiner's offset IS the
+/// host-vs-joiner wall-clock skew -- the 2026-09-15 session measured ~4.8 s
+/// of it from story-beat propagation alone (docs/WO-98-findings.md s1), and
+/// nothing in the stack could see it. MEASUREMENT ONLY: nothing consumes the
+/// estimate yet; it is logged (MP-CLOCK) and handed to the mod for display.
+/// Ping (0x04/0x05) is left alone: its echo carries only the client's own
+/// stamp, so it can measure RTT but never offset.
+///
+/// A pre-WO-98 relay skips an unknown 0x39 (payload read and discarded, the
+/// read loop's fall-through), so a new client against an old relay simply
+/// never gets an estimate; an old client never sends it. No version bump.
+///
+/// Free type bytes for new features: 0x3B and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -722,6 +743,7 @@ public static class Protocol
     public const byte ItemDropUp     = 0x32;
     public const byte ItemClaimUp    = 0x34;
     public const byte StoryBeatUp    = 0x37;
+    public const byte ClockSyncUp    = 0x39;   // WO-98
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -756,7 +778,13 @@ public static class Protocol
     public const byte ItemClaimDown    = 0x35;
     public const byte ServerFull       = 0x36;
     public const byte StoryBeatDown    = 0x38;
+    public const byte ClockSyncDown    = 0x3A;   // WO-98
     public const byte Ack              = 0xFF;
+
+    /// <summary>WO-98: ClockSyncUp payload -- one int64 of client UTC ticks.</summary>
+    public const int ClockSyncUpPayloadLen = 8;
+    /// <summary>WO-98: ClockSyncDown payload -- client send, relay receive, relay send (UTC ticks each).</summary>
+    public const int ClockSyncDownPayloadLen = 24;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
     public const int PositionPayloadLen = 17;
@@ -951,6 +979,19 @@ public static class Protocol
     /// registry id matches; a WO-94 receiver drops the unknown kind.
     /// </summary>
     public const byte StoryBeatKindFingerprint = 5;
+
+    /// <summary>
+    /// WO-98: a cutscene edge on the sender's machine, text
+    /// "start|end &lt;type&gt; &lt;name&gt;" (e.g. "start Ingame socky_3_tavern"),
+    /// straight from the engine's own CutscenePlayer::PlayCutscene /
+    /// OnCutsceneEnd log lines. Informational: the receiver logs it beside its
+    /// own cutscene state and tells the mod, which holds the readiness prompt
+    /// while a cutscene plays. Nothing is gated or synchronised on it yet --
+    /// with ~4.8 s of wall-clock skew between machines (Phase 1), alignment
+    /// cannot be timestamp-based until the offset estimate is consumed.
+    /// An older receiver drops the unknown kind.
+    /// </summary>
+    public const byte StoryBeatKindCutscene = 6;
 
     public static bool IsNeverSyncedNpcName(string npcName) =>
         npcName.StartsWith(NpcReservedNamePrefix, StringComparison.OrdinalIgnoreCase)

@@ -44,6 +44,23 @@ public partial class GameBridge(ClientConfig config)
     // Ping: maps sent timestamp (ticks) → Stopwatch timestamp at send time
     private readonly ConcurrentDictionary<long, long> _pingsSent = new();
 
+    // WO-98 Phase 1: clock-offset estimator -- relay wall clock minus ours,
+    // NTP-shaped over ClockSyncUp/Down (0x39/0x3A, sent on the ping cadence).
+    // Running median of the last ClockSamplesKept samples; a single sample
+    // is one round trip's worth of asymmetric-latency error, the median of
+    // fifteen is not. MEASUREMENT ONLY (docs/WO-98-findings.md s1): nothing
+    // consumes it yet. Logged as MP-CLOCK, pushed to the mod for display,
+    // and stamped into every agent.log line by TeeTextWriter.
+    private readonly object _clockLock = new();
+    private readonly List<(double OffsetMs, double RttMs)> _clockSamples = new();
+    private const int ClockSamplesKept = 15;
+    private double? _clockOffsetMs;
+    private double? _clockRttMedianMs;
+    private int _clockSampleCount;
+    private long _lastClockLogTimestamp;
+    /// <summary>WO-98: relay clock minus this machine's clock, ms; null until the first reply.</summary>
+    public double? ClockOffsetMs => _clockOffsetMs;
+
     // Voice: frames captured by VoiceChat are queued here, drained in main loop
     private readonly ConcurrentQueue<byte[]> _voiceQueue = new();
     private VoiceChat? _voice;
@@ -1358,6 +1375,43 @@ public partial class GameBridge(ClientConfig config)
     // Background rotation + riding state loop (every RotStateIntervalMs)
     // -------------------------------------------------------------------------
 
+    /// <summary>
+    /// WO-98 Phase 1: fold one ClockSyncDown reply into the running estimate.
+    /// offset = ((t1-t0)+(t2-t3))/2 is the relay's clock minus ours; the relay
+    /// runs on the host, so on a joiner this IS the host-vs-joiner skew.
+    /// Logs MP-CLOCK on the 1st and 5th sample and every 30 s after, and
+    /// pushes the median to the mod on the same cadence.
+    /// </summary>
+    private void OnClockSample(long t0, long t1, long t2, long t3)
+    {
+        double offsetMs = ((t1 - t0) + (t2 - t3)) / 2.0 / TimeSpan.TicksPerMillisecond;
+        double rttMs    = ((t3 - t0) - (t2 - t1)) / (double)TimeSpan.TicksPerMillisecond;
+        if (rttMs < 0 || rttMs > 5000) return;   // a wall-clock step landed mid-sample; not a measurement
+        double off, rtt; int n; bool logDue;
+        lock (_clockLock)
+        {
+            _clockSamples.Add((offsetMs, rttMs));
+            if (_clockSamples.Count > ClockSamplesKept) _clockSamples.RemoveAt(0);
+            _clockSampleCount++;
+            var offs = _clockSamples.Select(s => s.OffsetMs).OrderBy(v => v).ToArray();
+            var rtts = _clockSamples.Select(s => s.RttMs).OrderBy(v => v).ToArray();
+            off = offs[offs.Length / 2];
+            rtt = rtts[rtts.Length / 2];
+            _clockOffsetMs = off;
+            _clockRttMedianMs = rtt;
+            n = _clockSampleCount;
+            long now = Stopwatch.GetTimestamp();
+            logDue = n == 1 || n == 5 || (now - _lastClockLogTimestamp) >= Stopwatch.Frequency * 30;
+            if (logDue) _lastClockLogTimestamp = now;
+        }
+        TeeTextWriter.ClockOffsetMs = off;
+        if (!logDue) return;
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-CLOCK offset_ms={off:F1} rtt_ms={rtt:F1} n={n} sample_offset_ms={offsetMs:F1} sample_rtt_ms={rttMs:F1}"));
+        _ = ExecLuaAsync(FormattableString.Invariant(
+            $"if KCD2MP_SetClockOffset then KCD2MP_SetClockOffset({off:F1},{rtt:F1},{n}) end"));
+    }
+
     private async Task PingLoopAsync(NetworkStream stream, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -1374,6 +1428,15 @@ public partial class GameBridge(ClientConfig config)
                 BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), 8);
                 tsBytes.CopyTo(packet, 3);
                 await WritePacketAsync(stream, packet, ct);
+
+                // WO-98 Phase 1: one clock-offset sample per ping. Stamped
+                // immediately before the write so t0 is as close to the wire
+                // as this code can get it.
+                var cs = new byte[3 + Protocol.ClockSyncUpPayloadLen];
+                cs[0] = Protocol.ClockSyncUp;
+                BinaryPrimitives.WriteUInt16LittleEndian(cs.AsSpan(1), (ushort)Protocol.ClockSyncUpPayloadLen);
+                BinaryPrimitives.WriteInt64LittleEndian(cs.AsSpan(3), DateTime.UtcNow.Ticks);
+                await WritePacketAsync(stream, cs, ct);
             }
             catch (OperationCanceledException) { break; }
             catch { break; }
@@ -3167,6 +3230,15 @@ public partial class GameBridge(ClientConfig config)
                         Console.WriteLine($"[ping] {ms} ms");
                         try { await ExecLuaAsync($"KCD2MP_ShowPing({ms})"); } catch { }
                     }
+                }
+                else if (type == Protocol.ClockSyncDown && payloadLen == Protocol.ClockSyncDownPayloadLen)
+                {
+                    // WO-98 Phase 1: [t0 client send][t1 relay recv][t2 relay send]; t3 = now.
+                    long t3 = DateTime.UtcNow.Ticks;
+                    long t0 = BinaryPrimitives.ReadInt64LittleEndian(payload);
+                    long t1 = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(8));
+                    long t2 = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(16));
+                    OnClockSample(t0, t1, t2, t3);
                 }
                 else if (type == Protocol.Ghost && payloadLen == Protocol.GhostPayloadLen)
                 {

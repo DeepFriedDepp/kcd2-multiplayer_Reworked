@@ -161,6 +161,25 @@ public class ClientSession
                     continue;
                 }
 
+                if (type == Protocol.ClockSyncUp && payloadLen == Protocol.ClockSyncUpPayloadLen)
+                {
+                    // WO-98 Phase 1: NTP-shaped clock-offset sample. Echo the
+                    // client's send stamp with our receive and send stamps
+                    // appended; the client does the arithmetic (Protocol.cs
+                    // header, "Clock-offset sampling"). The send stamp is taken
+                    // when the reply is queued, not when the socket writes it,
+                    // so a busy outbound queue reads as a few ms of RTT.
+                    var t0 = new byte[Protocol.ClockSyncUpPayloadLen];
+                    await ReadExactAsync(t0);
+                    long t1 = DateTime.UtcNow.Ticks;
+                    var body = new byte[Protocol.ClockSyncDownPayloadLen];
+                    t0.CopyTo(body, 0);
+                    BinaryPrimitives.WriteInt64LittleEndian(body.AsSpan(8), t1);
+                    BinaryPrimitives.WriteInt64LittleEndian(body.AsSpan(16), DateTime.UtcNow.Ticks);
+                    EnqueueRaw(BuildPacket(Protocol.ClockSyncDown, body));
+                    continue;
+                }
+
                 if (type == Protocol.VoiceUp && payloadLen == Protocol.VoiceFrameLen)
                 {
                     // Voice frame → relay to all other ready clients

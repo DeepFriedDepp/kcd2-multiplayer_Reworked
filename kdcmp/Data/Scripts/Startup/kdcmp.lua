@@ -143,7 +143,18 @@ end
 -- Game.ShowNotification adds unwanted "@" decorators so we use DrawLabel instead.
 function KCD2MP_ShowPing(ms)
     KCD2MP.ping = ms
+    local off = KCD2MP.clockOffsetMs
     KCD2MP.pingText = string.format("Ping: %d ms", ms)
+        .. (off and string.format("  clock %+.2f s", off / 1000) or "")
+end
+
+-- WO-98 Phase 1: the agent's clock-offset estimate (relay clock minus this
+-- machine's, ms; the relay runs on the host) and its median RTT. Display and
+-- summary only -- nothing here is corrected by it yet.
+function KCD2MP_SetClockOffset(ms, rttMs, n)
+    KCD2MP.clockOffsetMs = tonumber(ms)
+    KCD2MP.clockRttMs = tonumber(rttMs)
+    KCD2MP.clockSamples = tonumber(n)
 end
 
 -- ===== Player Position =====
