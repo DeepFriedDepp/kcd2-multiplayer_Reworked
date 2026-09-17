@@ -420,9 +420,12 @@ public class ClientSession
                 // block visuals only -- damage keeps its own authoritative
                 // paths), so like HorseInfo there is no authority gate: it is
                 // a fact about the sender, not about the shared world.
-                if (type == Protocol.CombatEventUp && payloadLen == Protocol.CombatEventUpPayloadLen)
+                if (type == Protocol.CombatEventUp
+                    && (payloadLen == Protocol.CombatEventUpPayloadLen || payloadLen == Protocol.CombatEventUpPayloadLenV2))
                 {
-                    var body = new byte[Protocol.CombatEventUpPayloadLen];
+                    // WO-99 Phase 4: v2 carries [sid:2] after the event byte;
+                    // forwarded verbatim either way.
+                    var body = new byte[payloadLen];
                     await ReadExactAsync(body);
                     _broadcastService.BroadcastCombatEvent(this, body);
                     continue;

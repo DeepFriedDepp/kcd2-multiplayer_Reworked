@@ -38,7 +38,13 @@ consumes it (Phase 1).
 
 ### MP-CUTSCENE — cutscene edges (agent.log and kcd.log)
 agent, own machine:
-`MP-CUTSCENE side=local state=start|end type=Rendered|Ingame name=<engine name> peers=<id:0|1,...>|-`
+`MP-CUTSCENE side=local state=start|end type=Rendered|Ingame|Fader|Text|SkipTime name=<engine name> peers=<id:0|1,...>|- acted=0|1`
+
+`acted=1` only for Rendered/Ingame (peer beat sent, prompt held). WO-99
+Phase 4 added the other three as log-only edges, because a loading fade or
+a sleep is what sits inside an unexplained emitter gap (2026-09-16: all 18
+cutscene lines were Fader, so the channel was correctly silent and the
+gaps had no marker).
 
 agent, a peer's machine (StoryBeat kind 6):
 `MP-CUTSCENE side=peer ghost=<id> who="<display name>" state=start|end type=<type> name=<name> local=0|1`
@@ -46,9 +52,9 @@ agent, a peer's machine (StoryBeat kind 6):
 mod (kcd.log), own machine, state AFTER the edge was applied:
 `MP-CUTSCENE side=local state=start|end name=<name> peers=<id:0|1,...>|- prompt=0|1 pending=0|1`
 
-Only `Rendered` and `Ingame` types are reported; `Fader`, `Text` and
-`SkipTime` are not (WO-80's reasoning: not what a player experiences as a
-cutscene). Source is the engine's own `CutscenePlayer::PlayCutscene` /
+Only `Rendered` and `Ingame` edges act (WO-80's reasoning: the others are
+not what a player experiences as a cutscene); all five types are logged
+locally. Source is the engine's own `CutscenePlayer::PlayCutscene` /
 `OnCutsceneEnd` lines.
 
 ### MP-KEY — prompt keys (kcd.log)
@@ -87,6 +93,21 @@ window of an episode is not reported (the totals are, in `MP-SUMMARY-MOD`).
 peer's stream. The prose `NPC-FIGHT ... displaced ...` line stays, throttled
 to one per 30 s per NPC (was 5 s).
 
+### MP-NPCYIELD — sub-8 m yield arbitration (kcd.log, WO-99 Phase 2)
+`MP-NPCYIELD npc=<name> state=yield disp_m=<F2> streak=<int> fight_n=<int> total_yields=<int> total_repins=<int>`
+`MP-NPCYIELD npc=<name> state=repin target_moved_m=<F2> body_off_m=<F2> yielded_s=<F1> total_yields=<int> total_repins=<int>`
+
+`yield`: the readback displacement stayed above `dispM` (default 0.30 m)
+for `ticks` (default 10) consecutive 50 ms ticks; the puppet gets no more
+position/angle/anim writes. `repin`: an inbound packet moved the stream
+target more than `repinM` (default 1.0 m) from where it was at yield time;
+`body_off_m` is how far the body had wandered from the new target, and the
+render position is re-seeded from the body. Toggle `mp_npc_yield_on|off`
+(default on); thresholds `#KCD2MP_SetNpcYield("dispM ticks repinM")`.
+`MP-NPCFIGHT` stops counting a yielded puppet (nothing is written to
+measure against), so a live A/B reads as: fewer NPCFIGHT events, NPCYIELD
+lines appearing.
+
 ### MP-NPCDIVERGE — divergence release (kcd.log)
 `MP-NPCDIVERGE npc=<name> dist_m=<F1> hits=<int> window_s=<F0> standoff_s=<F0> total=<int>`
 
@@ -95,13 +116,15 @@ One per WO-90 release (the puppet is handed back to the local world for
 
 ### MP-SWING — swing path hops (agent.log)
 sender: `MP-SWING hop=sent sid=<int>`
-receiver: `MP-SWING hop=recv rsid=<int> ghost=<id> entity=0x<hex> spec="<fragment spec>"`
-receiver: `MP-SWING hop=queued rsid=<int> ghost=<id> ok=0|1`
+receiver: `MP-SWING hop=recv rsid=<int> sid=<int> ghost=<id> entity=0x<hex> spec="<fragment spec>"`
+receiver: `MP-SWING hop=queued rsid=<int> sid=<int> ghost=<id> ok=0|1`
 
-`sid` counts swings this machine sent; `rsid` counts swings this machine
-received, and ties `recv` to its `queued` outcome. The two ids are
-per-machine; a cross-machine correlation id needs a field on
-CombatEventUp (0x2C) and is not in this WO. The native side's `SWING:
+`sid` counts swings this machine sent and, since WO-99 Phase 4, travels
+on the wire (CombatEventUp/Down v2, `[sid:2]`), so the receiver's `sid` is
+the SENDER's counter: `hop=sent sid=N` on one machine matches `hop=recv
+sid=N` on the other. `sid=0` on a receiver = a v1 sender. `rsid` still
+counts swings this machine received and ties `recv` to its `queued`
+outcome. The native side's `SWING:
 entity=... queued fragment ...` line in `kcdmp-native.log` is the
 "fragment queued" hop; whether the animation then PLAYED is still
 unrecorded (nothing on the native side reports fragment start/end).
@@ -109,20 +132,39 @@ unrecorded (nothing on the native side reports fragment start/end).
 ### MP-DMG — shared combat damage (agent.log)
 `MP-DMG dir=out npc=<name> hp=<F1> st=<F1> fatal=0|1 authority=0|1`
 `MP-DMG dir=in ghost=<id> npc=<name> hp=<F1> st=<F1> fatal=0|1 result=applied|nosoul|nodelta|failed authority=0|1`
+`MP-DMG dir=drop npc=<name|?> hp=<F1> st=<F1> fatal=0|1 reason=local_player|local_player_name|echo|echo_fatal authority=0|1` (WO-99 Phase 0)
+`MP-DMG dir=in ghost=<id> npc=<name> hp=<F1> st=<F1> fatal=0|1 result=refused reason=local_player|local_player_name authority=0|1` (WO-99 Phase 0)
+
+`drop` = the DLL reported a local hit that this client refused to send:
+`local_player` = the soul is the local player (by PlayerSoul guid),
+`local_player_name` = same by soul name only (guid not yet re-read after a
+save load), `echo` = the value matches an inbound hit applied within 300 s,
+`echo_fatal` = a FATAL for a name whose death was applied from a peer within
+300 s. `refused` = an inbound 0x31 whose name resolved to this machine's
+own player soul. `[dmgguard] local player soul guid=... name=...` is logged
+on connect and whenever the identity changes.
 
 `authority` = whether THIS agent is the relay's damage authority at that
 moment (the lowest-id ready client). The NPC's claim holder at the moment
 of the hit is only known at the relay (`[CLAIM]` lines).
 
 ### MP-GHOSTPKT — ghost motion (agent.log)
-`MP-GHOSTPKT ghost=<id> n=<int> ia_mean_ms=<F1> ia_max_ms=<F1> d_mean_m=<F2> d_max_m=<F2> snaps=<int>`
+`MP-GHOSTPKT ghost=<id> n=<int> ia_mean_ms=<F1> ia_max_ms=<F1> d_mean_m=<F2> d_max_m=<F2> snaps=<int> stale=<int>`
 
 Per ghost per ≥10 s window (flushed by the next packet): inbound Ghost
 packets, inter-arrival mean/max, position delta mean/max, and `snaps` =
 deltas over 5 m. With `KCDMP_LOG_LEVEL=verbose` in the agent's environment,
 every packet also writes
-`MP-GHOSTPKT-RAW ghost=<id> ia_ms=<F1> d_m=<F3> snap=0|1` — the snapshot-
+`MP-GHOSTPKT-RAW ghost=<id> ia_ms=<F1> d_m=<F3> snap=0|1 stale=0|1` — the snapshot-
 buffer tuning data; ~4 lines/s per ghost, off by default.
+
+`stale` (WO-99 Phase 1) counts packets carrying the Position/Ghost flag bit
+0x02: the sender's mod emitter was halted (menu, loading, cutscene,
+dialogue) and its agent re-sent the last known position at the 2 s
+heartbeat. A gap that is all stale packets is "the peer is paused", not
+"the peer is gone"; the sender logs `[pos] mod emitter silent -- sending
+stale heartbeats until it resumes` / `[pos] mod emitter resumed after N
+stale heartbeat(s)` at the edges.
 
 ### Authority transitions (relay log, pre-existing, unchanged)
 `[CLAIM] granted npc=<name> owner=<id> pos=(x,y,z)`
@@ -136,22 +178,29 @@ There is no claim *request*: a non-authority claims by sending
 "denied" = `stale-owner`. The damage authority's own packets never create
 claims (docs/WO-98-findings.md s2).
 
-### MP-SUMMARY — per-connection summary (agent.log, on disconnect)
+### MP-SUMMARY — per-connection summary (agent.log, on disconnect and every 300 s)
 ```
 MP-SUMMARY section=session reason=<str> duration_s=<F0> agent_lines=<int> agent_lines_per_s=<F2> clock_offset_ms=<F1|?> clock_rtt_ms=<F1|?> clock_samples=<int>
 MP-SUMMARY section=ping pongs=<int> rtt_min_ms=<F0> rtt_avg_ms=<F1> rtt_max_ms=<F0>
 MP-SUMMARY section=swings sent=<int> recv=<int> queued=<int> failed=<int> no_entity=<int>
-MP-SUMMARY section=damage out=<int> out_fatal=<int> in=<int> in_applied=<int> in_failed=<int> authority=0|1
+MP-SUMMARY section=position stale_out=<int> ghost_stale_in=<int>
+MP-SUMMARY section=damage out=<int> out_fatal=<int> out_dropped=<int> in=<int> in_applied=<int> in_failed=<int> in_refused=<int> authority=0|1
 MP-SUMMARY section=npc state_out=<int> claim_out=<int> drag_out=<int>
 MP-SUMMARY section=story divergences_pushed=<int> cutscene_local_edges=<int> cutscene_peer_edges=<int> ghost_packets=<int>
-MP-SUMMARY section=ghost ghost=<id> packets=<int> ia_mean_ms=<F1> ia_max_ms=<F1> d_mean_m=<F2> d_max_m=<F2> snaps=<int>
+MP-SUMMARY section=ghost ghost=<id> packets=<int> ia_mean_ms=<F1> ia_max_ms=<F1> d_mean_m=<F2> d_max_m=<F2> snaps=<int> stale=<int>
 ```
+WO-99 Phase 4: the block is also printed every 300 s with `reason=periodic`
+(counters are cumulative, so the last snapshot is the session summary) --
+2026-09-16 ended with both agents killed under the launcher and no
+disconnect block was ever written.
 `no_entity` is reserved (a swing received for a ghost whose entity id is
 not cached is currently dropped without a line; counting it needs the
 dispatch restructured — WO-99 candidate).
 
 ### MP-SUMMARY-MOD — the mod's counters (kcd.log, on disconnect and `mp_summary`)
-`MP-SUMMARY-MOD reason=<str> mod_clock_s=<F0> toasts=<int> screen_rows=<int> keys=<int> cutscene_edges=<int> ghosts=<int> ghost_packets=<int> puppets=<int> npcfight_events=<int> diverge_releases=<int> quest_divergences=<int> quest_prompts=<int> quest_fires=<int> clock_offset_ms=<F1|?> clock_rtt_ms=<F1|?>`
+`MP-SUMMARY-MOD reason=<str> mod_clock_s=<F0> toasts=<int> screen_rows=<int> keys=<int> cutscene_edges=<int> ghosts=<int> ghost_packets=<int> puppets=<int> npcfight_events=<int> diverge_releases=<int> quest_divergences=<int> quest_prompts=<int> quest_fires=<int> clock_offset_ms=<F1|?> clock_rtt_ms=<F1|?> npc_yields=<int> npc_repins=<int>`
+
+Also written every 300 s (the agent's periodic summary asks for it).
 
 ## Volume
 

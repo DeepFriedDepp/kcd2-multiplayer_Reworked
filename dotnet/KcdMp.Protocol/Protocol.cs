@@ -462,8 +462,10 @@ namespace KcdMp.Wire;
 ///
 /// ---- Combat visibility layer (WO-39 Phase 1) ----
 ///
-/// C→S  0x2C  CombatEventUp:   [event:1]                    (1)
-/// S→C  0x2D  CombatEventDown: [sourceGhostId:1][event:1]   (2)
+/// C→S  0x2C  CombatEventUp:   [event:1]                    (1)   v2 (WO-99): [event:1][sid:2]                 (3)
+/// S→C  0x2D  CombatEventDown: [sourceGhostId:1][event:1]   (2)   v2 (WO-99): [sourceGhostId:1][event:1][sid:2] (4)
+///            sid = the sender's swing counter, the cross-machine correlation id for MP-SWING.
+///            Relay accepts both lengths and forwards the body verbatim; a v1 receiver drops a v2 packet.
 ///
 /// The WO-38 report's Phase 4 gap: the emit line carries position, rotation,
 /// riding/sneaking flags, health, stamina, dead, unconscious -- and NOTHING
@@ -1178,11 +1180,15 @@ public static class Protocol
 
     // ---- Combat visibility layer (WO-39 Phase 1) ----
 
-    /// <summary>Exact CombatEventUp (0x2C) payload length.</summary>
+    /// <summary>Exact CombatEventUp (0x2C) payload length (v1: [event:1]).</summary>
     public const int CombatEventUpPayloadLen = 1;
+    /// <summary>WO-99 Phase 4: CombatEventUp v2 payload length ([event:1][sid:2]).</summary>
+    public const int CombatEventUpPayloadLenV2 = 3;
 
-    /// <summary>Exact CombatEventDown (0x2D) payload length.</summary>
+    /// <summary>Exact CombatEventDown (0x2D) payload length (v1: [sourceGhostId:1][event:1]).</summary>
     public const int CombatEventDownPayloadLen = 2;
+    /// <summary>WO-99 Phase 4: CombatEventDown v2 payload length ([sourceGhostId:1][event:1][sid:2]).</summary>
+    public const int CombatEventDownPayloadLenV2 = 4;
 
     /// <summary>Combat event: the sender drew their weapon. Receivers call the ghost's DrawWeapon.</summary>
     public const byte CombatEventWeaponDrawn = 0;

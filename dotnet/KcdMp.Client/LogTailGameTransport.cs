@@ -279,7 +279,11 @@ public sealed class LogTailGameTransport : IGameTransport
     /// </summary>
     public event Action? ModInitDetected;
 
-    private static readonly string[] CutsceneEdgeTypes = ["Rendered", "Ingame"];
+    // WO-99 Phase 4: Fader/Text/SkipTime edges are now reported too, so a
+    // loading fade or a sleep shows up beside the emitter gap it causes
+    // (2026-09-16: all 18 cutscene lines were Fader, and the un-paused ghost
+    // gaps were exactly those). The consumer ACTS only on Rendered/Ingame.
+    private static readonly string[] CutsceneEdgeTypes = ["Rendered", "Ingame", "Fader", "Text", "SkipTime"];
 
     private const string LevelBanner = " Loading level ";
 

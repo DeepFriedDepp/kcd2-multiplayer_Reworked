@@ -406,6 +406,11 @@ public partial class GameBridge(ClientConfig config)
     // QUEST-DIVERGENCE lines per side in the 2026-09-15 logs.
     private volatile bool _questRepushDue;
     private static readonly TimeSpan QuestRepushHeartbeat = TimeSpan.FromSeconds(60);
+    // WO-99 Phase 4: MP-SUMMARY only ever printed on a clean disconnect, and
+    // 2026-09-16 ended with both agents killed under the launcher (last lines
+    // are pings). A periodic snapshot makes the block exist however the
+    // session ends; counters are cumulative, so the last one is the summary.
+    private static readonly TimeSpan SummaryHeartbeat = TimeSpan.FromSeconds(300);
 
     // WO-98 Phase 6: per-connection counters behind the MP-SUMMARY block and
     // the MP-GHOSTPKT aggregate. KCDMP_LOG_LEVEL=verbose adds a raw
@@ -524,11 +529,19 @@ public partial class GameBridge(ClientConfig config)
     /// <summary>WO-98 Phase 5: a Rendered/Ingame cutscene edge on this machine.</summary>
     private void OnLocalCutsceneEdge(bool active, string type, string name)
     {
+        // WO-99 Phase 4: Fader/Text/SkipTime are logged (acted=0) and nothing
+        // else -- no peer beat, no prompt hold. Only Rendered/Ingame act.
+        bool acts = type is "Rendered" or "Ingame";
+        string peers = string.Join(",", _peerCutscene.Select(kv => $"{kv.Key}:{(kv.Value.Active ? 1 : 0)}"));
+        _stats.CutsceneLocalEdges++;
+        if (!acts)
+        {
+            Console.WriteLine($"MP-CUTSCENE side=local state={(active ? "start" : "end")} type={type} name={name} peers={(peers.Length == 0 ? "-" : peers)} acted=0");
+            return;
+        }
         _localCutsceneActive = active;
         _localCutsceneName = active ? name : "";
-        _stats.CutsceneLocalEdges++;
-        string peers = string.Join(",", _peerCutscene.Select(kv => $"{kv.Key}:{(kv.Value.Active ? 1 : 0)}"));
-        Console.WriteLine($"MP-CUTSCENE side=local state={(active ? "start" : "end")} type={type} name={name} peers={(peers.Length == 0 ? "-" : peers)}");
+        Console.WriteLine($"MP-CUTSCENE side=local state={(active ? "start" : "end")} type={type} name={name} peers={(peers.Length == 0 ? "-" : peers)} acted=1");
         string text = $"{(active ? "start" : "end")} {type} {name}";
         if (text.Length > Protocol.MaxStoryBeatTextLen) text = text[..Protocol.MaxStoryBeatTextLen];
         _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindCutscene, text);
@@ -618,7 +631,7 @@ public partial class GameBridge(ClientConfig config)
     // ---- Combat visibility (WO-39 Phase 1) ----
     // Carries one combat event line from the mod onto the wire as a
     // CombatEventUp (0x2C). Reassigned per connection like _sendHorseInfo.
-    private Func<byte, Task>? _sendCombatEvent;
+    private Func<byte, ushort, Task>? _sendCombatEvent;   // WO-99 Phase 4: (event, sid)
 
     // ---- Per-entity NPC authority (WO-39 Phase 2) ----
     // Same wire packet as _sendNpcState but flagged as a claim emission, so
@@ -1249,7 +1262,7 @@ public partial class GameBridge(ClientConfig config)
         _sendNpcDrag = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token, asClaim: true);
         _sendNpcDeath = npc => SendNpcDamageAsync(stream, npc, 0f, 0f, suppressHitReaction: true, fatal: true);
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
-        _sendCombatEvent = evt => SendCombatEventAsync(stream, evt, cts.Token);
+        _sendCombatEvent = (evt, sid) => SendCombatEventAsync(stream, evt, sid, cts.Token);
         _sendWeather = (profile, blend) => SendWeatherAsync(stream, profile, blend, cts.Token);
         // Dropped-item sync (WO-48): both fire from the tail transport's event
         // thread (item_drop / item_claim event lines), which has no stream.
@@ -1331,6 +1344,7 @@ public partial class GameBridge(ClientConfig config)
             long lastWeatherTick = nowTimestamp;
             long lastPositionHeartbeat = nowTimestamp;
             long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
+            long lastSummary = nowTimestamp;        // WO-99 Phase 4
 
             while (tcp.Connected)
             {
@@ -1482,6 +1496,12 @@ public partial class GameBridge(ClientConfig config)
                 // inside the tick.
                 if (IntervalElapsed(ref lastWeatherTick, WeatherTickInterval, nowTimestamp))
                     WeatherArbiterTick();
+
+                // WO-99 Phase 4: periodic MP-SUMMARY / MP-SUMMARY-MOD snapshot.
+                if (IntervalElapsed(ref lastSummary, SummaryHeartbeat, nowTimestamp))
+                {
+                    try { PrintSessionSummary("periodic"); } catch { }
+                }
 
                 if (state.HasValue && _staleRun > 0)
                 {
@@ -2806,14 +2826,17 @@ public partial class GameBridge(ClientConfig config)
     /// (draw/sheathe/swing/block) from the mod's combat event line. The mod
     /// already rate-limits swings; this just puts the byte on the wire.
     /// </summary>
-    private async Task SendCombatEventAsync(NetworkStream stream, byte evt, CancellationToken ct)
+    private async Task SendCombatEventAsync(NetworkStream stream, byte evt, ushort sid, CancellationToken ct)
     {
         try
         {
-            var packet = new byte[3 + Protocol.CombatEventUpPayloadLen];
+            // WO-99 Phase 4: [event:1][sid:2] -- the sender's swing counter,
+            // so a `hop=sent sid=N` here matches `hop=recv sid=N` on the peer.
+            var packet = new byte[3 + Protocol.CombatEventUpPayloadLenV2];
             packet[0] = Protocol.CombatEventUp;
-            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.CombatEventUpPayloadLen);
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.CombatEventUpPayloadLenV2);
             packet[3] = evt;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(4), sid);
             await WritePacketAsync(stream, packet, ct);
         }
         catch (Exception ex) { Console.WriteLine($"[combatviz] send failed: {ex.Message}"); }
@@ -4003,9 +4026,13 @@ public partial class GameBridge(ClientConfig config)
                     Console.WriteLine($"[itemsync] drop {icDropId} claimed by {(claimIsMine ? "us" : $"ghost {icClaimer}")}");
                     await ExecLuaAsync($"if KCD2MP_ItemDropClaimed then KCD2MP_ItemDropClaimed(\"{icDropId}\",\"{icClaimer}\",{(claimIsMine ? "true" : "false")}) end");
                 }
-                else if (type == Protocol.CombatEventDown && payloadLen == Protocol.CombatEventDownPayloadLen)
+                else if (type == Protocol.CombatEventDown
+                         && (payloadLen == Protocol.CombatEventDownPayloadLen || payloadLen == Protocol.CombatEventDownPayloadLenV2))
                 {
                     // Combat visibility (WO-39 Phase 1): [sourceGhostId:1][event:1].
+                    // WO-99 Phase 4: v2 appends [sid:2], the sender's swing counter.
+                    ushort ceSid = payloadLen == Protocol.CombatEventDownPayloadLenV2
+                        ? BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(2)) : (ushort)0;
                     // Purely cosmetic on this side -- the Lua applies a
                     // draw/holster call or a one-shot animation to the ghost.
                     // An event byte this build does not know is passed through
@@ -4033,13 +4060,13 @@ public partial class GameBridge(ClientConfig config)
                         // per-machine rsid. (A cross-machine id would need a
                         // wire field on CombatEventUp; docs/WO-98-findings.md s6.)
                         long rsid = ++_stats.SwingsRecv;
-                        Console.WriteLine($"MP-SWING hop=recv rsid={rsid} ghost={ceSource} entity=0x{ceEntityId:X} spec=\"{fragSpec}\"");
+                        Console.WriteLine($"MP-SWING hop=recv rsid={rsid} sid={ceSid} ghost={ceSource} entity=0x{ceEntityId:X} spec=\"{fragSpec}\"");
                         _ = _combat.GhostSwingAsync(ceEntityId, fragSpec, ct)
                             .ContinueWith(t =>
                             {
                                 bool ok = !t.IsFaulted && t.Result;
                                 if (ok) _stats.SwingsQueued++; else _stats.SwingsFailed++;
-                                Console.WriteLine($"MP-SWING hop=queued rsid={rsid} ghost={ceSource} ok={(ok ? 1 : 0)}");
+                                Console.WriteLine($"MP-SWING hop=queued rsid={rsid} sid={ceSid} ghost={ceSource} ok={(ok ? 1 : 0)}");
                                 if (!ok)
                                 {
                                     Console.WriteLine($"[combatviz] native swing for ghost {ceSource} did not apply — falling back to the Lua cue");
@@ -4500,9 +4527,10 @@ public partial class GameBridge(ClientConfig config)
                 }
                 var sendCombat = _sendCombatEvent;
                 if (sendCombat is null) break;
-                _ = sendCombat(evt.Value);
+                ushort swingSid = evt.Value == Protocol.CombatEventSwing ? (ushort)(++_stats.SwingsSent) : (ushort)0;
+                _ = sendCombat(evt.Value, swingSid);
                 if (evt.Value == Protocol.CombatEventSwing)
-                    Console.WriteLine($"MP-SWING hop=sent sid={++_stats.SwingsSent}");   // WO-98 Phase 6
+                    Console.WriteLine($"MP-SWING hop=sent sid={swingSid}");   // WO-98 Phase 6 / WO-99 Phase 4: sid is on the wire
                 break;
             }
 
