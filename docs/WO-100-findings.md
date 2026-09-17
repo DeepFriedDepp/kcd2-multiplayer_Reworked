@@ -16,11 +16,11 @@ shipped data file. **(synthetic)** = a test harness, not a live game.
 |---|---|
 | 0 — Mannequin tag state readable? | **surface mapped, partially**: pace/direction/stance yes, animation speed yes as a scalar, **airborne no** (§1.5). Live known-answer check **not run** — needs the maintainer, runbook in §1.6 |
 | 1 — attack acceptance point | **found** (S4): `I_CombatActor+0x2F0` is the combat model; `RequestedInputClass` / `RequestedAtkZone` / `RequestedPreparedToAttack` are the accepted input, offsets mapped. Replayability answered **read-only: yes, structurally** -- the AI uses the same entry -- but acting on it is a native write, so **Phase 5 is a STOP and did not proceed** |
-| 2 — wire format | not reached |
-| 3 — locomotion replication | not reached |
+| 2 — wire format | **designed, not implemented** (S6). Additive continuous fields behind a flag bit, one discrete shape for every action, a gen triple, name-keyed enums throughout. Reserved 0x3B/0x3C |
+| 3 — locomotion replication | **not built** -- gated on Phase 0's live check (S7). One finding that changes item 4: ghost smoothing **already exists** (damped correction + 5 m teleport threshold), and the snapshot-buffer variant already exists on the puppet path. Building a third would be the error the instruction prevents. What is missing is correction-magnitude and snap-count logging |
 | 4 — unconditional improvements | **landed**, all five items + one defect found while reading (§3). 111 tests green, **(synthetic)** — no live session |
 | 5 — combat replication | **not run -- STOP.** The blocker is named precisely rather than vaguely: every remaining step is a native write (S4.2) |
-| 6 — AI-less puppet class | not reached |
+| 6 — AI-less puppet class | **found: `NPC_NAI`** (S5), registered in WHGame's InitGameFactory, spawnable, same Mannequin databases as NPC, and its own shipped comment says "null AI don't have AI objects". Applicability stated both ways in S5.3. Investigation only, nothing rebuilt on it |
 
 ---
 
@@ -490,3 +490,258 @@ The conclusion holds, and is now evidenced rather than argued:
 
 The missing "fragment played/failed" reporter really is an artefact of the
 fragment-queue design. One level up, the engine has one.
+
+---
+
+## 5. Phase 6 — the AI-less human class. It exists, it is `NPC_NAI`
+
+### 5.1 Confirmed, and spawnable
+
+`WHGame.dll`'s `InitGameFactory` registers, in one run of strings
+(**code-verified**):
+
+```
+NullAI | AIFACTORY_DEBUG_registered | GameFactory.cpp | AddEntityClassFlag |
+NPC_Female | NPC_NAI | DummyTarget | PlayerFemale | Animal | WildDog | Wolf |
+InventoryDummyHorse | ... | NPCActor
+```
+
+`NPC_NAI` — "NPC, no AI" — sits exactly where the WO said it would, beside the
+ordinary NPC classes and a dummy-target class. Its script is
+`Scripts/Entities/AI/NPC_NAI.lua` in `Scripts.pak`, and it ends with
+
+```lua
+function NPC_NAI:RegisterAI(bForce)
+	-- do nothing (null AI don't have AI objects)
+end
+...
+EntityCommon.MakeSpawnable(NPC_NAI)
+```
+
+So: **the class exists, it declares its own AI-lessness in a shipped comment,
+and it is explicitly spawnable** (**code-verified**). `NullAI` is a separate
+thing — an AI-factory registration name in
+`Scripts/Entities/AI/XML/AIFactoryRegistration.xml` — not this class.
+
+### 5.2 What it keeps and what it loses, by diff against `NPC.lua`
+
+Both are the same shipped file family, so this is a literal diff, not an
+inference.
+
+**Keeps — and these are the ones that matter for this WO:**
+
+| kept | why it matters |
+|---|---|
+| `ActionController = kcd_male_controllerdefs.xml` | **the same Mannequin controller def as `NPC`** — so the same global tag definition §1.1 describes, and the same tag state §1.2 reads |
+| `AnimDatabase3P = kcd_male_database.adb` | the same animation database, so every fragment a real NPC can play, it can play |
+| `fileModel = …/male.cdf`, `fileHitDeathReactionsParamsDataFile` | the same body and the same hit/death reactions |
+| `esClothingConfig = "male2"` | dressable — the appearance layer applies unchanged |
+| `defaultSoulArchetype = "NPC"`, `esFaction = "Civilians"` | it still gets a soul and a faction |
+| `UseMannequinAGState = true` | the Mannequin-driven animation state, which is the whole premise of Phase 3 |
+
+**Loses — `NPC` has these properties and `NPC_NAI` does not:**
+
+| lost | consequence |
+|---|---|
+| `bWH_PerceptorObject` | it perceives nothing |
+| `bWH_PerceptibleObject` | **other NPCs cannot see it.** A guard will not react to it, a crowd will not part for it |
+| `bWH_ListenerObject` | it hears nothing |
+| `bWH_CreateSituationSubsystem` | no situation participation — the very thing WO-99.5 shipped a script context to *disable* on ghosts, absent here by construction |
+| `bWH_RequiresHome` | no home, no schedule |
+| `ProceduralContextLook` | **no head/look tracking.** It will not turn to look at anything |
+| `OpponentMnTag = "relatedMale"`, `CombatOpponentMnTag = "oppMale"` | **it is not an opponent to the combat tag system.** Combat fragments that tag on the opponent's kind have nothing to key on |
+| the full `AIMovementAbility` (cover, avoidance, accel/decel) | no pathfinding, no obstacle avoidance |
+| `eiSoundObstructionType`, `perInstanceStreamingPriority` | minor |
+
+### 5.3 Where this helps, and where it cannot
+
+**It removes the contention problem completely, for any body we are willing to
+replace rather than possess.** WO-98's sub-metre tug-of-war is a local brain and
+a remote stream writing the same transform; a body with no AI object has no
+local brain to contend with, so the stream is the only writer. WO-99's yield
+rule (0.30 m over 10 ticks) exists to arbitrate a fight that would simply not
+happen.
+
+**Where it applies:**
+
+* **Ambient crowd NPCs** — most of the contention volume, by count. A
+  market crowd, villagers on a road, idlers in a tavern. Nobody's quest turns
+  on them and nobody talks to them.
+* **Possibly our own ghosts.** Ghosts already spawn as `NPC` /
+  `NPC_Female` (`facePick.className`, `kdcmp.lua:4065`), so this is a one-word
+  class change with the same Mannequin databases. It would end the ghost's own
+  brain fighting the stream.
+
+**Where it cannot apply, stated plainly:**
+
+* **Any quest-relevant NPC that must remain itself.** Replacing the body
+  replaces its soul, its home, its schedule and its perception. It is not the
+  same character any more.
+* **Anything another NPC must react to.** `bWH_PerceptibleObject` is gone, so
+  it is invisible to the perception system. A crowd of `NPC_NAI` bodies would
+  be a crowd nobody in the world can see.
+* **Ghosts, if the shipped reactive-combat behaviour is to be kept.** WO-26
+  established that a ghost already engages reactively with no toggle — that
+  comes from the brain this class does not have. Swapping the class trades
+  "ghosts fight back" for "ghosts never contend". That is a product decision,
+  not a technical one, and it is the maintainer's.
+
+**Investigation only, as instructed. Nothing was rebuilt on it.** The next
+step, if it is ever taken, is small and cheap: spawn one `NPC_NAI`, confirm it
+renders and animates, and measure whether the WO-98 tug-of-war disappears —
+which is a live test, not a code change.
+
+---
+
+## 6. Phase 2 — the wire format, designed
+
+Conditional on Phase 0, whose live check has not run, so this is **design
+only**; nothing here is implemented. Bytes are *reserved* rather than spent —
+`0x3B` is the next free one (WO-98 left `0x3A` as the last used).
+
+### 6.1 Continuous channel — additive on Position/Ghost
+
+The pattern is WO-99's `0x02 STALE` bit exactly: a new flag bit, new fields
+appended, and an older receiver **ignores the extra bytes rather than dropping
+the packet** — which is what the existing length-dispatch already does
+(`payloadLen == PositionPayloadLen || payloadLen == PositionPayloadLenV2`).
+
+```
+flags bit 2 (0x04)  BODYSTATE   -- the packet carries the four fields below
+  pace      : 1   0 none, 1 walk, 2 run, 3 sprint, 4 dash, 5 steps
+  dir       : 1   0 none, 1 forward, 2 backward, 3 left, 4 right
+  stance    : 1   0 upright, then a mod-owned enum keyed on the TAG NAME
+  animSpeed : 2   pseudo-speed, fixed point, 0.01 m/s units, clamped 0..655
+```
+
+Five bytes. Three choices worth defending:
+
+* **Enums keyed on tag NAMES, not on the engine's TagIDs.** A TagID is a
+  position in a `CTagDefinition`, and §1.3 shows the whole table is rebuilt
+  from XML per build. The name is the authored, stable thing. The sender maps
+  name → our enum; the receiver maps our enum → *its own* TagID by name, and a
+  name its build does not have is a **specific** rejection
+  (`row-not-on-this-build`, §3.2), never a silently different tag.
+* **Not the raw 20-byte TagState.** It is build- and definition-specific, four
+  times larger, and would make a mismatch undetectable.
+* **`stance` is a mod-owned enum, not a raw ordinal.** §1.1's Stance group has
+  38 tags, most of them scene furniture (`hanushRailing`, `sittingVariation03`).
+  Replicating all 38 is neither useful nor honest about what we can drive; the
+  enum covers the ones that change how a body reads at a distance — upright,
+  stealth, sitting, lying, horse, leaning — and everything else maps to the
+  nearest of those with the real tag name logged.
+
+### 6.2 Discrete channel — one shape for every replicated action
+
+One packet pair, not one per action kind, so a new action costs a payload and
+not a protocol:
+
+```
+C->S  0x3B  ActionUp:   [kind:1][seq:2][phase:1][gen:4][len:1][payload:len]
+S->C  0x3C  ActionDown: [sourceGhostId:1] + the upstream body verbatim
+
+kind   : attack=1, jump=2, emote=3, …  (append-only)
+seq    : monotonic per sender, per kind
+phase  : press=0, commit=1, cancel=2, complete=3
+gen    : the validity counter, §6.3
+payload: kind-specific. For attack, the accepted input from §4.1:
+         [inputClass:1][zone:1][attackType:1][flags:1]
+         -- all three are TABLE-ROW NAMES resolved to our own append-only
+            enums, never the engine's row ids
+```
+
+`phase` is what makes this the input rather than the result: a press that is
+never committed is a real thing the remote body should show and then abandon,
+and a cancel is a first-class message rather than the absence of one.
+
+### 6.3 Validity counters — `gen`
+
+Four bytes: `[incarnation:2][epoch:1][revision:1]`.
+
+* **incarnation** — the sender's body identity. Increments on death, respawn,
+  save load, level change.
+* **epoch** — the connection. Increments on reconnect, so an event that
+  survived a relay round trip across a drop is discarded.
+* **revision** — reserved, 0 for now; the field exists so a future need does
+  not cost a protocol bump.
+
+A receiver drops any event whose `gen` does not match what it currently holds
+for that sender, counts it, and logs `reason=expired`. §3.3 already implements
+exactly this shape locally with a single counter; the wire version is the same
+rule made cross-machine.
+
+**Why the triple here but a single counter in §3.3:** locally, all three causes
+change the ghost's CryEngine entity id, so one observable covers them. Across
+the wire there is no such shared observable — the sender must say which kind of
+discontinuity happened, because the receiver cannot see it.
+
+### 6.4 Ordering
+
+Per `(sender, kind)`: keep the last dispatched `seq`; drop anything not greater
+than it; count and log duplicates and out-of-order arrivals separately
+(`stale-or-duplicate`, §3.2). `seq` wraps at 16 bits, compared modulo with a
+half-range window — the same comparison §3.1 already uses for the pipe's
+sequence byte.
+
+### 6.5 Stable identity — the rule this format is built to keep
+
+§3.4's audit is the input. The rule, stated once: **nothing that is a position
+in a table, an engine handle, or a per-save identifier crosses the wire.** Names
+and authored GUIDs do. Every field in §6.1–§6.3 obeys it; the two existing
+violations (`0x12`, `0x14`) are named there and are not extended by this design.
+
+---
+
+## 7. Phase 3 — the gate, and a finding that changes item 4
+
+**Not built. Phase 0's live known-answer check has not run** (§1.6), and Phase 3
+drives a remote body from that read. Building it on a mapped-but-unverified read
+is precisely the forced positive this WO's own instructions warn against.
+
+One finding worth recording, because it changes what Phase 3 should do:
+
+**Item 4's premise — "ghost smoothing, now unblocked" — is out of date. Ghost
+smoothing already exists.** `KCD2MP_UpdateGhost` maintains a per-ghost velocity
+estimate from real packet inter-arrival, lerps toward it, and snaps on a
+displacement over 5 m (**code-verified**, `kdcmp.lua`). That is the WO's first
+option — damped correction with an explicit teleport threshold — already
+shipped. The *second* option, time-based snapshot interpolation-behind, also
+already exists, on the **puppet** path (`mp_npc_smooth`, WO-77, from WO-75's
+design).
+
+So the WO's "pick one, do not build both" is not a choice still to be made;
+both already exist, one per body kind. **Building a third would be the error the
+instruction exists to prevent.**
+
+What is genuinely missing is the **logging** item 4 asks for, and only part of
+it. Agent-side, per-ghost inter-arrival and position delta are already
+aggregated (WO-98's `GhostAgg`: `IaSum/IaMax/DSum/DMax/Stale`). **Correction
+magnitude and snap count are not recorded anywhere.** Those two are the ones
+needed to tune the existing smoothing, they cost nothing, and they are the
+concrete next step for Phase 3 whether or not Phase 0 verifies.
+
+---
+
+## 8. Deviations
+
+| deviation | taken or dropped |
+|---|---|
+| Imported four DLLs into Ghidra rather than the one the WO implied — CryAction, AnimationModule, EntityModule, CombatModule | **taken.** The chain crosses all four and no single one answers Phase 0 |
+| Followed `C_Actor::GetPseudoSpeed` and `C_ActorStanceManager::GetCurrentLogicalSpeedTag`, which the WO did not name | **taken.** They are the animation-side speed the WO asked for, and Lua has no route to it |
+| Did not call the engine's own `CTagDefinition::FlagsToTagList` in the probe, though it is right there | **dropped.** It needs a `CryStackStringT` with a heap-growth path through the module allocator; a pure field decode has the same result with no allocation and no engine-side state |
+| Fixed `CombatPipe`'s stale-reply defect, which no phase asked for | **taken.** Found while reading for Phase 4 item 2; it silently corrupted every pipe result after one timeout |
+| Phase 3 not built | **dropped**, on the Phase 0 gate — stated in §7 rather than worked around |
+| Phase 5 not attempted | **dropped**, on the STOP rule — §4.2 |
+
+## 9. WO-101 candidates
+
+1. **Airborne.** Find the tag context that carries `kcd_pose_tags.xml`'s
+   `ActorState` group (`jump`/`fall`/`land`) — §1.5. Likely a scope context
+   rather than the global one.
+2. **The `0x12`/`0x14` per-save-guid fallback.** Remove it, or gate it behind a
+   logged name-lookup failure — §3.4.
+3. **Correction magnitude and snap count** on the ghost smoothing — §7.
+4. **`NPC_NAI` as a puppet body.** One live spawn, and a measurement of whether
+   WO-98's tug-of-war disappears — §5.3.
+5. **Phase 5**, when a maintainer is at the keyboard for the write: `0x76500`,
+   `0xF4C20`, the model offsets in §4.1 — §4.2.
