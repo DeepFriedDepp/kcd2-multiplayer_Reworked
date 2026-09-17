@@ -106,7 +106,52 @@ local function mp_log(msg)
     if #KCD2MP.debugLog > MP_LOG_MAX then
         table.remove(KCD2MP.debugLog, 1)
     end
-    System.LogAlways("[KCD2-MP] " .. msg)
+    -- WO-98 Phase 6: every mod line carries the mod clock as a trailing
+    -- field. kcd.log has no wall clock; before this, a mod line's time was
+    -- "the nearest [KCD2-MP-DATA] line's t", good to ~26 ms and useless in a
+    -- menu (no DATA lines). docs/WO-98-log-format.md.
+    System.LogAlways(string.format("[KCD2-MP] %s t=%.3f", msg, os.clock()))
+end
+
+-- WO-98 Phase 6: session counters for the MP-SUMMARY-MOD line (KCD2MP_LogSummary).
+KCD2MP._stats = { toasts = 0, screenRows = 0, keys = 0, cutsceneEdges = 0, npcFightEvents = 0 }
+
+-- WO-98 Phase 6: the one place on-screen text gets logged. The 2026-09-15
+-- session's toast text was built at nine call sites and logged at none, so a
+-- reported wrong name on screen ("kcd2_tctk"-like) could not be checked
+-- against any log. Every toast now leaves an MP-TOAST line with its final
+-- string; every persistent DrawText row leaves an MP-SCREEN line when its
+-- text CHANGES (and text="" when the row disappears), never per frame.
+local function mp_log_text(kind, text)
+    KCD2MP._stats.toasts = KCD2MP._stats.toasts + 1
+    mp_log(string.format('MP-TOAST kind=%s text="%s"', kind, (tostring(text):gsub('"', "'"))))
+end
+
+KCD2MP._screenRows = {}     -- row key -> last logged text
+KCD2MP._screenSeen = {}     -- row keys drawn this frame
+-- stableText: what gets compared and logged when the drawn text carries a
+-- per-second countdown (the invite timer, the catch-up window).
+local function mp_draw_row(key, x, y, text, size, stableText)
+    text = tostring(text)
+    local logText = stableText and tostring(stableText) or text
+    KCD2MP._screenSeen[key] = true
+    if KCD2MP._screenRows[key] ~= logText then
+        KCD2MP._screenRows[key] = logText
+        KCD2MP._stats.screenRows = KCD2MP._stats.screenRows + 1
+        mp_log(string.format('MP-SCREEN row=%s text="%s"', key, (logText:gsub('"', "'"))))
+    end
+    System.DrawText(x, y, text, size)
+end
+-- Called once per frame after the rows are drawn: a row that was logged but
+-- not drawn this frame has disappeared.
+local function mp_screen_frame_end()
+    for key, _ in pairs(KCD2MP._screenRows) do
+        if not KCD2MP._screenSeen[key] then
+            KCD2MP._screenRows[key] = nil
+            mp_log(string.format('MP-SCREEN row=%s text=""', key))
+        end
+    end
+    KCD2MP._screenSeen = {}
 end
 
 -- Server calls this via evalLua to dequeue one message at a time
@@ -155,6 +200,61 @@ function KCD2MP_SetClockOffset(ms, rttMs, n)
     KCD2MP.clockOffsetMs = tonumber(ms)
     KCD2MP.clockRttMs = tonumber(rttMs)
     KCD2MP.clockSamples = tonumber(n)
+end
+
+-- WO-98 Phase 5: cutscene state. The agent's log tail sees every Rendered/
+-- Ingame CutscenePlayer edge on this machine and every peer's (StoryBeat
+-- kind 6); nothing in the mod knew a cutscene was playing before this. Used
+-- for one thing so far: the readiness prompt is held while a cutscene plays
+-- (KCD2MP_QuestOnCutscene) -- the 2026-09-15 joiner pressed F11 during a
+-- cutscene and nothing fired (docs/WO-98-findings.md s5). Nothing is
+-- synchronised on it: with ~4.8 s of wall-clock skew between machines, any
+-- alignment must wait for the Phase 1 offset to be consumed.
+KCD2MP.cutsceneActive = false
+KCD2MP.cutsceneName   = nil
+KCD2MP.peerCutscene   = {}     -- ghostId (string) -> { active, name }
+
+function KCD2MP_SetCutscene(active, name)
+    active = (active == true)
+    KCD2MP.cutsceneActive = active
+    KCD2MP.cutsceneName = active and tostring(name or "") or nil
+    KCD2MP._stats.cutsceneEdges = KCD2MP._stats.cutsceneEdges + 1
+    local peers = ""
+    for gid, pc in pairs(KCD2MP.peerCutscene) do
+        peers = peers .. (peers == "" and "" or ",") .. tostring(gid) .. ":" .. (pc.active and "1" or "0")
+    end
+    -- The quest layer reacts first so the line records the state AFTER the
+    -- edge (a prompt hidden by this cutscene shows as prompt=0 pending=1).
+    if KCD2MP_QuestOnCutscene then pcall(KCD2MP_QuestOnCutscene, active) end
+    local q = KCD2MP.quest
+    mp_log(string.format("MP-CUTSCENE side=local state=%s name=%s peers=%s prompt=%d pending=%d",
+        active and "start" or "end", tostring(name or "-"), peers == "" and "-" or peers,
+        (q and q.prompt) and 1 or 0, (q and q.pendingPrompt) and 1 or 0))
+end
+
+function KCD2MP_SetPeerCutscene(ghostId, active, name)
+    KCD2MP.peerCutscene[tostring(ghostId)] = { active = (active == true), name = tostring(name or "") }
+end
+
+-- WO-98 Phase 6: one structured line with the session's counters, on
+-- disconnect (the agent asks) or from the console (mp_summary).
+function KCD2MP_LogSummary(reason)
+    local st = KCD2MP._stats
+    local ghosts, ghostPackets = 0, 0
+    for _, g in pairs(KCD2MP.ghosts or {}) do
+        ghosts = ghosts + 1
+        if g.istate then ghostPackets = ghostPackets + (g.istate.packetCount or 0) end
+    end
+    local puppets = 0
+    for _ in pairs(KCD2MP.npcPuppets or {}) do puppets = puppets + 1 end
+    local q = KCD2MP.quest
+    mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
+        .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
+        .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s",
+        tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
+        ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
+        (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
+        tostring(KCD2MP.clockOffsetMs or "?"), tostring(KCD2MP.clockRttMs or "?")))
 end
 
 -- ===== Player Position =====
@@ -604,6 +704,7 @@ end
 
 -- Transient feedback: "Declined", "PeerDisconnected", and so on.
 function KCD2MP_ShowInteractionMsg(text)
+    mp_log_text("msg", text)   -- WO-98 Phase 6
     KCD2MP.interactionMsg = { text = tostring(text), shownAt = os.clock() }
 end
 
@@ -791,6 +892,7 @@ end
 -- in the top left and is not immersive." DrawText remains the fallback if
 -- the UIAction path ever fails.
 function KCD2MP_ShowNativeToast(text)
+    mp_log_text("native", text)   -- WO-98 Phase 6
     local ok = pcall(function()
         UIAction.CallFunction("hud", -1, "ShowInfoText", tostring(text), 10, 5000, true)
     end)
@@ -859,8 +961,9 @@ function KCD2MP_DrawInteractionUI()
         else
             local left = math.ceil(INVITE_TIMEOUT - (os.clock() - inv.shownAt))
             local stake = (inv.wager and inv.wager > 0) and ("  for " .. inv.wager .. " groschen") or ""
-            System.DrawText(10, 60, inv.who .. " invites you to " .. inv.kind .. stake .. "  (" .. left .. "s)", 2)
-            System.DrawText(10, 84, "F11 accept / F12 decline  (or mp_accept / mp_decline)", 1.6)
+            local inviteText = inv.who .. " invites you to " .. inv.kind .. stake
+            mp_draw_row("invite", 10, 60, inviteText .. "  (" .. left .. "s)", 2, inviteText)
+            mp_draw_row("invite_keys", 10, 84, "F11 accept / F12 decline  (or mp_accept / mp_decline)", 1.6)
         end
     end
 
@@ -869,16 +972,17 @@ function KCD2MP_DrawInteractionUI()
         if os.clock() - msg.shownAt > MSG_TIMEOUT then
             KCD2MP.interactionMsg = nil
         else
-            System.DrawText(10, 110, msg.text, 1.6)
+            mp_draw_row("msg", 10, 110, msg.text, 1.6)
         end
     end
 
     if KCD2MP.diceTurn then
-        System.DrawText(10, 134, KCD2MP.diceTurn.text, 1.6)
+        mp_draw_row("dice_turn", 10, 134, KCD2MP.diceTurn.text, 1.6)
     end
 
     -- WO-94: the readiness prompt and the catch-up window, rows 160/184/208.
     if KCD2MP_QuestDrawUI then pcall(KCD2MP_QuestDrawUI) end
+    mp_screen_frame_end()   -- WO-98 Phase 6: rows that vanished this frame log text=""
 end
 
 -- ============================================================================
@@ -1315,6 +1419,7 @@ end
 
 local function say(text)
     if not D.native.infotext then return end
+    mp_log_text("dice", text)   -- WO-98 Phase 6
     pcall(function()
         UIAction.CallFunction("hud", -1, "ShowInfoText", text, 10, 2200, true)
     end)
@@ -3332,11 +3437,25 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                     -- which no field session has ever run.
                     if (fx*fx + fy*fy) > 0.0025 then
                         p.fightN = (p.fightN or 0) + 1
-                        if (now - (p.fightLogAt or 0)) >= 5.0 then
+                        KCD2MP._stats.npcFightEvents = KCD2MP._stats.npcFightEvents + 1
+                        local fdist = math.sqrt(fx*fx + fy*fy)
+                        -- WO-98 Phase 6: the machine-readable record is a
+                        -- per-NPC 10 s aggregate; the prose line stays for a
+                        -- human skimming the log, at 30 s instead of 5 s.
+                        local fw = p.fightWin
+                        if not fw then fw = { n = 0, sum = 0, max = 0, since = now }; p.fightWin = fw end
+                        fw.n = fw.n + 1; fw.sum = fw.sum + fdist
+                        if fdist > fw.max then fw.max = fdist end
+                        if (now - fw.since) >= 10.0 then
+                            mp_log(string.format("MP-NPCFIGHT npc=%s n=%d mean_m=%.2f max_m=%.2f window_s=%.0f total=%d authority=peer",
+                                name, fw.n, fw.sum / fw.n, fw.max, now - fw.since, p.fightN))
+                            p.fightWin = { n = 0, sum = 0, max = 0, since = now }
+                        end
+                        if (now - (p.fightLogAt or 0)) >= 30.0 then
                             p.fightLogAt = now
                             mp_log(string.format(
                                 "NPC-FIGHT %s displaced %.2fm from our last write in one tick (n=%d) -- something else is moving it",
-                                name, math.sqrt(fx*fx + fy*fy), p.fightN))
+                                name, fdist, p.fightN))
                         end
                         p.attr = p.attr or {}
                         local matched = false
@@ -3405,6 +3524,8 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                 KCD2MP.npcPuppets[name] = nil
                                 KCD2MP._npcDivergeUntil[name] = now + MP_NPC_DIVERGE_COOLDOWN_S
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
+                                mp_log(string.format("MP-NPCDIVERGE npc=%s dist_m=%.1f hits=%d window_s=%.0f standoff_s=%.0f total=%d",
+                                    name, math.sqrt(fx*fx + fy*fy), #keep, MP_NPC_DIVERGE_WINDOW_S, MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN))
                                 -- Tell the player, at most once a minute: an
                                 -- NPC that suddenly stops matching the other
                                 -- player's world is otherwise inexplicable,
@@ -3413,12 +3534,27 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                 -- actually helps. The agent's own story layer
                                 -- (WO-90, 0x37/0x38) names WHICH points when
                                 -- both clients are new enough to carry it.
-                                if (now - (KCD2MP._npcDivergeToastAt or -1e9)) >= 60.0 then
+                                -- WO-98 Phase 4 Target C / Phase 7: this toast led with
+                                -- the NPC's entity name ("KCD2-MP: ttkc_inkeeper is at a
+                                -- different point...") and was the only toast in the
+                                -- 2026-09-15 session that could read as a peer named
+                                -- "kcd2_tctk"-like. It now names the PEER, tucks the NPC
+                                -- name at the end, stays quiet while the quest layer's own
+                                -- divergence row or prompt is already explaining the
+                                -- situation, and fires at most once per 5 min.
+                                local questExplaining = KCD2MP.quest and (KCD2MP.quest.prompt
+                                    or (KCD2MP_QuestWaitingVisible and KCD2MP_QuestWaitingVisible()))
+                                if not questExplaining and (now - (KCD2MP._npcDivergeToastAt or -1e9)) >= 300.0 then
                                     KCD2MP._npcDivergeToastAt = now
+                                    local peer = "your friend"
+                                    for gid, _ in pairs(KCD2MP.ghosts) do
+                                        local nm = KCD2MP.ghostNames and KCD2MP.ghostNames[gid]
+                                        if nm and nm ~= "" then peer = nm; break end
+                                    end
                                     pcall(function()
                                         KCD2MP_ShowNativeToast(
-                                            "KCD2-MP: " .. tostring(name) .. " is at a different point in your"
-                                            .. " friend's story -- following your own quest instead")
+                                            "KCD2-MP: your story and " .. peer .. "'s have diverged -- nearby NPCs"
+                                            .. " now follow your own game (e.g. " .. tostring(name) .. ")")
                                     end)
                                 end
                                 return
@@ -8845,6 +8981,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_combat_probe", "KCD2MP_CombatProbe()", "WO-39: registration + anim-candidate probe for combat visibility (needs a ghost for the anim half)")
     System.AddCCommand("mp_ghost_combat", 'KCD2MP_GhostCombatAll("%LINE")', "WO-39: play a combat event on every local ghost, no wire: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
     System.AddCCommand("mp_log_actions", 'KCD2MP_LogActions("%LINE")', "Log every OnAction name (floods log -- for discovering action names): mp_log_actions on|off")
+    System.AddCCommand("mp_summary", 'KCD2MP_LogSummary("console")', "WO-98: write the MP-SUMMARY-MOD counters line to kcd.log now")
     System.AddCCommand("mp_combat_frag", 'KCD2MP_SetCombatFragment("%LINE")', "WO-39: set the Mannequin fragment tried for swings (empty to clear): mp_combat_frag <name> [tags]")
     System.AddCCommand("mp_entity_id", 'KCD2MP_ReportEntityId("%LINE")', "WO-43: print an entity's raw id by name, or every ghost's id with no argument")
     System.AddCCommand("mp_anim_tag",    'KCD2MP_AnimTagCmd("%LINE")', "WO-40: probe AI.Set/ClearAnimationTag on every ghost: mp_anim_tag set|clear <tag>")
@@ -9093,6 +9230,17 @@ local function handleAction(action, activation, value)
                 return
             end
         end
+    end
+
+    -- WO-98 Phase 6: every F11/F12 press the hook actually receives, with the
+    -- state it landed in. A prompt window with a reported press and no MP-KEY
+    -- line means the input never reached Lua (cutscene input context).
+    if activation == "press" and (action == "kcd2mp_dice_bank" or action == "kcd2mp_dice_yield") and KCD2MP.quest then
+        KCD2MP._stats.keys = KCD2MP._stats.keys + 1
+        mp_log(string.format("MP-KEY action=%s prompt=%d pending=%d waiting=%d cutscene=%d dice=%d",
+            tostring(action), KCD2MP.quest.prompt and 1 or 0, KCD2MP.quest.pendingPrompt and 1 or 0,
+            (KCD2MP_QuestWaitingVisible and KCD2MP_QuestWaitingVisible()) and 1 or 0,
+            KCD2MP.cutsceneActive and 1 or 0, (KCD2MP.dice and KCD2MP.dice.open) and 1 or 0))
     end
 
     -- Shared Quests readiness prompt (WO-94). Same two actions as the
@@ -9603,15 +9751,48 @@ function KCD2MP_QuestShowPrompt(ghostId, who, beat, diverged, reason)
         mp_log("QUEST-PROMPT not shown for " .. beat .. ": already fired here this session (spent)")
         return false
     end
+    -- WO-98 Phase 5: a prompt that can be shown but not acted on is worse
+    -- than no prompt. Input does not reach the OnAction hook during a
+    -- cutscene (observed: F11 pressed, zero CATCHUP/QuestFire lines), so the
+    -- offer is parked and re-raised the moment the cutscene ends.
+    if KCD2MP.cutsceneActive then
+        Q.pendingPrompt = { ghostId = tostring(ghostId), who = tostring(who or ("player " .. tostring(ghostId))),
+                            beat = beat, reason = tostring(reason or "divergence") }
+        mp_log("QUEST-PROMPT held: a cutscene is playing (" .. tostring(KCD2MP.cutsceneName) .. ") -- "
+            .. beat .. " will be offered when it ends")
+        return "held"
+    end
     local hit = questIndex().byPath[beat]
     Q.prompt = { ghostId = tostring(ghostId), who = tostring(who or ("player " .. tostring(ghostId))),
                  beat = beat, title = (hit and hit.quest.title ~= "" and hit.quest.title) or (hit and hit.quest.name) or beat,
                  shownAt = os.clock(), reason = tostring(reason or "divergence") }
     Q.lastPromptAt[Q.prompt.ghostId] = os.clock()
     Q.waiting[Q.prompt.ghostId] = nil      -- an offer replaces the waiting line for that peer
+    Q.promptN = (Q.promptN or 0) + 1
     mp_log(string.format("QUEST-PROMPT shown (%s): %s is ahead in \"%s\" -- F11 catch up to %s / F12 stay (no timeout)",
         Q.prompt.reason, Q.prompt.who, tostring(Q.prompt.title), beat))
     return true
+end
+
+-- WO-98 Phase 5: cutscene edge -> hide a standing prompt (it returns when the
+-- cutscene ends) / re-offer a parked one.
+function KCD2MP_QuestOnCutscene(active)
+    if active then
+        if Q.prompt then
+            Q.pendingPrompt = { ghostId = Q.prompt.ghostId, who = Q.prompt.who, beat = Q.prompt.beat, reason = Q.prompt.reason }
+            mp_log("QUEST-PROMPT hidden: cutscene started -- " .. Q.prompt.beat
+                .. " returns when it ends (input cannot reach the prompt during a cutscene)")
+            Q.prompt = nil
+        end
+        return
+    end
+    local pp = Q.pendingPrompt
+    if pp then
+        Q.pendingPrompt = nil
+        Q.lastPromptAt[pp.ghostId] = nil   -- the debounce must not swallow a re-offer
+        mp_log("QUEST-PROMPT re-offered after the cutscene: " .. pp.beat)
+        KCD2MP_QuestShowPrompt(pp.ghostId, pp.who, pp.beat, 1, pp.reason)
+    end
 end
 
 -- Agent -> mod. The prompt is no longer relevant: the peer left, the two
@@ -9624,6 +9805,11 @@ function KCD2MP_QuestPromptMoot(reason, ghostId)
         Q.waiting[tostring(ghostId)] = nil
     end
     if tostring(reason) == "peer left" and ghostId ~= nil and Q.gap then Q.gap[tostring(ghostId)] = nil end
+    -- WO-98 Phase 5: a parked (cutscene-held) offer is withdrawn on the same terms as a shown one.
+    if Q.pendingPrompt and (ghostId == nil or tostring(ghostId) == Q.pendingPrompt.ghostId) then
+        mp_log(string.format("QUEST-PROMPT pending offer withdrawn (%s): %s", tostring(reason), Q.pendingPrompt.beat))
+        Q.pendingPrompt = nil
+    end
     if not Q.prompt then return end
     if ghostId ~= nil and tostring(ghostId) ~= Q.prompt.ghostId then return end
     mp_log(string.format("QUEST-PROMPT withdrawn (%s): %s", tostring(reason), Q.prompt.beat))
@@ -9759,8 +9945,24 @@ function KCD2MP_QuestDivergence(ghostId, who, peerQuestLower, peerObj, localObj,
     else
         why = "cannot tell who is ahead"
     end
-    mp_log(string.format("QUEST-DIVERGENCE #%d: %s (%s) is on \"%s\", we are on \"%s\" (%s) -- %s",
-        Q.divergeN, who, rel, peerObj, localObj, tostring(Q.current), beat and ("offer " .. beat .. " [" .. pickWhy .. "]") or why))
+    -- WO-98 Phase 7: the agent re-pushes an unchanged divergence (restart
+    -- safety net); log the full line only when something changed, and the
+    -- repeats as one counter line per minute.
+    local logKey = key .. "|" .. tostring(beat or why)
+    if logKey ~= Q._lastDivergeLogKey then
+        if (Q._divergeRepeat or 0) > 0 then
+            mp_log(string.format("QUEST-DIVERGENCE previous pair was re-pushed x%d unchanged", Q._divergeRepeat))
+        end
+        Q._lastDivergeLogKey, Q._divergeRepeat, Q._divergeRepeatAt = logKey, 0, now
+        mp_log(string.format("QUEST-DIVERGENCE #%d: %s (%s) is on \"%s\", we are on \"%s\" (%s) -- %s",
+            Q.divergeN, who, rel, peerObj, localObj, tostring(Q.current), beat and ("offer " .. beat .. " [" .. pickWhy .. "]") or why))
+    else
+        Q._divergeRepeat = (Q._divergeRepeat or 0) + 1
+        if (now - (Q._divergeRepeatAt or 0)) >= 60.0 then
+            Q._divergeRepeatAt = now
+            mp_log(string.format("QUEST-DIVERGENCE #%d unchanged (re-pushed x%d): %s", Q.divergeN, Q._divergeRepeat, logKey))
+        end
+    end
 
     -- 2. Offer it, unless the debounce says wait.
     if beat then
@@ -9951,6 +10153,12 @@ end
 
 -- F11 / F12 / mp_quest_yes / mp_quest_no.
 function KCD2MP_QuestAnswer(yes)
+    if KCD2MP.cutsceneActive then
+        -- WO-98 Phase 5: the console path (mp_quest_yes) can reach here mid-cutscene; a
+        -- Haste trigger during a cutscene is the WO-97 hazard class. The offer is parked.
+        mp_log("QUEST-PROMPT answer refused: a cutscene is playing (" .. tostring(KCD2MP.cutsceneName) .. ")")
+        return false
+    end
     local p = Q.prompt
     if not p then
         mp_log("QUEST-PROMPT: nothing to answer")
@@ -10176,15 +10384,16 @@ function KCD2MP_QuestDrawUI()
     local p = Q.prompt
     if p and p.reason == "gap" then
         -- WO-96 Phase 3: a narrow fix. Nothing moves the player; it flips one journal objective.
-        System.DrawText(10, 160, p.who .. " has \"" .. tostring(p.fixLabel) .. "\" (" .. tostring(p.fixDir) .. ") in \"" .. tostring(p.title) .. "\" and you do not", 2)
-        System.DrawText(10, 184, "F11 grant it to me (narrow trigger " .. p.beat .. ", no teleport)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
+        mp_draw_row("quest_prompt", 10, 160, p.who .. " has \"" .. tostring(p.fixLabel) .. "\" (" .. tostring(p.fixDir) .. ") in \"" .. tostring(p.title) .. "\" and you do not", 2)
+        mp_draw_row("quest_prompt_keys", 10, 184, "F11 grant it to me (narrow trigger " .. p.beat .. ", no teleport)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
     elseif p then
-        System.DrawText(10, 160, p.who .. " is ahead of you in \"" .. tostring(p.title) .. "\"  -- catch up to " .. p.beat .. "?", 2)
-        System.DrawText(10, 184, "F11 catch up (advance my story; you will be moved)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
+        mp_draw_row("quest_prompt", 10, 160, p.who .. " is ahead of you in \"" .. tostring(p.title) .. "\"  -- catch up to " .. p.beat .. "?", 2)
+        mp_draw_row("quest_prompt_keys", 10, 184, "F11 catch up (advance my story; you will be moved)  /  F12 stay  (or mp_quest_yes / mp_quest_no)", 1.6)
     end
     local w, where = KCD2MP_QuestWindow()
     if w then
-        System.DrawText(10, 208, string.format("Catch-up in progress (%s): %s  %.0fs", where, w.beat, w.untilT - os.clock()), 1.4)
+        local stable = string.format("Catch-up in progress (%s): %s", where, w.beat)
+        mp_draw_row("quest_window", 10, 208, string.format("%s  %.0fs", stable, w.untilT - os.clock()), 1.4, stable)
     end
     -- WO-96: WAITING_FOR_PEER, one row, informational. Not drawn under an
     -- open prompt for the same peer (ShowPrompt clears it).
@@ -10194,8 +10403,8 @@ function KCD2MP_QuestDrawUI()
         if wt.rel == "behind" then head = "WAITING FOR PEER -- " .. wt.who .. " is ahead: they are on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\""
         elseif wt.rel == "ahead" then head = "WAITING FOR PEER -- " .. wt.who .. " is behind you: they are on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\""
         else head = "STORY DIVERGED -- " .. wt.who .. " is on \"" .. wt.peerObj .. "\", you are on \"" .. wt.localObj .. "\"" end
-        System.DrawText(10, 232, head .. ".  " .. tostring(wt.why) .. ".  (F12 hides)", 1.4)
-        if wt.gap then System.DrawText(10, 256, "Objectives: " .. tostring(wt.gap), 1.4) end
+        mp_draw_row("quest_waiting", 10, 232, head .. ".  " .. tostring(wt.why) .. ".  (F12 hides)", 1.4)
+        if wt.gap then mp_draw_row("quest_gap", 10, 256, "Objectives: " .. tostring(wt.gap), 1.4) end
     end
 end
 

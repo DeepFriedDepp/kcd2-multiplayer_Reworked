@@ -360,6 +360,152 @@ public partial class GameBridge(ClientConfig config)
     private readonly ConcurrentDictionary<byte, (float X, float Y, float Z, DateTime AtUtc)> _ghostLastPos = new();
     private readonly ConcurrentDictionary<byte, (string Beat, DateTime AtUtc)> _peerCatchup = new();
     private (string Beat, DateTime AtUtc)? _localCatchup;
+
+    // WO-98 Phase 5: cutscene state -- ours (from the tail's CutsceneEdge) and
+    // each peer's (StoryBeat kind 6). Logged as MP-CUTSCENE on both sides with
+    // the other side's state; handed to the mod so the readiness prompt is
+    // held while a cutscene plays. Nothing is gated or aligned on it yet.
+    private bool _localCutsceneActive;
+    private string _localCutsceneName = "";
+    private readonly ConcurrentDictionary<byte, (bool Active, string Type, string Name)> _peerCutscene = new();
+
+    // WO-98 Phase 7: standing divergences are re-pushed to the mod when its
+    // Lua was reborn (MOD INIT seen by the tail) or on a slow heartbeat --
+    // not on every 2.5 s re-arm, which produced ~50 identical
+    // QUEST-DIVERGENCE lines per side in the 2026-09-15 logs.
+    private volatile bool _questRepushDue;
+    private static readonly TimeSpan QuestRepushHeartbeat = TimeSpan.FromSeconds(60);
+
+    // WO-98 Phase 6: per-connection counters behind the MP-SUMMARY block and
+    // the MP-GHOSTPKT aggregate. KCDMP_LOG_LEVEL=verbose adds a raw
+    // MP-GHOSTPKT line per packet (the smoothing work's tuning data);
+    // the default is the 10 s aggregate only.
+    private SessionCounters _stats = new();
+    private static readonly bool VerboseLog =
+        string.Equals(Environment.GetEnvironmentVariable("KCDMP_LOG_LEVEL"), "verbose", StringComparison.OrdinalIgnoreCase);
+
+    private sealed class SessionCounters
+    {
+        public long Pongs, SwingsSent, SwingsRecv, SwingsQueued, SwingsFailed, SwingsNoEntity,
+                    DmgOut, DmgOutFatal, DmgIn, DmgInApplied, DmgInFailed,
+                    NpcStateOut, NpcClaimOut, NpcDragOut, StoryDivergencesPushed,
+                    CutsceneLocalEdges, CutscenePeerEdges, GhostPackets;
+        public double RttMin = double.PositiveInfinity, RttMax, RttSum;
+        public readonly long StartedTs = Stopwatch.GetTimestamp();
+        public readonly long StartedLines = TeeTextWriter.LinesWritten;
+
+        private sealed class GhostAgg
+        {
+            public long N, Snaps, WinN, WinSnaps, LastTs, WinStartTs;
+            public double IaSum, IaMax, DSum, DMax, WinIaSum, WinIaMax, WinDSum, WinDMax;
+            public float X, Y, Z;
+        }
+        private readonly object _g = new();
+        private readonly Dictionary<byte, GhostAgg> _ghosts = new();
+
+        public void OnPong(int ms)
+        {
+            lock (_g) { Pongs++; RttSum += ms; if (ms < RttMin) RttMin = ms; if (ms > RttMax) RttMax = ms; }
+        }
+
+        /// <summary>One inbound Ghost packet: inter-arrival and position delta, windowed per 10 s.</summary>
+        public string? OnGhostPacket(byte id, float x, float y, float z, out string? raw)
+        {
+            long now = Stopwatch.GetTimestamp();
+            raw = null;
+            lock (_g)
+            {
+                GhostPackets++;
+                if (!_ghosts.TryGetValue(id, out var g))
+                {
+                    _ghosts[id] = new GhostAgg { LastTs = now, WinStartTs = now, X = x, Y = y, Z = z };
+                    return null;
+                }
+                double ia = (now - g.LastTs) * 1000.0 / Stopwatch.Frequency;
+                double d = Math.Sqrt((x - g.X) * (x - g.X) + (y - g.Y) * (y - g.Y) + (z - g.Z) * (z - g.Z));
+                g.LastTs = now; g.X = x; g.Y = y; g.Z = z;
+                g.N++; g.IaSum += ia; if (ia > g.IaMax) g.IaMax = ia; g.DSum += d; if (d > g.DMax) g.DMax = d; if (d > 5.0) g.Snaps++;
+                g.WinN++; g.WinIaSum += ia; if (ia > g.WinIaMax) g.WinIaMax = ia; g.WinDSum += d; if (d > g.WinDMax) g.WinDMax = d; if (d > 5.0) g.WinSnaps++;
+                if (VerboseLog)
+                    raw = FormattableString.Invariant($"MP-GHOSTPKT-RAW ghost={id} ia_ms={ia:F1} d_m={d:F3} snap={(d > 5.0 ? 1 : 0)}");
+                if (now - g.WinStartTs < Stopwatch.Frequency * 10) return null;
+                string line = FormattableString.Invariant(
+                    $"MP-GHOSTPKT ghost={id} n={g.WinN} ia_mean_ms={g.WinIaSum / g.WinN:F1} ia_max_ms={g.WinIaMax:F1} d_mean_m={g.WinDSum / g.WinN:F2} d_max_m={g.WinDMax:F2} snaps={g.WinSnaps}");
+                g.WinN = 0; g.WinSnaps = 0; g.WinIaSum = 0; g.WinIaMax = 0; g.WinDSum = 0; g.WinDMax = 0; g.WinStartTs = now;
+                return line;
+            }
+        }
+
+        public IEnumerable<string> GhostSummaryLines()
+        {
+            lock (_g)
+            {
+                foreach (var kv in _ghosts)
+                {
+                    var g = kv.Value;
+                    if (g.N == 0) continue;
+                    yield return FormattableString.Invariant(
+                        $"MP-SUMMARY section=ghost ghost={kv.Key} packets={g.N} ia_mean_ms={g.IaSum / g.N:F1} ia_max_ms={g.IaMax:F1} d_mean_m={g.DSum / g.N:F2} d_max_m={g.DMax:F2} snaps={g.Snaps}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// WO-98 Phase 6: the per-connection summary block, one structured line
+    /// per channel, printed when the relay connection ends. Most of WO-98's
+    /// analysis was counting things by hand; this is the mod counting them.
+    /// </summary>
+    private void PrintSessionSummary(string reason)
+    {
+        var s = _stats;
+        double secs = Math.Max(0.001, (Stopwatch.GetTimestamp() - s.StartedTs) / (double)Stopwatch.Frequency);
+        long lines = TeeTextWriter.LinesWritten - s.StartedLines;
+        string off = _clockOffsetMs is double o ? o.ToString("F1", CultureInfo.InvariantCulture) : "?";
+        string rttm = _clockRttMedianMs is double r ? r.ToString("F1", CultureInfo.InvariantCulture) : "?";
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=session reason={reason} duration_s={secs:F0} agent_lines={lines} agent_lines_per_s={lines / secs:F2} clock_offset_ms={off} clock_rtt_ms={rttm} clock_samples={_clockSampleCount}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=ping pongs={s.Pongs} rtt_min_ms={(s.Pongs > 0 ? s.RttMin : 0):F0} rtt_avg_ms={(s.Pongs > 0 ? s.RttSum / s.Pongs : 0):F1} rtt_max_ms={s.RttMax:F0}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=swings sent={s.SwingsSent} recv={s.SwingsRecv} queued={s.SwingsQueued} failed={s.SwingsFailed} no_entity={s.SwingsNoEntity}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=damage out={s.DmgOut} out_fatal={s.DmgOutFatal} in={s.DmgIn} in_applied={s.DmgInApplied} in_failed={s.DmgInFailed} authority={(_isDamageAuthority ? 1 : 0)}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=story divergences_pushed={s.StoryDivergencesPushed} cutscene_local_edges={s.CutsceneLocalEdges} cutscene_peer_edges={s.CutscenePeerEdges} ghost_packets={s.GhostPackets}"));
+        foreach (var line in s.GhostSummaryLines()) Console.WriteLine(line);
+        _ = ExecLuaAsync($"if KCD2MP_LogSummary then KCD2MP_LogSummary(\"{reason}\") end");
+    }
+
+    private static bool IsPlainToken(string s)
+    {
+        if (s.Length == 0 || s.Length > 64) return false;
+        foreach (char c in s) if (!(char.IsAsciiLetterOrDigit(c) || c == '_' || c == '-')) return false;
+        return true;
+    }
+
+    /// <summary>WO-98 Phase 5: a Rendered/Ingame cutscene edge on this machine.</summary>
+    private void OnLocalCutsceneEdge(bool active, string type, string name)
+    {
+        _localCutsceneActive = active;
+        _localCutsceneName = active ? name : "";
+        _stats.CutsceneLocalEdges++;
+        string peers = string.Join(",", _peerCutscene.Select(kv => $"{kv.Key}:{(kv.Value.Active ? 1 : 0)}"));
+        Console.WriteLine($"MP-CUTSCENE side=local state={(active ? "start" : "end")} type={type} name={name} peers={(peers.Length == 0 ? "-" : peers)}");
+        string text = $"{(active ? "start" : "end")} {type} {name}";
+        if (text.Length > Protocol.MaxStoryBeatTextLen) text = text[..Protocol.MaxStoryBeatTextLen];
+        _ = _sendStoryBeat?.Invoke(Protocol.StoryBeatKindCutscene, text);
+        _ = ExecLuaAsync($"if KCD2MP_SetCutscene then KCD2MP_SetCutscene({(active ? "true" : "false")}, \"{EscapeLua(name)}\") end");
+    }
+
+    /// <summary>WO-98 Phase 7: the mod's Lua was reborn; re-push standing state on the next re-arm.</summary>
+    private void OnModInitDetected()
+    {
+        _questRepushDue = true;
+        Console.WriteLine("[quest] mod Lua (re)initialised -- standing divergences will be re-pushed on the next re-arm");
+    }
     private static readonly TimeSpan CatchupWindow = TimeSpan.FromSeconds(120);   // mirrors KCD2MP.quest.windowS
 
     /// <summary>
@@ -981,6 +1127,8 @@ public partial class GameBridge(ClientConfig config)
                 {
                     await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true, fatal: died);
                     Console.WriteLine($"[combat] sent hit {health:F1} on '{npcName}' ({soul}){(died ? " FATAL" : "")}");
+                    _stats.DmgOut++; if (died) _stats.DmgOutFatal++;
+                    Console.WriteLine(FormattableString.Invariant($"MP-DMG dir=out npc={npcName} hp={health:F1} st={stamina:F1} fatal={(died ? 1 : 0)} authority={(_isDamageAuthority ? 1 : 0)}"));
                     if (died)
                     {
                         // Tell the mod's death observer this death is already
@@ -1092,6 +1240,8 @@ public partial class GameBridge(ClientConfig config)
             tailForPause.LevelDetected += OnLocalLevel;              // WO-94
             tailForPause.CutsceneStateChanged += OnLocalCutscene;    // WO-94
             tailForPause.PlayerTeleported += OnLocalTeleport;        // WO-94
+            tailForPause.CutsceneEdge += OnLocalCutsceneEdge;        // WO-98 Phase 5
+            tailForPause.ModInitDetected += OnModInitDetected;       // WO-98 Phase 7
 
             // A reconnect keeps the tail (and its last marker) alive, so seed
             // from it rather than waiting for the next checkpoint -- at a
@@ -1117,6 +1267,7 @@ public partial class GameBridge(ClientConfig config)
             long lastTimeAnnounce = nowTimestamp;   // WO-88: periodic quiet clock announce
             long lastWeatherTick = nowTimestamp;
             long lastPositionHeartbeat = nowTimestamp;
+            long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
 
             while (tcp.Connected)
             {
@@ -1184,7 +1335,18 @@ public partial class GameBridge(ClientConfig config)
                         // agent but not in a restarted game's Lua; re-push
                         // them on the same cadence (idempotent in Lua).
                         PushQuestContext();
-                        RepushQuestDivergences();   // WO-96
+                        // WO-98 Phase 7: WO-96 re-pushed on every 2.5 s
+                        // re-arm for as long as the pair differed -- ~50
+                        // identical QUEST-DIVERGENCE lines per side in the
+                        // 2026-09-15 logs, ten in one 21 s window. The
+                        // re-push exists for a RESTARTED game's fresh Lua,
+                        // so it now fires when the tail sees MOD INIT, with
+                        // a 60 s heartbeat as the safety net.
+                        if (_questRepushDue || IntervalElapsed(ref lastQuestRepush, QuestRepushHeartbeat, nowTimestamp))
+                        {
+                            _questRepushDue = false;
+                            RepushQuestDivergences();   // WO-96
+                        }
                         // WO-59 Thread C: re-assert stimulus-deafness on every
                         // live ghost. AI.SetIgnorant was applied exactly once
                         // at spawn with its result discarded, so a failed call
@@ -1307,6 +1469,9 @@ public partial class GameBridge(ClientConfig config)
         }
         finally
         {
+            try { PrintSessionSummary("disconnect"); } catch { }   // WO-98 Phase 6
+            _stats = new SessionCounters();
+            _peerCutscene.Clear();
             cts.Cancel();
             try { await receiveTask;     } catch { }
             try { await pingTask;        } catch { }
@@ -1323,6 +1488,8 @@ public partial class GameBridge(ClientConfig config)
                 tailForPause2.LevelDetected -= OnLocalLevel;            // WO-94
                 tailForPause2.CutsceneStateChanged -= OnLocalCutscene;  // WO-94
                 tailForPause2.PlayerTeleported -= OnLocalTeleport;      // WO-94
+                tailForPause2.CutsceneEdge -= OnLocalCutsceneEdge;      // WO-98 Phase 5
+                tailForPause2.ModInitDetected -= OnModInitDetected;     // WO-98 Phase 7
             }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
@@ -2455,6 +2622,7 @@ public partial class GameBridge(ClientConfig config)
         string peerQuest = StoryBeat.TryQuestNameFromMarker(peerMarker) ?? string.Empty;
         string hint = _peerApproach.TryGetValue(ghostId, out var h) && StoryBeat.IsValidBeatPath(h) ? h : string.Empty;
         Console.WriteLine($"[quest] divergence -> mod: {who} rel={rel} peerQuest='{peerQuest}' ours='{_localQuest ?? string.Empty}' hint='{hint}'");
+        _stats.StoryDivergencesPushed++;
         _ = ExecLuaAsync(
             $"if KCD2MP_QuestDivergence then KCD2MP_QuestDivergence(\"{ghostId}\", \"{EscapeLua(who)}\", \"{EscapeLua(peerQuest)}\", " +
             $"\"{EscapeLua(StoryBeat.Humanize(peerMarker))}\", \"{EscapeLua(StoryBeat.Humanize(mine))}\", \"{rel}\", \"{hint}\") end");
@@ -3228,6 +3396,7 @@ public partial class GameBridge(ClientConfig config)
                         int ms = (int)((System.Diagnostics.Stopwatch.GetTimestamp() - sentAt)
                                        * 1000L / System.Diagnostics.Stopwatch.Frequency);
                         Console.WriteLine($"[ping] {ms} ms");
+                        _stats.OnPong(ms);
                         try { await ExecLuaAsync($"KCD2MP_ShowPing({ms})"); } catch { }
                     }
                 }
@@ -3267,6 +3436,8 @@ public partial class GameBridge(ClientConfig config)
                     }
                     _peerLastSeenUtc[ghostId] = DateTime.UtcNow;   // WO-40 Phase 4: live-peer gate for reload convergence
                     RefreshDiscordPeerCount();
+                    if (_stats.OnGhostPacket(ghostId, x, y, z, out string? rawPkt) is string pktAgg) Console.WriteLine(pktAgg);   // WO-98 Phase 6
+                    if (rawPkt is not null) Console.WriteLine(rawPkt);
                     // WO-94: a peer position that jumps further than any horse
                     // between two samples, inside a catch-up window, is the
                     // "untracked teleport" hazard (WO-92 s6.4 hazard 1).
@@ -3308,6 +3479,7 @@ public partial class GameBridge(ClientConfig config)
                     byte ghostId = payload[0];
                     Console.WriteLine($"[disconnect] ghost {ghostId} removed");
                     _peerLastSeenUtc.TryRemove(ghostId, out _);
+                    _peerCutscene.TryRemove(ghostId, out _);   // WO-98 Phase 5
                     RefreshDiscordPeerCount();
                     _voice?.RemovePlayer(ghostId);
                     _ghostAppearance.TryRemove(ghostId, out _);
@@ -3401,6 +3573,9 @@ public partial class GameBridge(ClientConfig config)
                                                : !ndHasDelta ? " -> no delta to apply"
                                                : ndApplied ? " -> applied" : " -> pipe apply FAILED")
                                             + (ndFatal ? CatchupTag() : string.Empty));
+                            _stats.DmgIn++; if (ndApplied) _stats.DmgInApplied++; else _stats.DmgInFailed++;
+                            Console.WriteLine(FormattableString.Invariant(
+                                $"MP-DMG dir=in ghost={ndSource} npc={ndName} hp={ndHealth:F1} st={ndStamina:F1} fatal={(ndFatal ? 1 : 0)} result={(localGuid is null ? "nosoul" : !ndHasDelta ? "nodelta" : ndApplied ? "applied" : "failed")} authority={(_isDamageAuthority ? 1 : 0)}"));
                             if (ndApplied)
                                 _ = TriggerReactiveAggroAsync(ndSource, ct);
                             if (ndFatal)
@@ -3656,6 +3831,24 @@ public partial class GameBridge(ClientConfig config)
                         else
                             OnPeerCatchup(sbSource, qText, begin: sbKind == Protocol.StoryBeatKindCatchupBegin);
                     }
+                    else if (sbKind == Protocol.StoryBeatKindCutscene && payloadLen == 3 + sbLen && sbLen > 0)
+                    {
+                        // WO-98 Phase 5: "start|end <type> <name>" -- shape-checked
+                        // (plain tokens only) before it reaches a log line or Lua.
+                        string csText = Encoding.UTF8.GetString(payload, 3, sbLen);
+                        var csParts = csText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (csParts.Length == 3 && (csParts[0] == "start" || csParts[0] == "end")
+                            && IsPlainToken(csParts[1]) && IsPlainToken(csParts[2]))
+                        {
+                            bool csActive = csParts[0] == "start";
+                            _peerCutscene[sbSource] = (csActive, csParts[1], csParts[2]);
+                            _stats.CutscenePeerEdges++;
+                            string csWho = _ghostNames.TryGetValue(sbSource, out var csDn) ? csDn : $"player {sbSource}";
+                            Console.WriteLine($"MP-CUTSCENE side=peer ghost={sbSource} who=\"{csWho}\" state={csParts[0]} type={csParts[1]} name={csParts[2]} local={(_localCutsceneActive ? 1 : 0)}");
+                            _ = ExecLuaAsync($"if KCD2MP_SetPeerCutscene then KCD2MP_SetPeerCutscene(\"{sbSource}\", {(csActive ? "true" : "false")}, \"{EscapeLua(csParts[2])}\") end");
+                        }
+                        else Console.WriteLine($"[quest] ghost {sbSource} sent a malformed cutscene edge; dropped");
+                    }
                     else if (sbKind == Protocol.StoryBeatKindFingerprint && payloadLen == 3 + sbLen && sbLen > 0)
                     {
                         // WO-96 Phase 2: a peer's per-quest objective fingerprint.
@@ -3728,10 +3921,18 @@ public partial class GameBridge(ClientConfig config)
                         // DLL absent, stale entity id after a respawn — the old
                         // Lua cue runs as the fallback, late but visible.
                         string fragSpec = ResolveSwingSpec(ceSource);
+                        // WO-98 Phase 6: the receive-side hops, correlated by a
+                        // per-machine rsid. (A cross-machine id would need a
+                        // wire field on CombatEventUp; docs/WO-98-findings.md s6.)
+                        long rsid = ++_stats.SwingsRecv;
+                        Console.WriteLine($"MP-SWING hop=recv rsid={rsid} ghost={ceSource} entity=0x{ceEntityId:X} spec=\"{fragSpec}\"");
                         _ = _combat.GhostSwingAsync(ceEntityId, fragSpec, ct)
                             .ContinueWith(t =>
                             {
-                                if (t.IsFaulted || !t.Result)
+                                bool ok = !t.IsFaulted && t.Result;
+                                if (ok) _stats.SwingsQueued++; else _stats.SwingsFailed++;
+                                Console.WriteLine($"MP-SWING hop=queued rsid={rsid} ghost={ceSource} ok={(ok ? 1 : 0)}");
+                                if (!ok)
                                 {
                                     Console.WriteLine($"[combatviz] native swing for ghost {ceSource} did not apply — falling back to the Lua cue");
                                     _ = ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
@@ -4139,6 +4340,7 @@ public partial class GameBridge(ClientConfig config)
                 var sendNpc = name == "npc_state" ? _sendNpcState : _sendNpcDrag;
                 if (sendNpc is null) break;
                 _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
+                if (name == "npc_state") _stats.NpcStateOut++; else if (name == "npc_claim") _stats.NpcClaimOut++; else _stats.NpcDragOut++;   // WO-98
                 break;
             }
 
@@ -4191,6 +4393,8 @@ public partial class GameBridge(ClientConfig config)
                 var sendCombat = _sendCombatEvent;
                 if (sendCombat is null) break;
                 _ = sendCombat(evt.Value);
+                if (evt.Value == Protocol.CombatEventSwing)
+                    Console.WriteLine($"MP-SWING hop=sent sid={++_stats.SwingsSent}");   // WO-98 Phase 6
                 break;
             }
 

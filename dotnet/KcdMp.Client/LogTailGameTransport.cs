@@ -258,6 +258,26 @@ public sealed class LogTailGameTransport : IGameTransport
     /// </summary>
     public event Action<bool>? CutsceneStateChanged;
 
+    /// <summary>
+    /// WO-98 Phase 5: EVERY Rendered or Ingame cutscene edge -- (active, type,
+    /// name), straight from CutscenePlayer::PlayCutscene / OnCutsceneEnd.
+    /// Separate from <see cref="CutsceneStateChanged"/>, which stays
+    /// Rendered-only because it feeds the pause aggregate (WO-80's reasoning
+    /// about which types freeze Script.SetTimer is untouched). The
+    /// 2026-09-15 session's seven quest cutscenes were all "Ingame"
+    /// (socky_2_gate .. socky_7_bergov) and nothing in the stack saw them.
+    /// </summary>
+    public event Action<bool, string, string>? CutsceneEdge;
+
+    /// <summary>
+    /// WO-98 Phase 7: the mod's Lua state was (re)initialised -- the tail saw
+    /// "[KCD2-MP] MOD INIT". The one moment a restarted game's fresh Lua
+    /// actually needs the agent's standing quest state pushed again.
+    /// </summary>
+    public event Action? ModInitDetected;
+
+    private static readonly string[] CutsceneEdgeTypes = ["Rendered", "Ingame"];
+
     private const string LevelBanner = " Loading level ";
 
     /// <summary>
@@ -386,6 +406,40 @@ public sealed class LogTailGameTransport : IGameTransport
         // freeze there is the existing AfterSkipTime marker above, which this
         // deliberately does not duplicate. Only "Rendered" (the one real
         // instance observed) sat inside the field session's 60.69 s DATA gap.
+        // WO-98 Phase 5: report every Rendered/Ingame edge with type and name.
+        // Fader/Text/SkipTime stay excluded here too -- they are not what a
+        // player experiences as "a cutscene" (WO-80 notes above).
+        if (CutsceneEdge is not null && line.IndexOf("CutscenePlayer::") >= 0)
+        {
+            bool csPlay = line.IndexOf("::PlayCutscene called for ") >= 0;
+            bool csEnd  = !csPlay && line.IndexOf("::OnCutsceneEnd called for ") >= 0;
+            if (csPlay || csEnd)
+            {
+                foreach (string csType in CutsceneEdgeTypes)
+                {
+                    string marker = " called for " + csType + " cutscene '";
+                    int m = line.IndexOf(marker.AsSpan(), StringComparison.Ordinal);
+                    if (m < 0) continue;
+                    var afterMarker = line[(m + marker.Length)..];
+                    int q = afterMarker.IndexOf('\'');
+                    if (q > 0)
+                    {
+                        try { CutsceneEdge.Invoke(csPlay, csType, afterMarker[..q].ToString()); }
+                        catch (Exception ex) { Console.WriteLine($"[cutscene] edge handler threw: {ex.Message}"); }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // WO-98 Phase 7: "[KCD2-MP] MOD INIT" (the second of the mod's two
+        // init lines; the first is "=== MOD INIT ===" and does not match).
+        if (ModInitDetected is not null && line.IndexOf("[KCD2-MP] MOD INIT") >= 0)
+        {
+            try { ModInitDetected.Invoke(); }
+            catch (Exception ex) { Console.WriteLine($"[quest] mod-init handler threw: {ex.Message}"); }
+        }
+
         bool cutBefore = _cutsceneActive;
         if (line.IndexOf("CutscenePlayer::PlayCutscene called for Rendered cutscene") >= 0) _cutsceneActive = true;
         else if (line.IndexOf("CutscenePlayer::OnCutsceneEnd called for Rendered cutscene") >= 0) _cutsceneActive = false;

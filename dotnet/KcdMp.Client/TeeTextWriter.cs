@@ -31,6 +31,9 @@ public sealed class TeeTextWriter(TextWriter primary, TextWriter secondary) : Te
     /// <summary>Milliseconds since the agent process started (monotonic).</summary>
     public static long MonotonicMs => Mono.ElapsedMilliseconds;
 
+    /// <summary>Lines written so far (both halves); the MP-SUMMARY line rate is derived from it.</summary>
+    public static long LinesWritten;
+
     public override Encoding Encoding => primary.Encoding;
 
     public override void Write(char value)
@@ -51,6 +54,7 @@ public sealed class TeeTextWriter(TextWriter primary, TextWriter secondary) : Te
 
     public override void WriteLine(string? value)
     {
+        System.Threading.Interlocked.Increment(ref LinesWritten);
         primary.WriteLine(value);
         if (_secondaryDead) return;
         try
