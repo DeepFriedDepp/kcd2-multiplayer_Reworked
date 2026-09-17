@@ -61,3 +61,19 @@ file on disk (WO-99.5 §6.1 — AppData is sandbox-redirected).
 
 **No wire change shipped.** Phase 2's `0x3B`/`0x3C` are reserved on paper only,
 so this build does not require both machines to update for the protocol's sake.
+
+## End gate — build: HELD, by maintainer decision
+
+Asked rather than assumed, per the WO's own rule that `VERSION` is the
+maintainer's to name. **No build was cut and `VERSION` stays `0.22.8`.**
+
+The reasoning, recorded so a later session does not re-open it: nothing this WO
+landed has been verified against a running game. Phase 4's code is real and
+tested, but synthetic-only, and Phase 0's known-answer check — the gate on
+everything downstream — has not run. A build follows the live check rather than
+preceding it.
+
+Consequences: the README badge is untouched, no release notes were written, and
+no installer exists for this work. The native DLL **is** built locally
+(`native/build/KCDMP/KCDMP.dll`) and can be deployed on its own for the Phase 0
+probe without an installer, which is the only thing the live check needs.
