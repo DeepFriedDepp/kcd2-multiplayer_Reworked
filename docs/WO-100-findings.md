@@ -410,10 +410,21 @@ it yields every offset (**code-verified**). Each property occupies `0x40` bytes:
 
 ```
   base + 0x00   vptr          (the property is polymorphic; Get() is a vtable slot)
-  base + 0x08   the value     (int / enum / bool, readable as a plain field)
+  base + 0x08   the value     -- WIDTH VARIES, see below
   base + 0x10   owner back-pointer (set from model + 0x1100)
-  base + 0x20   the registered debug name
+  base + 0x30   the registered debug name (a CryString data pointer)
 ```
+
+The name at `+0x30` is what makes a read of this struct self-checking: the
+probe reads it back and reports whether the property at the offset we believe
+is `RequestedInputClass` calls *itself* `RequestedInputClass`. §10.4 ran that
+check live — 20 of 20 passed.
+
+**The value's width is part of the map, not an assumption** (§10.5, found by
+the live data): most properties are `int32`, `AttackStrength` is a `float`, and
+`CombatMode` / `PerfectBlockState` / `PreparedToAttack` are **one-byte bools**
+whose neighbouring bytes a 4-byte read swallows. Reading the wrong width does
+not fail — it returns a plausible number.
 
 The properties this WO cares about — **the accepted input, before the animation
 is chosen**:
@@ -603,18 +614,23 @@ happen.
   "ghosts fight back" for "ghosts never contend". That is a product decision,
   not a technical one, and it is the maintainer's.
 
-**Investigation only, as instructed. Nothing was rebuilt on it.** The next
-step, if it is ever taken, is small and cheap: spawn one `NPC_NAI`, confirm it
-renders and animates, and measure whether the WO-98 tug-of-war disappears —
-which is a live test, not a code change.
+**Investigation only, as instructed. Nothing was rebuilt on it.**
+
+The next step named here — spawn one and confirm it — **was taken in the live
+session, and it passed**: `NPC_NAI` spawns, is a full actor with a soul, and
+carries its own Mannequin action controller sharing the player's tag
+definition object (§10.6). What remains unmeasured is the part that needs two
+machines: whether the WO-98 tug-of-war actually disappears on a body with no
+brain.
 
 ---
 
 ## 6. Phase 2 — the wire format, designed
 
-Conditional on Phase 0, whose live check has not run, so this is **design
-only**; nothing here is implemented. Bytes are *reserved* rather than spent —
-`0x3B` is the next free one (WO-98 left `0x3A` as the last used).
+Conditional on Phase 0. **That gate has since been passed live** (§10.1/§10.2)
+— but this section was written before the session and nothing here is
+implemented, so it remains **design only**. Bytes are *reserved* rather than
+spent — `0x3B` is the next free one (WO-98 left `0x3A` as the last used).
 
 ### 6.1 Continuous channel — additive on Position/Ghost
 
