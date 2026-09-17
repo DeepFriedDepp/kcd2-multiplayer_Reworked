@@ -727,9 +727,14 @@ violations (`0x12`, `0x14`) are named there and are not extended by this design.
 
 ## 7. Phase 3 — the gate, and a finding that changes item 4
 
-**Not built. Phase 0's live known-answer check has not run** (§1.6), and Phase 3
-drives a remote body from that read. Building it on a mapped-but-unverified read
-is precisely the forced positive this WO's own instructions warn against.
+**Not built.** At the time this section was written, Phase 0's live
+known-answer check had not run, and Phase 3 drives a remote body from that
+read — building it on a mapped-but-unverified read is precisely the forced
+positive this WO's own instructions warn against.
+
+> **The gate has since been passed** (§10.1/§10.2). Phase 0 is REACHABLE and
+> the tags are stable continuous state, so Phase 3 is unblocked on evidence.
+> It is still not built — that is now a matter of budget, not of doubt.
 
 One finding worth recording, because it changes what Phase 3 should do:
 
@@ -751,7 +756,8 @@ it. Agent-side, per-ghost inter-arrival and position delta are already
 aggregated (WO-98's `GhostAgg`: `IaSum/IaMax/DSum/DMax/Stale`). **Correction
 magnitude and snap count are not recorded anywhere.** Those two are the ones
 needed to tune the existing smoothing, they cost nothing, and they are the
-concrete next step for Phase 3 whether or not Phase 0 verifies.
+concrete next step for Phase 3 — which, with the gate now passed, is the next
+thing to build.
 
 ---
 
