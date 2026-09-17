@@ -2655,12 +2655,32 @@ end
 -- one of only maxTracked=5 slots on a body it spawned itself.
 local MP_NPC_NAME_EXCLUDE = { "DialogTwin_", "kcd2mp_" }
 
+-- WO-99 Phase 0: the LOCAL PLAYER's own entity name ("Dude" on every
+-- machine). The NPC-sync emitter is class-filtered (NPC/NPC_Female) so the
+-- player never enters the tracked set from this side, but an inbound stream
+-- or a damage packet carrying that name resolves to OUR player here -- the
+-- 2026-09-16 collision (docs/WO-99-findings.md Phase 0). Read from the live
+-- player entity, not hard-coded, so a renamed player entity is still caught.
+KCD2MP._localPlayerName = nil
+local function mp_local_player_name()
+    if KCD2MP._localPlayerName == nil then
+        local n = false
+        pcall(function()
+            if player and type(player.GetName) == "function" then n = player:GetName() or false end
+        end)
+        KCD2MP._localPlayerName = n
+    end
+    return KCD2MP._localPlayerName
+end
+
 local function mp_is_excluded_npc_name(name)
     if not name or name == "" then return true end
     for i = 1, #MP_NPC_NAME_EXCLUDE do
         local prefix = MP_NPC_NAME_EXCLUDE[i]
         if string.sub(name, 1, #prefix) == prefix then return true end
     end
+    local pn = mp_local_player_name()
+    if pn and name == pn then return true end
     return false
 end
 

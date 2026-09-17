@@ -197,6 +197,9 @@ public sealed class LogTailGameTransport : IGameTransport
     public Task<string?> ReadSoulNameByGuidAsync(Guid soulGuid, CancellationToken ct = default) =>
         _http.ReadSoulNameByGuidAsync(soulGuid, ct);
 
+    public Task<(Guid? Guid, string? Name)> ReadPlayerSoulIdentityAsync(CancellationToken ct = default) =>
+        _http.ReadPlayerSoulIdentityAsync(ct);
+
     public Task ExecuteNowAsync(string lua, CancellationToken ct = default) =>
         _http.ExecuteNowAsync(lua, ct);
 

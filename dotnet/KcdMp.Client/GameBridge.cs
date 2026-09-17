@@ -69,6 +69,34 @@ public partial class GameBridge(ClientConfig config)
     // applied through native code, so this is the one path for it.
     private readonly CombatPipe _combat = new();
 
+    // WO-99 Phase 0: local-player exclusion + echo memory for the 0x30/0x31
+    // NPC damage path (docs/WO-99-findings.md Phase 0). The player identity
+    // is re-read on a TTL and forced after a save load / MOD INIT.
+    private readonly NpcDamageGuard _dmgGuard = new();
+    private DateTime _dmgGuardIdentityAtUtc = DateTime.MinValue;
+    private static readonly TimeSpan DmgGuardIdentityTtl = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Refresh the guard's view of the local player's soul (guid + name) from
+    /// SoulList/PlayerSoul when the cache is older than the TTL or a caller
+    /// has reason to distrust it (a name matched but the guid did not).
+    /// </summary>
+    private async Task RefreshPlayerIdentityAsync(bool force, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        if (!force && now - _dmgGuardIdentityAtUtc < DmgGuardIdentityTtl) return;
+        _dmgGuardIdentityAtUtc = now;
+        try
+        {
+            var (guid, name) = await _transport.ReadPlayerSoulIdentityAsync(ct);
+            var before = _dmgGuard.PlayerGuid;
+            _dmgGuard.SetLocalPlayer(guid, name);
+            if (guid != before || force)
+                Console.WriteLine($"[dmgguard] local player soul guid={(guid?.ToString() ?? "?")} name={name ?? "?"}{(force ? " (forced re-read)" : "")}");
+        }
+        catch (Exception ex) { Console.WriteLine($"[dmgguard] player identity read failed: {ex.Message}"); }
+    }
+
     /// <summary>
     /// Interaction sessions (WO-2). Dice and duelling hang off this rather than
     /// adding their own protocols. Null until connected.
@@ -387,7 +415,7 @@ public partial class GameBridge(ClientConfig config)
     private sealed class SessionCounters
     {
         public long Pongs, SwingsSent, SwingsRecv, SwingsQueued, SwingsFailed, SwingsNoEntity,
-                    DmgOut, DmgOutFatal, DmgIn, DmgInApplied, DmgInFailed,
+                    DmgOut, DmgOutFatal, DmgIn, DmgInApplied, DmgInFailed, DmgOutDropped, DmgInRefused,
                     NpcStateOut, NpcClaimOut, NpcDragOut, StoryDivergencesPushed,
                     CutsceneLocalEdges, CutscenePeerEdges, GhostPackets;
         public double RttMin = double.PositiveInfinity, RttMax, RttSum;
@@ -470,7 +498,7 @@ public partial class GameBridge(ClientConfig config)
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=swings sent={s.SwingsSent} recv={s.SwingsRecv} queued={s.SwingsQueued} failed={s.SwingsFailed} no_entity={s.SwingsNoEntity}"));
         Console.WriteLine(FormattableString.Invariant(
-            $"MP-SUMMARY section=damage out={s.DmgOut} out_fatal={s.DmgOutFatal} in={s.DmgIn} in_applied={s.DmgInApplied} in_failed={s.DmgInFailed} authority={(_isDamageAuthority ? 1 : 0)}"));
+            $"MP-SUMMARY section=damage out={s.DmgOut} out_fatal={s.DmgOutFatal} out_dropped={s.DmgOutDropped} in={s.DmgIn} in_applied={s.DmgInApplied} in_failed={s.DmgInFailed} in_refused={s.DmgInRefused} authority={(_isDamageAuthority ? 1 : 0)}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
         Console.WriteLine(FormattableString.Invariant(
@@ -504,6 +532,8 @@ public partial class GameBridge(ClientConfig config)
     private void OnModInitDetected()
     {
         _questRepushDue = true;
+        _dmgGuard.InvalidatePlayerGuid();          // WO-99 Phase 0
+        _dmgGuardIdentityAtUtc = DateTime.MinValue;
         Console.WriteLine("[quest] mod Lua (re)initialised -- standing divergences will be re-pushed on the next re-arm");
     }
     private static readonly TimeSpan CatchupWindow = TimeSpan.FromSeconds(120);   // mirrors KCD2MP.quest.windowS
@@ -1123,6 +1153,28 @@ public partial class GameBridge(ClientConfig config)
                 // has its own authoritative flow (0x21) and a name like
                 // "kcd2mp_6" means a different entity on every machine.
                 string? npcName = await ResolveSoulNameAsync(soul, cts.Token);
+
+                // WO-99 Phase 0: never put the LOCAL PLAYER's own health drop
+                // on the NPC path, and never re-send a value a peer just made
+                // us apply. Structural key = the per-save PlayerSoul guid; the
+                // soul name is the fallback for the window after a save load
+                // (a name match with a guid miss forces the re-read first, so
+                // the guid gets its chance to be the reason).
+                await RefreshPlayerIdentityAsync(force: false, cts.Token);
+                var verdict = _dmgGuard.CheckOutbound(soul, npcName, health, stamina, died, DateTime.UtcNow);
+                if (verdict == NpcDamageGuard.Outbound.DropLocalPlayerName)
+                {
+                    await RefreshPlayerIdentityAsync(force: true, cts.Token);
+                    verdict = _dmgGuard.CheckOutbound(soul, npcName, health, stamina, died, DateTime.UtcNow);
+                }
+                if (NpcDamageGuard.IsDrop(verdict))
+                {
+                    _stats.DmgOutDropped++;
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"MP-DMG dir=drop npc={npcName ?? "?"} hp={health:F1} st={stamina:F1} fatal={(died ? 1 : 0)} reason={NpcDamageGuard.Reason(verdict)} authority={(_isDamageAuthority ? 1 : 0)}"));
+                    return;
+                }
+
                 if (npcName is not null && !npcName.StartsWith("kcd2mp_", StringComparison.Ordinal))
                 {
                     await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true, fatal: died);
@@ -1174,6 +1226,9 @@ public partial class GameBridge(ClientConfig config)
         // Connect now rather than lazily, so the DLL has somewhere to push hits
         // before the first inbound packet ever arrives.
         _ = _combat.EnsureConnectedAsync(cts.Token);
+        // WO-99 Phase 0: learn who the local player is before the first hit.
+        _dmgGuard.ResetEchoMemory();
+        await RefreshPlayerIdentityAsync(force: true, cts.Token);
 
         // Pause mitigation (WO-11): only the log-tail transport can see the
         // kcd.log markers this relies on (docs/WO-11-findings.md addendum),
@@ -2264,6 +2319,8 @@ public partial class GameBridge(ClientConfig config)
         // damage-translation caches are stale the moment a reload happens.
         _soulNameByGuid.Clear();
         _soulGuidByName.Clear();
+        _dmgGuard.InvalidatePlayerGuid();          // WO-99 Phase 0: new save = new PlayerSoul guid
+        _dmgGuardIdentityAtUtc = DateTime.MinValue;
 
         var now = DateTime.UtcNow;
         bool hasLivePeers = _peerLastSeenUtc.Any(kv => (now - kv.Value) < TimeSpan.FromMinutes(2));
@@ -2816,6 +2873,10 @@ public partial class GameBridge(ClientConfig config)
         bool applied = false;
         try { applied = await _combat.ApplyDeathAsync(lg, ct); }
         catch (Exception ex) { Console.WriteLine($"[npcdeath] ApplyDeath threw for '{npcName}': {ex.Message}"); }
+        // WO-99 Phase 0: the lethal apply's own drop will surface as a
+        // LocalHit(fatal) from the DLL (ApplyDeath books no credit); the
+        // guard drops that echo for EchoWindow.
+        _dmgGuard.NoteInboundApplied(npcName, 0f, 0f, fatal: true, DateTime.UtcNow);
         Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -> ApplyDeath "
                         + (applied ? "applied (or already dead here)" : "FAILED (soul not loaded, or the DLL is absent)"));
     }
@@ -3559,12 +3620,26 @@ public partial class GameBridge(ClientConfig config)
                             bool  ndSupp    = (payload[no + 8] & Protocol.DamageFlagSuppressHitReaction) != 0;
                             bool  ndFatal   = (payload[no + 8] & Protocol.NpcDamageFlagFatal) != 0;   // WO-86
                             Guid? localGuid = await ResolveLocalSoulGuidAsync(ndName, ct);
+                            // WO-99 Phase 0: a name that resolves to OUR player
+                            // soul is the peer's player, not a shared NPC --
+                            // refuse it before anything touches the local body.
+                            await RefreshPlayerIdentityAsync(force: false, ct);
+                            var ndVerdict = _dmgGuard.CheckInbound(ndName, localGuid);
+                            if (ndVerdict != NpcDamageGuard.Inbound.Apply)
+                            {
+                                _stats.DmgIn++; _stats.DmgInRefused++;
+                                Console.WriteLine(FormattableString.Invariant(
+                                    $"MP-DMG dir=in ghost={ndSource} npc={ndName} hp={ndHealth:F1} st={ndStamina:F1} fatal={(ndFatal ? 1 : 0)} result=refused reason={NpcDamageGuard.Reason(ndVerdict)} authority={(_isDamageAuthority ? 1 : 0)}"));
+                                continue;
+                            }
                             // WO-86: a FATAL packet may carry no delta at all
                             // (the Lua observer saw the death, not the blow);
                             // there is nothing to apply then, only the death.
                             bool ndHasDelta = ndHealth > 0f || ndStamina > 0f;
                             bool ndApplied = ndHasDelta && localGuid is Guid lg
                                 && await _combat.ApplyDamageAsync(lg, ndStamina, ndHealth, ndSupp, ct);
+                            if (ndApplied || (ndFatal && localGuid is not null))
+                                _dmgGuard.NoteInboundApplied(ndName, ndApplied ? ndHealth : 0f, ndApplied ? ndStamina : 0f, ndFatal, DateTime.UtcNow);
                             // WO-86 Phase 1: every inbound NPC damage event, with
                             // what this client did about it.
                             Console.WriteLine($"[npcdmg] in: ghost {ndSource} hit '{ndName}' hp -{ndHealth:F1} st -{ndStamina:F1}"

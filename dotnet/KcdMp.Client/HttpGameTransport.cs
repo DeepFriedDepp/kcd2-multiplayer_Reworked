@@ -366,6 +366,29 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         return null;
     }
 
+    /// <summary>
+    /// WO-99 Phase 0: the local player's soul guid + name from the same
+    /// PlayerSoul route the position read uses, one round trip. Same
+    /// attribute regexes as the SoulsByName/SoulsByGuid reads (the route
+    /// returns one Soul object; the first Name= on it is the soul's own).
+    /// </summary>
+    public async Task<(Guid? Guid, string? Name)> ReadPlayerSoulIdentityAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var xml = await _http.GetStringAsync(
+                $"{gameApiBase}/api/rpg/SoulList/PlayerSoul?depth=1&exclude=" +
+                "DerivedStatsByName,Buffs,Roles,StaticData,PersistentData,Archetype,Inventory," +
+                "CombatSoul,CompanionManager,EquipmentManager,FactionNode,SoulClass,SocialClass,StormDebug", ct);
+            var g = SoulGuidRegex().Match(xml);
+            var n = SoulNameRegex().Match(xml);
+            Guid? guid = g.Success && Guid.TryParse(g.Groups[1].Value, out var parsed) && parsed != Guid.Empty ? parsed : null;
+            string? name = n.Success ? n.Groups[1].Value : null;
+            return (guid, name);
+        }
+        catch { return (null, null); }
+    }
+
     private static Guid[] ParseItemClasses(string xml)
     {
         var matches = ItemClassRegex().Matches(xml);

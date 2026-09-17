@@ -142,6 +142,15 @@ public interface IGameTransport : IAsyncDisposable
     Task<string?> ReadSoulNameByGuidAsync(Guid soulGuid, CancellationToken ct = default);
 
     /// <summary>
+    /// WO-99 Phase 0: the LOCAL player's soul identity -- its per-save
+    /// <c>Soul.Guid</c> and soul <c>Name</c> (the engine's <c>Dude</c>) from
+    /// <c>SoulList/PlayerSoul</c>. The damage path excludes this soul on both
+    /// send and receive; the guid changes on every save load, so callers
+    /// re-read after one. Either half is null when the read fails.
+    /// </summary>
+    Task<(Guid? Guid, string? Name)> ReadPlayerSoulIdentityAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// Runs a Lua statement immediately, bypassing the batch buffer that
     /// <see cref="ExecuteAsync"/> writes into.
     ///
