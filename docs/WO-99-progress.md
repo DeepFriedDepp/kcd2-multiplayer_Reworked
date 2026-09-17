@@ -38,6 +38,41 @@ transport premise corrected in place with evidence; Phase 3's reload gap
 documented rather than extended; Fader/Text/SkipTime cutscene edges added
 as log-only; swing id as an additive v2 length.
 
-## End gate — 0.22.7
+## End gate — 0.22.7 built from a fresh clone
 
-See the section appended below once the build has run.
+Version `0.22.7` (maintainer pre-authorised for this session; Setup exe only,
+no DirectInstall ZIP). `VERSION`, README badge and
+`docs/releases/RELEASE-NOTES-0.22.7.md` committed and pushed first
+(`079854d`); then a fresh `--depth 1` clone of `origin/main` at that commit
+ran `tools\Build-Installer.ps1` (Publish-Release → pak rebuild → Inno Setup).
+
+* `kdcmp.pak` rebuilt in the clone: 706,376 bytes (CRLF checkout; the
+  working tree's LF build is 695,788 — line endings only, as in WO-97/98)
+* `KCDMP.dll` rebuilt in the clone: 332,288 bytes, source-unchanged since
+  0.22.4 (`git diff aab0a56 HEAD -- native` is empty)
+* **`KCDMP-Setup-0.22.7.exe`, 100,493,607 bytes (95.8 MB)**,
+  sha256 `a1849f2383db4576dce1f30afe0f12c3bc33535178ac1b728f16004bfdd69e3d`
+* `KcdMpClient.dll` 772,096 bytes, `KcdMpServer.dll` 82,432 bytes
+* copied to `release\KCDMP-Setup-0.22.7.exe` in the working tree (gitignored)
+* **WO-98 privacy fix survived:** the clone's full publish output
+  (`release\KCDMP`, **1,023 files** incl. subfolders) grepped for the build
+  machine's profile path and the clone path in UTF-8 **and** UTF-16LE —
+  **zero first-party hits**; the same six third-party NAudio DLLs carry their
+  own author's `\Users\` path as in 0.22.5.
+
+**What is in it:** all five phases (0, 1, 2, 4 as code; 3 as documentation).
+No phase halted.
+
+**Not verified here:** the installer was not run (sandbox AppData redirect;
+Setup + `tools\Verify-Install.ps1` are the maintainer's step). Nothing in
+0.22.7 is live-verified.
+
+## Next session starts here
+
+1. Two-machine run on 0.22.7. First reads: `MP-DMG dir=drop` / `result=refused`
+   (should be the only `Dude` lines left), `[pos] mod emitter silent` vs the
+   peer's `MP-GHOSTPKT … stale=`, `MP-NPCYIELD` beside `MP-NPCFIGHT`, and the
+   periodic `MP-SUMMARY` blocks.
+2. Yield A/B: `mp_npc_yield_off` for a minute in the same scene; if the
+   stutter persists with it on, `#KCD2MP_SetNpcYield("0.10 10 1.0")`.
+3. WO-99.5 native: refresh `g_player` per rescan, carry credit across rescans.
