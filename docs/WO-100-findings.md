@@ -15,11 +15,11 @@ shipped data file. **(synthetic)** = a test harness, not a live game.
 | phase | outcome |
 |---|---|
 | 0 — Mannequin tag state readable? | **surface mapped, partially**: pace/direction/stance yes, animation speed yes as a scalar, **airborne no** (§1.5). Live known-answer check **not run** — needs the maintainer, runbook in §1.6 |
-| 1 — attack acceptance point | *in progress* |
+| 1 — attack acceptance point | **found** (S4): `I_CombatActor+0x2F0` is the combat model; `RequestedInputClass` / `RequestedAtkZone` / `RequestedPreparedToAttack` are the accepted input, offsets mapped. Replayability answered **read-only: yes, structurally** -- the AI uses the same entry -- but acting on it is a native write, so **Phase 5 is a STOP and did not proceed** |
 | 2 — wire format | not reached |
 | 3 — locomotion replication | not reached |
 | 4 — unconditional improvements | **landed**, all five items + one defect found while reading (§3). 111 tests green, **(synthetic)** — no live session |
-| 5 — combat replication | not reached |
+| 5 — combat replication | **not run -- STOP.** The blocker is named precisely rather than vaguely: every remaining step is a native write (S4.2) |
 | 6 — AI-less puppet class | not reached |
 
 ---
@@ -374,3 +374,119 @@ path that silently does nothing on the majority of NPCs. **Removing the `0x12`
 fallback, or gating it behind a name-lookup failure that is itself logged, is a
 WO-101 candidate** — not taken here because it is a behaviour change on the
 damage path and this WO had no live session to verify it.
+
+---
+
+## 4. Phase 1 — where an attack is accepted (continued)
+
+### 4.1 The game already separates "requested" from "resolved"
+
+`I_CombatActor + 0x2F0` is the **combat model** — the object WO-42 recorded
+under the vaguer name "combat state block" (`kOffCombatStateBlock = 0x2F0` in
+`combat_construct.cpp`), and the same offset the shipped assertion
+`combatActor->GetModel().RequestedAtkZoneId.Get()` walks (**code-verified**,
+decompiled from `CombatModule` `0x49FAF0`).
+
+The model is a flat struct of uniformly-laid-out named properties. One
+function, `CombatModule` RVA `0xD8E50`, registers all of them, and decompiling
+it yields every offset (**code-verified**). Each property occupies `0x40` bytes:
+
+```
+  base + 0x00   vptr          (the property is polymorphic; Get() is a vtable slot)
+  base + 0x08   the value     (int / enum / bool, readable as a plain field)
+  base + 0x10   owner back-pointer (set from model + 0x1100)
+  base + 0x20   the registered debug name
+```
+
+The properties this WO cares about — **the accepted input, before the animation
+is chosen**:
+
+| property | base (model +) | what it is |
+|---|---|---|
+| `RequestedInputClass` | `0x300` | `combat_input_class_id`: `attack_light` 0, `attack_heavy` 1, `attack_special` 2, `move_*` 3–6, `block` 7 |
+| `RequestedAtkZone` | `0x200` | `combat_zone_id` 0–5 — **the combat star** |
+| `RequestedGuardZone` | `0x180` | `combat_zone_id` |
+| `RequestedPreparedToAttack` | `0x380` | the press/hold request |
+| `ReqEndGuardType` | `0xC0` | |
+
+and the resolved half, for comparison:
+
+| property | base (model +) |
+|---|---|
+| `InputClass` | `0x340` |
+| `AttackZone` | `0x1C0` |
+| `AttackType` | `0x2C0` (`combat_attack_type_id`) |
+| `AttackStrength` | `0x280` |
+| `AttackHandSlot` | `0x240` |
+| `PreparedToAttack` | `0x3C0` |
+| `GuardZone` / `GuardType` / `GuardStance` | `0x140` / `0x80` / `0x100` |
+| `State` | `0x40` |
+| `ComboState` / `RiposteState` | `0x480` / `0x4C0` |
+| `BlockZoneId` / `BlockHandSlot` / `BlockMode` / `PerfectBlockState` | `0x7C0` / `0x800` / `0x868` / `0x8A8` |
+
+**This is the WO's design conclusion already present in the engine.** The game
+does not derive "what the player asked for" from the animation; it holds it as
+first-class state, and the animation is chosen from it. Publishing
+`RequestedInputClass` + `RequestedAtkZone` + the press/commit/cancel phase is
+publishing exactly what the game itself calls the accepted input.
+
+**Phase 1 items 1–3, answered.** What is available at the acceptance point: an
+input class, a zone, a hand slot, a strength, a charged flag, a combo step — all
+of them **row ids in shipped tables that carry name columns** (§2.1), and the
+attack row itself carries a GUID (§2.2). Nothing here is a computed value or a
+positional index without a name.
+
+### 4.2 Item 4 — can the accepted input be replayed? Answered read-only: yes, structurally
+
+Two shipped functions settle it without attempting anything:
+
+1. **`C_CombatPlayerController::SetStandardGuardRequest`** (`0x33F110`) writes a
+   model property through a generic setter, `CombatModule` RVA **`0xF4C20`**,
+   called as `set(model + 0xEE8, 0, 1)` — `(propertyBase, value, flag)`
+   (**code-verified**). So the model properties have a single, generic write
+   entry.
+
+2. **`C_CombatAutomationBlock::FireAction`** (`0x126800`) requests a whole
+   combat action from **AI code, with no player input anywhere in the call**:
+
+   ```c
+   FUN_180076500(combatActor, &outAction, 6, zone, handSlot, packed(1, -1));
+   //                                     ^ combat_action_type_id 6 == "block"
+   ```
+
+   The `6` is a row id in `combat_action_type` (§2.1), so the same entry with
+   `3` is `attack`. The function returns a smart pointer to the queued action,
+   and the caller logs `"Automated block was not triggered - anim queue failed!"`
+   when it comes back null — i.e. **the engine already reports this action's
+   failure at this level**, which is the reporter WO-98/WO-99 went looking for
+   at the fragment level and could not find.
+
+**So the acceptance path is not input-only.** Every NPC in every fight in the
+shipped game reaches it without a device, and a ghost is an NPC-class entity
+whose combat actor WO-45 already created and queued through.
+
+**But acting on it is a native write, so Phase 5 is a STOP and did not
+proceed.** What a future session is handed, precisely:
+
+* the request entry `CombatModule` **`0x76500`**, signature approximately
+  `(I_CombatActor*, smart_ptr<Action>* out, int actionTypeId, int zoneId, uint8 handSlot, int64 packed(strength, -1))` — the argument roles are read off **one** call site and are **(inconclusive)** until a second call site agrees;
+* the property setter `CombatModule` **`0xF4C20`**, `(propertyBase, value, flag)`;
+* the model at `I_CombatActor + 0x2F0` with §4.1's offsets;
+* and a hard prerequisite: prologue-verify both RVAs before the first call, as
+  `ghost_swing` already does, so a build mismatch disables the path rather than
+  calling into the wrong bytes.
+
+### 4.3 What this means for the WO's design conclusion
+
+The conclusion holds, and is now evidenced rather than argued:
+
+* the engine has a first-class "accepted input" representation
+  (`Requested*` on the combat model) that is **upstream of the animation**;
+* its vocabulary is table rows with **names and, for attacks, GUIDs** — so it
+  crosses a wire as stable identity, not as a positional index;
+* there is a shipped **non-input** path into it, used by the AI every fight;
+* and that path reports its own failure at the action level, which is the
+  reporter the fragment-queue design lacked.
+
+The missing "fragment played/failed" reporter really is an artefact of the
+fragment-queue design. One level up, the engine has one.
