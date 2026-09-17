@@ -185,8 +185,7 @@ player stood still" and "the probe stopped" stay distinguishable (WO-99.5
 > build directory:
 >
 > ```
-> KCDMP_LauncherInjector.exe --pid <pid> --dll <abs path>
-ativeuild\KCDMP\KCDMP.dll
+> KCDMP_LauncherInjector.exe --pid <pid> --dll <repo>/native/build/KCDMP/KCDMP.dll
 > ```
 >
 > Verify by `ModuleMemorySize` on the **loaded module**, never by the file on
@@ -216,8 +215,6 @@ Expected refusals worth reporting rather than ignoring: a `controller vptr
 … != CActionController::vftable` line means the animated-actor hop lands on a
 class this WO did not map, and the whole Phase 0 verdict is
 **(inconclusive)** rather than positive.
-
----
 
 ---
 
