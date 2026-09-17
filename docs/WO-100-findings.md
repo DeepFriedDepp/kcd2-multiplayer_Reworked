@@ -18,7 +18,7 @@ shipped data file. **(synthetic)** = a test harness, not a live game.
 | 1 — attack acceptance point | *in progress* |
 | 2 — wire format | not reached |
 | 3 — locomotion replication | not reached |
-| 4 — unconditional improvements | not reached |
+| 4 — unconditional improvements | **landed**, all five items + one defect found while reading (§3). 111 tests green, **(synthetic)** — no live session |
 | 5 — combat replication | not reached |
 | 6 — AI-less puppet class | not reached |
 
@@ -246,3 +246,131 @@ Expected refusals worth reporting rather than ignoring: a `controller vptr
 … != CActionController::vftable` line means the animated-actor hop lands on a
 class this WO did not map, and the whole Phase 0 verdict is
 **(inconclusive)** rather than positive.
+
+---
+
+## 3. Phase 4 — the unconditional improvements
+
+These depend on neither Phase 0 nor Phase 1 and landed regardless. Everything
+below is **(synthetic)** — 111 tests green, no live session this WO.
+
+### 3.1 A defect found while reading the pipe, not looked for
+
+`CombatPipe` held one `_lastReply` slot plus a `SemaphoreSlim`. When a command
+timed out (5 s), its reply still arrived afterwards, wrote the slot and released
+the semaphore. The **next** command's wait then returned immediately with the
+**previous** command's answer — and stayed one reply behind for the rest of the
+session. Every damage apply, death apply, faction toggle, isolation toggle and
+swing after one timeout was reported against the wrong request.
+
+The DLL has echoed a per-request sequence byte in the Result frame
+(`body[1]`) since WO-20. Nothing read it (**code-verified**).
+
+Fixed: the reader hands replies through a bounded channel; the sender drains
+leftovers before writing, and drops any reply whose sequence is older than the
+one it is waiting for — counted (`StaleRepliesDropped`) and logged. A reply
+*ahead* of the expectation resyncs rather than hanging. `Ping` advances the
+expectation too, because it consumes a sequence number in the DLL even though
+it answers with `Pong` rather than `Result`.
+
+### 3.2 Item 3 — a specific failure vocabulary
+
+`ghost_swing` already logged a precise reason on each of its fourteen failure
+paths, into the **native** log. The pipe collapsed all of them into one bool, so
+the **agent** log — the one a field session reads — showed only `ok=0`.
+
+`SwingResult` (`native/KCDMP/combat_swing.h`) now travels as a third byte on
+the Result frame; `PipeReason` (`dotnet/KcdMp.Client/PipeResult.cs`) mirrors it.
+Additive: a pre-WO-100 agent reads `body[0]`/`body[1]` and never looks further;
+a pre-WO-100 DLL sends two bytes and the agent reports `reason=unknown`.
+
+The WO's required vocabulary maps onto it directly:
+
+| the WO asks for | code |
+|---|---|
+| engine refused the action | `15` `engine-refused` |
+| target missing | `5` `target-missing` |
+| row not present on this build | `12` `row-not-on-this-build` |
+| body in the wrong state | `6` `body-wrong-state` |
+| out of order / duplicate | `205` `stale-or-duplicate` (agent side) |
+| expired | `204` `expired` (agent side) |
+
+Agent-side reasons start at 200 so the two vocabularies cannot collide as
+either side grows. Codes are **append-only**; renumbering one would make a
+mismatched pair misreport instead of saying "unknown".
+
+### 3.3 Items 1, 2 and 4 — `SwingInbox`
+
+The inbound swing path was:
+
+```csharp
+if (_ghostEntityIds.TryGetValue(source, out uint id))
+    _ = _combat.GhostSwingAsync(id, spec, ct).ContinueWith(t => log(ok));
+// else: silently downgrade to the Lua cue, forever
+```
+
+Four defects, one per Phase 4 item:
+
+1. **No validity counter.** The entity id was resolved at apply time, so a
+   swing that crossed a respawn played on whatever body now held that ghost
+   slot. WO-88 already used "the entity id changed" to invalidate appearance
+   sets; nothing used it for events in flight.
+2. **No bounded wait.** A swing arriving in the window between a ghost
+   spawning and its `ghostid` event was downgraded to the Lua cue
+   *permanently* — "we do not know the entity id" was treated as final rather
+   than as "not yet".
+3. **One generic failure** — §3.2.
+4. **No bound on pending work.** Fire-and-forget tasks piled up against a
+   single pipe gate with a 5 s wait each.
+
+`SwingInbox` owns all four. The body generation is **one counter, not the
+incarnation/epoch/revision triple the WO describes**: on this client all three
+of that triple's causes (death, respawn, save reload) replace the ghost body and
+therefore change its CryEngine entity id, so the second and third fields would
+carry no information the first does not. Stated as a decision, not an omission.
+
+The precondition deadline is **750 ms — a guess, not a measurement**, and the
+give-up line prints the real waited time so a field session can tune it with
+evidence.
+
+Two choices worth naming:
+
+* `BoundedChannelFullMode.Wait` with a **non-blocking** `TryWrite`. Both `Drop`
+  modes make `TryWrite` return **true** while discarding the item, which is
+  exactly the silent loss this class exists to remove. (Found by a test that
+  failed: the first version used `DropWrite` and the refusal never happened.)
+* An **expired** swing does not fall back to the Lua cue. The body it described
+  is gone, and playing a cue on the body that replaced it is the wrong
+  animation on the wrong character. Every other failure still falls back, as
+  before.
+
+Counters land in `MP-SUMMARY section=swinginbox`:
+`accepted / applied / refused / expired / waited / gaveup / dropped /
+peak_depth / bound`.
+
+### 3.4 Item 5 — the stable-identity audit
+
+**No CryEngine entity id crosses the wire anywhere.** Audited every packet pair
+in `Protocol.cs` (**code-verified**):
+
+| packet | identity on the wire | stable across machines? |
+|---|---|---|
+| `0x01/0x02` Position/Ghost | relay-assigned player id, 1 byte | yes — relay-assigned, not engine. **But it is a byte and the relay reuses it**; the wrap is a known, still-unfixed hazard (WO-75) |
+| `0x12/0x13` Damage | 16-byte guid | **NO.** Documented as `SharedSoulGuid`; WO-39 Phase 3 proved it is the **per-save Soul Guid**, and WO-40 field-confirmed it resolves on some NPCs and not others (571/571 failures on one machine, 176/176 successes on another) |
+| `0x14/0x15` Death | the same per-save guid | **NO**, same reason. Additionally WO-86 found no client ever sent one |
+| `0x1A/0x1B` Appearance | ItemClass GUIDs | yes — authored class guids |
+| `0x26/0x27` NpcState | entity **name** | yes — authored names are byte-identical per install |
+| `0x2A/0x2B` HorseInfo | entity **name** | yes; runtime-spawned horses are excluded by design rather than sent with an unstable name |
+| `0x2C/0x2D` CombatEvent | ghost id + event + `sid` | the id is fine; **`sid` is a counter, not an identity** — it correlates logs and cannot express validity. That is the gap §3.3 fills locally and §4 would fill on the wire |
+| `0x30/0x31` NpcDamage | entity **name** | yes — this layer exists *because* the guid route was not |
+| `0x32–0x35` ItemDrop/Claim | agent-minted `dropId`, per connection | yes within a connection, by construction |
+| `0x37/0x38` StoryBeat | quest/objective key strings | yes — authored keys |
+
+**Two violations, both already known and both still live:** `0x12` and `0x14`
+carry a per-save guid. `0x30/0x31` superseded `0x12` for NPC damage and
+`0x14`'s job moved onto a flag there, but the guid-addressed pair remains as a
+fallback "for whenever the guids happen to match". On the evidence that is a
+path that silently does nothing on the majority of NPCs. **Removing the `0x12`
+fallback, or gating it behind a name-lookup failure that is itself logged, is a
+WO-101 candidate** — not taken here because it is a behaviour change on the
+damage path and this WO had no live session to verify it.

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO.Pipes;
+using System.Threading.Channels;
 
 namespace KcdMp.Client;
 
@@ -41,9 +42,39 @@ public sealed class CombatPipe : IAsyncDisposable
     // single background reader owns the stream and routes frames: replies to
     // whoever is waiting, hits to the callback. Reading inline per command
     // would mistake a hit for a reply.
+    //
+    // WO-100 Phase 4: this used to be a single `_lastReply` slot plus a
+    // SemaphoreSlim, and that had a real defect. When a command timed out, its
+    // reply still arrived later, set the slot and released the semaphore --
+    // so the NEXT command's wait returned instantly with the PREVIOUS
+    // command's answer, and every reply after one timeout was attributed to
+    // the wrong request, permanently. The DLL has always echoed a per-request
+    // sequence byte in the Result frame (body[1]); nothing read it. Now the
+    // reader hands replies through a bounded channel and the sender drops
+    // replies older than the one it is waiting for -- counted and logged,
+    // never silently.
     private Task? _reader;
-    private readonly SemaphoreSlim _replyReady = new(0);
-    private (byte Type, byte[] Body) _lastReply;
+    private Channel<(byte Type, byte[] Body)> _replies = NewReplyChannel();
+
+    /// <summary>Bounded so a wedged sender cannot let replies accumulate without limit.</summary>
+    private static Channel<(byte, byte[])> NewReplyChannel() =>
+        Channel.CreateBounded<(byte, byte[])>(new BoundedChannelOptions(ReplyInboxCapacity)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = false,
+            SingleWriter = true,
+        });
+
+    private const int ReplyInboxCapacity = 8;
+
+    /// <summary>The sequence byte we expect next, or null until the first reply latches it.</summary>
+    private byte? _expectedSeq;
+
+    /// <summary>Replies discarded as stale (a late answer to a timed-out command).</summary>
+    public long StaleRepliesDropped { get; private set; }
+
+    /// <summary>Commands that got no answer inside the deadline.</summary>
+    public long TimedOut { get; private set; }
 
     /// <summary>
     /// Raised when the DLL reports that a nearby NPC lost health for a reason
@@ -146,13 +177,23 @@ public sealed class CombatPipe : IAsyncDisposable
     /// visually inert success (ghost's weapon sheathed) still returns true.
     /// </summary>
     public Task<bool> GhostSwingAsync(uint entityId, string fragSpec, CancellationToken ct = default)
+        => GhostSwingForResultAsync(entityId, fragSpec, ct).ContinueWith(t => t.Result.Ok, ct,
+               TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+    /// <summary>
+    /// WO-100 Phase 4 item 3: the same swing, with the DLL's specific reason.
+    /// Prefer this over <see cref="GhostSwingAsync"/> anywhere the outcome is
+    /// logged -- "the swing did not apply" is four different problems with four
+    /// different fixes, and the bool cannot tell them apart.
+    /// </summary>
+    public Task<PipeResult> GhostSwingForResultAsync(uint entityId, string fragSpec, CancellationToken ct = default)
     {
         var spec = System.Text.Encoding.UTF8.GetBytes(fragSpec);
-        if (spec.Length is 0 or > 191) return Task.FromResult(false);
+        if (spec.Length is 0 or > 191) return Task.FromResult(PipeResult.Fail(PipeReason.BadSpec));
         var payload = new byte[4 + spec.Length];
         BinaryPrimitives.WriteUInt32LittleEndian(payload, entityId);
         spec.CopyTo(payload.AsSpan(4));
-        return SendAsync(GhostSwing, payload, ct);
+        return SendForResultAsync(GhostSwing, payload, ct);
     }
 
     /// <summary>
@@ -183,9 +224,24 @@ public sealed class CombatPipe : IAsyncDisposable
         await _gate.WaitAsync(ct);
         try
         {
+            while (_replies.Reader.TryRead(out _)) StaleRepliesDropped++;
             await WriteFrameAsync(Ping, [], ct);
-            if (!await _replyReady.WaitAsync(TimeSpan.FromSeconds(5), ct)) return false;
-            return _lastReply.Type == Pong;
+            using var slice = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            slice.CancelAfter(ReplyDeadline);
+            try
+            {
+                var reply = await _replies.Reader.ReadAsync(slice.Token);
+                // A Ping consumes a sequence number in the DLL even though it
+                // answers with Pong rather than Result, so the expectation has
+                // to advance with it or every later reply looks misordered.
+                if (_expectedSeq is byte want) _expectedSeq = (byte)(want + 1);
+                return reply.Type == Pong;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                TimedOut++;
+                return false;
+            }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
@@ -228,10 +284,12 @@ public sealed class CombatPipe : IAsyncDisposable
                         catch (Exception ex) { Console.WriteLine($"[combat] local hit not sent: {ex.Message}"); }
                     }
                 }
-                else
+                else if (!_replies.Writer.TryWrite((type, body)))
                 {
-                    _lastReply = (type, body);
-                    _replyReady.Release();
+                    // DropOldest means TryWrite only fails on a completed
+                    // writer, which happens on Drop(). Say so rather than
+                    // losing the frame silently.
+                    Console.WriteLine($"[combat] reply 0x{type:X2} arrived after the channel closed");
                 }
             }
         }
@@ -250,34 +308,94 @@ public sealed class CombatPipe : IAsyncDisposable
     }
 
     private async Task<bool> SendAsync(byte type, byte[] payload, CancellationToken ct)
+        => (await SendForResultAsync(type, payload, ct)).Ok;
+
+    /// <summary>
+    /// One request/reply exchange. Returns whether the DLL applied it and, when
+    /// the DLL is new enough to send one, its specific reason code (WO-100
+    /// Phase 4 item 3). The reason is <see cref="PipeReason.Unknown"/> from a
+    /// pre-WO-100 DLL whose Result frame stops at two bytes, and
+    /// <see cref="PipeReason.NoAnswer"/> when the deadline expired -- which is
+    /// NOT a refusal and is reported as its own thing.
+    /// </summary>
+    private async Task<PipeResult> SendForResultAsync(byte type, byte[] payload, CancellationToken ct)
     {
-        if (!await EnsureConnectedAsync(ct)) return false;
+        if (!await EnsureConnectedAsync(ct)) return PipeResult.Fail(PipeReason.NotConnected);
 
         await _gate.WaitAsync(ct);
         try
         {
-            await WriteFrameAsync(type, payload, ct);
-            // Wait for the reader to hand over a reply. A timeout here means the
-            // DLL is wedged, not that the command failed, so it is reported
-            // distinctly rather than folded into "not applied".
-            if (!await _replyReady.WaitAsync(TimeSpan.FromSeconds(5), ct))
+            // Drop anything left over from an earlier command that timed out.
+            // Without this the first read below returns that command's answer
+            // as if it were ours -- the defect described at _replies.
+            while (_replies.Reader.TryRead(out var leftover))
             {
-                Console.WriteLine("[combat] the DLL did not answer within 5 s");
-                return false;
+                StaleRepliesDropped++;
+                Console.WriteLine($"[combat] dropped a leftover reply 0x{leftover.Type:X2} " +
+                                  $"before sending 0x{type:X2} (total {StaleRepliesDropped})");
             }
-            var (rtype, body) = _lastReply;
-            // The DLL answers with the truth after applying on the game thread,
-            // so a false here means the soul is not loaded on this client —
-            // normal when the peer is somewhere we have not streamed in.
-            return rtype == Result && body.Length >= 1 && body[0] == 1;
+
+            await WriteFrameAsync(type, payload, ct);
+
+            // Bounded wait with an explicit give-up, and the waited time is
+            // reported on expiry (WO-100 Phase 4 item 2).
+            var deadline = DateTime.UtcNow + ReplyDeadline;
+            var started  = DateTime.UtcNow;
+            while (true)
+            {
+                var left = deadline - DateTime.UtcNow;
+                if (left <= TimeSpan.Zero)
+                {
+                    TimedOut++;
+                    Console.WriteLine($"[combat] no answer to 0x{type:X2} after " +
+                                      $"{(DateTime.UtcNow - started).TotalMilliseconds:F0} ms " +
+                                      $"(deadline {ReplyDeadline.TotalMilliseconds:F0} ms, timeouts {TimedOut})");
+                    return PipeResult.Fail(PipeReason.NoAnswer);
+                }
+
+                using var slice = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                slice.CancelAfter(left);
+                (byte Type, byte[] Body) reply;
+                try { reply = await _replies.Reader.ReadAsync(slice.Token); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { continue; }
+
+                if (reply.Type != Result || reply.Body.Length < 2)
+                {
+                    StaleRepliesDropped++;   // not a Result frame, or truncated: not ours
+                    continue;
+                }
+
+                byte seq = reply.Body[1];
+                if (_expectedSeq is byte want && seq != want)
+                {
+                    // Older than what we are waiting for? Then it belongs to a
+                    // command that already gave up. Anything else means we
+                    // missed a reply, so resync on it rather than hanging.
+                    bool older = (byte)(want - seq) is > 0 and < 128;
+                    if (older)
+                    {
+                        StaleRepliesDropped++;
+                        Console.WriteLine($"[combat] dropped stale reply seq={seq} (expected {want}, " +
+                                          $"total {StaleRepliesDropped})");
+                        continue;
+                    }
+                    Console.WriteLine($"[combat] reply seq={seq} is ahead of the expected {want} -- resyncing");
+                }
+                _expectedSeq = (byte)(seq + 1);
+
+                var reason = reply.Body.Length >= 3 ? (PipeReason)reply.Body[2] : PipeReason.Unknown;
+                return new PipeResult(reply.Body[0] == 1, reason);
+            }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
             Drop();
-            return false;
+            return PipeResult.Fail(PipeReason.NotConnected);
         }
         finally { _gate.Release(); }
     }
+
+    private static readonly TimeSpan ReplyDeadline = TimeSpan.FromSeconds(5);
 
     private async Task WriteFrameAsync(byte type, byte[] payload, CancellationToken ct)
     {
@@ -314,6 +432,12 @@ public sealed class CombatPipe : IAsyncDisposable
     {
         _pipe?.Dispose();
         _pipe = null;
+        // A reconnect gets a fresh channel and no sequence expectation: the
+        // DLL's counter keeps running across connections, so carrying the old
+        // expectation over would reject the first real reply.
+        _replies.Writer.TryComplete();
+        _replies = NewReplyChannel();
+        _expectedSeq = null;
         Console.WriteLine("[combat] lost the connection to KCDMP.dll");
     }
 
@@ -321,6 +445,7 @@ public sealed class CombatPipe : IAsyncDisposable
     {
         _pipe?.Dispose();
         _pipe = null;
+        _replies.Writer.TryComplete();
         _gate.Dispose();
         return ValueTask.CompletedTask;
     }

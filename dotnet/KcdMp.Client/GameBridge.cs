@@ -121,6 +121,70 @@ public partial class GameBridge(ClientConfig config)
     // never reused within a session.
     private readonly ConcurrentDictionary<string, uint> _ghostEntityIds = new();
 
+    // WO-100 Phase 4 item 1 -- the validity counter for a ghost body.
+    //
+    // A ghost's CryEngine entity id changes when its body is replaced (a save
+    // load -> RECONCILE -> fresh spawn; a reconnect; a despawn/respawn). WO-88
+    // already used "the entity id changed" to invalidate the appearance sets;
+    // this makes the same fact available to events IN FLIGHT. Bumped on every
+    // observed id change and on every ghost removal, so an event that names
+    // generation N is discarded rather than replayed onto generation N+1.
+    //
+    // One counter, not the incarnation/epoch/revision triple the WO describes:
+    // all three of that triple's causes (death, respawn, reload) produce a new
+    // body here and therefore a new entity id, so a second and third field
+    // would carry no information this one does not. Stated so the difference
+    // from the WO's text is a decision rather than an omission.
+    private readonly ConcurrentDictionary<string, int> _ghostBodyGen = new();
+
+    private int GhostGeneration(string ghostId) =>
+        _ghostBodyGen.TryGetValue(ghostId, out int g) ? g : 0;
+
+    private void BumpGhostGeneration(string ghostId, string why)
+    {
+        int now = _ghostBodyGen.AddOrUpdate(ghostId, 1, (_, g) => g + 1);
+        Console.WriteLine($"[combatviz] ghost {ghostId} body generation -> {now} ({why})");
+    }
+
+    private SwingInbox? _swingInbox;
+    private readonly object _swingInboxGate = new();
+
+    /// <summary>
+    /// The inbound-swing queue, created on first use because it needs the
+    /// session's cancellation token. One per process: the bound is a bound on
+    /// pending native calls, and they all contend on the same pipe gate.
+    /// </summary>
+    private SwingInbox EnsureSwingInbox(CancellationToken ct)
+    {
+        lock (_swingInboxGate)
+        {
+            if (_swingInbox is not null) return _swingInbox;
+            var inbox = new SwingInbox(
+                resolveEntityId:   g => _ghostEntityIds.TryGetValue(g, out uint id) ? id : null,
+                currentGeneration: GhostGeneration,
+                apply:             (id, spec, c) => _combat.GhostSwingForResultAsync(id, spec, c),
+                log:               Console.WriteLine);
+            inbox.OnOutcome = o =>
+            {
+                if (o.Ok) { _stats.SwingsQueued++; return; }
+                _stats.SwingsFailed++;
+                // An EXPIRED swing must not fall back: the body it described is
+                // gone, and playing a cue on the body that replaced it is the
+                // wrong animation on the wrong character. Everything else --
+                // the DLL absent, the fragment missing on this build, the
+                // engine refusing -- still gets the old Lua cue, late but
+                // visible, which is what it has always done.
+                if (o.Reason == PipeReason.Expired) return;
+                Console.WriteLine($"[combatviz] native swing for ghost {o.Entry.GhostId} did not apply " +
+                                  $"(reason={new PipeResult(false, o.Reason).ReasonTag}) -- falling back to the Lua cue");
+                _ = ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{o.Entry.GhostId}\",{Protocol.CombatEventSwing}) end");
+            };
+            inbox.Start();
+            _swingInbox = inbox;
+            return inbox;
+        }
+    }
+
     // WO-46: the one fragment row native ghost swings play, verbatim from the
     // shipped combat_action_attack.xml (WO-43 pulled it; WO-45 live-verified
     // it renders a full swing). Longsword-tagged because the armed ghost
@@ -515,6 +579,7 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=story divergences_pushed={s.StoryDivergencesPushed} cutscene_local_edges={s.CutsceneLocalEdges} cutscene_peer_edges={s.CutscenePeerEdges} ghost_packets={s.GhostPackets}"));
+        if (_swingInbox is { } inbox) Console.WriteLine(inbox.SummaryLine());
         foreach (var line in s.GhostSummaryLines()) Console.WriteLine(line);
         _ = ExecLuaAsync($"if KCD2MP_LogSummary then KCD2MP_LogSummary(\"{reason}\") end");
     }
@@ -3616,6 +3681,13 @@ public partial class GameBridge(ClientConfig config)
                     _peerGapTold.TryRemove(ghostId, out _);
                     _peerRegistryMismatchTold.TryRemove(ghostId, out _);
                     _ghostLastPos.TryRemove(ghostId, out _);
+                    // WO-100 Phase 4 item 1: the body is gone, so every event
+                    // still queued for it is invalid. Forgetting the entity id
+                    // alone is not enough -- a reconnecting peer reuses the
+                    // ghost id, and a queued swing would then wait for the NEW
+                    // body's id and play on it.
+                    _ghostEntityIds.TryRemove(ghostId.ToString(), out _);
+                    BumpGhostGeneration(ghostId.ToString(), "peer disconnected");
                     if (_peerApproach.TryRemove(ghostId, out _))
                         try { await ExecLuaAsync($"if KCD2MP_QuestPromptMoot then KCD2MP_QuestPromptMoot(\"peer left\", \"{ghostId}\") end"); } catch { }
                     if (_peerCatchup.TryRemove(ghostId, out _))
@@ -4061,18 +4133,13 @@ public partial class GameBridge(ClientConfig config)
                         // wire field on CombatEventUp; docs/WO-98-findings.md s6.)
                         long rsid = ++_stats.SwingsRecv;
                         Console.WriteLine($"MP-SWING hop=recv rsid={rsid} sid={ceSid} ghost={ceSource} entity=0x{ceEntityId:X} spec=\"{fragSpec}\"");
-                        _ = _combat.GhostSwingAsync(ceEntityId, fragSpec, ct)
-                            .ContinueWith(t =>
-                            {
-                                bool ok = !t.IsFaulted && t.Result;
-                                if (ok) _stats.SwingsQueued++; else _stats.SwingsFailed++;
-                                Console.WriteLine($"MP-SWING hop=queued rsid={rsid} sid={ceSid} ghost={ceSource} ok={(ok ? 1 : 0)}");
-                                if (!ok)
-                                {
-                                    Console.WriteLine($"[combatviz] native swing for ghost {ceSource} did not apply — falling back to the Lua cue");
-                                    _ = ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
-                                }
-                            }, TaskScheduler.Default);
+                        // WO-100 Phase 4: the inbox owns validity, the bounded
+                        // precondition wait, the reason vocabulary and the
+                        // queue bound. The fire-and-forget task this replaced
+                        // had none of the four.
+                        EnsureSwingInbox(ct).TryEnqueue(new SwingInbox.Entry(
+                            ceSource.ToString(), ceSid, rsid,
+                            GhostGeneration(ceSource.ToString()), fragSpec, DateTime.UtcNow));
                         await ExecLuaAsync($"if KCD2MP_GhostNativeSwingHold then KCD2MP_GhostNativeSwingHold(\"{ceSource}\") end");
                     }
                     else if (ceEvent == Protocol.CombatEventWeaponDrawn
@@ -4260,6 +4327,10 @@ public partial class GameBridge(ClientConfig config)
             {
                 uint? previousEntityId = _ghostEntityIds.TryGetValue(giParts[0], out uint prevId) ? prevId : null;
                 _ghostEntityIds[giParts[0]] = (uint)rawId;
+                // WO-100 Phase 4 item 1: a different id is a different body, so
+                // every event still in flight for the old one is now invalid.
+                if (previousEntityId is uint had && had != (uint)rawId)
+                    BumpGhostGeneration(giParts[0], $"entity 0x{had:X} -> 0x{rawId:X}");
                 Console.WriteLine($"[combatviz] ghost {giParts[0]} entity id 0x{rawId:X} cached for native swings");
 
                 // WO-88 finding 2: a NEW entity id for a ghost we already

@@ -151,10 +151,13 @@ void send_closure_info(HANDLE h, const kcdmp::luaintrospect::ClosureInfo& info) 
     LeaveCriticalSection(&g_write_lock);
 }
 
-void send_result(HANDLE h, bool ok, uint8_t seq) {
-    BYTE body[2] = { static_cast<BYTE>(ok ? 1 : 0), seq };
+// WO-100 Phase 4 item 3: the Result frame grows a third byte, a specific
+// reason code (0 on success). Additive -- a pre-WO-100 agent reads body[0]
+// and body[1] and never looks at body[2].
+void send_result(HANDLE h, bool ok, uint8_t seq, uint8_t reason = 0) {
+    BYTE body[3] = { static_cast<BYTE>(ok ? 1 : 0), seq, reason };
     EnterCriticalSection(&g_write_lock);
-    send_frame(h, kResult, body, 2);
+    send_frame(h, kResult, body, 3);
     LeaveCriticalSection(&g_write_lock);
 }
 
@@ -318,12 +321,20 @@ void serve(HANDLE h) {
                 const size_t specLen = len - 4;
                 std::string spec(reinterpret_cast<const char*>(body + 4), specLen);
 
-                bool ok = false;
-                const bool ran = run_sync_bounded<bool>(
-                    [entityId, spec](bool& result) { result = rttr::ghost_swing(entityId, spec.c_str()); },
-                    "GhostSwing", ok);
-                if (!ran) logf("PIPE: GhostSwing timed out waiting for a frame");
-                send_result(h, ran && ok, seq);
+                rttr::SwingResult res = rttr::SwingResult::Ok;
+                const bool ran = run_sync_bounded<rttr::SwingResult>(
+                    [entityId, spec](rttr::SwingResult& result) { result = rttr::ghost_swing(entityId, spec.c_str()); },
+                    "GhostSwing", res);
+                // A task that never ran is NOT the same failure as one that
+                // ran and was refused -- WO-100 Phase 4 item 3. Report it as
+                // its own code rather than folding it into the last one.
+                if (!ran) {
+                    logf("PIPE: GhostSwing timed out waiting for a frame");
+                    res = rttr::SwingResult::Timeout;
+                }
+                const bool ok = (res == rttr::SwingResult::Ok);
+                if (!ok) logf("PIPE: GhostSwing entity=%u -> %s", entityId, rttr::swing_result_name(res));
+                send_result(h, ok, seq, static_cast<uint8_t>(res));
                 break;
             }
 

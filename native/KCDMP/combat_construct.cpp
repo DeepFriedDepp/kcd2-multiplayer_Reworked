@@ -49,6 +49,7 @@
 // 1166656_117 (docs/WO-42-findings.md §1), re-verified against the installed
 // EntityModule.dll / CombatModule.dll this session (docs/WO-44-findings.md).
 
+#include "combat_swing.h"
 #include "pe_exports.h"
 #include "log.h"
 
@@ -744,10 +745,33 @@ void probe_combat_construct_watch() {
 // path), then release it through the action's own virtual. The controller's
 // own reference (live-measured in WO-45: refcount 2 with one retained ref
 // held) then owns the action until it completes.
-bool ghost_swing(uint32_t entityId, const char* fragSpec) {
+const char* swing_result_name(SwingResult r) {
+    switch (r) {
+        case SwingResult::Ok:                return "ok";
+        case SwingResult::BadSpec:           return "bad-spec";
+        case SwingResult::ModuleMissing:     return "module-missing";
+        case SwingResult::BuildMismatch:     return "build-mismatch";
+        case SwingResult::NoExports:         return "no-exports";
+        case SwingResult::ActorNotResolved:  return "target-missing";
+        case SwingResult::CombatActorFailed: return "body-wrong-state";
+        case SwingResult::ManagerMissing:    return "manager-missing";
+        case SwingResult::AllocatorMissing:  return "allocator-missing";
+        case SwingResult::GameIfaceMissing:  return "gameiface-missing";
+        case SwingResult::AnimDbChainBroke:  return "animdb-chain-broke";
+        case SwingResult::ParseFaulted:      return "parse-faulted";
+        case SwingResult::FragmentUnknown:   return "row-not-on-this-build";
+        case SwingResult::AllocFailed:       return "alloc-failed";
+        case SwingResult::CtorFailed:        return "ctor-failed";
+        case SwingResult::QueueFaulted:      return "engine-refused";
+        case SwingResult::Timeout:           return "timeout";
+    }
+    return "unknown";
+}
+
+SwingResult ghost_swing(uint32_t entityId, const char* fragSpec) {
     if (!fragSpec || !fragSpec[0] || std::strlen(fragSpec) > 191) {
         logf("SWING: rejected -- missing/oversized fragment spec");
-        return false;
+        return SwingResult::BadSpec;
     }
 
     HMODULE entityModule = GetModuleHandleA("EntityModule.dll");
@@ -755,7 +779,7 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
     HMODULE combatModule = GetModuleHandleA("CombatModule.dll");
     if (!entityModule || !animModule || !combatModule) {
         logf("SWING: entity=%u rejected -- a required module is not loaded", entityId);
-        return false;
+        return SwingResult::ModuleMissing;
     }
 
     // Prologue-verify all three hardcoded RVAs once per process (fail closed,
@@ -773,42 +797,42 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
         if (prologueState < 0)
             logf("SWING: RVA prologue mismatch -- native swings disabled for this build");
     }
-    if (prologueState < 0) return false;
+    if (prologueState < 0) return SwingResult::BuildMismatch;
 
     const auto exports = module_exports(entityModule);
     if (exports.empty()) {
         logf("SWING: entity=%u -- EntityModule has no export table", entityId);
-        return false;
+        return SwingResult::NoExports;
     }
     void* actor = resolve_actor(entityModule, exports, /*wantPlayer*/ false, entityId);
     if (!actor) {
         logf("SWING: entity=%u -- actor did not resolve (despawned or stale id)", entityId);
-        return false;
+        return SwingResult::ActorNotResolved;
     }
 
     void* combatActor = nullptr;
     if (!read_ptr(actor, kOffCombatActorInActor, &combatActor)) {
         logf("SWING: entity=%u -- actor+0x300 read faulted", entityId);
-        return false;
+        return SwingResult::CombatActorFailed;
     }
     if (!combatActor) {
         auto fn = reinterpret_cast<GetOrCreateFn>(
             reinterpret_cast<char*>(entityModule) + kRvaGetOrCreateCombat);
         if (!call_get_or_create(fn, actor, &combatActor) || !combatActor) {
             logf("SWING: entity=%u -- GetOrCreateCombatActor faulted/null", entityId);
-            return false;
+            return SwingResult::CombatActorFailed;
         }
     }
     void* manager = nullptr;
     if (!read_ptr(combatActor, kOffAnimActionManager, &manager) || !manager) {
         logf("SWING: entity=%u -- anim-action manager (+0x490) unreadable/null", entityId);
-        return false;
+        return SwingResult::ManagerMissing;
     }
 
     void* allocFn = nullptr;
     if (!read_ptr(combatModule, kRvaCombatAllocGlobal, &allocFn) || !allocFn) {
         logf("SWING: entity=%u -- CombatModule allocator global unreadable/null", entityId);
-        return false;
+        return SwingResult::AllocatorMissing;
     }
 
     void* giFn = nullptr;
@@ -826,7 +850,7 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
     const void* gi = nullptr;
     if (!giFn || !call_get_game_iface(reinterpret_cast<GetGameIfaceFn>(giFn), &gi) || !gi) {
         logf("SWING: entity=%u -- GetGameIface unavailable/faulted", entityId);
-        return false;
+        return SwingResult::GameIfaceMissing;
     }
 
     // The animDB chain, exactly as C_PlayAnim::Execute does (WO-45 live-verified).
@@ -839,7 +863,7 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
         !call_vtbl_ptr(a, 0x18, &b) || !b ||
         !call_vtbl_ptr_arg(b, 0x20, dbKey, &animDB) || !animDB) {
         logf("SWING: entity=%u -- animDB chain broke", entityId);
-        return false;
+        return SwingResult::AnimDbChainBroke;
     }
 
     FakeCryStr s0{-1, 0, 0, {0}}, s38{-1, 0, 0, {0}};
@@ -850,25 +874,25 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
     if (!call_parse_fragment_spec(reinterpret_cast<ParseFragSpecFn>(parseFn),
                                   animDB, fragSpec, &out)) {
         logf("SWING: entity=%u -- ParseFragmentSpec faulted", entityId);
-        return false;
+        return SwingResult::ParseFaulted;
     }
     if (out.fragmentID < 0) {
         logf("SWING: entity=%u -- fragment unknown to this actor's animDB: \"%s\"",
              entityId, fragSpec);
-        return false;
+        return SwingResult::FragmentUnknown;
     }
 
     void* mem = nullptr;
     if (!call_combat_alloc(reinterpret_cast<CombatAllocFn>(allocFn), 0x1A8, &mem) || !mem) {
         logf("SWING: entity=%u -- allocator faulted/null", entityId);
-        return false;
+        return SwingResult::AllocFailed;
     }
     void* anim = nullptr;
     if (!call_anim_ctor(reinterpret_cast<AnimCtorFn>(ctorFn), mem, combatActor,
                         /*priority*/ 5, static_cast<uint32_t>(out.fragmentID),
                         out.tagsB, &anim) || !anim) {
         logf("SWING: entity=%u -- C_CombatAnimAction ctor faulted/null", entityId);
-        return false;
+        return SwingResult::CtorFailed;
     }
 
     // Two refs in: one for QueueAction to consume (the game's own convention),
@@ -879,7 +903,7 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
     if (!call_queue_action(reinterpret_cast<QueueActionFn>(queueFn), manager, &sp, -1.0f)) {
         logf("SWING: entity=%u -- QueueAction FAULTED", entityId);
         call_release(anim);   // still drop our ref; the object outlives the fault path
-        return false;
+        return SwingResult::QueueFaulted;
     }
     uint32_t status = ~0u, refc = ~0u;
     read_u32(anim, 0x28, &status);
@@ -889,7 +913,7 @@ bool ghost_swing(uint32_t entityId, const char* fragSpec) {
     call_release(anim);
     logf("SWING: entity=%u queued fragment %d status=%u ref(controller)=%u spec=\"%s\"",
          entityId, out.fragmentID, status, refc ? refc - 1 : 0, fragSpec);
-    return true;
+    return SwingResult::Ok;
 }
 
 } // namespace kcdmp::rttr
