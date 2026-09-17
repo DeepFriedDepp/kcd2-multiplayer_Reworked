@@ -64,10 +64,24 @@ class Program
             // WO-50: <ApplicationIcon> in the csproj only sets the .exe's own
             // file icon (Explorer, shortcuts, taskbar when not running).
             // Photino's actual window -- title bar, and the taskbar icon
-            // while it's running -- is a separate runtime setting. Relative
-            // path: SetIconFile resolves it against AppContext.BaseDirectory
-            // when it doesn't exist relative to the working directory.
-            app.MainWindow.SetIconFile("app.ico");
+            // while it's running -- is a separate runtime setting.
+            //
+            // WO-98 Phase 0: this used to pass the bare relative "app.ico".
+            // Photino's IconFile setter does probe AppContext.BaseDirectory
+            // when the relative path is not found, but it then STORES the
+            // relative string, and the later startup-parameter validation
+            // re-checks File.Exists against the process working directory
+            // and throws "WindowIconFile: app.ico cannot be found" (observed
+            // on a tester's machine in 0.22.4, code-verified against
+            // Photino.NET's PhotinoWindow IconFile setter). So the launcher
+            // hard-crashed whenever it was started from any directory other
+            // than its own. Resolve the path ourselves and never let a missing
+            // icon take the whole launcher down -- an icon is decoration.
+            var iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
+            if (File.Exists(iconPath))
+                app.MainWindow.SetIconFile(iconPath);
+            else
+                Log.Warning("app.ico not found beside the launcher ({IconPath}); window icon skipped", iconPath);
 
             AppDomain.CurrentDomain.UnhandledException += (sender, error) =>
             {

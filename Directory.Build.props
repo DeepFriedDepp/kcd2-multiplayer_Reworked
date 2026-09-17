@@ -1,0 +1,34 @@
+<Project>
+  <!--
+    WO-98 Phase 0: strip the build machine's absolute source paths from every
+    managed assembly and PDB this repo ships.
+
+    Without this, Roslyn embeds the full path of each compiled source file in
+    the PDB and the PDB's own path in the DLL's CodeView debug directory, so
+    an unhandled exception on a tester's machine prints the BUILD machine's
+    profile path: 0.22.4 printed
+      "... in C:\Users\<maintainer>\AppData\Local\Temp\...\Program.cs:line 79"
+    (observed, joiner app20260915.log). The WO-97 end gate built from a clone
+    under the maintainer's temp folder, so the leak carried a real Windows
+    username. PathMap rewrites the repo root to the conventional "/_/" at
+    compile time; stack traces then read "/_/KCDMP_launcher/Program.cs:line 79".
+
+    Sits at the repo root so it covers KCDMP_launcher/ and every dotnet/*
+    project alike (MSBuild walks up from each .csproj and imports the first
+    Directory.Build.props it finds). The native CMake build is unaffected:
+    KCDMP.dll carried no path strings in the 0.22.4 output (checked).
+  -->
+  <PropertyGroup>
+    <RepoRootForPathMap>$(MSBuildThisFileDirectory)</RepoRootForPathMap>
+    <PathMap>$(RepoRootForPathMap)=/_/</PathMap>
+    <Deterministic>true</Deterministic>
+    <!-- The .NET 8 SDK's implicit SourceLink writes a second copy of the
+         repo root into every PDB as a documents map
+         ({"documents":{"C:\Users\<you>\...\*":"https://raw.githubusercontent.com/..."}}),
+         which PathMap does not touch (found by grepping the first WO-98 test
+         build). Nothing consumes SourceLink here (the PDBs ship only so
+         stack traces carry line numbers), so turn it off rather than map it. -->
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+  </PropertyGroup>
+</Project>
