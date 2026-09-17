@@ -250,11 +250,12 @@ function KCD2MP_LogSummary(reason)
     local q = KCD2MP.quest
     mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
-        .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s",
+        .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
         (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
-        tostring(KCD2MP.clockOffsetMs or "?"), tostring(KCD2MP.clockRttMs or "?")))
+        tostring(KCD2MP.clockOffsetMs or "?"), tostring(KCD2MP.clockRttMs or "?"),
+        KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN or 0))
 end
 
 -- ===== Player Position =====
@@ -2481,6 +2482,65 @@ end
 -- `mp_npc_diverge on|off|<metres>`; off restores the pre-WO-90 behaviour
 -- (fight forever, log every 5 s) exactly, for a live A/B.
 KCD2MP.npcDiverge          = true
+
+-- WO-99 Phase 2: sub-8 m yield arbitration (WO-98 s3a, landed).
+--
+-- Below the WO-90 release threshold nothing arbitrated the puppet write
+-- against the local brain: KCD2MP_NpcPuppetTick wrote SetWorldPos every
+-- 50 ms and the brain moved the body back, forever. 2026-09-16 cabin scene
+-- (host, observed): `MP-NPCFIGHT npc=ttkc_drozd n=177 mean_m=0.07 max_m=0.08
+-- window_s=10` -- 177 corrections in 10 s at 7 cm, three orders of magnitude
+-- under 8 m, so the release never saw it; joiner session totals tzel_rowdy_2
+-- 3826, tzel_rowdy_1 3448, tzel_bretislav 3429. The maintainer's "NPCs
+-- glitching badly for the host, clean for the joiner, same scene" is exactly
+-- this: they were puppets on the host (authority=peer) and locally driven on
+-- the joiner.
+--
+-- Rule: when the readback displacement (where the engine put the body vs
+-- where we wrote it one tick earlier) stays above `dispM` for `ticks`
+-- consecutive ticks, stop writing that puppet -- yield to the brain while it
+-- is walking -- and re-pin only when an inbound packet has moved the STREAM
+-- TARGET more than `repinM` from where it was at yield time (the peer's copy
+-- actually went somewhere). The body's own drift never re-pins, so a
+-- yielded puppet cannot oscillate yield/re-pin against a stationary stream.
+-- The WO-90 release still applies to written puppets; a yielded puppet is
+-- already off the write path, so it is not measured until re-pinned.
+--
+-- Named risk (WO-51): an NPC the peer is fighting may walk off on this
+-- machine. That is divergence made visible instead of jitter; a field report
+-- of "NPC wandered away" is THIS, not a new bug.
+--
+-- Toggle: `mp_npc_yield_on` / `mp_npc_yield_off` (argless -- the console
+-- drops arguments, docs/WO-98), `mp_npc_yield` reports; thresholds via
+-- `#KCD2MP_SetNpcYield("0.3 10 1.0")` = dispM ticks repinM. Default ON.
+-- Every yield and re-pin logs MP-NPCYIELD (docs/WO-98-log-format.md).
+KCD2MP.npcYield = { enabled = true, dispM = 0.30, ticks = 10, repinM = 1.0 }
+KCD2MP._npcYieldN, KCD2MP._npcRepinN = 0, 0
+
+function KCD2MP_SetNpcYield(arg)
+    local s = tostring(arg or ""):lower()
+    local y = KCD2MP.npcYield
+    if s == "on" or s == "1" or s == "true" then
+        y.enabled = true
+    elseif s == "off" or s == "0" or s == "false" then
+        y.enabled = false
+        -- a puppet already yielded resumes writing on the next tick
+        for _, p in pairs(KCD2MP.npcPuppets or {}) do p.yielded, p.yieldStreak = nil, 0 end
+    else
+        local d, t, r = string.match(s, "^%s*([%d%.]+)%s+(%d+)%s+([%d%.]+)%s*$")
+        if d then
+            y.dispM, y.ticks, y.repinM = tonumber(d), tonumber(t), tonumber(r)
+        elseif s ~= "" and s ~= "%line" then
+            mp_log("mp_npc_yield: expected on|off|<dispM> <ticks> <repinM>, got '" .. tostring(arg) .. "'")
+            return false
+        end
+    end
+    mp_log(string.format("NPC-YIELD %s dispM=%.2f ticks=%d repinM=%.2f yields=%d repins=%d",
+        y.enabled and "ENABLED" or "disabled (pre-WO-99: write every tick below 8 m)",
+        y.dispM, y.ticks, y.repinM, KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN or 0))
+    KCD2MP_ShowInteractionMsg("NPC puppet yield: " .. (y.enabled and "ON" or "OFF"))
+    return true
+end
 local MP_NPC_DIVERGE_M          = 8.0    -- metres in one tick that cannot be footwork
 local MP_NPC_DIVERGE_HITS       = 3      -- far readings needed inside the window
 local MP_NPC_DIVERGE_WINDOW_S   = 30.0   -- sliding window
@@ -3106,6 +3166,29 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
         and (math.abs(x - p.tx) > eps or math.abs(y - p.ty) > eps or math.abs(z - (p.tz or z)) > eps)
     p.tx, p.ty, p.tz, p.tr = x, y, z, rot
     p.hp = hp
+    -- WO-99 Phase 2: a yielded puppet re-pins only when the STREAM moved.
+    if p.yielded then
+        local ax, ay = x - (p.yieldAnchorX or x), y - (p.yieldAnchorY or y)
+        local yc = KCD2MP.npcYield
+        local rm = (yc and yc.repinM) or 1.0
+        if (ax*ax + ay*ay) > rm * rm then
+            local cur = nil
+            pcall(function() cur = e:GetWorldPos() end)
+            if cur then
+                -- slide from where the body actually IS onto the stream,
+                -- the same seed the puppet got at creation (WO-77)
+                p.cx, p.cy, p.cz = cur.x, cur.y, cur.z
+                p.ring = { { x = cur.x, y = cur.y, z = cur.z, rot = p.cr or rot,
+                             at = os.clock() - KCD2MP_NpcSmoothDelayS() } }
+            end
+            local bx, by = (cur and cur.x or x) - x, (cur and cur.y or y) - y
+            KCD2MP._npcRepinN = (KCD2MP._npcRepinN or 0) + 1
+            mp_log(string.format("MP-NPCYIELD npc=%s state=repin target_moved_m=%.2f body_off_m=%.2f yielded_s=%.1f total_yields=%d total_repins=%d",
+                name, math.sqrt(ax*ax + ay*ay), math.sqrt(bx*bx + by*by),
+                os.clock() - (p.yieldAt or os.clock()), KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN))
+            p.yielded, p.yieldStreak, p.yieldAnchorX, p.yieldAnchorY, p.yieldAt = nil, 0, nil, nil, nil
+        end
+    end
     local f = tonumber(flags) or 0
     local wasKo = p.ko
     local wasDead = p.dead
@@ -3446,6 +3529,24 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 pcall(function() ap = e:GetWorldPos() end)
                 if ap then
                     local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
+                    -- WO-99 Phase 2: sustained sub-8 m contention -> yield.
+                    local yc = KCD2MP.npcYield
+                    if yc and yc.enabled and not p.yielded then
+                        if (fx*fx + fy*fy) > yc.dispM * yc.dispM then
+                            p.yieldStreak = (p.yieldStreak or 0) + 1
+                            if p.yieldStreak >= yc.ticks then
+                                p.yielded = true
+                                p.yieldAnchorX, p.yieldAnchorY = p.tx or p.cx, p.ty or p.cy
+                                p.yieldAt = now
+                                KCD2MP._npcYieldN = (KCD2MP._npcYieldN or 0) + 1
+                                mp_log(string.format("MP-NPCYIELD npc=%s state=yield disp_m=%.2f streak=%d fight_n=%d total_yields=%d total_repins=%d",
+                                    name, math.sqrt(fx*fx + fy*fy), p.yieldStreak, p.fightN or 0,
+                                    KCD2MP._npcYieldN, KCD2MP._npcRepinN or 0))
+                            end
+                        else
+                            p.yieldStreak = 0
+                        end
+                    end
                     -- WO-69: the threshold was 0.5625 m^2 = 0.75 m of drift in
                     -- one 50 ms tick = 15 m/s. Nothing short of a teleport
                     -- moves that fast, so this counter was blind to every
@@ -3582,6 +3683,15 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         end
                     end
                 end
+            end
+
+            -- WO-99 Phase 2: a yielded puppet gets no position/angle/anim
+            -- writes -- the local brain owns the body until the stream moves
+            -- (re-pin in KCD2MP_ApplyNpcState). lastWrote is cleared so the
+            -- tug-of-war counter does not measure a write we did not make.
+            if p.yielded then
+                p.lastWroteX, p.lastWroteY = nil, nil
+                return
             end
 
             -- WO-77 Step 1: interpolation-behind (mp_npc_smooth on, the
@@ -8947,6 +9057,9 @@ local ok, err = pcall(function()
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
+    System.AddCCommand("mp_npc_yield",     'KCD2MP_SetNpcYield("%LINE")', "WO-99: report the sub-8 m puppet yield arbitration state; thresholds via #KCD2MP_SetNpcYield(\"dispM ticks repinM\")")
+    System.AddCCommand("mp_npc_yield_on",  'KCD2MP_SetNpcYield("on")',  "WO-99: yield a puppet to the local brain after sustained sub-8 m contention (default on)")
+    System.AddCCommand("mp_npc_yield_off", 'KCD2MP_SetNpcYield("off")', "WO-99: pre-WO-99 behaviour -- write every puppet every tick below 8 m (live A/B)")
     System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%LINE")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
     -- WO-94: Shared Quests (main-story readiness prompt).
     -- LIVE-VERIFIED TRAP (2026-09-13): on this build the console REFUSES an
