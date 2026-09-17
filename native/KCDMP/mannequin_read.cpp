@@ -110,6 +110,35 @@ constexpr size_t kTagStateBytes            = 20;
 constexpr size_t kOffActorAiAnim           = 0x7E8;  // C_Actor -> AI animation component
 constexpr size_t kOffAiAnimPseudoSpeed     = 0x18;
 
+// --- WO-100 Phase 1: the combat model ---------------------------------------
+//
+// C_Actor + 0x300 is m_pCombatActor (WO-42 s9.5, already used by
+// combat_construct.cpp). I_CombatActor + 0x2F0 is the combat MODEL -- WO-42
+// recorded that offset under the vaguer name "combat state block", and the
+// shipped assertion
+//   "m_ZoneId == DATA_INVALID_ID || combatActor->GetModel().RequestedAtkZoneId.Get() == m_ZoneId"
+// walks exactly `*(*(actor_combat + 0x2F0) + 0x200)` then calls vtbl[1] on it
+// (code-verified, CombatModule 0x49FAF0).
+//
+// One function -- CombatModule 0xD8E50 -- registers every named property, and
+// decompiling it gives the layout. Each property is 0x40 bytes:
+//     base + 0x00  vptr
+//     base + 0x08  the value (int/enum/bool)
+//     base + 0x10  owner back-pointer, assigned from *(model + 0x1100)
+//     base + 0x30  the registered debug NAME (a CryString data pointer)
+//
+// The name at +0x30 is what makes this a known-answer check rather than a
+// plausible number: the probe reads the name back and reports whether the
+// property at the offset we believe is RequestedInputClass calls ITSELF
+// "RequestedInputClass". An offset that does not name-match is reported as a
+// MISMATCH and its value is not trusted.
+constexpr size_t kOffActorCombatActor      = 0x300;   // C_Actor::m_pCombatActor
+constexpr size_t kOffCombatActorModel      = 0x2F0;   // I_CombatActor -> the model
+constexpr size_t kOffModelOwnerSelf        = 0x1100;  // the value every property's owner is set from
+constexpr size_t kPropValue                = 0x08;
+constexpr size_t kPropOwner                = 0x10;
+constexpr size_t kPropName                 = 0x30;
+
 // CActionController::vftable, CryAction RVA -- the class-identity comparand.
 constexpr uintptr_t kRvaCActionControllerVtbl = 0x483D98;
 
@@ -190,6 +219,7 @@ struct Request {
     uint32_t entityId   = 0;
     unsigned periodMs   = 500;
     bool     dumpDefs   = false;   // one full tag-definition dump
+    bool     combat     = false;   // WO-100 Phase 1: also read the combat model
 };
 
 // Game working directory first, then beside the DLL. Same reasoning as
@@ -219,15 +249,16 @@ bool config_path(char* path, size_t n) {
 
 // "<player|entityId> [periodMs] [defs]"
 bool parse_request(const char* text, Request* out) {
-    char who[64]{}, a[32]{}, b[32]{};
-    const int got = std::sscanf(text, "%63s %31s %31s", who, a, b);
+    char who[64]{}, a[32]{}, b[32]{}, c[32]{};
+    const int got = std::sscanf(text, "%63s %31s %31s %31s", who, a, b, c);
     if (got < 1) return false;
     if (_stricmp(who, "player") == 0) { out->wantPlayer = true; }
     else if (std::sscanf(who, "%u", &out->entityId) != 1) return false;
 
-    for (const char* tok : { a, b }) {
+    for (const char* tok : { a, b, c }) {
         if (!tok[0]) continue;
-        if (_stricmp(tok, "defs") == 0) { out->dumpDefs = true; continue; }
+        if (_stricmp(tok, "defs") == 0)   { out->dumpDefs = true; continue; }
+        if (_stricmp(tok, "combat") == 0) { out->combat   = true; continue; }
         unsigned v = 0;
         if (std::sscanf(tok, "%u", &v) == 1 && v >= 50 && v <= 60000) out->periodMs = v;
     }
@@ -354,12 +385,177 @@ bool in_list(const char* name, const char* const* list, size_t n) {
     return false;
 }
 
+// ---- WO-100 Phase 1: the combat model --------------------------------------
+
+// The value at base+8 is NOT always an int32. Live capture (2026-09-17) settled
+// each of these by watching the bits move:
+//   * AttackStrength read 1064546718 / 1059833454 -- nonsense as ints, and
+//     0.952 / 0.671 as floats, which is exactly what a charge level looks like.
+//   * CombatMode and PerfectBlockState changed by EXACTLY 1 in the low byte
+//     when combat/blocking began, with three constant high bytes -- so they are
+//     one-byte bools and a 4-byte read was spanning into the neighbouring
+//     field. Reading them as int32 printed 925523968 and 1156810496: numbers
+//     that look like data and are not.
+// Reading the wrong width does not fail, it lies, so the width is part of the
+// table rather than an assumption.
+enum class PropType { I32, F32, Bool8 };
+struct ModelProp { const char* name; size_t base; const char* what; PropType type; };
+
+// Offsets read out of CombatModule 0xD8E50's decompilation. `name` is the
+// string the engine itself registered at base + 0x30, so every row is
+// self-checking.
+const ModelProp kModelProps[] = {
+    // the ACCEPTED INPUT -- upstream of the animation, which is the whole point
+    { "RequestedInputClass",       0x300, "input",    PropType::I32   },
+    { "RequestedAtkZone",          0x200, "input",    PropType::I32   },
+    { "RequestedGuardZone",        0x180, "input",    PropType::I32   },
+    { "RequestedPreparedToAttack", 0x380, "input",    PropType::Bool8 },
+    { "ReqEndGuardType",           0x0C0, "input",    PropType::I32   },
+    // the RESOLVED half, for comparison
+    { "InputClass",                0x340, "resolved", PropType::I32   },
+    { "AttackZone",                0x1C0, "resolved", PropType::I32   },
+    { "AttackType",                0x2C0, "resolved", PropType::I32   },
+    { "AttackStrength",            0x280, "resolved", PropType::F32   },
+    { "AttackHandSlot",            0x240, "resolved", PropType::I32   },
+    { "PreparedToAttack",          0x3C0, "resolved", PropType::Bool8 },
+    { "GuardZone",                 0x140, "resolved", PropType::I32   },
+    { "GuardType",                 0x080, "resolved", PropType::I32   },
+    { "GuardStance",               0x100, "resolved", PropType::I32   },
+    { "State",                     0x040, "resolved", PropType::I32   },  // a BITMASK: 1,2,4,8,16,64,128,256 observed
+    { "ComboState",                0x480, "resolved", PropType::I32   },
+    { "RiposteState",              0x4C0, "resolved", PropType::I32   },
+    { "BlockZoneId",               0x7C0, "resolved", PropType::I32   },
+    { "PerfectBlockState",         0x8A8, "resolved", PropType::Bool8 },
+    { "CombatMode",                0x000, "resolved", PropType::Bool8 },
+};
+
+// Names from the shipped tables, so the log reads in the game's own words
+// rather than in integers. Unknown ids print as the number -- never as a
+// guessed name.
+const char* input_class_name(int32_t v) {
+    switch (v) {
+        case -1: return "none";       case 0: return "attack_light";
+        case 1:  return "attack_heavy"; case 2: return "attack_special";
+        case 3:  return "move_left";  case 4: return "move_right";
+        case 5:  return "move_back";  case 6: return "move_forward";
+        case 7:  return "block";
+    }
+    return nullptr;
+}
+const char* zone_name(int32_t v) {
+    switch (v) {
+        case -1: return "undefined";  case 0: return "head";
+        case 1:  return "upper_left"; case 2: return "upper_right";
+        case 3:  return "lower_left"; case 4: return "lower_right";
+        case 5:  return "lower";
+    }
+    return nullptr;
+}
+const char* attack_type_name(int32_t v) {
+    switch (v) {
+        case -1: return "none";  case 0: return "stab";  case 1: return "slash";
+        case 2:  return "smash"; case 3: return "throw"; case 4: return "kick";
+        case 5:  return "punch"; case 6: return "hook";  case 7: return "direct";
+        case 8:  return "bite";  case 9: return "backoff";
+    }
+    return nullptr;
+}
+
+struct ModelSample { char line[900]; bool ok; int mismatches; };
+
+// Read the whole model, name-checking every offset. Returns false only when the
+// model itself is unreachable; a per-property mismatch is reported, not fatal.
+bool sample_combat_model(void* actor, ModelSample* out, bool verbose) {
+    out->line[0] = 0; out->ok = false; out->mismatches = 0;
+
+    void* combatActor = nullptr;
+    if (!read_ptr(actor, kOffActorCombatActor, &combatActor)) {
+        _snprintf_s(out->line, sizeof(out->line), _TRUNCATE,
+                    "MANN-COMBAT: actor+0x300 read faulted");
+        return false;
+    }
+    if (!combatActor) {
+        // Deliberately NOT calling GetOrCreateCombatActor: that creates state.
+        // This probe is read-only, so "not in combat yet" is the honest answer.
+        _snprintf_s(out->line, sizeof(out->line), _TRUNCATE,
+                    "MANN-COMBAT: no combat actor on this body yet "
+                    "(not created until combat begins) -- nothing to read, not an error");
+        return false;
+    }
+    void* model = nullptr;
+    if (!read_ptr(combatActor, kOffCombatActorModel, &model) || !model) {
+        _snprintf_s(out->line, sizeof(out->line), _TRUNCATE,
+                    "MANN-COMBAT: combatActor+0x2F0 (the model) unreadable/null -- REFUSING");
+        return false;
+    }
+    // Self-check: every property's owner field was assigned from *(model+0x1100).
+    void* ownerSelf = nullptr;
+    if (!read_ptr(model, kOffModelOwnerSelf, &ownerSelf)) {
+        _snprintf_s(out->line, sizeof(out->line), _TRUNCATE,
+                    "MANN-COMBAT: model+0x1100 unreadable -- REFUSING");
+        return false;
+    }
+
+    size_t used = 0;
+    auto put = [&](const char* fmt, auto... args) {
+        if (used + 2 >= sizeof(out->line)) return;
+        int n = _snprintf_s(out->line + used, sizeof(out->line) - used, _TRUNCATE, fmt, args...);
+        if (n > 0) used += static_cast<size_t>(n);
+    };
+    put("MANN-COMBAT:");
+
+    for (const auto& p : kModelProps) {
+        void* base = static_cast<char*>(model) + p.base;
+        int32_t v = 0; float fv = 0.0f; uint8_t bv = 0;
+        void* owner = nullptr; void* namePtr = nullptr;
+        char nameBuf[64]{};
+        bool nameOk = false, ownerOk = false, valueOk = false;
+        switch (p.type) {
+            case PropType::I32:   valueOk = read_i32(base, kPropValue, &v); break;
+            case PropType::F32:   valueOk = read_f32(base, kPropValue, &fv); break;
+            case PropType::Bool8: valueOk = read_u8 (base, kPropValue, &bv); break;
+        }
+        if (valueOk &&
+            read_ptr(base, kPropOwner, &owner) &&
+            read_ptr(base, kPropName, &namePtr) && namePtr &&
+            copy_cstr(static_cast<const char*>(namePtr), nameBuf, sizeof(nameBuf))) {
+            nameOk  = (std::strcmp(nameBuf, p.name) == 0);
+            ownerOk = (owner == ownerSelf);
+        }
+        if (!nameOk) {
+            ++out->mismatches;
+            if (verbose)
+                logf("MANN-COMBAT: MISMATCH model+0x%03zX expected \"%s\" but it names itself \"%s\" "
+                     "-- offset NOT trusted", p.base, p.name, nameBuf[0] ? nameBuf : "<unreadable>");
+            put(" %s=?", p.name);
+            continue;
+        }
+        if (!ownerOk && verbose)
+            logf("MANN-COMBAT: note model+0x%03zX (%s) owner=%p != model+0x1100=%p",
+                 p.base, p.name, owner, ownerSelf);
+
+        if (p.type == PropType::F32)   { put(" %s=%.3f", p.name, fv); continue; }
+        if (p.type == PropType::Bool8) { put(" %s=%u", p.name, bv);   continue; }
+        const char* sym = nullptr;
+        if (std::strstr(p.name, "InputClass"))      sym = input_class_name(v);
+        else if (std::strstr(p.name, "Zone"))       sym = zone_name(v);
+        else if (std::strstr(p.name, "AttackType")) sym = attack_type_name(v);
+        if (sym) put(" %s=%s", p.name, sym);
+        else     put(" %s=%d", p.name, v);
+    }
+    out->ok = true;
+    return true;
+}
+
 // ---- the sample ------------------------------------------------------------
 
 struct Session {
     Request  req{};
     bool     armed       = false;
     bool     dumpedDefs  = false;
+    bool     combatFirst = true;    // first combat pass logs mismatches verbosely
+    char     lastCombat[900]{};
+    unsigned combatRepeats = 0;
     DWORD    lastSample  = 0;
     char     lastLine[512]{};
     unsigned repeats     = 0;
@@ -483,6 +679,11 @@ void sample() {
     }
 
     // Animation-side speed scalar. Field read -- see the header comment.
+    // Live 2026-09-17: reads 0.000 and tracks movement on an NPC body, but the
+    // PLAYER always reads the sentinel -- C_Player overrides GetPseudoSpeed and
+    // does not use this field, exactly as the base implementation's own trace
+    // line ("Forgot to override GetPseudoSpeed?") implies. So a sentinel here
+    // means "this actor overrides it", not "the offset is wrong".
     float pseudo = -1.0f;
     void* aiAnim = nullptr;
     if (read_ptr(actor, kOffActorAiAnim, &aiAnim) && aiAnim)
@@ -503,6 +704,34 @@ void sample() {
     strncpy_s(g.lastLine, line, _TRUNCATE);
     logf("%s", line);
     logf("MANN:   state=%s ctx=%p defs=%p", hex, ctx, defs.obj);
+}
+
+// WO-100 Phase 1. Separate from sample() because the two answer different
+// questions and one can be reachable while the other is not: the tag state
+// exists the moment the body does, the combat model only once combat has
+// begun.
+void sample_combat() {
+    HMODULE entityModule = GetModuleHandleA("EntityModule.dll");
+    if (!entityModule) return;
+    const std::vector<ExportEntry> exports = module_exports(entityModule);
+    if (exports.empty()) return;
+    void* actor = resolve_actor(entityModule, exports, g.req.wantPlayer, g.req.entityId);
+    if (!actor) return;
+
+    ModelSample ms{};
+    const bool got = sample_combat_model(actor, &ms, g.combatFirst);
+    if (g.combatFirst) {
+        g.combatFirst = false;
+        if (got) logf("MANN-COMBAT: %d of %zu offsets failed their own name check",
+                      ms.mismatches, sizeof(kModelProps) / sizeof(kModelProps[0]));
+    }
+    if (std::strcmp(ms.line, g.lastCombat) == 0) { ++g.combatRepeats; return; }
+    if (g.combatRepeats) {
+        logf("MANN-COMBAT: (previous line repeated %u times)", g.combatRepeats);
+        g.combatRepeats = 0;
+    }
+    strncpy_s(g.lastCombat, ms.line, _TRUNCATE);
+    logf("%s", ms.line);
 }
 
 } // namespace
@@ -526,14 +755,15 @@ void tag_watch() {
         g = Session{};
         if (text[0] == 0) { logf("MANN-WATCH: kcdmp-mannequin.txt cleared/absent -- idle"); return; }
         if (!parse_request(text, &g.req)) {
-            logf("MANN-WATCH: unparsable -- expected \"<player|entityId> [periodMs] [defs]\"");
+            logf("MANN-WATCH: unparsable -- expected \"<player|entityId> [periodMs] [defs] [combat]\"");
             return;
         }
         g.armed = true;
-        logf("MANN-WATCH: armed target=%s%u period=%ums%s",
+        logf("MANN-WATCH: armed target=%s%u period=%ums%s%s",
              g.req.wantPlayer ? "player" : "entity ",
              g.req.wantPlayer ? 0u : g.req.entityId, g.req.periodMs,
-             g.req.dumpDefs ? " +defs" : "");
+             g.req.dumpDefs ? " +defs" : "",
+             g.req.combat ? " +combat" : "");
     }
     if (!g.armed) return;
 
@@ -541,6 +771,7 @@ void tag_watch() {
     if (g.lastSample && (now - g.lastSample) < g.req.periodMs) return;
     g.lastSample = now;
     sample();
+    if (g.req.combat) sample_combat();
 }
 
 } // namespace kcdmp::mannequin

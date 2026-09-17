@@ -77,3 +77,47 @@ Consequences: the README badge is untouched, no release notes were written, and
 no installer exists for this work. The native DLL **is** built locally
 (`native/build/KCDMP/KCDMP.dll`) and can be deployed on its own for the Phase 0
 probe without an installer, which is the only thing the live check needs.
+
+---
+
+## Live session addendum — 2026-09-17 16:38–16:46
+
+A solo live session ran after the phases above were written. Full account in
+`docs/WO-100-findings.md` §10. Summary of what changed:
+
+* **Phase 0 is REACHABLE, live-verified.** The known-answer check passed on
+  every step; no refusals; `unknownTags=0` throughout.
+* **Phase 1 is live-verified**: 20/20 model properties read back their own
+  registered name, and an accepted-input event was captured mid-attack.
+* **Phase 3's gate is passed.** The tags are continuous state, not transient —
+  the 300 ms "flicker" was the sampling. Phase 3 is unblocked on evidence.
+* **Phase 6 is live-confirmed**: `NPC_NAI` spawns and has its own Mannequin
+  action controller sharing the player's tag definition object.
+* **A real defect was caught by the live data**: three model properties are
+  one-byte bools and one is a float; reading them as int32 printed plausible
+  nonsense. Widths are now part of the property table.
+
+**The DLL deploy step is obsolete for solo native probes.** `KCDMP.dll` was
+injected straight from the build directory with
+`KCDMP_LauncherInjector.exe --pid <pid> --dll <absolute path>`, verified by
+`ModuleMemorySize == SizeOfImage`. No copy into AppData, so the WO-74 redirect
+never applied, and the DLL's own log landed inside the repo where the coding
+shell can read it directly.
+
+### Known state of the tree after the session
+
+The `PropType` width fix is **written and compiles**, but the final link was
+refused because the previous DLL was still loaded in the running game
+(`LNK1104: cannot open file KCDMP\KCDMP.dll`). Re-run the native build once the
+game is closed:
+
+```
+cmake --build native/build --target KCDMP
+```
+
+Nothing else is outstanding.
+
+### Still unverified
+
+Everything in **Phase 4** — swing reason codes, inbox counters, the
+body-generation rule. Those need two machines. Phase 5 remains a STOP.

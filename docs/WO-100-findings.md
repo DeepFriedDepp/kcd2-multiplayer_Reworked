@@ -14,13 +14,13 @@ shipped data file. **(synthetic)** = a test harness, not a live game.
 
 | phase | outcome |
 |---|---|
-| 0 — Mannequin tag state readable? | **surface mapped, partially**: pace/direction/stance yes, animation speed yes as a scalar, **airborne no** (§1.5). Live known-answer check **not run** — needs the maintainer, runbook in §1.6 |
-| 1 — attack acceptance point | **found** (S4): `I_CombatActor+0x2F0` is the combat model; `RequestedInputClass` / `RequestedAtkZone` / `RequestedPreparedToAttack` are the accepted input, offsets mapped. Replayability answered **read-only: yes, structurally** -- the AI uses the same entry -- but acting on it is a native write, so **Phase 5 is a STOP and did not proceed** |
+| 0 — Mannequin tag state readable? | **REACHABLE — live-verified** (S10.1). Pace/direction/stance all confirmed against on-screen behaviour, `unknownTags=0`, no refusals. Animation speed reachable on an NPC but **overridden on the player** (S10.3). **Airborne still no** (S1.5) |
+| 1 — attack acceptance point | **found and LIVE-VERIFIED** (S4, S10.4): 20 of 20 properties read back their own registered name, and a whole accepted-input event was captured in flight. Replayability answered **read-only: yes, structurally**; acting on it is a native write, so **Phase 5 is a STOP and did not proceed** |
 | 2 — wire format | **designed, not implemented** (S6). Additive continuous fields behind a flag bit, one discrete shape for every action, a gen triple, name-keyed enums throughout. Reserved 0x3B/0x3C |
-| 3 — locomotion replication | **not built** -- gated on Phase 0's live check (S7). One finding that changes item 4: ghost smoothing **already exists** (damped correction + 5 m teleport threshold), and the snapshot-buffer variant already exists on the puppet path. Building a third would be the error the instruction prevents. What is missing is correction-magnitude and snap-count logging |
+| 3 — locomotion replication | **not built, but the gate is now PASSED** (S10.1/S10.2). Tags are continuous state at 50 ms, so the continuous channel can publish them directly. Item 4's premise is still out of date: ghost smoothing **already exists** and so does the snapshot-buffer variant on the puppet path; what is missing is correction-magnitude and snap-count logging |
 | 4 — unconditional improvements | **landed**, all five items + one defect found while reading (§3). 111 tests green, **(synthetic)** — no live session |
 | 5 — combat replication | **not run -- STOP.** The blocker is named precisely rather than vaguely: every remaining step is a native write (S4.2) |
-| 6 — AI-less puppet class | **found: `NPC_NAI`** (S5), registered in WHGame's InitGameFactory, spawnable, same Mannequin databases as NPC, and its own shipped comment says "null AI don't have AI objects". Applicability stated both ways in S5.3. Investigation only, nothing rebuilt on it |
+| 6 — AI-less puppet class | **found: `NPC_NAI`**, and **live-confirmed** (S5, S10.6): it spawns, is a full actor with a soul, and has its own Mannequin action controller **sharing the player's tag definition object**. Needs a faction or it spams every frame. Applicability stated both ways in S5.3. Investigation only, nothing rebuilt on it |
 
 ---
 
@@ -745,3 +745,190 @@ concrete next step for Phase 3 whether or not Phase 0 verifies.
    WO-98's tug-of-war disappears — §5.3.
 5. **Phase 5**, when a maintainer is at the keyboard for the write: `0x76500`,
    `0xF4C20`, the model offsets in §4.1 — §4.2.
+
+---
+
+## 10. THE LIVE SESSION — 2026-09-17, 16:38–16:46
+
+Maintainer at the keyboard, single player, **no relay and no agent**. The
+Modding Tools game was launched normally and `KCDMP.dll` injected straight from
+the build directory with `KCDMP_LauncherInjector.exe --pid 16644 --dll <path>`,
+so **no deploy was needed at all** and the AppData redirect (WO-74/WO-99.5 §6.1)
+never entered into it. The loaded module was verified the only admissible way:
+
+```
+ModuleMemorySize = 397312  ==  SizeOfImage of the 16:31 build   -- MATCH
+```
+
+**This supersedes the "maintainer must copy the DLL" step every native WO since
+WO-45 has assumed.** The injector takes an absolute path; the DLL's own log
+lands beside it (inside the repo, fully readable from the coding shell) and the
+mirror still lands in the game root. For a solo native probe, nothing has to be
+installed.
+
+### 10.1 Phase 0 — **REACHABLE.** Known-answer check passed
+
+Not a single `REFUSING` line in the whole session. All five gates held: the
+controller vptr matched `CActionController::vftable`, and the two independent
+routes to the tag definition agreed on every sample.
+
+286 tags decoded, **`unknownTags=0` on every sample** — every tag in the
+definition resolved through the `(byteIndex, mask)` arrays, with no leftovers.
+
+The known-answer check, against what was on screen (**observed**):
+
+| on screen | `MANN:` line |
+|---|---|
+| standing, unarmed | `pace=- dir=- stance=upright tags=l_noweapon+r_noweapon+r_equip_sword+player` |
+| walking forward | `pace=walk dir=forward` |
+| jogging forward | `pace=run dir=forward` |
+| moving backwards | `pace=run dir=backward` |
+| sprinting | `pace=sprint dir=forward` |
+| crouched, moving | `stance=stealth` + `stealth+run+forward` |
+| sword drawn | `r_noweapon` → `r_sword` |
+| sword sheathed | `r_sword` → `r_noweapon+r_equip_sword` |
+| in combat | `+combat +relatedMale` appear |
+
+An independent cross-check of the decode itself: the raw state bytes read
+`00 00 4C 0F 00 00 00 00 10 00 …`, and byte 8 = `0x10` is exactly what the
+probe's own definition dump lists for the ungrouped `player` tag. The decode
+agrees with the engine's own bit table, not merely with expectations.
+
+### 10.2 The 300 ms "flicker" was the sampling, not the engine — and this matters
+
+The first pass at 300 ms showed `pace=` dropping to `-` between movement
+samples, which would have been fatal for Phase 3: a continuous channel cannot
+publish a signal that is only intermittently true.
+
+Re-armed at **50 ms** (live, by rewriting the watched file — no game restart)
+and held a steady jog:
+
+```
+16:43:12.290  run+forward
+    …          (repeats collapsed; only stopLegLeft/stopLegRight alternate)
+16:43:18.597  run+forward
+```
+
+**6.3 seconds of unbroken `run+forward`.** In combat, at 50 ms, the same:
+`run` → `sprint` → `run` → `walk` in clean continuous transitions.
+
+**The MoveSpeed/MoveDir tags are stable continuous state.** The earlier gaps
+were 300 ms sampling over tapped keys. This is the answer Phase 3 needed and it
+is the good one: the continuous channel can publish these directly, at the
+position stream's own cadence, with no smoothing or debouncing.
+
+One detail for the wire: `stopLegLeft`/`stopLegRight` alternate at footfall rate
+(~370 ms apart at a jog). They are per-footstep tags and should **not** be
+published — the receiver's own animation system generates its own footfalls.
+
+### 10.3 `pseudoSpeed` — both halves of the caveat proven
+
+The player always read the `-1.000` sentinel. The `NPC_NAI` body read
+**`0.000`** standing still. So `C_Actor + 0x7E8 → +0x18` is the right offset and
+is populated on an ordinary actor; the **player** simply does not use it,
+because `C_Player` overrides `GetPseudoSpeed` — exactly what the base
+implementation's own trace line ("Forgot to override GetPseudoSpeed?") implies.
+
+The probe's sentinel therefore means "this actor overrides it", not "the offset
+is wrong". For the player specifically, the animation-side speed needs the
+vtable override rather than the field. **Named, not hidden** — and it costs
+Phase 3 nothing, because pace and direction come from the tags.
+
+### 10.4 Phase 1 — **LIVE-VERIFIED.** 0 of 20 offsets failed their own name check
+
+Every combat-model property read back the name the engine registered for it.
+`RequestedInputClass` at `model+0x300` calls itself `RequestedInputClass`, live,
+and so do the other nineteen. The map in §4.1 is confirmed, not inferred.
+
+Two more cross-checks fell out for free:
+
+* At rest, `AttackZone=upper_right` — which is the row `combat_zone.xml` marks
+  `default_zone="true"`. The symbolic decode agrees with the shipped table.
+* `State` takes values `1, 2, 4, 8, 16, 64, 128, 256` — it is a **bitmask**, not
+  an enum. Worth knowing before anything keys on it.
+
+**An entire accepted-input event, caught in flight** (16:41:08.810 → 09.762,
+300 ms apart, so this is three consecutive samples of one attack):
+
+```
+08.810  RequestedInputClass=none          InputClass=attack_heavy AttackZone=head       AttackType=slash State=4
+09.128  RequestedInputClass=none          InputClass=attack_heavy AttackZone=head       AttackType=slash State=8
+09.445  RequestedInputClass=attack_heavy  InputClass=attack_heavy AttackZone=head       AttackType=slash State=8
+        RequestedAtkZone=upper_left  RequestedPreparedToAttack=1
+09.762  RequestedInputClass=none          InputClass=attack_heavy AttackZone=upper_right AttackType=slash AttackStrength=0.952
+```
+
+The `Requested*` triple is present and distinct from the resolved half, and
+`RequestedPreparedToAttack=1` is the commit. **This is the WO's design
+conclusion, observed rather than argued.**
+
+### 10.5 A real defect the live data caught: the value width is part of the map
+
+Three properties printed numbers that looked like data and were not —
+`CombatMode=925523968`, `PerfectBlockState=1156810496`,
+`PreparedToAttack=-1813265152`. They moved by **exactly 1 in the low byte** when
+combat and blocking began, with three constant high bytes.
+
+They are **one-byte bools**, and a 4-byte read was spanning into the
+neighbouring field. `AttackStrength` is the mirror case: `1064546718` and
+`1059833454` are nonsense as ints and **0.952** and **0.671** as floats — a
+charge level, which is exactly what it should be.
+
+Reading the wrong width does not fail, it lies. The probe now carries a
+`PropType` per row (`I32` / `F32` / `Bool8`) so the width is part of the table
+rather than an assumption. **This is the trap this project keeps meeting in a
+new costume** (WO-96 §7, WO-97 §2, WO-99.5 §2.3): a read that returns something
+plausible is not a read.
+
+### 10.6 Phase 6 — `NPC_NAI` spawns, and has a full Mannequin controller
+
+```lua
+System.SpawnEntity({class="NPC_NAI", name="wo100_nai_probe", position=p})
+  -> true, entity 0x1C05CC
+  -> class=NPC_NAI human=true actor=true soul=true
+```
+
+Spawnable, and a full actor with a soul (**observed**). Then the probe was
+pointed at it:
+
+```
+MANN: pace=- dir=- stance=upright pseudoSpeed=0.000 unknownTags=0 tags=l_noweapon+r_noweapon
+MANN:   ctx=000002158B8F3320 defs=0000021291DDFD00
+```
+
+**It has its own action controller** (`ctx` differs from the player's
+`00000214E43BCB00`) and **shares the player's tag definition object**
+(`defs=0000021291DDFD00`, byte-identical pointer). `unknownTags=0`.
+
+So an AI-less body is a **drop-in target for Phase 3's locomotion
+replication**: same tag definition, same animation database, its own controller,
+and no brain to contend with. That is the strongest possible version of §5.3's
+claim, and it is now observed rather than diffed out of a script.
+
+Two caveats found by doing it, not by reading:
+
+* A bare `NPC_NAI` spawn with no faction logs `NPC <name> does not have a
+  faction.` **every frame**. It is spawnable but not usable bare — the same
+  bare-spawn starvation family WO-56 named. A real use needs a soul and faction
+  assigned, exactly as ghost spawning already does.
+* The Lua `entity.AI` member reads non-nil, but that is the `self.AI = {}` the
+  shipped script assigns in `NPC_NAI_ResetCommon`. It is an empty table, not an
+  AI object, and `RegisterAI` is a documented no-op. **Do not read `entity.AI`
+  as evidence of a brain.**
+
+The test body was removed and the faction spam stopped; the probe was disarmed.
+
+### 10.7 What this changes in the verdicts above
+
+| section | was | now |
+|---|---|---|
+| §1 Phase 0 | mapped, live check pending | **REACHABLE, live-verified.** Pace/dir/stance confirmed against on-screen behaviour; tags are continuous state |
+| §1.5 pseudo-speed | "reachable as a scalar", caveat noted | caveat **proven both ways**: works on an NPC, overridden on the player |
+| §4 Phase 1 | code-verified map | **live-verified**, 20/20 name checks, plus a captured attack |
+| §4.1 property layout | offsets only | offsets **plus widths** — three bools and one float were being misread |
+| §5 Phase 6 | class exists per shipped script | **spawns, and has a Mannequin controller sharing the player's tag definition** |
+| §7 Phase 3 gate | blocked on Phase 0 | **gate passed.** Phase 3 is now unblocked on evidence |
+
+**Still not verified, and still unverifiable solo:** everything in Phase 4 — the
+swing reason codes, the inbox counters, the body-generation rule. Those need two
+machines. Phase 5 remains a STOP regardless.
