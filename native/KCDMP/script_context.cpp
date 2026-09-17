@@ -1,4 +1,4 @@
-#include "script_context.h"
+﻿#include "script_context.h"
 #include "log.h"
 #include "rttr_abi.h"
 
@@ -98,6 +98,25 @@ constexpr const char* kIsolationContexts[] = {
     "crime_ignoredUnconsciousBody",
     "crime_ignoredCorpse",
     "crime_ignoredPickpocket",
+    // WO-99.5 Phase 3a. The engine registers the ghost player entity as an NPC
+    // and runs social behaviour trees against it, which then error for lack of
+    // role holders ("Registering NPC kcdmp_N for situations", 40 host / 42
+    // joiner on 2026-09-16, with 4 and 9 resulting BT error lines).
+    //
+    // Tables.pak :: Libs/Tables/ai/ScriptContext.xml carries
+    //   <ScriptContextDatabaseNode Name="DisableSituationParticipation"
+    //        Class="Entity" SideEffect="disableSituationParticipation"/>
+    // (observed, this build). Resolution was confirmed live and read-only on
+    // 2026-09-17: the node resolves with class=1, while the bogus control name
+    // resolves null, so the name is genuinely in the database rather than being
+    // echoed back.
+    //
+    // NOT verified to reduce the registration count -- that needs a connected
+    // peer to produce a ghost at all, and is deferred to the field session.
+    // Rollback without a rebuild: drop a kcdmp-isolation.txt beside the DLL (or
+    // in the game's working directory) holding the eleven names above and not
+    // this one; the file override replaces this list wholesale.
+    "DisableSituationParticipation",
 };
 
 // Upper bounds for the file override below. Generous: the cost is stack, and
