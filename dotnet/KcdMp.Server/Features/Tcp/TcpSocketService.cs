@@ -13,6 +13,7 @@ public class TcpSocketService : BackgroundService
 {
 	private readonly ILogger _logger;
 	private readonly int _port;
+	private readonly TimeSpan _idleTimeout;
 	private readonly ClientHandler _clientHandler;
 	private readonly TcpBroadcastService _broadcastService;
 	private readonly SessionManager _sessions;
@@ -25,6 +26,9 @@ public class TcpSocketService : BackgroundService
 
 		var configSection = configuration.GetSection("Tcp");
 		_port = int.Parse(configSection["Port"] ?? "7778");
+		// WO-102.5 Phase 4: configurable so the relay round-trip tests can use
+		// a short timeout instead of ClientSession's 30 s field default.
+		_idleTimeout = TimeSpan.FromMilliseconds(int.Parse(configSection["IdleTimeoutMs"] ?? "30000"));
 
 		_clientHandler = clientHandler;
 		_broadcastService = broadcastService;
@@ -53,7 +57,7 @@ public class TcpSocketService : BackgroundService
 			while (!cancellationToken.IsCancellationRequested)
 			{
 				var tcpListener = await listener.AcceptTcpClientAsync(cancellationToken);
-				var client = new ClientSession(_logger, tcpListener, _broadcastService, _sessions, _clientHandler);
+				var client = new ClientSession(_logger, tcpListener, _broadcastService, _sessions, _clientHandler, _idleTimeout);
 
 				_clientHandler.AddClient(client);
 

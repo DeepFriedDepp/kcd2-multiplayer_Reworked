@@ -2213,6 +2213,19 @@ KCD2MP.wo1025 = {
     -- construction -- NPC_ENGAGE_RANGE_SQ's 12 m is always inside this.
     cullRadius = 30.0,
     npcCull = true,   -- mp_npc_cull_on|off
+    -- WO-102.5 Phase 4: ONE coarse together/apart state for the whole
+    -- session, not per-NPC proximity ownership (deliberately unlike the
+    -- WO-60 claim model's per-entity claiming, which WO-102 S2.1 showed
+    -- produced 52/52 grants to one player and expiries mid-fight -- a
+    -- single, rarely-changing, session-level state is a different and much
+    -- safer shape). Hysteresis: must close to <= togetherEnterM to become
+    -- "together", must open past togetherExitM to become "apart" again,
+    -- each sustained for togetherDwellS before the transition commits -- a
+    -- momentary crossing does not flip it.
+    together        = false,
+    togetherEnterM  = 60.0,
+    togetherExitM   = 90.0,
+    togetherDwellS  = 10.0,
 }
 
 -- name:string metres, from the console via #KCD2MP_SetAuthorityRadius("90").
@@ -2258,6 +2271,11 @@ function KCD2MP_SetNpcCull(arg)
     mp_log("WO1025-CULL " .. (KCD2MP.wo1025.npcCull and "on" or "off"))
     return true
 end
+
+-- WO-102.5 Phase 4's co-location transition/tick functions live further
+-- down (just before mp_npc_rescan), not here -- they call mp_auth_log,
+-- a local not yet defined at this point in the file.
+KCD2MP._colocatePendingRelease = {}
 KCD2MP._npcSyncAliveAt = nil
 KCD2MP.npcTracked      = {}   -- name -> {lastX,lastY,lastZ,lastRot,lastHp,lastSentAt}
 KCD2MP._npcScanAt      = 0
@@ -3471,6 +3489,94 @@ function KCD2MP_NpcScanCompare()
     if #onlyNative > 0 then mp_log("MP-NPCSCAN dir=compare only_native=" .. table.concat(onlyNative, ",")) end
 end
 
+-- WO-102.5 Phase 4: the co-location transition. Runs on the AUTHORITY only
+-- (the non-authority never claims regardless of together/apart, Phase 0 S0.2
+-- -- nothing there needs to change). Going apart releases OWNERSHIP here;
+-- it does NOT reach across the wire to tell a puppeting peer to let go --
+-- untracking simply stops this machine emitting for that name, and the
+-- EXISTING silence-release path (WO-32/WO-90, <=3 s of no packets) already
+-- resumes the pause and drops the puppet on the other side. No new wire
+-- message, no resync-flag repurposing.
+--
+-- Never mid-interaction: an NPC this machine is fighting (t.sentEngaged) or
+-- that is in dialogue (e.human:IsInDialog(), the same per-entity check
+-- KCD2MP_ApplyNpcState's resync path already uses) is left exactly as it
+-- is and marked pending -- KCD2MP_NpcSyncTick's own per-NPC loop sweeps it
+-- the moment neither is true any more (below), even if that is minutes
+-- later. "Frozen" NPCs are still logged by count, never silently dropped
+-- from the transition's own accounting.
+local function mp_wo1025_colocate_transition(newTogether, distM)
+    KCD2MP.wo1025.together = newTogether
+    local frozen, released = 0, 0
+    if not newTogether then
+        for name, t in pairs(KCD2MP.npcTracked) do
+            local e = System.GetEntityByName(name)
+            local inDialog = false
+            pcall(function() if e and e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end)
+            if t.sentEngaged or inDialog then
+                frozen = frozen + 1
+                KCD2MP._colocatePendingRelease[name] = true
+            else
+                KCD2MP.npcTracked[name] = nil
+                mp_auth_log(name, "release", "self", "colocate-apart", os.clock() - (t.since or os.clock()))
+                released = released + 1
+            end
+        end
+    end
+    mp_log(string.format("WO1025-COLOCATE event=%s dist_m=%.1f frozen=%d released=%d",
+        newTogether and "enter" or "exit", distM, frozen, released))
+    KCD2MP_ShowInteractionMsg(newTogether and "Players together: NPCs shared" or "Players apart: NPCs local")
+end
+
+-- Hysteresis + dwell over the nearest peer ghost's distance. Called at the
+-- rescan cadence (KCD2MP_NpcSyncTick, scanMs). A momentary crossing does
+-- not flip the state -- togetherDwellS of SUSTAINED wanting-the-other-state
+-- is required, tracked by KCD2MP._togetherWantSince.
+local function mp_wo1025_colocation_tick()
+    if not (KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn) then return end
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return end
+
+    local nearest = nil
+    for _, g in pairs(KCD2MP.ghosts or {}) do
+        local gp = nil
+        pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
+        if not gp and g.istate and g.istate.tx then gp = { x = g.istate.tx, y = g.istate.ty, z = g.istate.tz or pp.z } end
+        if gp then
+            local dx, dy = gp.x - pp.x, gp.y - pp.y
+            local d = math.sqrt(dx * dx + dy * dy)
+            if not nearest or d < nearest then nearest = d end
+        end
+    end
+
+    local w = KCD2MP.wo1025
+    if not nearest then
+        -- No peer ghost loaded at all -- there is nothing to be "together"
+        -- with. Apart, no hysteresis needed (there is no boundary to bounce
+        -- across when the other side does not exist here).
+        KCD2MP._togetherWantSince = nil
+        if w.together then mp_wo1025_colocate_transition(false, -1) end
+        return
+    end
+
+    local wantTogether = w.together
+    if w.together and nearest > w.togetherExitM then wantTogether = false
+    elseif not w.together and nearest <= w.togetherEnterM then wantTogether = true end
+
+    if wantTogether == w.together then
+        KCD2MP._togetherWantSince = nil
+        return
+    end
+
+    local now = os.clock()
+    if not KCD2MP._togetherWantSince then KCD2MP._togetherWantSince = now end
+    if (now - KCD2MP._togetherWantSince) >= w.togetherDwellS then
+        KCD2MP._togetherWantSince = nil
+        mp_wo1025_colocate_transition(wantTogether, nearest)
+    end
+end
+
 local function mp_npc_rescan()
     if not player then return end
     local pp = nil
@@ -3490,8 +3596,13 @@ local function mp_npc_rescan()
     -- its own player -- one anchor per body. An NPC only the peer's game has
     -- loaded cannot be scanned here; that is the stated limit (findings
     -- S4.4), not a gap in the scan.
+    -- WO-102.5 Phase 4: a peer's anchor is only added while the coarse
+    -- co-location state says "together" -- this is what lets players apart
+    -- play independently: the authority simply stops discovering (and, via
+    -- the transition, stops owning) anything near a far peer, rather than
+    -- each NPC crossing its own radius threshold independently.
     local anchors = { pp }
-    if underHostAuthority then
+    if underHostAuthority and KCD2MP.wo1025.together then
         for _, g in pairs(KCD2MP.ghosts or {}) do
             local gp = nil
             pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
@@ -3756,6 +3867,11 @@ function KCD2MP_NpcSyncTick()
     local now = os.clock()
     if (now - (KCD2MP._npcScanAt or 0)) * 1000 >= KCD2MP.npcSync.scanMs then
         KCD2MP._npcScanAt = now
+        -- WO-102.5 Phase 4: the co-location hysteresis, same cadence as the
+        -- rescan it gates (mp_npc_rescan reads KCD2MP.wo1025.together).
+        -- Decided BEFORE the rescan so a transition this tick is reflected
+        -- in the anchor list the rescan is about to build, not one tick late.
+        pcall(mp_wo1025_colocation_tick)
         pcall(mp_npc_rescan)
     end
 
@@ -3820,6 +3936,25 @@ function KCD2MP_NpcSyncTick()
             if drawn and not dead and not ko and ppos then
                 local gx, gy = p.x - ppos.x, p.y - ppos.y
                 engaged = (gx * gx + gy * gy) <= NPC_ENGAGE_RANGE_SQ
+            end
+
+            -- WO-102.5 Phase 4: a co-location "going apart" release deferred
+            -- because this NPC was engaged or in dialogue at the time --
+            -- swept the moment neither is true any more, however much later
+            -- that is. Checked every tick regardless of the current
+            -- together/apart state: if players went back together in the
+            -- meantime the pending flag is simply stale and harmless (the
+            -- NPC stays tracked either way).
+            if KCD2MP._colocatePendingRelease[name] and not engaged then
+                local inDialog = false
+                pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end)
+                if not inDialog then
+                    KCD2MP._colocatePendingRelease[name] = nil
+                    KCD2MP.npcTracked[name] = nil
+                    mp_auth_log(name, "release", "self", "colocate-apart-deferred", os.clock() - (t.since or os.clock()))
+                    mp_log("WO1025-COLOCATE deferred release now clear: " .. name)
+                    return
+                end
             end
 
             -- WO-102.5 Phase 3: culling. Owned (tracked, so nobody else can
@@ -5971,13 +6106,26 @@ end
 -- holds authority cannot generate a hit by accident.
 function KCD2MP_SetHitSensor(on)
     local now = on and true or false
-    if KCD2MP.hitSensorOn ~= now then
+    local was = KCD2MP.hitSensorOn
+    if was ~= now then
         mp_log("HIT_SENSOR " .. (now and "on (this client holds NPC damage authority)" or "off"))
     end
     KCD2MP.hitSensorOn = now
     if not now then
         KCD2MP.ghostHpSeen = {}
         KCD2MP.ghostHpSkip = {}
+    end
+    -- WO-102.5 Phase 4: departure handoff. Becoming the NEW authority (Rule 2
+    -- moved here, e.g. the previous authority disconnected) starts the
+    -- co-location state fresh -- the old authority's together/apart history
+    -- does not apply, and this machine's OWN anchor is scanned regardless
+    -- (mp_npc_rescan), so it starts owning what is near itself immediately
+    -- without any handoff-specific code. Nothing to release: a fresh
+    -- authority has nothing tracked yet.
+    if now and not was then
+        KCD2MP.wo1025.together = false
+        KCD2MP._togetherWantSince = nil
+        KCD2MP._colocatePendingRelease = {}
     end
 end
 

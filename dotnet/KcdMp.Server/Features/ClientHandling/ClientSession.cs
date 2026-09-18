@@ -43,12 +43,24 @@ public class ClientSession
     /// release-version field (an old build, or a synthetic test peer).</summary>
     public string? ReleaseVersion { get; private set; }
 
+    // WO-102.5 Phase 4: departure handoff needs the ungraceful case caught by
+    // a timeout, not only a clean disconnect (FIN) or an immediate reset
+    // (RST) -- a client whose machine or network vanishes silently (cable
+    // pulled, hard crash) leaves this read parked forever with neither. The
+    // real client sends a position heartbeat at least every 2 s even at a
+    // menu or a loading screen (GameBridge.cs's PositionHeartbeatInterval,
+    // which keeps running independent of the game's own Script.SetTimer
+    // chains) -- Tcp:IdleTimeoutMs (default 30 s, TcpSocketService) is 15x
+    // that margin before calling it dead.
+    private readonly TimeSpan _idleTimeout;
+
     public ClientSession(ILogger logger, TcpClient tcp, TcpBroadcastService broadcastService,
-        SessionManager sessions, ClientHandler clientHandler)
+        SessionManager sessions, ClientHandler clientHandler, TimeSpan idleTimeout)
     {
         _logger = logger;
         _tcp = tcp;
         _stream = tcp.GetStream();
+        _idleTimeout = idleTimeout;
         _broadcastService = broadcastService;
         _sessions = sessions;
         _clientHandler = clientHandler;
@@ -151,7 +163,13 @@ public class ClientSession
             var posPayload = new byte[Protocol.PositionPayloadLenV2];
             while (true)
             {
-                await ReadExactAsync(header);
+                // WO-102.5 Phase 4: only the wait for the NEXT message is
+                // timed -- once a header has arrived the rest of that
+                // message is assumed to already be in flight on the same
+                // stream. NetworkStream.ReadTimeout does not reliably apply
+                // to ReadAsync (verified empirically this session), so the
+                // timeout is an explicit CancellationTokenSource instead.
+                await ReadExactWithIdleTimeoutAsync(header);
                 int type = header[0];
                 int payloadLen = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(1));
 
@@ -1157,6 +1175,32 @@ public class ClientSession
             int n = await _stream.ReadAsync(buffer, offset, count - offset);
             if (n == 0) throw new EndOfStreamException();
             offset += n;
+        }
+    }
+
+    /// <summary>
+    /// WO-102.5 Phase 4: the idle-timeout read at the top of the main
+    /// per-packet loop. A cancellation from the timeout is converted to an
+    /// IOException so it reaches RunAsync's existing "normal disconnect"
+    /// catch clause unchanged, running the same BroadcastCombatRole /
+    /// HandleDisconnect cleanup an ordinary FIN or RST would.
+    /// </summary>
+    private async Task ReadExactWithIdleTimeoutAsync(byte[] buffer)
+    {
+        using var cts = new CancellationTokenSource(_idleTimeout);
+        try
+        {
+            int offset = 0;
+            while (offset < buffer.Length)
+            {
+                int n = await _stream.ReadAsync(buffer.AsMemory(offset), cts.Token);
+                if (n == 0) throw new EndOfStreamException();
+                offset += n;
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            throw new IOException($"idle timeout ({_idleTimeout.TotalSeconds:F0}s) waiting for the next packet");
         }
     }
 }

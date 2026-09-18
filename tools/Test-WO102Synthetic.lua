@@ -276,6 +276,8 @@ local function resetAll4()
     KCD2MP.wo102.authorityHost = false; KCD2MP.wo102.authorityPause = false
     KCD2MP.npcDiverge = true; KCD2MP.npcYield.enabled = true
     KCD2MP.ghosts = {}; KCD2MP._npcScanAnchors = nil
+    -- WO-102.5 Phase 4
+    KCD2MP.wo1025.together = false; KCD2MP._togetherWantSince = nil; KCD2MP._colocatePendingRelease = {}
 end
 
 do -- (m)
@@ -307,6 +309,7 @@ do -- (n)
     KCD2MP.hitSensorOn = true
     KCD2MP.wo102.authorityHost = true
     KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    KCD2MP.wo1025.together = true   -- WO-102.5 Phase 4: peer anchors only scanned while together
     local ghostEnt = { GetWorldPos = function() return { x = 100, y = 0, z = 0 } end }
     KCD2MP.ghosts = { ["1"] = { entity = ghostEnt, istate = {} } }
     local far = mkEntity("n_far", 95, 0, 0); ENTS["n_far"] = far          -- 95 m from the player, 5 m from the ghost
@@ -822,6 +825,116 @@ do
     KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false
     KCD2MP.wo1025.authorityRadius = 45.0; KCD2MP.wo1025.npcCull = true
     check("bb: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ------------------------------------------------------------ WO-102.5 Phase 4
+--   (cc) co-location: hysteresis (enter/exit bands + dwell -- a momentary
+--        crossing does not flip it), the transition gates peer-anchor
+--        scanning, mid-interaction (engaged) freeze with a deferred sweep
+--        once it clears, and departure handoff resets the state fresh
+do
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = true
+    KCD2MP.wo102.authorityHost = true
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+
+    local ghostPos = { x = 200, y = 0, z = 0 }
+    local ghostEnt = { GetWorldPos = function() return ghostPos end }
+    KCD2MP.ghosts = { ["1"] = { entity = ghostEnt, istate = {} } }
+    SPHERE = {}
+    NOW = 3000; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("cc: starts apart", KCD2MP.wo1025.together == false)
+
+    -- a MOMENTARY close crossing (< dwellS) must not flip it.
+    ghostPos.x = 50
+    NOW = 3001; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("cc: momentary closeness does not flip it yet", KCD2MP.wo1025.together == false)
+    ghostPos.x = 200
+    NOW = 3002; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("cc: backing off resets the dwell clock", KCD2MP._togetherWantSince == nil)
+
+    -- sustained closeness for >= dwellS commits to together.
+    ghostPos.x = 50
+    NOW = 3010; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("cc: still apart -- dwell just started", KCD2MP.wo1025.together == false)
+    NOW = 3010 + KCD2MP.wo1025.togetherDwellS + 0.5
+    KCD2MP._npcScanAt = 0; clearLog()
+    KCD2MP_NpcSyncTick()
+    check("cc: sustained closeness commits to together", KCD2MP.wo1025.together == true)
+    check("cc: enter is logged", logCount("WO1025-COLOCATE event=enter") == 1, lastLog("WO1025-COLOCATE"))
+
+    -- together: an NPC near the (now close) peer is discoverable.
+    local nearGhost = mkEntity("cc_near_ghost", 55, 0, 0); ENTS["cc_near_ghost"] = nearGhost
+    SPHERE = { nearGhost }
+    NOW = NOW + 0.1; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("cc: NPC near the close peer is tracked", KCD2MP.npcTracked["cc_near_ghost"] ~= nil)
+
+    -- sustained distance commits to apart; the un-engaged NPC is released.
+    ghostPos.x = 300
+    local farT = NOW + 1
+    NOW = farT; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    NOW = farT + KCD2MP.wo1025.togetherDwellS + 0.5
+    KCD2MP._npcScanAt = 0; clearLog()
+    KCD2MP_NpcSyncTick()
+    check("cc: sustained distance commits to apart", KCD2MP.wo1025.together == false)
+    check("cc: exit released the un-engaged NPC", KCD2MP.npcTracked["cc_near_ghost"] == nil)
+    check("cc: exit is logged with a release count",
+        logCount("WO1025-COLOCATE event=exit") == 1 and logCount("released=1") >= 1, lastLog("WO1025-COLOCATE"))
+
+    -- back together, then mid-interaction freeze: an engaged NPC survives
+    -- the "apart" transition, then is swept once it stops being engaged.
+    ghostPos.x = 50
+    NOW = NOW + 1; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    NOW = NOW + KCD2MP.wo1025.togetherDwellS + 0.5
+    KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("cc: together again for the freeze test", KCD2MP.wo1025.together == true)
+
+    local fighter = mkEntity("cc_fighter", 0.5, 0, 0)   -- right next to the player: engaged range
+    fighter.human.IsWeaponDrawn = function() return true end
+    ENTS["cc_fighter"] = fighter
+    SPHERE = { fighter }
+    NOW = NOW + 0.1; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    KCD2MP_NpcSyncTick()
+    check("cc: the fighter is tracked and engaged", KCD2MP.npcTracked["cc_fighter"] ~= nil)
+
+    ghostPos.x = 300
+    local farT2 = NOW + 1
+    NOW = farT2; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    NOW = farT2 + KCD2MP.wo1025.togetherDwellS + 0.5
+    KCD2MP._npcScanAt = 0; clearLog()
+    KCD2MP_NpcSyncTick()
+    check("cc: apart again", KCD2MP.wo1025.together == false)
+    check("cc: the engaged fighter is frozen, not released", KCD2MP.npcTracked["cc_fighter"] ~= nil
+        and KCD2MP._colocatePendingRelease["cc_fighter"] == true)
+    check("cc: exit logs it as frozen",
+        logCount("WO1025-COLOCATE event=exit") == 1 and logCount("frozen=1") >= 1, lastLog("WO1025-COLOCATE"))
+
+    -- combat ends: the deferred sweep releases it on the very next tick.
+    fighter.human.IsWeaponDrawn = function() return false end
+    NOW = NOW + 0.1; clearLog()
+    KCD2MP_NpcSyncTick()
+    check("cc: deferred sweep releases it once combat ends", KCD2MP.npcTracked["cc_fighter"] == nil
+        and KCD2MP._colocatePendingRelease["cc_fighter"] == nil)
+    check("cc: the deferred release is logged", logCount("WO1025-COLOCATE deferred release now clear: cc_fighter") == 1)
+
+    -- departure handoff: becoming the NEW authority resets the state fresh.
+    KCD2MP.wo1025.together = true
+    KCD2MP_SetHitSensor(false)
+    KCD2MP_SetHitSensor(true)
+    check("cc: new authority starts apart, fresh", KCD2MP.wo1025.together == false)
+
+    KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false
+    check("cc: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary.
