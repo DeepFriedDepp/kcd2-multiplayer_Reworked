@@ -12,6 +12,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# WO-102.5 end gate: MSVC embeds the PDB's full absolute build path in every
+# linked binary's PE debug directory by default -- found this session by the
+# privacy sweep (docs/WO-98-findings.md S0's own concern, for a shipped
+# binary: it reveals the build machine's local folder structure to anyone
+# who runs a debugger or a crash reporter against the shipped .dll/.exe,
+# same class of leak PathMap already fixes for the managed side).
+# /PDBALTPATH:%_PDB% embeds just the PDB's own filename instead.
+add_link_options("/PDBALTPATH:%_PDB%")
+
 add_subdirectory(KCDMP)
 add_subdirectory(KCDMP_LauncherInjector)
 
