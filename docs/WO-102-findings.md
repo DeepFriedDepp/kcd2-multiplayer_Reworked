@@ -365,6 +365,41 @@ can give it. The XGenAI decompile of `PauseNPCInternal` and
 `C_MovementControllerAdapter` (started, not finished this session) is the
 follow-up if the probe fails.
 
+### 3.5 Addendum — the XGenAI decompile landed (code-verified, Ghidra 12.1.3 on `XGenAIModule.dll`)
+
+The 51 MB import finished after Phase 3 closed; three functions were read.
+
+* **`wh_ai_PauseNPC` handler (`0x1AE58E0`)**: requires exactly one argument
+  (else *"Wrong number of arguments. Expected one argument"*), copies it into
+  a `CryString`, and calls `PauseNPCInternal(name, 1)`; `wh_ai_ResumeNPC`
+  (`0x1AE59F0`) is the same with `0`.
+* **`PauseNPCInternal` (`0x1AE5200`)**: `gEnv->pEntitySystem->FindEntityByName(name)`
+  → `IEntity::GetId()` → the WUID registry maps the entity id to a `WUID` →
+  builds a pause request `{ callback, WUID, resume = !pause, context = 8 }`
+  and hands it to the **NPC pause-request manager** (`vtbl+0x40`). The
+  callback logs *"Testing NPC pause request ended with %s"*. So the command
+  is a thin console front to the engine's own request system, addressed by
+  WUID, in its own context id (8).
+* **`C_IntelligentObject::Suspend` (`0x1612290`)** — the consumer. Per queued
+  request: on **suspend** it ORs the request's context bit into a mask at
+  `obj+0x129`, and on the first bit calls `vtbl+0x1C0(obj, true)` and the
+  brain host's `+0x68()`; on **resume** it clears the bit and only when the
+  mask reaches zero calls `vtbl+0x1C0(obj, false)` and `+0x70()`. Its own
+  trace strings say the rest: *"Trying to resume intelligent object %s in
+  context (%d), but it is still suspended in other contexts (%d)"*, *"Cannot
+  suspend intelligent object %s (%s), because it is in state %s"* (a
+  three-valued state at `obj+0x128`).
+
+What this establishes: the pause is a **refcounted, per-context suspension
+of the `C_IntelligentObject`** (the brain host, `C_NPC : I_NPC :
+C_IntelligentObject : C_AIObject`, RTTI) — not of the `CEntity`. Nothing in
+this path touches the entity, its character or its physics. That is the
+shape the lever needs; what it still does not prove is what `vtbl+0x1C0`
+does to the movement controller, which only the §3.3 runbook can answer.
+The multi-context mask also means our pause cannot be undone by an engine
+resume in another context, and an engine suspend in another context is not
+undone by ours — the two coexist by design.
+
 ---
 
 ## 4. Phase 4 — permanent host authority (behind `mp_authority_host_on`, default off)
