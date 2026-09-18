@@ -124,6 +124,40 @@ KCD2MP.ghostNai = false
 -- which is a product decision, not a technical one. Field runbook:
 -- docs/WO-100.5-findings.md S5.
 KCD2MP.ghostNoAi = false
+
+-- ===== WO-100.5 Phase 2: the continuous body-state channel =====
+--
+-- Until now a ghost's animation was INFERRED here, from the distance between
+-- consecutive position packets (calcAnimTag on istate.smoothedSpeed). That is a
+-- guess about what the other player is doing, made from the only signal we had.
+-- The peer now sends what their body is ACTUALLY doing: the live Mannequin
+-- MoveSpeed / MoveDir / Stance tags, read natively (WO-100 Phase 0, live-verified
+-- 286 tags, unknownTags=0) and carried as five bytes behind Position flag 0x04.
+--
+-- mp_anim_legacy_on restores the inference. Default OFF -- i.e. the new path is
+-- the one that runs -- and it is fail-closed rather than trusting: a packet with
+-- no body state, an older peer, or a pace this build cannot name all fall
+-- straight back to calcAnimTag for that sample. Nothing waits on a probe.
+KCD2MP.animLegacy = false
+
+-- The wire vocabulary. MIRRORED, BY NUMBER, in
+--   native/KCDMP/mannequin_read.h        (kPace* / kDir* / kStance*)
+--   dotnet/KcdMp.Protocol/Protocol.cs    (BodyPace / BodyDir / BodyStance)
+-- All three change together. These are ORDINAL -> NAME: the wire carries our
+-- ordinal, and the name is what this build matches on, because a CryEngine
+-- TagID is a position in a CTagDefinition rebuilt from XML per build and is
+-- exactly the table index WO-100 S6.5's rule keeps off the wire.
+--
+-- A nil here is a SPECIFIC rejection -- an ordinal this build has no name for --
+-- counted as KCD2MP._animUnknown and logged once per distinct value, never
+-- silently treated as some other tag.
+KCD2MP.bodyPaceName   = { [0]="none", [1]="walk", [2]="run", [3]="sprint", [4]="dash", [5]="steps" }
+KCD2MP.bodyDirName    = { [0]="none", [1]="forward", [2]="backward", [3]="left", [4]="right" }
+KCD2MP.bodyStanceName = { [0]="upright", [1]="stealth", [2]="sitting", [3]="lying",
+                          [4]="horse", [5]="leaning", [6]="other" }
+KCD2MP._animUnknown   = {}   -- "pace=9" -> true, so each unknown ordinal logs once
+KCD2MP._animStats     = { applied = 0, legacy = 0, noBody = 0, rejected = 0 }
+
 KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
 KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
@@ -4769,7 +4803,12 @@ end
 
 -- ===== Ghost Update (called by server each packet) =====
 
-function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
+-- WO-100.5 Phase 2: pace/dir/stance/animSpeedCenti are APPENDED parameters.
+-- An agent older than 0.23.1 calls this with six arguments and they arrive nil,
+-- which is exactly "this peer sent no body state" -- the legacy inference then
+-- runs for that sample. No version negotiation, no probe: absence is the
+-- signal.
+function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding, bPace, bDir, bStance, bSpeedCenti)
     local ghost = KCD2MP.ghosts[id]
 
     -- Spawn if doesn't exist yet, then fall through to process isRiding on same call.
@@ -4833,6 +4872,32 @@ function KCD2MP_UpdateGhost(id, x, y, z, rotZ, isRiding)
     istate.tr = r
     istate.ticksSincePacket = 0
     istate.packetCount = istate.packetCount + 1
+
+    -- WO-100.5 Phase 2: the peer's live Mannequin tags. Resolved to NAMES here
+    -- -- ordinal -> our own name table -- so an ordinal this build does not
+    -- know is a specific, counted rejection instead of a silently different
+    -- tag. Stored raw on istate; the animation selection reads it.
+    if bPace ~= nil then
+        local pn = KCD2MP.bodyPaceName[bPace]
+        local dn = KCD2MP.bodyDirName[bDir or 0]
+        local sn = KCD2MP.bodyStanceName[bStance or 0]
+        if pn == nil or dn == nil or sn == nil then
+            KCD2MP._animStats.rejected = KCD2MP._animStats.rejected + 1
+            local key = string.format("p=%s d=%s s=%s", tostring(bPace), tostring(bDir), tostring(bStance))
+            if not KCD2MP._animUnknown[key] then
+                KCD2MP._animUnknown[key] = true
+                mp_log("MP-ANIM reject=unknown-ordinal " .. key
+                    .. " -- this build has no name for it; falling back to the inferred animation."
+                    .. " The peer is running a newer body-state vocabulary than this pak.")
+            end
+            istate.body = nil
+        else
+            istate.body = { pace = pn, dir = dn, stance = sn,
+                            speed = (bSpeedCenti or 0) / 100.0 }
+        end
+    else
+        istate.body = nil
+    end
 
     -- Horse riding sync
     local riding = (isRiding == true)
@@ -5785,6 +5850,49 @@ local function calcAnimTag(speed, cur, stance)
     else                                 return "idle" end
 end
 
+-- WO-100.5 Phase 2: choose the locomotion tag from the peer's ACTUAL Mannequin
+-- state rather than from the speed we inferred between two position packets.
+--
+-- Returns nil when it cannot answer, and every caller falls back to
+-- calcAnimTag on nil -- so this is strictly additive: the worst case is the
+-- behaviour that shipped before it.
+--
+-- What is NOT done here, stated rather than glossed:
+--   * `dir` is carried, resolved and logged, but this build's ghost clip set
+--     has no directional variants to select -- there is no backward-walk tag
+--     to pick. It rides the wire because the field costs nothing and the
+--     receiver half needs it the moment a directional clip exists.
+--   * nothing writes a Mannequin tag onto the remote body directly. A tag
+--     WRITER (AI.SetAnimationTag / Action.PersistantEntityTag) exists as a
+--     method-name string in CryAISystem.dll / CryAction.dll, but being a
+--     string is not being registered (WO-65: pairs() is blind to scriptbind
+--     methods, type() must probe it live) and no live session was available
+--     to probe it. Driving the existing clip selection from authoritative
+--     tags is what is reachable today; probing the writer is a WO-101
+--     candidate.
+--   * stopLegLeft / stopLegRight are never sent, so nothing here can key on
+--     them. They alternate at footfall rate (~370 ms at a jog) and the
+--     receiver's own animation system generates its own footfalls.
+local function bodyAnimTag(body)
+    if not body then return nil end
+    if body.stance == "stealth" then
+        return (body.pace ~= "none") and "sneak_walk" or "sneak_idle"
+    end
+    -- Horse/sitting/lying/leaning are postures the ghost body reaches by other
+    -- means (ForceMount, and the interp tick's own riding branch). Answering
+    -- "idle" for them here would fight those, so decline and let the existing
+    -- path run.
+    if body.stance ~= "upright" and body.stance ~= "other" then return nil end
+    local p = body.pace
+    if p == "none"   then return "idle"   end
+    if p == "walk"   then return "walk"   end
+    if p == "steps"  then return "walk"   end   -- the small-adjustment pace
+    if p == "run"    then return "run"    end
+    if p == "sprint" then return "sprint" end
+    if p == "dash"   then return "sprint" end   -- horse pace; the fastest we have on foot
+    return nil
+end
+
 -- WO-84: restart a LOOPED clip on a change, plus a keep-alive refresh -- never
 -- on every tick.
 --
@@ -5861,7 +5969,24 @@ function KCD2MP_UpdateAnimation(id, ghost, pumped)
 
     -- Sanity: can't be sneaking at running speeds (auto-clears bad toggle state)
     if stance == "c" and speed > 4.0 then stance = "s" end
-    local wantTag = calcAnimTag(speed, istate.animTag, stance)
+
+    -- WO-100.5 Phase 2: prefer the peer's real Mannequin tags over our
+    -- inference. Fail-closed at every step -- legacy toggle on, no body state
+    -- this sample, or a posture this chooser declines all land on calcAnimTag,
+    -- which is exactly what shipped before.
+    local wantTag = nil
+    if not KCD2MP.animLegacy then
+        wantTag = bodyAnimTag(istate.body)
+        if wantTag then
+            KCD2MP._animStats.applied = KCD2MP._animStats.applied + 1
+        elseif istate.body then
+            KCD2MP._animStats.noBody = KCD2MP._animStats.noBody + 1
+        end
+    end
+    if not wantTag then
+        KCD2MP._animStats.legacy = KCD2MP._animStats.legacy + 1
+        wantTag = calcAnimTag(speed, istate.animTag, stance)
+    end
 
     -- WO-38 Phase 3 (Section A): a jump used to render as a stationary
     -- vertical teleport, because this function only ever saw horizontal
@@ -6118,6 +6243,10 @@ function KCD2MP_InterpTick(arg, gen)
                          + (istate.ty-istate.cy)*(istate.ty-istate.cy)
                          + (istate.tz-istate.cz)*(istate.tz-istate.cz)
             if distSq > 25.0 then
+                -- WO-100.5 Phase 2 item 6: the SNAP COUNT, recorded where the
+                -- snap actually happens. WO-100 S7 asked for this next to the
+                -- correction magnitude below.
+                istate.corrSnaps = (istate.corrSnaps or 0) + 1
                 mp_log(string.format("TELEPORT id=%s dist=%.1f", id, math.sqrt(distSq)))
                 if KCD2MP_QuestHazard then KCD2MP_QuestHazard("teleport-ghost", string.format("ghost %s snapped %.0fm", tostring(id), math.sqrt(distSq))) end
                 istate.cx = istate.tx
@@ -6178,6 +6307,32 @@ function KCD2MP_InterpTick(arg, gen)
             -- steps == 1 gives exactly the old 0.5 / 0.15; two fires 10 ms
             -- apart compose to the same result as one 20 ms fire.
             factor = 1 - (1 - factor) ^ steps
+            -- WO-100.5 Phase 2 item 6: CORRECTION MAGNITUDE -- how far the
+            -- body was from where the stream says it should be, sampled
+            -- before the lerp closes the gap. This is the number that tunes
+            -- the smoothing that already exists (WO-100 S7: do not build a
+            -- third one, measure the two we have).
+            --
+            -- DEVIATION, recorded: WO-100 asked for these two "in the existing
+            -- GhostAgg aggregation", which lives in the AGENT. They are
+            -- computed here instead, because the agent cannot see them: it
+            -- knows the packet positions but not where the ghost body actually
+            -- is, and the gap between those two IS the correction. Putting a
+            -- number the agent cannot observe into an agent-side aggregate
+            -- would have meant inventing it.
+            local corr = math.sqrt(dxT*dxT + dyT*dyT)
+            local cw = istate.corrWin
+            if not cw then cw = { n = 0, sum = 0, max = 0, since = nowClock }; istate.corrWin = cw end
+            cw.n = cw.n + 1
+            cw.sum = cw.sum + corr
+            if corr > cw.max then cw.max = corr end
+            if (nowClock - cw.since) > 10.0 and cw.n > 0 then
+                mp_log(string.format(
+                    "MP-GHOSTCORR ghost=%s n=%d corr_mean_m=%.3f corr_max_m=%.3f snaps=%d",
+                    tostring(id), cw.n, cw.sum / cw.n, cw.max, istate.corrSnaps or 0))
+                istate.corrWin = { n = 0, sum = 0, max = 0, since = nowClock }
+            end
+
             local prevCx = istate.cx
             local prevCy = istate.cy
             local nx = lerpVal(istate.cx, renderX, factor)
@@ -6956,6 +7111,24 @@ function KCD2MP_Wo1005NaiAB()
     KCD2MP_SpawnGhost("npc_probe", pos.x + fx * 4 - px * 1.5, pos.y + fy * 4 - py * 1.5, pos.z, az)
     KCD2MP.ghostNai = was
     System.LogAlways("[KCD2-MP] NAI-AB: done; mp_ghost_nai restored to " .. tostring(was))
+end
+
+-- WO-100.5 Phase 2: the body-state channel's counters, on demand.
+function KCD2MP_AnimStats()
+    local a = KCD2MP._animStats
+    System.LogAlways(string.format(
+        "[KCD2-MP] MP-ANIM section=apply legacy_toggle=%s applied=%d legacy=%d declined=%d rejected=%d",
+        tostring(KCD2MP.animLegacy), a.applied, a.legacy, a.noBody, a.rejected))
+    for id, g in pairs(KCD2MP.ghosts or {}) do
+        local b = g.istate and g.istate.body
+        if b then
+            System.LogAlways(string.format(
+                "[KCD2-MP] MP-ANIM section=peer ghost=%s pace=%s dir=%s stance=%s anim_speed=%.2f",
+                tostring(id), b.pace, b.dir, b.stance, b.speed or 0))
+        else
+            System.LogAlways("[KCD2-MP] MP-ANIM section=peer ghost=" .. tostring(id) .. " body=none")
+        end
+    end
 end
 
 function KCD2MP_InspectGhost()
@@ -8149,6 +8322,19 @@ function KCD2MP_SetGhostNai(on)
     end
 end
 
+-- WO-100.5 Phase 2: mp_anim_legacy on|off, argless.
+function KCD2MP_SetAnimLegacy(on)
+    KCD2MP.animLegacy = on and true or false
+    local a = KCD2MP._animStats
+    System.LogAlways(string.format(
+        "[KCD2-MP] mp_anim_legacy=%s -- ghost locomotion now comes from %s."
+        .. " So far: applied=%d legacy=%d declined=%d rejected=%d",
+        tostring(KCD2MP.animLegacy),
+        KCD2MP.animLegacy and "the inferred packet speed (pre-0.23.1 behaviour)"
+                           or "the peer's real Mannequin tags",
+        a.applied, a.legacy, a.noBody, a.rejected))
+end
+
 -- WO-100.5 Phase 0: the toggle that actually works. See KCD2MP.ghostNoAi.
 function KCD2MP_SetGhostNoAi(on)
     KCD2MP.ghostNoAi = on and true or false
@@ -9184,6 +9370,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_nai_ab",        "KCD2MP_Wo1005NaiAB()",      "WO-100.5: spawn one NPC_NAI ghost and one NPC ghost side by side, for the perception comparison")
     System.AddCCommand("mp_ghost_noai_on",  "KCD2MP_SetGhostNoAi(true)",  "WO-100.5: spawn ghosts with NoAI=true -- keeps class NPC, perception, hit registration and the soul; removes the brain. Applies to the NEXT spawn")
     System.AddCCommand("mp_ghost_noai_off", "KCD2MP_SetGhostNoAi(false)", "WO-100.5: spawn ghosts with their ordinary brain (WO-26 reactive self-defence)")
+    System.AddCCommand("mp_anim_legacy_on",  "KCD2MP_SetAnimLegacy(true)",  "WO-100.5: infer ghost locomotion from packet speed (pre-0.23.1 behaviour)")
+    System.AddCCommand("mp_anim_legacy_off", "KCD2MP_SetAnimLegacy(false)", "WO-100.5: drive ghost locomotion from the peer's real Mannequin tags (default)")
+    System.AddCCommand("mp_anim_stats",      "KCD2MP_AnimStats()",          "WO-100.5: print the body-state channel's counters")
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
     System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     -- mp_spawn_armor <guid1,guid2,...>  -- inventory only (no visual unless preset given as 2nd arg)

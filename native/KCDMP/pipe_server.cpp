@@ -1,4 +1,5 @@
 ﻿#include "pipe_server.h"
+#include "mannequin_read.h"
 #include "main_thread.h"
 #include "rttr_abi.h"
 #include "combat_swing.h"
@@ -154,6 +155,22 @@ void send_closure_info(HANDLE h, const kcdmp::luaintrospect::ClosureInfo& info) 
 // WO-100 Phase 4 item 3: the Result frame grows a third byte, a specific
 // reason code (0 on success). Additive -- a pre-WO-100 agent reads body[0]
 // and body[1] and never looks at body[2].
+// WO-100.5 Phase 2. seq goes at body[1], exactly where the Result frame
+// carries it, so the agent's sequence matching needs no special case.
+void send_body_state(HANDLE h, bool ok, uint8_t seq,
+                     const kcdmp::mannequin::BodyState& b) {
+    BYTE body[8] = {
+        static_cast<BYTE>(ok ? 1 : 0), seq,
+        b.pace, b.dir, b.stance,
+        static_cast<BYTE>(b.animSpeedCenti & 0xFF),
+        static_cast<BYTE>((b.animSpeedCenti >> 8) & 0xFF),
+        b.unknownTags,
+    };
+    EnterCriticalSection(&g_write_lock);
+    send_frame(h, kBodyState, body, sizeof(body));
+    LeaveCriticalSection(&g_write_lock);
+}
+
 void send_result(HANDLE h, bool ok, uint8_t seq, uint8_t reason = 0) {
     BYTE body[3] = { static_cast<BYTE>(ok ? 1 : 0), seq, reason };
     EnterCriticalSection(&g_write_lock);
@@ -364,6 +381,29 @@ void serve(HANDLE h) {
             // (root module names, node vs null) is many lines of text, not a
             // wire field. Result byte says whether the probe ran, not what it
             // found.
+            // WO-100.5 Phase 2: the continuous body-state read. Read-only,
+            // and deliberately silent -- the agent calls this at the position
+            // stream's cadence, so a log line per sample would be a flood.
+            // The ok byte carries every refusal; the agent counts them.
+            case kReadBodyState: {
+                kcdmp::mannequin::BodyState bs{};
+                if (len != kReadBodyStateLen) {
+                    logf("PIPE: ReadBodyState wrong length %u", len);
+                    send_body_state(h, false, seq, bs);
+                    break;
+                }
+                uint32_t entityId = 0;
+                std::memcpy(&entityId, body, 4);
+                const bool wantPlayer = (entityId == 0);
+                bool ok = false;
+                const bool ran = run_sync_bounded<bool>(
+                    [wantPlayer, entityId, &bs](bool& result) {
+                        result = kcdmp::mannequin::read_body_state(wantPlayer, entityId, &bs);
+                    }, "ReadBodyState", ok);
+                send_body_state(h, ran && ok, seq, bs);
+                break;
+            }
+
             case kConceptProbe: {
                 if (len > kConceptProbeMaxLen) {
                     logf("PIPE: ConceptProbe path too long (%u > %d)", len, kConceptProbeMaxLen);

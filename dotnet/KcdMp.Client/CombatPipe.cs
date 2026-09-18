@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Threading.Channels;
+using KcdMp.Wire;
 
 namespace KcdMp.Client;
 
@@ -27,8 +28,10 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte SetFactionHostile = 0x04;
     private const byte GhostSwing        = 0x06;
     private const byte GhostIsolate      = 0x07;
+    private const byte ReadBodyState     = 0x09;   // WO-100.5 Phase 2, read-only
     private const byte Result            = 0x81;
     private const byte Pong              = 0x83;
+    private const byte BodyStateReply    = 0x85;   // WO-100.5 Phase 2
 
     private const int GuidLen = 16;
 
@@ -320,7 +323,49 @@ public sealed class CombatPipe : IAsyncDisposable
     /// </summary>
     private async Task<PipeResult> SendForResultAsync(byte type, byte[] payload, CancellationToken ct)
     {
-        if (!await EnsureConnectedAsync(ct)) return PipeResult.Fail(PipeReason.NotConnected);
+        var (body, fail) = await SendAndAwaitAsync(type, payload, Result, ct);
+        if (body is null) return PipeResult.Fail(fail);
+        var reason = body.Length >= 3 ? (PipeReason)body[2] : PipeReason.Unknown;
+        return new PipeResult(body[0] == 1, reason);
+    }
+
+    /// <summary>
+    /// WO-100.5 Phase 2: read one actor's live Mannequin body state (entityId 0
+    /// = the local player). Returns null on any refusal -- a gate said no, the
+    /// pipe is down, or the DLL predates this command and never answers. The
+    /// caller counts those; nothing here logs per call, because this runs at
+    /// the position stream's cadence.
+    /// </summary>
+    public async Task<BodyState?> ReadBodyStateAsync(uint entityId, CancellationToken ct = default)
+    {
+        var payload = new byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, entityId);
+        var (body, _) = await SendAndAwaitAsync(ReadBodyState, payload, BodyStateReply, ct);
+        BodyStateReads++;
+        // [ok:1][seq:1][pace:1][dir:1][stance:1][animSpeedCenti:2 LE][unknownTags:1]
+        if (body is null || body.Length < 8 || body[0] != 1) { BodyStateRefused++; return null; }
+        BodyStateUnknownTags += body[7];
+        return new BodyState(
+            (BodyPace)body[2], (BodyDir)body[3], (BodyStance)body[4],
+            BinaryPrimitives.ReadUInt16LittleEndian(body.AsSpan(5)));
+    }
+
+    /// <summary>WO-100.5: how many body-state reads were attempted.</summary>
+    public long BodyStateReads { get; private set; }
+    /// <summary>WO-100.5: how many of those the DLL refused (a gate said no, or it is an older DLL).</summary>
+    public long BodyStateRefused { get; private set; }
+    /// <summary>WO-100.5: running total of tags the native decode could not place. Healthy value is 0.</summary>
+    public long BodyStateUnknownTags { get; private set; }
+
+    /// <summary>
+    /// The shared send-and-wait core. Sequence matching is identical for every
+    /// reply kind because the DLL puts seq at body[1] in all of them (WO-100
+    /// S3.1's fix, which this generalises rather than duplicates).
+    /// </summary>
+    private async Task<(byte[]? Body, PipeReason Fail)> SendAndAwaitAsync(
+        byte type, byte[] payload, byte wantType, CancellationToken ct)
+    {
+        if (!await EnsureConnectedAsync(ct)) return (null, PipeReason.NotConnected);
 
         await _gate.WaitAsync(ct);
         try
@@ -350,7 +395,7 @@ public sealed class CombatPipe : IAsyncDisposable
                     Console.WriteLine($"[combat] no answer to 0x{type:X2} after " +
                                       $"{(DateTime.UtcNow - started).TotalMilliseconds:F0} ms " +
                                       $"(deadline {ReplyDeadline.TotalMilliseconds:F0} ms, timeouts {TimedOut})");
-                    return PipeResult.Fail(PipeReason.NoAnswer);
+                    return (null, PipeReason.NoAnswer);
                 }
 
                 using var slice = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -359,9 +404,9 @@ public sealed class CombatPipe : IAsyncDisposable
                 try { reply = await _replies.Reader.ReadAsync(slice.Token); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { continue; }
 
-                if (reply.Type != Result || reply.Body.Length < 2)
+                if (reply.Type != wantType || reply.Body.Length < 2)
                 {
-                    StaleRepliesDropped++;   // not a Result frame, or truncated: not ours
+                    StaleRepliesDropped++;   // wrong frame kind, or truncated: not ours
                     continue;
                 }
 
@@ -382,15 +427,13 @@ public sealed class CombatPipe : IAsyncDisposable
                     Console.WriteLine($"[combat] reply seq={seq} is ahead of the expected {want} -- resyncing");
                 }
                 _expectedSeq = (byte)(seq + 1);
-
-                var reason = reply.Body.Length >= 3 ? (PipeReason)reply.Body[2] : PipeReason.Unknown;
-                return new PipeResult(reply.Body[0] == 1, reason);
+                return (reply.Body, PipeReason.Ok);
             }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)
         {
             Drop();
-            return PipeResult.Fail(PipeReason.NotConnected);
+            return (null, PipeReason.NotConnected);
         }
         finally { _gate.Release(); }
     }

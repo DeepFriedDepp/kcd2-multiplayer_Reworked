@@ -72,6 +72,17 @@ public partial class GameBridge(ClientConfig config)
     // applied through native code, so this is the one path for it.
     private readonly CombatPipe _combat = new();
 
+    // --- WO-100.5 Phase 2: the local body-state read ------------------------
+    //
+    // Read once per position push, not per tick, and switched off for the rest
+    // of the session after a run of refusals. A DLL that predates 0x09 never
+    // answers, and paying a pipe round trip per push forever to re-learn that
+    // is the kind of quiet cost that does not show up until a field log is
+    // read. One line when it gives up, and the counters say so in MP-ANIM.
+    private bool _bodyStateOff;
+    private int  _bodyStateMisses;
+    private const int BodyStateGiveUpAfter = 20;
+
     // WO-99 Phase 0: local-player exclusion + echo memory for the 0x30/0x31
     // NPC damage path (docs/WO-99-findings.md Phase 0). The player identity
     // is re-read on a TTL and forced after a save load / MOD INIT.
@@ -499,7 +510,15 @@ public partial class GameBridge(ClientConfig config)
             public long N, Snaps, WinN, WinSnaps, LastTs, WinStartTs, Stale, WinStale;
             public double IaSum, IaMax, DSum, DMax, WinIaSum, WinIaMax, WinDSum, WinDMax;
             public float X, Y, Z;
+            // WO-100.5 Phase 2: the continuous body-state channel, per peer.
+            public long BodyN;
+            public BodyState LastBody;
+            public bool HaveBody;
+            public long PaceChanges, DirChanges, StanceChanges;
         }
+
+        /// <summary>WO-100.5: peers that set the BODYSTATE flag but sent a short packet. Should be 0.</summary>
+        public long BodyStateShortPackets;
         private readonly object _g = new();
         private readonly Dictionary<byte, GhostAgg> _ghosts = new();
 
@@ -535,6 +554,46 @@ public partial class GameBridge(ClientConfig config)
                     $"MP-GHOSTPKT ghost={id} n={g.WinN} ia_mean_ms={g.WinIaSum / g.WinN:F1} ia_max_ms={g.WinIaMax:F1} d_mean_m={g.WinDSum / g.WinN:F2} d_max_m={g.WinDMax:F2} snaps={g.WinSnaps} stale={g.WinStale}");
                 g.WinN = 0; g.WinSnaps = 0; g.WinIaSum = 0; g.WinIaMax = 0; g.WinDSum = 0; g.WinDMax = 0; g.WinStale = 0; g.WinStartTs = now;
                 return line;
+            }
+        }
+
+        /// <summary>
+        /// WO-100.5 Phase 2: one inbound body-state reading. Counts transitions
+        /// rather than samples, because the tags are stable continuous state
+        /// (WO-100 S10.2) -- "how many times did the pace change" is the
+        /// interesting number and "how many packets carried a pace" is not.
+        /// </summary>
+        public void OnBodyState(byte id, BodyState b)
+        {
+            lock (_g)
+            {
+                if (!_ghosts.TryGetValue(id, out var g)) { _ghosts[id] = g = new GhostAgg(); }
+                g.BodyN++;
+                if (g.HaveBody)
+                {
+                    if (g.LastBody.Pace   != b.Pace)   g.PaceChanges++;
+                    if (g.LastBody.Dir    != b.Dir)    g.DirChanges++;
+                    if (g.LastBody.Stance != b.Stance) g.StanceChanges++;
+                }
+                g.LastBody = b; g.HaveBody = true;
+            }
+        }
+
+        /// <summary>WO-100.5 Phase 2: the MP-ANIM summary lines.</summary>
+        public IEnumerable<string> BodyStateSummaryLines()
+        {
+            lock (_g)
+            {
+                if (BodyStateShortPackets > 0)
+                    yield return FormattableString.Invariant(
+                        $"MP-ANIM section=inbound short_packets={BodyStateShortPackets}");
+                foreach (var kv in _ghosts)
+                {
+                    var g = kv.Value;
+                    if (g.BodyN == 0) continue;
+                    yield return FormattableString.Invariant(
+                        $"MP-ANIM section=ghost ghost={kv.Key} samples={g.BodyN} pace_changes={g.PaceChanges} dir_changes={g.DirChanges} stance_changes={g.StanceChanges} last_pace={g.LastBody.Pace} last_dir={g.LastBody.Dir} last_stance={g.LastBody.Stance} last_anim_speed={g.LastBody.AnimSpeed:F2}");
+                }
             }
         }
 
@@ -581,6 +640,11 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=story divergences_pushed={s.StoryDivergencesPushed} cutscene_local_edges={s.CutsceneLocalEdges} cutscene_peer_edges={s.CutscenePeerEdges} ghost_packets={s.GhostPackets}"));
         if (_swingInbox is { } inbox) Console.WriteLine(inbox.SummaryLine());
         foreach (var line in s.GhostSummaryLines()) Console.WriteLine(line);
+        // WO-100.5 Phase 2: the MP-ANIM channel. Outbound first (did we read
+        // anything at all), then per-peer inbound.
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-ANIM section=outbound reads={_combat.BodyStateReads} refused={_combat.BodyStateRefused} unknown_tags={_combat.BodyStateUnknownTags} disabled={(_bodyStateOff ? 1 : 0)}"));
+        foreach (var line in s.BodyStateSummaryLines()) Console.WriteLine(line);
         _ = ExecLuaAsync($"if KCD2MP_LogSummary then KCD2MP_LogSummary(\"{reason}\") end");
     }
 
@@ -1619,7 +1683,16 @@ public partial class GameBridge(ClientConfig config)
                         bool moved = !_hasPushed || HasChanged(x, y, z, rotZ);
                         _hasPushed = true;
                         _lastX = x; _lastY = y; _lastZ = z; _lastRotZ = rotZ; _lastRiding = riding;
-                        await SendPositionAsync(stream, x, y, z, rotZ, riding);
+                        // WO-100.5 Phase 2: published at the position stream's
+                        // own cadence, with no debouncing, smoothing or
+                        // hold-and-confirm. WO-100 S10.2 settled that live: the
+                        // MoveSpeed/MoveDir tags are stable continuous state
+                        // (6.3 s of unbroken run+forward at 50 ms) and the
+                        // earlier "flicker" was 300 ms sampling over tapped
+                        // keys. Adding smoothing here would be inventing a
+                        // problem the engine does not have.
+                        await SendPositionAsync(stream, x, y, z, rotZ, riding,
+                                                body: await ReadLocalBodyStateAsync(cts.Token));
                         if (moved)
                             Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
                     }
@@ -3590,10 +3663,11 @@ public partial class GameBridge(ClientConfig config)
                     long t2 = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(16));
                     OnClockSample(t0, t1, t2, t3);
                 }
-                else if (type == Protocol.Ghost && payloadLen == Protocol.GhostPayloadLen)
+                else if (type == Protocol.Ghost
+                         && (payloadLen == Protocol.GhostPayloadLen || payloadLen == Protocol.GhostPayloadLenV2))
                 {
                     // Ghost: [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
-                    // Length is exact now that the handshake pins the version.
+                    // WO-100.5 Phase 2 appends [pace:1][dir:1][stance:1][animSpeedCenti:2].
                     byte ghostId   = payload[0];
                     float x        = ReadFloat(payload, 1);
                     float y        = ReadFloat(payload, 5);
@@ -3601,6 +3675,23 @@ public partial class GameBridge(ClientConfig config)
                     float rotZ     = ReadFloat(payload, 13);
                     bool  isRiding = (payload[17] & Protocol.PositionFlagRiding) != 0;
                     bool  isStale  = (payload[17] & Protocol.PositionFlagStale) != 0;   // WO-99 Phase 1
+
+                    // Both conditions, not just the flag: a sender that sets
+                    // the bit but sends a short packet is a bug we must not
+                    // read past the end of.
+                    BodyState? body = null;
+                    if ((payload[17] & Protocol.PositionFlagBodyState) != 0
+                        && payloadLen == Protocol.GhostPayloadLenV2)
+                    {
+                        body = new BodyState(
+                            (BodyPace)payload[18], (BodyDir)payload[19], (BodyStance)payload[20],
+                            BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(21)));
+                        _stats.OnBodyState(ghostId, body.Value);
+                    }
+                    else if ((payload[17] & Protocol.PositionFlagBodyState) != 0)
+                    {
+                        _stats.BodyStateShortPackets++;
+                    }
                     // WO-59: a ghost id we have never seen this connection is
                     // a newly-arrived peer -- re-announce our clock so THEY
                     // converge too (our connect-time sync went out before
@@ -3637,7 +3728,7 @@ public partial class GameBridge(ClientConfig config)
                     }
                     _ghostLastPos[ghostId] = (x, y, z, DateTime.UtcNow);
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
-                    await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding);
+                    await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding, body);
                 }
                 else if (type == Protocol.Name && payloadLen >= 2)
                 {
@@ -4192,7 +4283,8 @@ public partial class GameBridge(ClientConfig config)
     // Game REST API helpers
     // -------------------------------------------------------------------------
 
-    private async Task UpdateGhostAsync(string ghostId, float x, float y, float z, float rotZ, bool isRiding)
+    private async Task UpdateGhostAsync(string ghostId, float x, float y, float z, float rotZ,
+                                        bool isRiding, BodyState? body = null)
     {
         string gx   = x.ToString("F2",  CultureInfo.InvariantCulture);
         string gy   = y.ToString("F2",  CultureInfo.InvariantCulture);
@@ -4200,9 +4292,17 @@ public partial class GameBridge(ClientConfig config)
         string rot  = rotZ.ToString("F4", CultureInfo.InvariantCulture);
         string ride = isRiding ? "true" : "false";
 
+        // WO-100.5 Phase 2: four extra arguments, appended. A pre-WO-100.5 pak
+        // has a 6-parameter KCD2MP_UpdateGhost and ignores the extras, so a
+        // mod/agent mismatch degrades to the old call rather than erroring --
+        // the same additive discipline the wire uses.
+        string tail = body is BodyState b
+            ? $",{(byte)b.Pace},{(byte)b.Dir},{(byte)b.Stance},{b.AnimSpeedCenti}"
+            : string.Empty;
+
         try
         {
-            await ExecLuaAsync($@"KCD2MP_UpdateGhost(""{ghostId}"",{gx},{gy},{gz},{rot},{ride})");
+            await ExecLuaAsync($@"KCD2MP_UpdateGhost(""{ghostId}"",{gx},{gy},{gz},{rot},{ride}{tail})");
             Console.WriteLine($"[ghost {ghostId}] {gx} {gy} {gz} riding={isRiding}");
         }
         catch { /* game might have unloaded */ }
@@ -5111,18 +5211,58 @@ public partial class GameBridge(ClientConfig config)
         await WritePacketAsync(stream, packet);
     }
 
-    private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ, bool isRiding, bool stale = false)
+    private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ,
+                                         bool isRiding, bool stale = false, BodyState? body = null)
     {
-        // 3 header + 17 payload = 20 bytes
-        var packet = new byte[3 + Protocol.PositionPayloadLen];
+        // WO-100.5 Phase 2: body state rides along when we have one, as five
+        // extra bytes behind a flag bit. Additive in the WO-99 STALE-bit shape:
+        // the packet is the old 17-byte one whenever body is null, so a peer
+        // that never gets a reading is byte-for-byte what every previous
+        // release sent.
+        int payloadLen = body.HasValue ? Protocol.PositionPayloadLenV2 : Protocol.PositionPayloadLen;
+        var packet = new byte[3 + payloadLen];
         packet[0] = Protocol.Position;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PositionPayloadLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payloadLen);
         WriteFloat(packet, 3,  x);
         WriteFloat(packet, 7,  y);
         WriteFloat(packet, 11, z);
         WriteFloat(packet, 15, rotZ);
-        packet[19] = (byte)((isRiding ? Protocol.PositionFlagRiding : 0) | (stale ? Protocol.PositionFlagStale : 0));
+        packet[19] = (byte)((isRiding ? Protocol.PositionFlagRiding : 0)
+                          | (stale    ? Protocol.PositionFlagStale   : 0)
+                          | (body.HasValue ? Protocol.PositionFlagBodyState : 0));
+        if (body is BodyState b)
+        {
+            packet[20] = (byte)b.Pace;
+            packet[21] = (byte)b.Dir;
+            packet[22] = (byte)b.Stance;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(23), b.AnimSpeedCenti);
+        }
         await WritePacketAsync(stream, packet);
+    }
+
+    /// <summary>
+    /// WO-100.5 Phase 2: the local player's Mannequin body state, or null.
+    /// Null is an ordinary outcome, not an error: no DLL, an older DLL, or a
+    /// refusal gate. The packet then goes out in its pre-WO-100.5 shape.
+    /// </summary>
+    private async Task<BodyState?> ReadLocalBodyStateAsync(CancellationToken ct)
+    {
+        if (_bodyStateOff) return null;
+        BodyState? b = null;
+        try { b = await _combat.ReadBodyStateAsync(0, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { /* the pipe reports its own faults; treat as a miss */ }
+
+        if (b is not null) { _bodyStateMisses = 0; return b; }
+        if (++_bodyStateMisses == BodyStateGiveUpAfter)
+        {
+            _bodyStateOff = true;
+            Console.WriteLine(
+                $"[anim] body state unavailable after {BodyStateGiveUpAfter} consecutive refusals -- " +
+                "not asking again this session. Peers will see this player's ghost on the legacy " +
+                "animation path. Usual cause: KCDMP.dll is older than this agent and has no 0x09 command.");
+        }
+        return null;
     }
 
     private async Task WritePacketAsync(NetworkStream stream, byte[] packet, CancellationToken ct = default)

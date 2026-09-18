@@ -803,8 +803,34 @@ public static class Protocol
     /// </summary>
     public const byte PositionFlagStale  = 0x02;
 
+    /// <summary>
+    /// WO-100.5 Phase 2: Position/Ghost flags bit: the packet carries five
+    /// extra BODY STATE bytes after the flags byte --
+    /// [pace:1][dir:1][stance:1][animSpeedCenti:2 LE].
+    ///
+    /// Additive in the WO-99 STALE-bit shape: the length dispatch accepts the
+    /// old length OR the new one, so a pre-WO-100.5 receiver sees a packet of
+    /// an unknown length and ignores it, and a pre-WO-100.5 SENDER simply
+    /// never sets the bit. Both halves degrade to exactly the old behaviour.
+    ///
+    /// The three enum bytes are OURS, keyed on Mannequin tag NAMES, never on
+    /// engine TagIDs -- a TagID is a position in a CTagDefinition rebuilt from
+    /// XML per build, which is precisely the table index WO-100 S6.5's rule
+    /// keeps off the wire.
+    /// </summary>
+    public const byte PositionFlagBodyState = 0x04;
+
+    /// <summary>WO-100.5: bytes appended when <see cref="PositionFlagBodyState"/> is set.</summary>
+    public const int BodyStateLen = 5;
+
+    /// <summary>WO-100.5: Position (0x01) payload length when body state rides along.</summary>
+    public const int PositionPayloadLenV2 = PositionPayloadLen + BodyStateLen;   // 22
+
     /// <summary>Exact Ghost (0x02) payload length.</summary>
     public const int GhostPayloadLen = 18;
+
+    /// <summary>WO-100.5: Ghost (0x02) payload length when body state rides along.</summary>
+    public const int GhostPayloadLenV2 = GhostPayloadLen + BodyStateLen;         // 23
 
     /// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
     public const int VoiceFrameLen = 640;
@@ -1340,4 +1366,63 @@ public enum SessionEndReason : byte
     TargetUnavailable = 0x06,
     /// <summary>Malformed or out-of-order request.</summary>
     ProtocolError = 0x07,
+}
+
+// ---------------------------------------------------------------------------
+// WO-100.5 Phase 2 -- the continuous body-state vocabulary.
+//
+// These three enums ARE the wire format for the five bytes
+// PositionFlagBodyState adds. They are mirrored, by number, in
+//   native/KCDMP/mannequin_read.h    (kPace* / kDir* / kStance*)
+//   kdcmp/Data/Scripts/Startup/kdcmp.lua (KCD2MP.bodyPaceName / DirName / StanceName)
+// and all three must change together.
+//
+// Keyed on Mannequin tag NAMES, not on engine TagIDs. A TagID is a position in
+// a CTagDefinition that is rebuilt from XML per build (WO-100 S1.3), so it is
+// exactly the kind of table index WO-100 S6.5's rule keeps off the wire. The
+// sender maps name -> ordinal; the receiver maps ordinal -> its own build's
+// tag BY NAME, and a name its build lacks is a specific, counted rejection
+// rather than a silently different tag.
+//
+// APPEND-ONLY. Renumbering one would make a mismatched pair misreport instead
+// of reporting "unknown".
+// ---------------------------------------------------------------------------
+
+/// <summary>WO-100.5: the Mannequin MoveSpeed group. There is no "jog" -- the engine's
+/// three paces are walk/run/sprint, with dash reserved for horses.</summary>
+public enum BodyPace : byte
+{
+    None = 0, Walk = 1, Run = 2, Sprint = 3, Dash = 4, Steps = 5,
+}
+
+/// <summary>WO-100.5: the Mannequin MoveDir group.</summary>
+public enum BodyDir : byte
+{
+    None = 0, Forward = 1, Backward = 2, Left = 3, Right = 4,
+}
+
+/// <summary>
+/// WO-100.5: a MOD-OWNED reduction of the Mannequin Stance group, not the group itself.
+/// The group has 38 tags, most of them scene furniture (hanushRailing,
+/// sittingVariation03); replicating all 38 is neither useful nor honest about
+/// what we can drive. Anything outside this list reports Other and the sender
+/// logs the real tag name once.
+/// "Upright" is the ABSENCE of any Stance tag, not a tag of its own.
+/// </summary>
+public enum BodyStance : byte
+{
+    Upright = 0, Stealth = 1, Sitting = 2, Lying = 3, Horse = 4, Leaning = 5, Other = 6,
+}
+
+/// <summary>WO-100.5: the five continuous body-state bytes, as read and as sent.</summary>
+public readonly record struct BodyState(BodyPace Pace, BodyDir Dir, BodyStance Stance, ushort AnimSpeedCenti)
+{
+    /// <summary>Animation-side speed in m/s. 0 means "not reported" -- see the
+    /// pseudo-speed note in native/KCDMP/mannequin_read.cpp: the PLAYER always
+    /// reads the engine's sentinel because C_Player overrides GetPseudoSpeed,
+    /// so this is real on NPC bodies and zero on the local player by design.</summary>
+    public float AnimSpeed => AnimSpeedCenti / 100f;
+
+    public override string ToString() =>
+        $"pace={Pace} dir={Dir} stance={Stance} animSpeed={AnimSpeed:F2}";
 }

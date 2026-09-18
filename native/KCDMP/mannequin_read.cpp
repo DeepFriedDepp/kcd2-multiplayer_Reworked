@@ -734,6 +734,145 @@ void sample_combat() {
     logf("%s", ms.line);
 }
 
+
+// ---------------------------------------------------------------------------
+// WO-100.5 Phase 2 -- the quiet, per-tick reduction used by the wire.
+//
+// Same chain, same five gates as sample(), minus every log line: this runs at
+// the position stream's cadence and a probe that logs per sample is a flood.
+// It refuses by returning false rather than by printing, and the CALLER counts
+// refusals (MP-ANIM read=refused) so a silent failure is still visible once.
+//
+// WO-100 S10.2 settled the sampling question live: MoveSpeed/MoveDir are
+// stable continuous state (6.3 s of unbroken run+forward at 50 ms), so there
+// is no debouncing, smoothing or hold-and-confirm here and there should not
+// be. The earlier "flicker" was 300 ms sampling over tapped keys.
+//
+// stopLegLeft / stopLegRight are deliberately NOT reduced into anything. They
+// alternate at footfall rate (~370 ms at a jog) and the receiver's own
+// animation system generates its own footfalls.
+// ---------------------------------------------------------------------------
+
+const char* const kStanceStealthNames[] = { "stealth" };
+const char* const kStanceSittingNames[] = { "sitting", "sittingGround", "sittingNoTable", "sittingOnTable" };
+const char* const kStanceLyingNames[]   = { "lying", "lyingGround" };
+const char* const kStanceHorseNames[]   = { "horse" };
+const char* const kStanceLeaningNames[] = { "leaning" };
+
+uint8_t pace_ordinal(const char* n) {
+    if (std::strcmp(n, "walk")   == 0) return kPaceWalk;
+    if (std::strcmp(n, "run")    == 0) return kPaceRun;
+    if (std::strcmp(n, "sprint") == 0) return kPaceSprint;
+    if (std::strcmp(n, "dash")   == 0) return kPaceDash;
+    if (std::strcmp(n, "steps")  == 0) return kPaceSteps;
+    return kPaceNone;
+}
+uint8_t dir_ordinal(const char* n) {
+    if (std::strcmp(n, "forward")  == 0) return kDirForward;
+    if (std::strcmp(n, "backward") == 0) return kDirBackward;
+    if (std::strcmp(n, "left")     == 0) return kDirLeft;
+    if (std::strcmp(n, "right")    == 0) return kDirRight;
+    return kDirNone;
+}
+
+} // namespace
+
+bool read_body_state(bool wantPlayer, uint32_t entityId, BodyState* out) {
+    if (!out) return false;
+    *out = BodyState{};
+
+    HMODULE entityModule = GetModuleHandleA("EntityModule.dll");
+    HMODULE cryAction    = GetModuleHandleA("CryAction.dll");
+    if (!entityModule || !cryAction) return false;
+    const std::vector<ExportEntry> exports = module_exports(entityModule);
+    if (exports.empty()) return false;
+
+    void* actor = resolve_actor(entityModule, exports, wantPlayer, entityId);
+    if (!actor) return false;
+
+    void* animActor = nullptr;
+    if (!call_vtbl_ptr(actor, kVtblGetAnimatedActor, &animActor) || !animActor) return false;
+    void* ctrl = nullptr;
+    if (!call_vtbl_ptr(animActor, kVtblGetActionController, &ctrl) || !ctrl) return false;
+
+    // Gate 3: class identity. On any class other than CActionController the
+    // +0xB0 hop returns something else and would decode a plausible lie.
+    void* vptr = nullptr;
+    if (!read_ptr(ctrl, 0, &vptr)) return false;
+    if (vptr != reinterpret_cast<char*>(cryAction) + kRvaCActionControllerVtbl) return false;
+
+    void* ctx = nullptr;
+    if (!call_vtbl_ptr(ctrl, kVtblGetContext, &ctx) || !ctx) return false;
+
+    // Gate 4: the two independent routes to the tag definition must agree.
+    void* ctrlDef = nullptr, *viaCtrlDef = nullptr, *viaCtx = nullptr;
+    if (!read_ptr(ctx, kOffCtxControllerDef, &ctrlDef) || !ctrlDef ||
+        !read_ptr(ctrlDef, kOffCtrlDefTagDefs, &viaCtrlDef) ||
+        !read_ptr(ctx, kOffCtxTagDefs, &viaCtx)) return false;
+    if (viaCtrlDef != viaCtx) return false;
+
+    TagDefs defs{};
+    if (!load_tag_defs(viaCtx, &defs)) return false;
+
+    uint8_t state[kTagStateBytes]{};
+    if (!copy_bytes(static_cast<const char*>(ctx) + kOffCtxTagState, state, sizeof(state))) return false;
+
+    int unknown = 0;
+    bool sawStance = false;
+    for (int i = 0; i < defs.tagCount; ++i) {
+        TagInfo t{};
+        if (!load_tag(defs, i, &t)) { ++unknown; continue; }
+        const int set = tag_is_set(defs, t, state);
+        if (set < 0) { ++unknown; continue; }
+        if (!set) continue;
+
+        if (const uint8_t p = pace_ordinal(t.name)) out->pace = p;
+        if (const uint8_t d = dir_ordinal(t.name))  out->dir  = d;
+
+        if (in_list(t.name, kStanceStealthNames, _countof(kStanceStealthNames))) { out->stance = kStanceStealth; sawStance = true; }
+        else if (in_list(t.name, kStanceSittingNames, _countof(kStanceSittingNames))) { out->stance = kStanceSitting; sawStance = true; }
+        else if (in_list(t.name, kStanceLyingNames,   _countof(kStanceLyingNames)))   { out->stance = kStanceLying;   sawStance = true; }
+        else if (in_list(t.name, kStanceHorseNames,   _countof(kStanceHorseNames)))   { out->stance = kStanceHorse;   sawStance = true; }
+        else if (in_list(t.name, kStanceLeaningNames, _countof(kStanceLeaningNames))) { out->stance = kStanceLeaning; sawStance = true; }
+        else if (!sawStance && in_list(t.name, kStance, _countof(kStance))) {
+            // A Stance-group tag we do not replicate. Report it as "other"
+            // rather than as upright, and name it once so a field log says
+            // WHICH one rather than leaving a silent downgrade.
+            out->stance = kStanceOther;
+            static char lastOther[64]{};
+            if (std::strcmp(lastOther, t.name) != 0) {
+                strncpy_s(lastOther, t.name, _TRUNCATE);
+                logf("MANN-BODY: unreplicated stance tag \"%s\" -> stance=other", t.name);
+            }
+        }
+    }
+
+    // Animation-side speed. WO-100 S10.3 proved both halves of the caveat:
+    // this field is populated on an ordinary actor and the PLAYER always reads
+    // the -1.0 sentinel, because C_Player overrides GetPseudoSpeed.
+    //
+    // DECISION (WO-100.5 Phase 2 item 4): leave the vtable override alone and
+    // send 0 for the sentinel. Pace and direction come from the tags, which
+    // are the authoritative locomotion signal, so the channel costs nothing
+    // without it -- and reaching through a vtable override to recover a
+    // redundant scalar is a native call added for no behaviour. The field
+    // stays on the wire because it is free and it is real on NPC bodies, which
+    // is where the puppet path will want it.
+    float pseudo = -1.0f;
+    void* aiAnim = nullptr;
+    if (read_ptr(actor, kOffActorAiAnim, &aiAnim) && aiAnim)
+        read_f32(aiAnim, kOffAiAnimPseudoSpeed, &pseudo);
+    if (pseudo > 0.0f) {
+        const float centi = pseudo * 100.0f;
+        out->animSpeedCenti = (centi >= 65535.0f) ? 65535u : static_cast<uint16_t>(centi);
+    }
+
+    out->unknownTags = (unknown > 255) ? 255 : static_cast<uint8_t>(unknown);
+    return true;
+}
+
+namespace {
+
 } // namespace
 
 void tag_watch() {

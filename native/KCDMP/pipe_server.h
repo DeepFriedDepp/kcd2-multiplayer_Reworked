@@ -39,6 +39,19 @@
 //                        disarms the feature for the rest of the process; a
 //                        ghost spawn is never blocked by it).
 //
+//     0x09 ReadBodyState [entityId:4 LE]           -> replies 0x85   (4)
+//                        WO-100.5 Phase 2: read one actor's live Mannequin
+//                        tag state and reduce it to the four continuous wire
+//                        fields (pace / dir / stance / animSpeed).
+//                        entityId 0 means "the local player". STRICTLY
+//                        READ-ONLY -- three virtual getters the game calls
+//                        every frame, then plain memory reads; the same five
+//                        refusal gates WO-100 Phase 0 shipped.
+//                        Queried at the position stream's own cadence, so it
+//                        must stay quiet: refusals are reported through the
+//                        reply's ok byte and counted by the agent, not logged
+//                        per sample.
+//
 //     0x08 ConceptProbe [path:N utf8, no NUL, may be empty]        (0..480)
 //                        WO-97: read-only probe of the quest concept tree.
 //                        Enumerates C_ConceptManager's root modules by name
@@ -53,6 +66,14 @@
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
 //     0x83 Pong         []
+//     0x85 BodyState    [ok:1][seq:1][pace:1][dir:1][stance:1]
+//                       [animSpeedCenti:2 LE][unknownTags:1]        (8)
+//                        WO-100.5 Phase 2. seq sits at body[1], exactly where
+//                        the Result frame carries it, so the agent's
+//                        sequence-matching (WO-100 S3.1) applies unchanged.
+//                        ok=0 means a gate refused; every other field is then
+//                        meaningless and the agent must not send one.
+//
 //     0x84 ClosureInfo  [ok:1][nativeAddr:8][rva:4]
 //                        [moduleNameLen:1][moduleName:N]
 //                        [nameLen:1][name:N]
@@ -96,9 +117,11 @@ constexpr uint8_t kResolveLuaClosure  = 0x05;
 constexpr uint8_t kGhostSwing         = 0x06;
 constexpr uint8_t kGhostIsolate       = 0x07;
 constexpr uint8_t kConceptProbe       = 0x08;   // WO-97, read-only
+constexpr uint8_t kReadBodyState      = 0x09;   // WO-100.5 Phase 2, read-only
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;
+constexpr uint8_t kBodyState          = 0x85;   // WO-100.5 Phase 2
 constexpr uint8_t kLocalHit           = 0x90;
 
 constexpr int kGuidLen                  = 16;
@@ -110,6 +133,7 @@ constexpr int kGhostSwingMinLen         = 4 + 1;      // entityId + at least one
 constexpr int kGhostSwingMaxLen         = 4 + 191;    // spec cap matches combat_swing.h
 constexpr int kGhostIsolateLen          = kGuidLen + 1;
 constexpr int kConceptProbeMaxLen       = 480;    // matches concept_read.cpp's kMaxPath
+constexpr int kReadBodyStateLen         = 4;      // entityId LE; 0 means "the player"
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not
