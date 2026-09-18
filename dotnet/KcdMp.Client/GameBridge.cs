@@ -3713,30 +3713,23 @@ public partial class GameBridge(ClientConfig config)
                 {
                     // Ghost: [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
                     // WO-100.5 Phase 2 appends [pace:1][dir:1][stance:1][animSpeedCenti:2].
-                    byte ghostId   = payload[0];
-                    float x        = ReadFloat(payload, 1);
-                    float y        = ReadFloat(payload, 5);
-                    float z        = ReadFloat(payload, 9);
-                    float rotZ     = ReadFloat(payload, 13);
-                    bool  isRiding = (payload[17] & Protocol.PositionFlagRiding) != 0;
-                    bool  isStale  = (payload[17] & Protocol.PositionFlagStale) != 0;   // WO-99 Phase 1
+                    // WO-101: decoded by PositionCodec, shared with the relay
+                    // round-trip gate; the length was already gated above.
+                    PositionCodec.TryDecodeGhost(payload.AsSpan(0, payloadLen), out var gs);
+                    byte ghostId   = gs.GhostId;
+                    float x        = gs.X;
+                    float y        = gs.Y;
+                    float z        = gs.Z;
+                    float rotZ     = gs.RotZ;
+                    bool  isRiding = gs.IsRiding;
+                    bool  isStale  = gs.IsStale;   // WO-99 Phase 1
 
                     // Both conditions, not just the flag: a sender that sets
                     // the bit but sends a short packet is a bug we must not
-                    // read past the end of.
-                    BodyState? body = null;
-                    if ((payload[17] & Protocol.PositionFlagBodyState) != 0
-                        && payloadLen == Protocol.GhostPayloadLenV2)
-                    {
-                        body = new BodyState(
-                            (BodyPace)payload[18], (BodyDir)payload[19], (BodyStance)payload[20],
-                            BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(21)));
-                        _stats.OnBodyState(ghostId, body.Value);
-                    }
-                    else if ((payload[17] & Protocol.PositionFlagBodyState) != 0)
-                    {
-                        _stats.BodyStateShortPackets++;
-                    }
+                    // read past the end of. The codec applies that rule.
+                    BodyState? body = gs.Body;
+                    if (body is BodyState bs) _stats.OnBodyState(ghostId, bs);
+                    else if (gs.BodyStateShort) _stats.BodyStateShortPackets++;
                     // WO-59: a ghost id we have never seen this connection is
                     // a newly-arrived peer -- re-announce our clock so THEY
                     // converge too (our connect-time sync went out before
@@ -5302,26 +5295,9 @@ public partial class GameBridge(ClientConfig config)
         // extra bytes behind a flag bit. Additive in the WO-99 STALE-bit shape:
         // the packet is the old 17-byte one whenever body is null, so a peer
         // that never gets a reading is byte-for-byte what every previous
-        // release sent.
-        int payloadLen = body.HasValue ? Protocol.PositionPayloadLenV2 : Protocol.PositionPayloadLen;
-        var packet = new byte[3 + payloadLen];
-        packet[0] = Protocol.Position;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payloadLen);
-        WriteFloat(packet, 3,  x);
-        WriteFloat(packet, 7,  y);
-        WriteFloat(packet, 11, z);
-        WriteFloat(packet, 15, rotZ);
-        packet[19] = (byte)((isRiding ? Protocol.PositionFlagRiding : 0)
-                          | (stale    ? Protocol.PositionFlagStale   : 0)
-                          | (body.HasValue ? Protocol.PositionFlagBodyState : 0));
-        if (body is BodyState b)
-        {
-            packet[20] = (byte)b.Pace;
-            packet[21] = (byte)b.Dir;
-            packet[22] = (byte)b.Stance;
-            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(23), b.AnimSpeedCenti);
-        }
-        await WritePacketAsync(stream, packet);
+        // release sent. WO-101: the bytes come from PositionCodec so the relay
+        // round-trip gate sends exactly what this method sends.
+        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, body));
     }
 
     /// <summary>

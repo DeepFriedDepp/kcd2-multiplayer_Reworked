@@ -6,7 +6,7 @@ using Serilog;
 
 namespace KcdMp.Server;
 
-class Program
+public class Program
 {
 	/// <summary>
 	/// Maps the pre-refactor CLI flags onto configuration keys, so
@@ -23,6 +23,21 @@ class Program
 	/// The server's entry point.
 	/// </summary>
 	static async Task Main(string[] args)
+	{
+		await using var app = CreateApp(args);
+		await app.RunAsync();
+	}
+
+	/// <summary>
+	/// Builds the relay exactly as <see cref="Main"/> runs it -- same services,
+	/// same configuration sources -- without starting it. WO-101: this is what
+	/// the loopback round-trip gate (dotnet/KcdMp.Relay.Tests) hosts
+	/// in-process, so the test exercises the REAL ClientSession /
+	/// TcpBroadcastService code path over a real socket, not a copy of it.
+	/// Pass "--port", "0"-free values only: TcpSocketService binds the port
+	/// it is given.
+	/// </summary>
+	public static WebApplication CreateApp(string[] args)
 	{
 		args = NormaliseArgs(args);
 
@@ -52,12 +67,12 @@ class Program
 		builder.Services.AddSingleton<TcpBroadcastService>();
 		builder.Services.AddSingleton<SessionManager>();
 
-		await using var app = builder.Build();
+		var app = builder.Build();
 
 		// Map controller routs
 		app.MapControllers();
 
-		await app.RunAsync();
+		return app;
 	}
 
 	/// <summary>

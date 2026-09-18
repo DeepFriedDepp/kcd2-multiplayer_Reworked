@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WO-101: the relay round-trip gate. Hosts the REAL relay (KcdMp.Server's
+    Program.CreateApp) in-process on a loopback port, connects real TCP peers,
+    and proves packets cross it intact using the shipped agent's own codec.
+    See RelayRoundTripTests.cs's header: this is a pre-ship gate, not an
+    optional suite. tools/Build-Installer.ps1 runs it before publishing.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="KcdMp.Wire" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KcdMp.Server\KcdMp.Server.csproj" />
+    <ProjectReference Include="..\KcdMp.Client\KcdMp.Client.csproj" />
+  </ItemGroup>
+
+</Project>

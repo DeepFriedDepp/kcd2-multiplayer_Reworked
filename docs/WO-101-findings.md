@@ -148,3 +148,42 @@ ItemClaimUp, PlayerDeathUp (0 → Down 1). All consistent.
 verbatim behind a source byte; none re-derives a length from a constant. The
 Position/Ghost pair was the single exception — it re-encoded from parsed
 fields with a hard-coded `new byte[18]` — and that is now gone.
+
+## 2. The gate that would have caught it
+
+`dotnet/KcdMp.Relay.Tests/RelayRoundTripTests.cs` — **a standing pre-ship
+gate**, run by `tools/Build-Installer.ps1` before it publishes anything. Its
+header comment states the rule: any packet-shape change gains a case here and
+passes, in both lengths, before a build ships.
+
+* Hosts the **real relay** in-process: `Program.CreateApp(args)` (new, same DI
+  graph `Main` runs) on free loopback TCP + HTTP ports; real `TcpClient` peers
+  speak the real handshake and read the Ack.
+* Sends with the **shipped agent code**: `PositionCodec.BuildPosition` (new
+  file, extracted from `GameBridge.SendPositionAsync`, which now calls it) and
+  `ActionOutbox.Build`. Decodes with the shipped agent code:
+  `PositionCodec.TryDecodeGhost` (extracted from the Ghost receive branch,
+  which now calls it) and `ActionInbox.Accept`.
+* Cases (10, all (synthetic)):
+  * V2 Position with body state → Ghost of 23 bytes, all five body bytes
+    equal, sender id, coords, flags.
+  * 17-byte Position → Ghost of 18 bytes, body null, flags intact — **the
+    negative**: mixed-version degradation still works.
+  * STALE heartbeat → flag survives.
+  * 20-byte Position → dropped, framing survives, exactly one Ghost for the
+    valid packet behind it.
+  * Sender never receives its own Ghost.
+  * Action `0x3B`→`0x3C` with a 4-byte payload → `ActionInbox` accepts,
+    payload equal, source id equal; header-only action (the other valid
+    length) → accepted; a lying `len` byte → dropped.
+  * CombatEvent 1 and 3 bytes → both forwarded verbatim.
+* **Proof it bites:** with `ClientSession.cs` + `TcpBroadcastService.cs`
+  checked out at `d663f15` (the 0.23.1 relay) and everything else current,
+  the gate fails exactly `V2_position_with_body_state_arrives_intact` and
+  `Sender_does_not_receive_its_own_ghost` (both send V2) and passes the eight
+  old-length cases — the field symptom, reproduced on loopback. (synthetic)
+* Agent unit tests after the codec extraction: 127/127. (synthetic)
+
+Not proven here, by construction: that the live agent's `body` is non-null in
+the field (the DLL read) — but §0.5's `MP-ANIM reads=1703 refused=0` already
+shows that (observed).

@@ -60,6 +60,19 @@ $payload = Join-Path $root "release\KCDMP"
 if ($LASTEXITCODE -ne 0) { throw "Build-And-Install-Mod.ps1 failed (is the game running?)" }
 
 if (-not $SkipPublish) {
+    # WO-101: the relay round-trip gate. 0.23.1 shipped a Position packet
+    # shape the relay silently dropped; 111 unit tests passed because none of
+    # them opened a socket to the relay. This hosts the real relay in-process
+    # and proves every multi-length packet crosses it intact, in both lengths.
+    # It is NOT optional: a packet-shape change that fails here does not ship.
+    if (-not $env:DOTNET_ROOT) {
+        $env:DOTNET_ROOT = "$env:USERPROFILE\.dotnet-sdk8"
+        $env:PATH = "$env:DOTNET_ROOT;$env:PATH"
+    }
+    Write-Host "Relay round-trip gate (dotnet\KcdMp.Relay.Tests) ..."
+    & dotnet test (Join-Path $root "dotnet\KcdMp.Relay.Tests\KcdMp.Relay.Tests.csproj") -c Release --nologo -v q
+    if ($LASTEXITCODE -ne 0) { throw "relay round-trip gate FAILED -- a packet does not cross the real relay. Not shipping." }
+
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Publish-Release.ps1 failed" }
 }
