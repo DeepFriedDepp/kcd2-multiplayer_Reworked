@@ -733,10 +733,13 @@ model they test ships as `mp_authority_host_off`. All unchanged in count.
 other" (WO-101's class). The matched-set rule still applies because a mixed
 pair is not running the model the release notes describe.
 
-### 8.2 Build — waiting on the version string
+### 8.2 Build — 0.24.0
 
-Everything above is pushed to `origin main` and `rollback/0.23.2` is tagged
-at `4d720cf` (the last 0.23.2 commit, one docs change after the `eb4b8dc`
-the installer was built from). The fresh-clone build, README badge, release
-notes, pak check and privacy sweep run once the maintainer names the version
-(docs/VERSIONING.md: never chosen by a session).
+Version **0.24.0**, named by the maintainer. `rollback/0.23.2` is tagged at
+`4d720cf` (the last 0.23.2 commit, one docs change after the `eb4b8dc` the
+0.23.2 installer was built from) and pushed. Built from a fresh clone of
+`origin main` at `93aaf8c`: three gates green inside the clone (relay 12/12,
+agent 150/150, Lua 109/109), `KCDMP-Setup-0.24.0.exe` 100,562,717 bytes,
+sha256 `967CF2B0…BA18A9`, privacy sweep 1023 files / zero first-party hits,
+shipped pak Lua content-identical to the repo with every WO-102 marker
+present. Details in `docs/WO-102-progress.md`.
