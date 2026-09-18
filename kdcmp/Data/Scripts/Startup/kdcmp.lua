@@ -66,6 +66,29 @@ KCD2MP.ghostsIgnorant = true
 -- live-verified 2026-08-27. The script-context half (the real crime fix) has
 -- no Lua-reachable setter here; see KCD2MP_ApplyGhostIsolation.
 KCD2MP.ghostIsolate = true
+-- WO-100.5 Phase 0: spawn ghosts as NPC_NAI (the shipped "NPC, no AI" class)
+-- instead of NPC. A ghost is the body representing the REMOTE player on this
+-- machine; spawning it as NPC gives it a local brain, and that brain
+-- improvises (WO-26: it engages reactively with no toggle). That is the other
+-- player's body acting without the other player -- a desync source, not a
+-- feature -- and it is the local writer in WO-98's sub-metre tug-of-war
+-- against the position stream.
+--
+-- NPC_NAI keeps the same Mannequin controller def, the same animation
+-- database, the same body and clothing config, and still takes a soul and a
+-- faction (diff against NPC.lua, WO-100 S5.2; live-confirmed WO-100 S10.6 --
+-- it spawns, is a full actor with a soul, and has its own action controller
+-- sharing the player's tag definition object).
+--
+-- What it loses, and the reason this is a toggle rather than a constant:
+-- bWH_PerceptibleObject is gone, so other NPCs may not perceive it at all.
+-- Off restores the NPC class exactly.
+--
+-- NOTE: there is no NPC_NAI_Female in this build (code-verified: WHGame.dll
+-- carries only NPC_Female and NPC_NAI). Since WO-69 the roster is male-only
+-- and KCD2MP_PickFaceForPlayer always returns "NPC", so the swap is total
+-- today -- but a future female roster entry must NOT be swapped.
+KCD2MP.ghostNai = false
 KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
 KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
@@ -4049,11 +4072,14 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     -- of the aggro toggle (WO-26). The toggle's own effect is a separate,
     -- additive native hostile-faction attach applied at hit-time, not at
     -- spawn (WO-27) -- see KCD2MP_EnableAggro above.
+    -- WO-100.5 Phase 0: one decision, used by every spawn path below and by
+    -- the spawn-verify comparison, so mp_ghost_nai cannot be half-applied.
+    local ghostClass = KCD2MP_GhostClassName(facePick.className)
     local entity = nil
     pcall(function()
         XGenAIModule.SpawnEntity{
             Name           = name,
-            ClassName      = facePick.className,
+            ClassName      = ghostClass,
             Pos            = {x, y, z},
             SharedSoulGuid = facePick.guid,
         }
@@ -4062,13 +4088,13 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     if not entity then
         System.LogAlways("[KCD2-MP] XGenAI spawn failed, fallback System.SpawnEntity")
         local ok2, e2 = pcall(System.SpawnEntity, {
-            class = facePick.className, position = pos, name = name,
+            class = ghostClass, position = pos, name = name,
             properties = { esFaction = "Civilians", guidSharedSoulId = facePick.guid },
         })
         if ok2 then entity = e2 end
     end
     System.LogAlways(string.format("[KCD2-MP] face pick for '%s': key=%s class=%s soul=%s guid=%s",
-        id, faceKey, facePick.className, facePick.soulName, facePick.guid))
+        id, faceKey, ghostClass, facePick.soulName, facePick.guid))
 
     if not entity then
         System.LogAlways("[KCD2-MP] SpawnEntity failed for ghost id=" .. tostring(id))
@@ -4098,7 +4124,7 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     pcall(function() resolvedSoul  = entity.soul and entity.soul.name end)
     System.LogAlways(string.format(
         "[KCD2-MP] spawn verify ghost '%s': requested class=%s soul=%s guid=%s | resolved class=%s soul=%s",
-        tostring(id), facePick.className, facePick.soulName, facePick.guid,
+        tostring(id), ghostClass, facePick.soulName, facePick.guid,
         tostring(resolvedClass), tostring(resolvedSoul)))
 
     -- WO-90: does this body actually HAVE a model?
@@ -4132,23 +4158,24 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         System.LogAlways("[KCD2-MP] spawn model ghost '" .. tostring(id) .. "': " .. tostring(cdf))
     end
 
-    if resolvedClass ~= nil and tostring(resolvedClass) ~= facePick.className then
+    if resolvedClass ~= nil and tostring(resolvedClass) ~= ghostClass then
         -- Loud: this is the failure mode that produced the field report and
         -- then hid from four sessions of logs.
         System.LogAlways(string.format(
             "[KCD2-MP] SPAWN MISMATCH ghost '%s': asked for class=%s, engine built class=%s"
             .. " -- respawning once on the deterministic fallback soul %s",
-            tostring(id), facePick.className, tostring(resolvedClass),
+            tostring(id), ghostClass, tostring(resolvedClass),
             KCD2MP.faceFallback.soulName))
         mp_remove_entity_verified(entity.id, name, "mismatched ghost " .. tostring(id))
         entity = nil
         -- Exactly one re-attempt, never a loop, and never the engine default:
         -- a named male commoner whose guid is checked into this file.
         facePick = KCD2MP.faceFallback
+        ghostClass = KCD2MP_GhostClassName(facePick.className)
         pcall(function()
             XGenAIModule.SpawnEntity{
                 Name           = name,
-                ClassName      = facePick.className,
+                ClassName      = ghostClass,
                 Pos            = {x, y, z},
                 SharedSoulGuid = facePick.guid,
             }
@@ -6859,6 +6886,36 @@ function KCD2MP_SpawnTest()
     KCD2MP_SpawnGhost("test_ghost", pos.x + ox, pos.y + oy, pos.z, ang and ang.z or 0)
 end
 
+-- WO-100.5 Phase 0: the side-by-side the perception question needs.
+-- Spawns TWO ghosts through the ordinary ghost path -- one NPC_NAI, one NPC --
+-- three metres apart in front of the player, so "do other NPCs react to it?"
+-- is a comparison in one scene rather than two runs separated by a respawn.
+-- Both go through KCD2MP_SpawnGhost, so this also exercises item 4: whether
+-- the class swap survives the roster's face-mapping and soul assignment.
+-- Remove them with mp_remove_all.
+function KCD2MP_Wo1005NaiAB()
+    if not player then System.LogAlways("[KCD2-MP] NAI-AB: no player"); return end
+    local pos = player:GetWorldPos()
+    if not pos then System.LogAlways("[KCD2-MP] NAI-AB: no player position"); return end
+    local ang = nil
+    pcall(function() ang = player:GetWorldAngles() end)
+    local az = ang and ang.z or 0
+    local fx, fy = math.sin(az), math.cos(az)
+    -- perpendicular, so the two stand beside each other facing the player
+    local px, py = math.cos(az), -math.sin(az)
+
+    local was = KCD2MP.ghostNai
+    System.LogAlways("[KCD2-MP] NAI-AB: spawning nai_probe (NPC_NAI) and npc_probe (NPC)."
+        .. " Watch both for guard reaction, crowd parting and head-tracking;"
+        .. " then grep kcd.log for 'Registering NPC kcd2mp_' and behaviour-tree role errors.")
+    KCD2MP.ghostNai = true
+    KCD2MP_SpawnGhost("nai_probe", pos.x + fx * 4 + px * 1.5, pos.y + fy * 4 + py * 1.5, pos.z, az)
+    KCD2MP.ghostNai = false
+    KCD2MP_SpawnGhost("npc_probe", pos.x + fx * 4 - px * 1.5, pos.y + fy * 4 - py * 1.5, pos.z, az)
+    KCD2MP.ghostNai = was
+    System.LogAlways("[KCD2-MP] NAI-AB: done; mp_ghost_nai restored to " .. tostring(was))
+end
+
 function KCD2MP_InspectGhost()
     local ghost = nil
     for _, g in pairs(KCD2MP.ghosts) do ghost = g; break end
@@ -8010,6 +8067,36 @@ end
 KCD2MP.faceFallback = { className = "NPC", soulName = "ttkc_man_26",
                         guid = "cfa65480-f361-4cf8-80c5-1900b7846bc8" }
 
+-- WO-100.5 Phase 0: the one place that decides a ghost's entity class.
+-- Every spawn site calls this rather than reading facePick.className, so the
+-- toggle cannot be half-applied (the spawn, the System.SpawnEntity fallback,
+-- the fallback respawn and the spawn-verify comparison all agree by
+-- construction). Only "NPC" is swapped: NPC_NAI has no female variant in this
+-- build, so anything else passes through untouched.
+function KCD2MP_GhostClassName(baseClass)
+    local c = tostring(baseClass or "NPC")
+    if KCD2MP.ghostNai and c == "NPC" then return "NPC_NAI" end
+    return c
+end
+
+-- mp_ghost_nai on|off. Argless commands only: the console drops arguments
+-- (live-verified -- "mp_x 35" answers "Too many arguments" and a bare call
+-- passes the literal %LINE), so every toggle since WO-17 that took on|off
+-- only ever worked as #Lua. These do not.
+--
+-- The class is chosen at spawn, so a flip does not move live ghosts; it takes
+-- effect on the next spawn. Stated in the log rather than silently true.
+function KCD2MP_SetGhostNai(on)
+    KCD2MP.ghostNai = on and true or false
+    local n = 0
+    for _ in pairs(KCD2MP.ghosts or {}) do n = n + 1 end
+    System.LogAlways(string.format(
+        "[KCD2-MP] mp_ghost_nai=%s -- ghosts spawn as %s from now on."
+        .. " %d ghost(s) already in the world keep the class they were built with;"
+        .. " respawn them (mp_remove_all, or a reconnect) to apply this.",
+        tostring(KCD2MP.ghostNai), KCD2MP_GhostClassName("NPC"), n))
+end
+
 -- Split "a,b,c" -> {"a","b","c"}, trims whitespace
 local function splitCSV(s)
     local parts = {}
@@ -9026,6 +9113,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_probe_dialog", "KCD2MP_ProbeDialog()",   "WO-88: log whether human:IsInDialog / Dialog.IsSoulInDialog exist and what they read right now -- run inside and outside a conversation; read-only")
     System.AddCCommand("mp_probe_contexts", "KCD2MP_ProbeContexts()", "WO-65: dump script-context isolation surface (Contexts global, soul/human methods, per-context HasScriptContext on ghost + player) -- read-only")
     System.AddCCommand("mp_ghost_isolate", 'KCD2MP_SetGhostIsolate("%LINE")', "WO-65: ghost civic isolation (default on). On this build: RestrictDialog+InterruptDialogs only -- the script-context crime fix has no Lua setter here: mp_ghost_isolate on|off")
+    System.AddCCommand("mp_ghost_nai_on",  "KCD2MP_SetGhostNai(true)",  "WO-100.5: spawn ghosts as NPC_NAI (no local brain, no contention with the position stream). Applies to the NEXT spawn")
+    System.AddCCommand("mp_ghost_nai_off", "KCD2MP_SetGhostNai(false)", "WO-100.5: spawn ghosts as the ordinary NPC class (brain and perception, WO-26 reactive combat)")
+    System.AddCCommand("mp_nai_ab",        "KCD2MP_Wo1005NaiAB()",      "WO-100.5: spawn one NPC_NAI ghost and one NPC ghost side by side, for the perception comparison")
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
     System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     -- mp_spawn_armor <guid1,guid2,...>  -- inventory only (no visual unless preset given as 2nd arg)

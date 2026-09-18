@@ -8,6 +8,7 @@
 #include "log.h"
 #include "main_thread.h"
 #include "mannequin_read.h"
+#include "combat_write.h"
 #include "pipe_server.h"
 #include "script_context.h"
 
@@ -164,6 +165,10 @@ DWORD WINAPI plugin_main(LPVOID) {
     // session while the maintainer walks, jogs, sprints and crouches, and the
     // pipe (nMaxInstances = 1) is occupied by the agent for the whole session.
     kcdmp::main_thread::post_repeating(&kcdmp::mannequin::tag_watch);
+    // WO-100.5 Phase 1: the first combat WRITE. Same file-watched shape, but
+    // ONE-SHOT rather than periodic -- a write that repeats at the tick rate
+    // is a hook, not a probe. Idle until kcdmp-combatwrite.txt names a command.
+    kcdmp::main_thread::post_repeating(&kcdmp::combatwrite::write_watch);
 
     kcdmp::pipe::start();
     return 0;
