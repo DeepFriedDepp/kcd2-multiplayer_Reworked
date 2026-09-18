@@ -3428,10 +3428,21 @@ function KCD2MP_NpcScanCompare()
     pcall(function() pp = player:GetWorldPos() end)
     if not pp then mp_log("MP-NPCSCAN dir=compare verdict=no-pos"); return end
 
-    local enterRadius = KCD2MP.npcSync.radius
+    -- WO-102.5 field session, 2026-09-18: this used to hardcode
+    -- npcSync.radius (30m, the claim-model bound) regardless of authority
+    -- state, while the native scan itself is requested at
+    -- wo1025.authorityRadius (45m default) -- under host authority the two
+    -- sides were being compared at different radii, which made
+    -- only_native look inflated by every real NPC between 30m and the
+    -- authority radius. only_lua stayed correct regardless (a smaller-radius
+    -- Lua set is trivially a subset of a larger-radius native one), so the
+    -- safety-critical verdict was never wrong, only the only_native count's
+    -- readability. Matches mp_npc_rescan's own radius choice exactly now.
+    local underHostAuthorityCmp = KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn
+    local enterRadius = underHostAuthorityCmp and KCD2MP.wo1025.authorityRadius or KCD2MP.npcSync.radius
     local exitRadius = enterRadius * NPC_TRACK_EXIT_FACTOR
     local anchors = { pp }
-    if KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn then
+    if underHostAuthorityCmp then
         for _, g in pairs(KCD2MP.ghosts or {}) do
             local gp = nil
             pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
