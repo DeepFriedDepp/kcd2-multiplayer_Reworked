@@ -447,6 +447,19 @@ public class ClientHandler
 	private long _claimGrants, _claimReleases, _claimReassignments, _claimContested;
 	private readonly Dictionary<string, long> _claimContestedByNpc = [];
 
+	// ---- WO-102 Phase 2 authority instrumentation ----
+	//
+	// The one lifecycle event the relay never logged: the damage authority's
+	// own stream for a claimed name being MUTED. That is the authority's
+	// implicit "request" being denied, and WO-98 S2 could not tell client-side
+	// from relay-side bias without it. Logged ONCE per claim ([CLAIM] muted),
+	// counted per packet; _mutedLogged is cleared with the claim (release,
+	// disconnect, reclaim) so a new claim logs again. _claimPackets counts the
+	// owner's accepted refreshes per claim and rides on the release line.
+	private long _authorityMutedClaims, _authorityMutedPackets;
+	private readonly HashSet<string> _mutedLogged = [];
+	private readonly Dictionary<string, long> _claimPackets = [];
+
 	/// <summary>Snapshot of the WO-81 claim-lifecycle counters.</summary>
 	public NpcClaimCounters GetNpcClaimCounters()
 	{
@@ -456,7 +469,9 @@ public class ClientHandler
 				Interlocked.Read(ref _claimReleases),
 				Interlocked.Read(ref _claimReassignments),
 				Interlocked.Read(ref _claimContested),
-				new Dictionary<string, long>(_claimContestedByNpc));
+				new Dictionary<string, long>(_claimContestedByNpc),
+				Interlocked.Read(ref _authorityMutedClaims),
+				Interlocked.Read(ref _authorityMutedPackets));
 	}
 
 	/// <summary>
@@ -517,21 +532,38 @@ public class ClientHandler
 			{
 				_npcClaims.Remove(npcName);
 				claimed = false;
+				_claimPackets.TryGetValue(npcName, out long expiredPackets);
+				_claimPackets.Remove(npcName);
+				_mutedLogged.Remove(npcName);
 
 				if (_claimLifecycleLoggingEnabled)
 				{
 					_recentReleases[npcName] = (claim.OwnerId, claim.LastUtc);
 					Interlocked.Increment(ref _claimReleases);
-					_logger.Information("[CLAIM] released npc={Npc} owner={Owner} reason=expiry heldForSec={HeldForSec:F1}",
-						npcName, claim.OwnerId, (now - claim.GrantedUtc).TotalSeconds);
+					// WO-102: packets= is the owner's accepted refresh count,
+					// silentSec= how long the owner had been silent when the
+					// expiry was noticed (the claim only expires when a packet
+					// for the name arrives, so this is >= NpcClaimTimeoutSeconds).
+					_logger.Information("[CLAIM] released npc={Npc} owner={Owner} reason=expiry heldForSec={HeldForSec:F1} packets={Packets} silentSec={SilentSec:F1} noticedBy={NoticedBy}",
+						npcName, claim.OwnerId, (now - claim.GrantedUtc).TotalSeconds, expiredPackets,
+						(now - claim.LastUtc).TotalSeconds, sender.Id);
 				}
 			}
 
 			if (IsDamageAuthority(sender))
 			{
 				// The default stream. Yields only to someone else's live claim.
-				return !claimed || claim.OwnerId == sender.Id
-					? NpcRoute.Broadcast : NpcRoute.MutedEcho;
+				if (!claimed || claim.OwnerId == sender.Id) return NpcRoute.Broadcast;
+				// WO-102 Phase 2: the authority's implicit request, denied.
+				Interlocked.Increment(ref _authorityMutedPackets);
+				if (_mutedLogged.Add(npcName))
+				{
+					Interlocked.Increment(ref _authorityMutedClaims);
+					if (_claimLifecycleLoggingEnabled)
+						_logger.Information("[CLAIM] muted npc={Npc} owner={Owner} authority={Authority} claimAgeSec={AgeSec:F1}",
+							npcName, claim.OwnerId, sender.Id, (now - claim.GrantedUtc).TotalSeconds);
+				}
+				return NpcRoute.MutedEcho;
 			}
 
 			if (claimed && claim.OwnerId != sender.Id)
@@ -570,6 +602,8 @@ public class ClientHandler
 				// the speed-gate baseline; it is deliberately not speed-checked
 				// (there is nothing of THIS owner's to check it against).
 				_npcClaims[npcName] = (sender.Id, now, now, engaged ? now : DateTime.MinValue, x, y, z);
+				_claimPackets[npcName] = 0;
+				_mutedLogged.Remove(npcName);
 
 				if (_claimLifecycleLoggingEnabled)
 				{
@@ -610,6 +644,7 @@ public class ClientHandler
 			}
 
 			_npcClaims[npcName] = (sender.Id, claim.GrantedUtc, now, engaged ? now : claim.EngagedUtc, x, y, z);
+			_claimPackets[npcName] = _claimPackets.GetValueOrDefault(npcName) + 1;   // WO-102
 			return NpcRoute.Broadcast;   // refresh (and re-arm the hold if still engaged; NOT logged -- see class notes)
 		}
 	}
@@ -631,13 +666,16 @@ public class ClientHandler
 			{
 				var claim = _npcClaims[name];
 				_npcClaims.Remove(name);
+				_claimPackets.TryGetValue(name, out long pk);
+				_claimPackets.Remove(name);
+				_mutedLogged.Remove(name);
 
 				if (_claimLifecycleLoggingEnabled)
 				{
 					_recentReleases[name] = (claim.OwnerId, claim.LastUtc);
 					Interlocked.Increment(ref _claimReleases);
-					_logger.Information("[CLAIM] released npc={Npc} owner={Owner} reason=disconnect heldForSec={HeldForSec:F1}",
-						name, client.Id, (now - claim.GrantedUtc).TotalSeconds);
+					_logger.Information("[CLAIM] released npc={Npc} owner={Owner} reason=disconnect heldForSec={HeldForSec:F1} packets={Packets}",
+						name, client.Id, (now - claim.GrantedUtc).TotalSeconds, pk);
 				}
 			}
 		}

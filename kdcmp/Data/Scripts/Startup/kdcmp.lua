@@ -342,12 +342,16 @@ function KCD2MP_LogSummary(reason)
     local q = KCD2MP.quest
     mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
-        .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d",
+        .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d"
+        .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
         (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
         tostring(KCD2MP.clockOffsetMs or "?"), tostring(KCD2MP.clockRttMs or "?"),
-        KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN or 0))
+        KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN or 0,
+        (KCD2MP._authStats or {}).acquire or 0, (KCD2MP._authStats or {}).release or 0,
+        (KCD2MP._authStats or {}).ownerChange or 0,
+        (KCD2MP.wo102 and KCD2MP.wo102.authorityHost) and "host" or "claim"))
 end
 
 -- ===== Player Position =====
@@ -2773,6 +2777,41 @@ function KCD2MP_Wo102Status()
         KCD2MP.hitSensorOn and "self" or "peer"))
 end
 
+-- WO-102 Phase 2: MP-AUTHORITY -- per NPC, who owns it, how it was acquired,
+-- how it was lost, how long it was held (docs/WO-98-log-format.md).
+--
+--   MP-AUTHORITY npc=<name> event=acquire|release|owner-change owner=<self|ghostId>
+--                via=<how> held_s=<F1> model=claim|host [from=<ghostId>]
+--
+--   acquire via: authority-default  this client is the damage authority and
+--                                   started streaming the NPC (owner=self)
+--                claim              this non-authority started a proximity
+--                                   claim stream for it (owner=self)
+--                drag               the drag sensor claimed a downed body
+--                stream             an inbound stream made it a puppet here
+--                                   (owner = the sending ghost id)
+--                repin              a yielded puppet was re-pinned
+--   release via: untrack | drag-idle | silence | diverge | yield
+--   owner-change: an existing puppet's packets now come from another sender
+--                 (a claim moved at the relay); from= is the previous owner.
+--
+-- "owner=self" is this machine; a number is the peer ghost id whose stream
+-- drives the body. Under the 0.23.2 claim model every NPC is expected to
+-- change hands; under host authority (Phase 4) a non-authority must only ever
+-- see acquire via=stream from the one authority and no owner-change at all --
+-- that absence is what the Phase 7 A/B reads.
+KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0 }
+local function mp_auth_log(name, event, owner, via, heldS, from)
+    local st = KCD2MP._authStats
+    if event == "acquire" then st.acquire = st.acquire + 1
+    elseif event == "release" then st.release = st.release + 1
+    elseif event == "owner-change" then st.ownerChange = st.ownerChange + 1 end
+    mp_log(string.format("MP-AUTHORITY npc=%s event=%s owner=%s via=%s held_s=%.1f model=%s%s",
+        tostring(name), event, tostring(owner), via, heldS or 0,
+        KCD2MP.wo102.authorityHost and "host" or "claim",
+        from ~= nil and (" from=" .. tostring(from)) or ""))
+end
+
 -- WO-40 Phase 5: dump every puppet's tug-of-war evidence -- how often the
 -- entity was found away from where we wrote it, and the clustered positions
 -- it kept being found at. Distinct clusters = distinct competing writers.
@@ -2993,14 +3032,16 @@ local function mp_npc_rescan()
         local name = found[i].name
         keep[name] = true
         if not KCD2MP.npcTracked[name] then
-            KCD2MP.npcTracked[name] = {}
+            KCD2MP.npcTracked[name] = { since = os.clock() }
             mp_log("NPC-SYNC tracking " .. name)
+            mp_auth_log(name, "acquire", "self", KCD2MP.hitSensorOn and "authority-default" or "claim", 0)   -- WO-102
         end
     end
-    for name in pairs(KCD2MP.npcTracked) do
+    for name, t in pairs(KCD2MP.npcTracked) do
         if not keep[name] then
             KCD2MP.npcTracked[name] = nil
             mp_log("NPC-SYNC untracking " .. name)
+            mp_auth_log(name, "release", "self", "untrack", os.clock() - (t.since or os.clock()))   -- WO-102
         end
     end
 end
@@ -3059,6 +3100,9 @@ local function mp_drag_sensor()
                                 if not streamMove then
                                     if not KCD2MP.dragging[name] then
                                         mp_log("NPC-DRAG claiming " .. name .. " (local manipulation)")
+                                        KCD2MP._dragSince = KCD2MP._dragSince or {}
+                                        KCD2MP._dragSince[name] = now
+                                        mp_auth_log(name, "acquire", "self", "drag", 0)   -- WO-102
                                     end
                                     KCD2MP.dragging[name] = now
                                 end
@@ -3078,6 +3122,7 @@ local function mp_drag_sensor()
         if now - lastMove > DRAG_TAIL_S then
             KCD2MP.dragging[name] = nil
             mp_log("NPC-DRAG released " .. name .. " (idle " .. DRAG_TAIL_S .. "s)")
+            mp_auth_log(name, "release", "self", "drag-idle", now - ((KCD2MP._dragSince or {})[name] or now))   -- WO-102
         else
             pcall(function()
                 local e = System.GetEntityByName(name)
@@ -3255,7 +3300,10 @@ end
 
 -- Receiving side. Called by the agent for each NpcStateDown (0x27). Never
 -- spawns anything: an NPC not loaded in this world is simply not ours to move.
-function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
+-- WO-102 Phase 2: `src` is the sending ghost id (the stream's owner), an
+-- APPENDED parameter -- an agent older than this build calls with seven
+-- arguments and it arrives nil, which MP-AUTHORITY prints as owner=?.
+function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
     -- WO-90: refuse an inbound stream for a name that must never be synced,
     -- whatever the sender believes. The send-side exclusion above stops US
     -- emitting these; this stops a peer on an older build (or with the
@@ -3312,6 +3360,8 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
                      at = os.clock() - KCD2MP_NpcSmoothDelayS() } }
         KCD2MP.npcPuppets[name] = p
         mp_log("NPC-SYNC puppet start " .. name)
+        p.owner, p.ownerSince = src, os.clock()
+        mp_auth_log(name, "acquire", src == nil and "?" or src, "stream", 0)   -- WO-102
         -- WO-49: report this world's copy's entity id so the agent can
         -- address it on the native swing path. Same tostring-hex idiom as
         -- SpawnGhost's ghostid emit -- a decimal path would corrupt ids
@@ -3323,6 +3373,13 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
     -- heartbeat? The emitter gate (KCD2MP_NpcSyncTick) sends a moving NPC
     -- every `emitMs` and a still one every `heartbeatS`; both arrive here.
     -- Decided against the PREVIOUS target, before it is overwritten below.
+    -- WO-102 Phase 2: the stream changed hands (a claim moved at the relay).
+    if src ~= nil and p.owner ~= nil and p.owner ~= src then
+        mp_auth_log(name, "owner-change", src, "stream", os.clock() - (p.ownerSince or os.clock()), p.owner)
+        p.owner, p.ownerSince = src, os.clock()
+    elseif src ~= nil and p.owner == nil then
+        p.owner, p.ownerSince = src, os.clock()
+    end
     local eps = (KCD2MP.npcSync and KCD2MP.npcSync.moveEps) or 0.05
     local hadPrevTarget = p.tx ~= nil
     local pktMoved = hadPrevTarget
@@ -3350,6 +3407,7 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags)
                 name, math.sqrt(ax*ax + ay*ay), math.sqrt(bx*bx + by*by),
                 os.clock() - (p.yieldAt or os.clock()), KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN))
             p.yielded, p.yieldStreak, p.yieldAnchorX, p.yieldAnchorY, p.yieldAt = nil, 0, nil, nil, nil
+            mp_auth_log(name, "acquire", p.owner == nil and "?" or p.owner, "repin", 0)   -- WO-102
         end
     end
     local f = tonumber(flags) or 0
@@ -3540,6 +3598,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             if (now - (p.lastPacketAt or 0)) > KCD2MP.npcSync.releaseS then
                 KCD2MP.npcPuppets[name] = nil
                 mp_log("NPC-SYNC release " .. name .. " (stream silent)")
+                mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "silence", now - (p.ownerSince or now))   -- WO-102
                 return
             end
             any = true
@@ -3702,6 +3761,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                 p.yieldAnchorX, p.yieldAnchorY = p.tx or p.cx, p.ty or p.cy
                                 p.yieldAt = now
                                 KCD2MP._npcYieldN = (KCD2MP._npcYieldN or 0) + 1
+                                mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "yield", now - (p.ownerSince or now))   -- WO-102
                                 mp_log(string.format("MP-NPCYIELD npc=%s state=yield disp_m=%.2f streak=%d fight_n=%d total_yields=%d total_repins=%d",
                                     name, math.sqrt(fx*fx + fy*fy), p.yieldStreak, p.fightN or 0,
                                     KCD2MP._npcYieldN, KCD2MP._npcRepinN or 0))
@@ -3810,6 +3870,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
                                 mp_log(string.format("MP-NPCDIVERGE npc=%s dist_m=%.1f hits=%d window_s=%.0f standoff_s=%.0f total=%d",
                                     name, math.sqrt(fx*fx + fy*fy), #keep, MP_NPC_DIVERGE_WINDOW_S, MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN))
+                                mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "diverge", now - (p.ownerSince or now))   -- WO-102
                                 -- Tell the player, at most once a minute: an
                                 -- NPC that suddenly stops matching the other
                                 -- player's world is otherwise inexplicable,

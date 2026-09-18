@@ -108,6 +108,36 @@ render position is re-seeded from the body. Toggle `mp_npc_yield_on|off`
 measure against), so a live A/B reads as: fewer NPCFIGHT events, NPCYIELD
 lines appearing.
 
+### MP-AUTHORITY — NPC ownership transitions (kcd.log, WO-102 Phase 2)
+`MP-AUTHORITY npc=<name> event=acquire|release|owner-change owner=<self|ghostId|?> via=<how> held_s=<F1> model=claim|host [from=<ghostId>]`
+
+One line per change of who drives a world NPC on THIS machine. `owner=self`
+is this client (it streams the body); a number is the peer ghost id whose
+inbound stream drives it as a puppet; `?` means the agent predates WO-102
+and sent no source id. `via` on `acquire`: `authority-default` (this client
+is the damage authority and began streaming it), `claim` (a non-authority
+began a WO-60 proximity claim stream), `drag` (the WO-39 drag sensor),
+`stream` (an inbound stream made it a puppet), `repin` (a yielded puppet
+re-pinned). `via` on `release`: `untrack`, `drag-idle`, `silence` (WO-32
+3 s release), `diverge` (WO-90), `yield` (WO-99). `owner-change` is an
+existing puppet whose packets now arrive from another sender -- a claim
+moved at the relay; `from=` is the previous owner. `held_s` is how long the
+previous owner held it. `model` is the WO-102 toggle state at the time.
+Counted into `MP-SUMMARY-MOD` as `auth_acquire= auth_release=
+auth_owner_changes= auth_model=`.
+
+Under host authority (`model=host`) a non-authority must only ever log
+`acquire ... via=stream` from the one authority and never `owner-change`;
+any `via=claim`, `via=drag` or `owner-change` under `model=host` is a
+violation, not traffic.
+
+### relay `[CLAIM]` lines (relay log, WO-81 + WO-102 Phase 2)
+`[CLAIM] granted npc= owner= pos=(x,y,z)` -- a non-authority's first accepted packet for an unclaimed name (WO-81).
+`[CLAIM] muted npc= owner= authority= claimAgeSec=` -- **WO-102**: the damage authority's own stream for a claimed name was dropped for the first time under this claim. This is the authority's implicit request being denied, which WO-98 §2 could not see. Once per claim; every muted packet is counted (`AuthorityMutedPackets` at `GET api/information/npc-claims`).
+`[CLAIM] released npc= owner= reason=expiry heldForSec= packets= silentSec= noticedBy=` -- **WO-102** adds `packets=` (the owner's accepted refreshes), `silentSec=` (how long the owner had been silent when a packet for the name finally arrived and noticed the expiry) and `noticedBy=` (whose packet noticed it).
+`[CLAIM] released ... reason=disconnect ... packets=`.
+`[CLAIM] reassigned` / `[CLAIM-CONTESTED]` unchanged (WO-81). Denials stay on `[WO66-REJECT] stale-owner|speed|reserved-name`.
+
 ### MP-NPCDIVERGE — divergence release (kcd.log)
 `MP-NPCDIVERGE npc=<name> dist_m=<F1> hits=<int> window_s=<F0> standoff_s=<F0> total=<int>`
 

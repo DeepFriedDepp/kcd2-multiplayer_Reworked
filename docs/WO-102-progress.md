@@ -8,7 +8,7 @@ Session 2026-09-18. Findings: `docs/WO-102-findings.md`.
 |---|---|---|
 | 0 — toggles + revertability | **done** | (synthetic) 15/15 `Test-WO102Synthetic.ps1`; agent + relay build green; existing suites 33/33 (WO-100.5), 50/50 (WO-98) unchanged |
 | 1 — position off the log tail | pending | |
-| 2 — baseline the claim model | pending | |
+| 2 — baseline the claim model | **done** (committed before Phase 1, which waits on Ghidra) | (observed) figures reproduced + corrected in findings §2.1; (synthetic) 31/31 WO-102 suite, puppet suites unchanged; relay 10/10, agent 101/101 |
 | 3 — locomotion suppression lever (native, read-only) | pending | |
 | 4 — permanent host authority | pending | |
 | 5 — request channel | pending | |

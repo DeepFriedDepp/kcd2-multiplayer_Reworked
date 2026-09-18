@@ -4121,8 +4121,8 @@ public partial class GameBridge(ClientConfig config)
                             }
 
                             await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
-                                "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6}) end",
-                                npcName, nx, ny, nz, nrot, nhp, nflags));
+                                "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6},{7}) end",
+                                npcName, nx, ny, nz, nrot, nhp, nflags, nsrc));   // WO-102 Phase 2: source id = the stream's owner (MP-AUTHORITY)
 
                             if (nDead && nSeen && !nWasDead)
                                 await ApplyRemoteNpcDeathAsync(npcName, null, nsrc, "0x27 dead transition", ct);

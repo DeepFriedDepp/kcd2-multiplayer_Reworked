@@ -13,4 +13,9 @@ public record NpcClaimCounters(
 	long Releases,
 	long Reassignments,
 	long Contested,
-	IReadOnlyDictionary<string, long> ContestedByNpc);
+	IReadOnlyDictionary<string, long> ContestedByNpc,
+	// WO-102 Phase 2: claims that muted the damage authority's own stream
+	// for their name at least once (the authority's implicit request being
+	// denied -- the relay never logged this before), and the muted packets.
+	long AuthorityMutedClaims = 0,
+	long AuthorityMutedPackets = 0);
