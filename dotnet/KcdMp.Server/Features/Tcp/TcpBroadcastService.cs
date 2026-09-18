@@ -23,17 +23,17 @@ public class TcpBroadcastService
 	/// Broadcasts a position update from <paramref name="source"/> to all other ready clients.
     /// In echo mode also reflects the position back to the sender as ghost id=0.
     /// </summary>
-    public void Broadcast(ClientSession source, float x, float y, float z, float rotZ, byte flags)
+    public void Broadcast(ClientSession source, float x, float y, float z, float rotZ, byte flags, byte[] tail)
     {
         foreach (var target in Others(source))
-            target.EnqueueGhost(source.Id, x, y, z, rotZ, flags);
+            target.EnqueueGhost(source.Id, x, y, z, rotZ, flags, tail);
 
         if (_echo)
         {
             // Place echo ghost 1 m to the right of the player's facing direction
             float sideX = (float)Math.Cos(rotZ);
             float sideY = -(float)Math.Sin(rotZ);
-            source.EnqueueGhost(0, x + sideX, y + sideY, z, rotZ, flags);
+            source.EnqueueGhost(0, x + sideX, y + sideY, z, rotZ, flags, tail);
         }
     }
 

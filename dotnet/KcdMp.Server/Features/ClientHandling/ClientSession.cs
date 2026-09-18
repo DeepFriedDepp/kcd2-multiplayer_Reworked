@@ -143,9 +143,12 @@ public class ClientSession
             _broadcastService.BroadcastCombatRole();
 
             // --- Position receive loop ---
-            // Payload length is now exact: the version byte replaced the old
-            // 16-vs-17-byte sniffing, and a v1 peer always sends 17.
-            var posPayload = new byte[Protocol.PositionPayloadLen];
+            // Two exact lengths, not one: 17 (pre-WO-100.5, and every STALE
+            // heartbeat) or 22 (WO-100.5 body state behind flag 0x04). WO-101:
+            // in 0.23.1 this gate took only 17, so every live sample -- all of
+            // which carried a body -- was skipped below with no log line, and
+            // only the 17-byte heartbeats crossed. docs/WO-101-findings.md S0.
+            var posPayload = new byte[Protocol.PositionPayloadLenV2];
             while (true)
             {
                 await ReadExactAsync(header);
@@ -552,7 +555,8 @@ public class ClientSession
                     continue;
                 }
 
-                if (type != Protocol.Position || payloadLen != Protocol.PositionPayloadLen)
+                if (type != Protocol.Position
+                    || (payloadLen != Protocol.PositionPayloadLen && payloadLen != Protocol.PositionPayloadLenV2))
                 {
                     // Skip unknown/malformed packet
                     if (payloadLen > 0)
@@ -563,20 +567,25 @@ public class ClientSession
                     continue;
                 }
 
-                await ReadExactAsync(posPayload, Protocol.PositionPayloadLen);
+                await ReadExactAsync(posPayload, payloadLen);
 
                 float x    = ReadFloat(posPayload, 0);
                 float y    = ReadFloat(posPayload, 4);
                 float z    = ReadFloat(posPayload, 8);
                 float rotZ = ReadFloat(posPayload, 12);
                 byte  flags = posPayload[16];
+                // WO-101: everything after the flags byte is the body-state
+                // tail -- 5 bytes on a V2 packet, none on a 17-byte one --
+                // forwarded verbatim. The relay does not interpret it, exactly
+                // as it does not interpret a CombatEvent v2's [sid:2].
+                var tail = posPayload.AsSpan(Protocol.PositionPayloadLen, payloadLen - Protocol.PositionPayloadLen).ToArray();
 
                 // WO-81: diagnostic-only cache of this session's last reported
                 // position, read solely by the contested-claim detector's
                 // distance correlation -- never a routing decision.
                 _clientHandler.RecordPlayerPosition(this, x, y, z);
 
-                _broadcastService.Broadcast(this, x, y, z, rotZ, flags);
+                _broadcastService.Broadcast(this, x, y, z, rotZ, flags, tail);
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or EndOfStreamException or ObjectDisposedException)
@@ -591,16 +600,22 @@ public class ClientSession
         }
     }
 
-    /// <summary>Thread-safe: enqueue a Ghost packet to be sent to this client.</summary>
-    public void EnqueueGhost(byte ghostId, float x, float y, float z, float rotZ, byte flags)
+    /// <summary>
+    /// Thread-safe: enqueue a Ghost packet to be sent to this client.
+    /// <paramref name="tail"/> is the sender's body-state bytes (WO-100.5),
+    /// appended verbatim after the flags byte -- empty for a 17-byte Position,
+    /// so the Ghost is 18 or 23 bytes and never anything else (WO-101).
+    /// </summary>
+    public void EnqueueGhost(byte ghostId, float x, float y, float z, float rotZ, byte flags, byte[] tail)
     {
-        var payload = new byte[18];
+        var payload = new byte[Protocol.GhostPayloadLen + tail.Length];
         payload[0] = ghostId;
         WriteFloat(payload, 1, x);
         WriteFloat(payload, 5, y);
         WriteFloat(payload, 9, z);
         WriteFloat(payload, 13, rotZ);
         payload[17] = flags;
+        tail.CopyTo(payload, Protocol.GhostPayloadLen);
         EnqueueGhostPacket(ghostId, BuildPacket(Protocol.Ghost, payload));
     }
 

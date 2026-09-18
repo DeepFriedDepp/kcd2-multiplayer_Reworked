@@ -94,3 +94,57 @@ and has no bearing on packet length; the body comes from the DLL pipe
 The 33 Lua checks and the 16+ agent unit tests exercise codec and inbox logic
 in one process. No test opens a socket to the relay. The one place the length
 is compared against a single constant is the one place no test reaches.
+
+## 1. The fix, and the audit
+
+### 1.1 Fix (code-verified, relay builds green)
+
+`ClientSession.cs` Position gate: `payloadLen == 17 || payloadLen == 22`;
+the read buffer is `PositionPayloadLenV2` and reads `payloadLen` bytes; the
+bytes after the flags byte (0 or 5) are handed to
+`TcpBroadcastService.Broadcast(..., tail)` → `EnqueueGhost(..., tail)`, which
+appends them verbatim after the Ghost flags byte. Ghost is therefore 18 or 23
+and nothing else. The relay does not interpret the tail — same discipline as
+the CombatEvent v2 `[sid:2]`. Echo mode carries the tail too.
+
+Wire format unchanged. No client change needed for the fix itself.
+
+### 1.2 Audit — every length gate on the path (code-verified)
+
+**Multi-length pairs (the defect class):**
+
+| pair | client sends | relay accepts | relay forwards | client accepts |
+|---|---|---|---|---|
+| Position 0x01 / Ghost 0x02 | 17 or 22 | **was 17 only → now 17 \| 22** | **was fixed 18 → now 18 \| 23** | 18 \| 23 (`GameBridge.cs:3711`) |
+| CombatEventUp 0x2C / Down 0x2D | 3 (V2 always) | 1 \| 3 (`ClientSession.cs:424`) | verbatim + src | 2 \| 4 (`GameBridge.cs:4276`) |
+
+Only one pair had the defect.
+
+**Action channel 0x3B / 0x3C:** client `ActionOutbox.Build` emits
+`9 + payload.Length` with `packet[11] = payload.Length`
+(`ActionChannel.cs:65-71`); relay accepts `9 ≤ len ≤ 73` and requires
+`body[8] == len - 9` (`ClientSession.cs:445-451`); `body[8]` is `packet[11]`.
+Consistent. Client `ActionInbox.Accept` requires `≥ 10` then `≥ 10 + len`
+(`ActionChannel.cs:140-149`). Relay forwards verbatim + 1 src byte. Consistent.
+
+**Variable-length, self-describing** — relay checks a range and that the
+embedded length agrees with the frame; client Down gate is the same range + 1:
+AppearanceUp (`1 + n*16`, n ≤ 32), NpcStateUp / NpcDamageUp
+(`nameLen` vs `MaxNpcNameLen`), HorseInfoUp, WeatherUp, StoryBeatUp. All
+consistent. (Send-side note, not this WO: NpcDamageUp and WeatherUp do not
+truncate the name they send; the relay would drop a > 64 / > 48-byte name.
+Both names come from the engine's own authored identifiers and NpcStateUp
+guards the same names at `GameBridge.cs:3544`. Pre-existing, no field
+evidence, left alone.)
+
+**Fixed-length** — relay `==` one constant, client sends the same constant,
+relay Down is `1 + Up` built from `upstreamBody.Length`, client gate is the
+`Down` constant: Ping 8, ClockSyncUp 8, VoiceUp 640, DamageUp, DeathUp,
+PauseUp, PlayerStateUp, PlayerHitUp (Down is re-shaped to
+`PlayerHitDownPayloadLen`, both constants), TimeSkipUp, ItemDropUp,
+ItemClaimUp, PlayerDeathUp (0 → Down 1). All consistent.
+
+**Relay forward vs receive:** every `Enqueue*Down` copies `upstreamBody`
+verbatim behind a source byte; none re-derives a length from a constant. The
+Position/Ghost pair was the single exception — it re-encoded from parsed
+fields with a hard-coded `new byte[18]` — and that is now gone.
