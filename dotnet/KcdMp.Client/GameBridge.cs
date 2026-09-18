@@ -255,6 +255,13 @@ public partial class GameBridge(ClientConfig config)
     // by the npc_deathsync event line -- the agent cannot read Lua state back.
     private volatile bool _npcDeathSyncEnabled = true;
 
+    // WO-102 Phase 0: the toggle set. Both start from ClientConfig and flip at
+    // runtime from the console (mp_authority_host_on|off, mp_pos_native_on|off)
+    // via the wo102_toggle event; the mod mirrors the same two flags. With
+    // both false this agent is byte-for-byte 0.23.2 on the wire.
+    private volatile bool _hostAuthority = config.HostAuthorityEnabled;
+    private volatile bool _posNative     = config.NativePositionEnabled;
+
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
     // for a peer whose Handshake carried none (an old build). Read by
     // VersionIpcServer so the launcher can compare it against this agent's
@@ -641,6 +648,8 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=damage out={s.DmgOut} out_fatal={s.DmgOutFatal} out_dropped={s.DmgOutDropped} in={s.DmgIn} in_applied={s.DmgInApplied} in_failed={s.DmgInFailed} in_refused={s.DmgInRefused} authority={(_isDamageAuthority ? 1 : 0)}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=wo102 authority_host={(_hostAuthority ? 1 : 0)} pos_native={(_posNative ? 1 : 0)} authority={(_isDamageAuthority ? 1 : 0)}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=story divergences_pushed={s.StoryDivergencesPushed} cutscene_local_edges={s.CutsceneLocalEdges} cutscene_peer_edges={s.CutscenePeerEdges} ghost_packets={s.GhostPackets}"));
         if (_swingInbox is { } inbox) Console.WriteLine(inbox.SummaryLine());
@@ -1555,6 +1564,11 @@ public partial class GameBridge(ClientConfig config)
                         // The puppet chain needs no re-arm: any inbound
                         // NpcStateDown restarts it via KCD2MP_ApplyNpcState.
                         await ExecLuaAsync("if KCD2MP_StartNpcSync and KCD2MP.npcSync and KCD2MP.npcSync.enabled then KCD2MP_StartNpcSync() end");
+                        // WO-102 Phase 0: the agent's configured defaults are
+                        // the session's starting toggle state; the mod
+                        // mirrors them (source "agent" -> no echo back).
+                        await ExecLuaAsync(FormattableString.Invariant(
+                            $"if KCD2MP_Wo102Set then KCD2MP_Wo102Set(\"authority_host\", {(_hostAuthority ? "true" : "false")}, \"agent\") KCD2MP_Wo102Set(\"pos_native\", {(_posNative ? "true" : "false")}, \"agent\") end"));
                         // WO-48: the item-sync tick is a Script.SetTimer chain
                         // like the others and dies with them on a save load.
                         await ExecLuaAsync("if KCD2MP_StartItemSync then KCD2MP_StartItemSync() end");
@@ -4654,6 +4668,22 @@ public partial class GameBridge(ClientConfig config)
                 var send = _sendPlayerHit;
                 if (send is null) break;
                 _ = send(hitGhostId, loss, 0f);
+                break;
+            }
+
+            case "wo102_toggle":
+            {
+                // WO-102 Phase 0: "<name> on|off" from KCD2MP_Wo102Set (console).
+                var tp = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (tp.Length != 2) { Console.WriteLine($"[wo102] malformed wo102_toggle '{arg}'"); break; }
+                bool on = tp[1].Equals("on", StringComparison.OrdinalIgnoreCase);
+                switch (tp[0])
+                {
+                    case "authority_host": _hostAuthority = on; break;
+                    case "pos_native":     _posNative = on; break;
+                    default: Console.WriteLine($"[wo102] unknown toggle '{tp[0]}'"); break;
+                }
+                Console.WriteLine($"WO102-TOGGLE name={tp[0]} state={(on ? "on" : "off")} source=console authority={(_isDamageAuthority ? 1 : 0)}");
                 break;
             }
 

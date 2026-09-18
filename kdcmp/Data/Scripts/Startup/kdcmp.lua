@@ -2702,6 +2702,77 @@ KCD2MP.npcProx = {
     enabled = true,   -- mp_npc_proximity on|off (mp_npc_sync default-on precedent)
 }
 
+-- ===== WO-102: host-authoritative NPCs -- the toggle set =====
+-- Every behavioural change WO-102 makes sits behind one of these, flips at
+-- runtime without a restart, and returns the 0.23.2 code path exactly when
+-- off. They are the instrument Phase 7's A/B measures with, not safety
+-- furniture: an A/B that cannot switch mid-fight cannot measure anything.
+--
+-- Argless console commands only: the console drops arguments from
+-- Lua-registered commands on this build (docs/WO-94, live), so every toggle
+-- is a pair (`mp_<x>_on` / `mp_<x>_off`) plus one status command.
+--
+-- Defaults here are the mod's own, used when no agent ever pushes one. The
+-- agent pushes ITS configured default at connect (KCD2MP_Wo102Set from the
+-- agent, source "agent"), so the shipped default lives in ClientConfig and
+-- this table mirrors it -- one source of truth, and an older agent that
+-- pushes nothing leaves the mod at 0.23.2 behaviour.
+--
+--   authorityHost  mp_authority_host_on|off  Phase 4: the damage-authority
+--                  holder (Rule 2, KCD2MP.hitSensorOn) owns EVERY NPC,
+--                  permanently. Non-authorities never claim (the WO-60
+--                  proximity emitter and the WO-39 drag claim are bypassed,
+--                  not removed), the NPC-DIVERGE release is refused on an
+--                  owned body, and the authority scans around every peer
+--                  ghost as well as its own player. Off = the claim model.
+--   posNative      mp_pos_native_on|off      Phase 1: the agent reads the
+--                  local position/rotation/riding state through the DLL
+--                  pipe instead of the [KCD2-MP-DATA] log line. Agent-side;
+--                  the mod only relays the switch (and keeps emitting the
+--                  log line, which stays the fallback).
+KCD2MP.wo102 = {
+    authorityHost = false,
+    posNative     = false,
+}
+KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative" }
+
+-- name: "authority_host" | "pos_native"; on: boolean; source: "console" | "agent".
+function KCD2MP_Wo102Set(name, on, source)
+    local field = KCD2MP._wo102Names[tostring(name)]
+    if not field then
+        mp_log("WO102-TOGGLE unknown toggle '" .. tostring(name) .. "'")
+        return false
+    end
+    local want = (on == true or on == 1 or on == "on" or on == "true")
+    local was = KCD2MP.wo102[field]
+    KCD2MP.wo102[field] = want
+    mp_log(string.format("WO102-TOGGLE name=%s state=%s was=%s source=%s",
+        tostring(name), want and "on" or "off", was and "on" or "off", tostring(source or "console")))
+    -- The agent owns the other half of every toggle (its own gates, and the
+    -- relay's view of them); a console flip travels out on the event
+    -- channel like npc_deathsync does. An agent-sourced push is not echoed
+    -- back -- it would only bounce.
+    if source ~= "agent" then
+        KCD2MP_EmitEvent("wo102_toggle", tostring(name) .. " " .. (want and "on" or "off"))
+    end
+    if source ~= "agent" or was ~= want then
+        KCD2MP_ShowInteractionMsg(string.format("%s: %s",
+            field == "authorityHost" and "Host NPC authority" or "Native position", want and "ON" or "OFF"))
+    end
+    -- Phase 4 hooks its side effects here (a non-authority dropping its
+    -- claim stream on the spot when host authority switches on), Phase 1 has
+    -- none in the mod.
+    if KCD2MP_Wo102OnChange then pcall(KCD2MP_Wo102OnChange, field, want, was) end
+    return true
+end
+
+function KCD2MP_Wo102Status()
+    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority=%s",
+        KCD2MP.wo102.authorityHost and "on" or "off",
+        KCD2MP.wo102.posNative and "on" or "off",
+        KCD2MP.hitSensorOn and "self" or "peer"))
+end
+
 -- WO-40 Phase 5: dump every puppet's tug-of-war evidence -- how often the
 -- entity was found away from where we wrote it, and the clustered positions
 -- it kept being found at. Distinct clusters = distinct competing writers.
@@ -9400,6 +9471,12 @@ local ok, err = pcall(function()
     -- NPC sync (WO-32)
     System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%LINE")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")
     System.AddCCommand("mp_npc_proximity", 'KCD2MP_EnableNpcProximity("%LINE")', "WO-60: non-authority claims NPCs near its own player (default on). off = pre-WO-60 host-only tracking: mp_npc_proximity on|off")
+    -- WO-102: argless toggle pairs (the console drops arguments) + status.
+    System.AddCCommand("mp_authority_host_on",  'KCD2MP_Wo102Set("authority_host", true)',  "WO-102: the damage-authority holder owns EVERY NPC permanently; no claims, no proximity, no expiry. Off = the 0.23.2 claim model")
+    System.AddCCommand("mp_authority_host_off", 'KCD2MP_Wo102Set("authority_host", false)', "WO-102: back to the 0.23.2 per-NPC claim model (WO-39/WO-60), exactly")
+    System.AddCCommand("mp_pos_native_on",      'KCD2MP_Wo102Set("pos_native", true)',      "WO-102: the agent reads position/rotation/riding over the DLL pipe instead of the kcd.log line")
+    System.AddCCommand("mp_pos_native_off",     'KCD2MP_Wo102Set("pos_native", false)',     "WO-102: position back on the [KCD2-MP-DATA] log tail (0.23.2 path)")
+    System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

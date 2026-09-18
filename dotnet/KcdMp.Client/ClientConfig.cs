@@ -75,6 +75,26 @@ public sealed class ClientConfig
     public bool GuidDamageFallbackEnabled { get; set; } = true;
 
     /// <summary>
+    /// WO-102 Phase 4: the damage-authority holder owns EVERY NPC permanently
+    /// (no claims, no proximity, no expiry). Off = the 0.23.2 per-NPC claim
+    /// model, exactly. Pushed into the mod at connect as the session's
+    /// starting state; flips at runtime from the console
+    /// (mp_authority_host_on|off) without a restart. The shipped default is
+    /// decided at the WO-102 end gate; off is the session's working default
+    /// so each phase measures against its own baseline.
+    /// </summary>
+    public bool HostAuthorityEnabled { get; set; } = false;
+
+    /// <summary>
+    /// WO-102 Phase 1: read the local position/rotation/riding state through
+    /// the DLL pipe (one read per frame, alongside the body state) instead of
+    /// the [KCD2-MP-DATA] log line. Off = the 0.23.2 log-tail path. The log
+    /// tail keeps running either way (it carries vitals and every event line)
+    /// and is the fallback when the pipe refuses.
+    /// </summary>
+    public bool NativePositionEnabled { get; set; } = false;
+
+    /// <summary>
     /// How the agent reads player state from the game.
     ///
     ///   "logtail" — the mod pushes state into kcd.log and the agent tails it.
@@ -283,6 +303,18 @@ public sealed class ClientConfig
                         break;
                     case "--hosting":
                         IsHosting = true;
+                        break;
+                    case "--authority-host":
+                        HostAuthorityEnabled = true;
+                        break;
+                    case "--no-authority-host":
+                        HostAuthorityEnabled = false;
+                        break;
+                    case "--pos-native":
+                        NativePositionEnabled = true;
+                        break;
+                    case "--no-pos-native":
+                        NativePositionEnabled = false;
                         break;
                     case "--benchmark":
                         // Handled in Program before the agent starts; listed
