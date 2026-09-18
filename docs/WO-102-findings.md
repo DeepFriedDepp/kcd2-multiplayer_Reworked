@@ -554,3 +554,97 @@ is the payload it consumes; nothing on the wire changes.
 Additive. A 0.23.2 receiver drops `kind=4` as `UnknownKind` (counted,
 `MP-ACTION section=inbound unknown_kind=`), and a 0.23.2 sender never sends
 it. The relay is unchanged.
+
+---
+
+## 6. Phase 6 — sleep resync, and the honest limits
+
+### 6.1 What was built (code-verified; synthetic agent 150/150, relay 12/12, Lua 99/99)
+
+* **Trigger points = the ones that already resync world time**, plus one
+  manual: our own sleep/wait finishing (`TimeSkipUp(done)`), a peer's
+  announced sleep/wait/fast-travel being applied (quiet clock reports
+  excluded), our fast-travel jump being reported, a save reload being
+  detected, a new peer appearing (the connect-time clock announce), and
+  `mp_resync_npcs` (argless). Each calls `RequestNpcResyncAsync(reason)`.
+* **Owner** (damage authority, host authority on): the mod's
+  `KCD2MP_NpcResyncBurst` scans **60 m around its player and every peer
+  ghost**, and emits one ordinary `npc_state` per NPC/horse (≤ 40 per burst)
+  with the new **`NpcStateFlagResync` = 0x40** plus dead/KO/drawn — so the
+  burst rides the existing authority stream and the unchanged relay. Bursts
+  are collapsed to one per 5 s (`result=collapsed`), so a sleep both
+  machines notice costs one.
+* **Non-owner**: sends `ActionKind.NpcResync = 5` (`[reason:1]`) to the
+  owner over the action channel; the owner bursts (`from=ghost-N`), or
+  refuses with `cause=not-owner` / `host-authority-off`.
+* **Receiver**, `KCD2MP_ApplyNpcState` on a `0x40` packet: **no puppet for
+  the name → one-shot snap** of this world's copy onto the owner's position
+  and yaw when it is more than 1 m off, no puppet created, no stream follows
+  (`MP-NPCRESYNC dir=apply npc= dist_m= moved= dead= owner=`); **never** a
+  local corpse, a body in dialogue, or a body within 2 m of the local player
+  (`skipped=local-corpse|in-dialog|near-player`). An existing puppet takes
+  it as an ordinary packet. The owner's **dead** bit on a resync packet kills
+  the local copy under host authority even on a first packet
+  (`ApplyRemoteNpcDeathAsync … "0x27 resync dead"`, idempotent) — the WO-86
+  "freeze only on a first dead packet" caution is about a stranger's save,
+  and here the stranger is the owner.
+* Under the claim model every trigger logs `MP-NPCRESYNC dir=skip
+  cause=host-authority-off` and does nothing: there is no single owner to
+  resync from.
+* `NpcStateCodec` (new) is now the one encoder for `0x26` in the agent, so
+  the relay gate sends the shipped bytes; **new round-trip case**: the
+  authority's `0x26` with `0x41` arrives at the peer with the flag intact.
+
+### 6.2 What this fixes, and what it does not — stated for the record
+
+* **Fixes:** accumulated *ambient* drift — an NPC both worlds hold, that
+  nobody streamed (outside the 5-per-anchor cap, or not tracked when the
+  drift happened), standing in two different places, or dead in one world
+  and alive in the other. After a sleep, a fast travel, a reload or a new
+  peer, every such NPC within 60 m of any player is put where the owner's
+  world has it, once, and the owner's death state is applied.
+* **Does not fix, by design:** an NPC *mid-interaction*. That is Phase 4's
+  stream: an owned, puppeted body is written every 50 ms and a resync sample
+  for it is just one more packet. If the stream is not holding it (a
+  violation is being logged), a resync will not either.
+* **Does not fix, and cannot:** an NPC the owner's game has **not loaded**
+  — beyond the owner's streaming range around itself *and* around the
+  peer's ghost (the anchor scan only sees what the owner's engine has in
+  memory). Such an NPC is the joiner's alone, on its own AI, until the two
+  players are close enough for the owner to have it.
+* **Deliberately skipped, and therefore still divergent after a burst:**
+  an NPC within 2 m of the receiving player (an interaction in progress), an
+  NPC in dialogue on the receiver, a local corpse the owner says is alive
+  (the WO-86 rule: nothing resurrects, and a corpse is not dragged). These
+  are named in the apply line, so a bundle can count them.
+
+### 6.3 Which NPC categories stay permanently divergent after Phase 4 + Phase 6
+
+Honest list:
+
+1. **NPCs only one game has loaded** (above) — divergent until the players
+   converge in space. Not permanent in principle, permanent in practice for
+   two players who split up.
+2. **Quest-state NPCs whose existence differs** — an NPC one player's story
+   has despawned, killed, or never spawned (WO-90's "present for one player,
+   not for the other", the prompt's field report). No stream and no resync
+   can move a body that does not exist; the resync's dead bit covers "dead
+   here, alive there" but not "absent here". This is the quest-divergence
+   class, and it stays with the WO-94/96 quest layer.
+3. **Per-player instances** — `DialogTwin_*` conversation stand-ins and the
+   mod's own bodies, excluded by design (WO-90).
+4. **A local corpse the owner has alive** — never resurrected, never dragged;
+   divergent until the owner's copy also dies or the receiver reloads.
+
+Everything else — every ambient NPC and horse both games hold — is owned
+(Phase 4) while any player is near it, and re-converged (Phase 6) when
+nobody was.
+
+### 6.4 Wire compatibility (Phase 6)
+
+Additive. `0x40` in the `0x26`/`0x27` flags byte: a 0.23.2 receiver reads
+it as an ordinary stream packet and **creates a puppet** for it, which the
+WO-32 3 s silence release then drops (one `puppet start` / `release` pair
+per resynced NPC on an old client — noisy, harmless, 0.23.2-or-less). A
+0.23.2 owner never sends it. `ActionKind.NpcResync` is `UnknownKind` to a
+0.23.2 receiver. The relay is unchanged.

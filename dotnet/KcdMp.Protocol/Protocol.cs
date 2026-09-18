@@ -1069,6 +1069,17 @@ public static partial class Protocol
     public const byte NpcStateFlagEngaged = 0x20;
 
     /// <summary>
+    /// WO-102 Phase 6: this NpcState is a RESYNC sample -- one shot of the
+    /// owner's position and life state for an NPC, pushed after sleep, fast
+    /// travel, reload, a new peer, or <c>mp_resync_npcs</c>. A receiver with no
+    /// puppet for the name snaps its copy once (no puppet is created, no
+    /// stream follows); a receiver that already puppets the name treats it as
+    /// an ordinary packet. Bits 0x04 (drawn), 0x08 (swing cue) and 0x10
+    /// (carried) are the mod's own and stay clear of it.
+    /// </summary>
+    public const byte NpcStateFlagResync = 0x40;
+
+    /// <summary>
     /// Per-entity NPC authority (WO-39 Phase 2): how long a non-authority's
     /// claim on one entity survives without a fresh NpcStateUp for it. The
     /// dragger's emitter sends at the ordinary npc emit cadence (250 ms) with
@@ -1466,6 +1477,14 @@ public enum ActionKind : byte
     /// been fired on an NPC and is a STOP -- docs/WO-102-findings.md S5).
     /// </summary>
     NpcRequest = 4,
+    /// <summary>
+    /// WO-102 Phase 6: a non-owner asks the owner for an NPC state burst
+    /// (positions + life state of every NPC the owner has loaded near any
+    /// player), payload <c>[reason:1]</c> = <see cref="NpcResyncReason"/>. The
+    /// owner answers with ordinary NpcStateUp packets flagged
+    /// <see cref="Protocol.NpcStateFlagResync"/>.
+    /// </summary>
+    NpcResync = 5,
 }
 
 /// <summary>
@@ -1509,6 +1528,17 @@ public readonly record struct ActionGen(ushort Incarnation, byte Epoch, byte Rev
 /// NpcState/NpcDamage use); it is validated <c>[A-Za-z0-9_]+</c> by the
 /// receiver before it reaches anything, exactly like those two.
 /// </summary>
+/// <summary>WO-102 Phase 6: why an NPC resync was requested (the NpcResync payload byte).</summary>
+public static class NpcResyncReason
+{
+    public const byte Manual = 1, Sleep = 2, FastTravel = 3, Reload = 4, NewPeer = 5;
+    public static string Name(byte r) => r switch
+    {
+        Manual => "manual", Sleep => "sleep", FastTravel => "fast-travel", Reload => "reload", NewPeer => "new-peer",
+        _ => $"unknown-{r}",
+    };
+}
+
 public readonly record struct NpcRequestPayload(AttackPayload Attack, string TargetName)
 {
     public const int FixedLen = AttackPayload.Len + 1;

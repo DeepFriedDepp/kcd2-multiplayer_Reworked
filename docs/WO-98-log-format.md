@@ -183,6 +183,20 @@ attack at the owned NPC it is facing (`npc_target`, nearest live puppet
 within 4 m); it resolves through the existing name-addressed damage path
 (`0x30`), and `dt_ms` is the request-to-damage gap on each side.
 
+### MP-NPCRESYNC — NPC state resync (agent.log + kcd.log, WO-102 Phase 6)
+agent: `MP-NPCRESYNC dir=skip reason=<r> cause=host-authority-off|not-connected`
+agent: `MP-NPCRESYNC dir=out reason=<r> gen=<gen>` (a non-owner asked the owner)
+agent: `MP-NPCRESYNC dir=in from=<ghostId> reason=<r> result=refused cause=not-owner|host-authority-off`
+agent: `MP-NPCRESYNC dir=burst reason=<r> from=self|ghost-<id> [result=collapsed …]`
+mod:   `MP-NPCRESYNC dir=burst reason=<r> n=<int> anchors=<int> radius_m=60 cap=40` | `dir=skip reason=<r> cause=not-authority`
+mod:   `MP-NPCRESYNC dir=apply npc=<name> dist_m=<F2> moved=0|1 dead=0|1 owner=<ghostId> [skipped=local-corpse|in-dialog|near-player]`
+agent: `MP-NPCRESYNC section=summary requests_out= requests_in= requests_refused= bursts= emitted= in_packets= dead_applied= skipped=`
+
+`reason` ∈ manual | sleep | fast-travel | reload | new-peer. Mod counters in
+`MP-SUMMARY-MOD`: `resync_bursts= resync_emitted= resync_applied=
+resync_moved= resync_skipped=`. A resync sample is an ordinary NpcState
+packet with flag bit 0x40.
+
 ### relay `[CLAIM]` lines (relay log, WO-81 + WO-102 Phase 2)
 `[CLAIM] granted npc= owner= pos=(x,y,z)` -- a non-authority's first accepted packet for an unclaimed name (WO-81).
 `[CLAIM] muted npc= owner= authority= claimAgeSec=` -- **WO-102**: the damage authority's own stream for a claimed name was dropped for the first time under this claim. This is the authority's implicit request being denied, which WO-98 §2 could not see. Once per claim; every muted packet is counted (`AuthorityMutedPackets` at `GET api/information/npc-claims`).

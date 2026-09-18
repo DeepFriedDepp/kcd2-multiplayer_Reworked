@@ -350,6 +350,29 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
     }
 
     [Fact]
+    public async Task Npc_state_resync_flag_crosses_from_the_authority()
+    {
+        // WO-102 Phase 6: the RESYNC bit (0x40) is the first NpcState flag this
+        // WO adds; the authority's default stream must carry it verbatim.
+        // alpha connects first -> lowest ready id -> damage authority.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        byte flags = (byte)(Protocol.NpcStateFlagDead | Protocol.NpcStateFlagResync);
+        var up = NpcStateCodec.BuildUp("ttkc_man_20", 2340.5f, 2047.25f, 109.0f, 1.5f, 0f, flags);
+        await a.SendRawAsync(up);
+
+        var down = await b.ReadUntilAsync(Protocol.NpcStateDown, Wait);
+        Assert.Equal(1 + up.Length - 3, down.Length);
+        Assert.True(NpcStateCodec.TryParseDown(down, out var d));
+        Assert.Equal(a.Id, d.SourceGhostId);
+        Assert.Equal("ttkc_man_20", d.Name);
+        Assert.Equal(2340.5f, d.X); Assert.Equal(2047.25f, d.Y); Assert.Equal(109.0f, d.Z);
+        Assert.Equal(flags, d.Flags);
+        Assert.NotEqual(0, d.Flags & Protocol.NpcStateFlagResync);
+    }
+
+    [Fact]
     public async Task Action_with_empty_payload_arrives()
     {
         // The other valid length: header only (ActionUpHeaderLen), len byte 0.

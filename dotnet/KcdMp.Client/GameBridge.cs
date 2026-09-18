@@ -292,6 +292,15 @@ public partial class GameBridge(ClientConfig config)
     private readonly Dictionary<string, DateTime> _ownedNpcSeenUtc = new();   // names this authority streamed recently
     private long _reqOut, _reqOutResolved, _reqIn, _reqInResolved, _reqInUnresolved, _reqInRefused, _reqOutUnresolved;
     private static readonly TimeSpan RequestResolveWindow = TimeSpan.FromMilliseconds(1500);
+
+    // WO-102 Phase 6: NPC resync. The owner bursts (ordinary NpcStateUp with
+    // the RESYNC bit) on the events that already resync world time; a
+    // non-owner asks for one over the action channel. Rate-limited so a
+    // sleep that both machines notice costs one burst, not two.
+    private DateTime _lastResyncBurstUtc = DateTime.MinValue;
+    private volatile NetworkStream? _resyncStream;
+    private static readonly TimeSpan ResyncBurstMinGap = TimeSpan.FromSeconds(5);
+    private long _resyncOut, _resyncBursts, _resyncEmitted, _resyncInPackets, _resyncDeadApplied, _resyncSkipped, _resyncInRequests, _resyncInRefused;
     private static readonly TimeSpan OwnedNpcRecent = TimeSpan.FromSeconds(10);
     private static double NowMs() => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
 
@@ -685,6 +694,8 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=wo102 authority_host={(_hostAuthority ? 1 : 0)} pos_native={(_posNative ? 1 : 0)} pos_native_gave_up={(_posNativeGaveUp ? 1 : 0)} pos_native_oracle_refused={(_posNativeRefusedByOracle ? 1 : 0)} native_reads={_combat.LocalStateReads} native_refused={_combat.LocalStateRefused} authority={(_isDamageAuthority ? 1 : 0)}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-REQUEST section=summary out={_reqOut} out_resolved={_reqOutResolved} out_unresolved={_reqOutUnresolved} in={_reqIn} in_resolved={_reqInResolved} in_unresolved={_reqInUnresolved} in_refused={_reqInRefused}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-NPCRESYNC section=summary requests_out={_resyncOut} requests_in={_resyncInRequests} requests_refused={_resyncInRefused} bursts={_resyncBursts} emitted={_resyncEmitted} in_packets={_resyncInPackets} dead_applied={_resyncDeadApplied} skipped={_resyncSkipped}"));
         if (_cadLog.Summary("log") is string cl) Console.WriteLine(cl);
         if (_cadNative.Summary("native") is string cn) Console.WriteLine(cn);
         Console.WriteLine(FormattableString.Invariant(
@@ -1472,6 +1483,7 @@ public partial class GameBridge(ClientConfig config)
         _sendPlayerHit = (target, hLoss, sLoss) => SendPlayerHitAsync(stream, target, hLoss, sLoss, cts.Token);
         _sendNpcState = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token);
         _sendNpcDrag = (npc, x, y, z, rot, hp, flags) => SendNpcStateAsync(stream, npc, x, y, z, rot, hp, flags, cts.Token, asClaim: true);
+        _resyncStream = stream;   // WO-102 Phase 6
         _sendNpcDeath = npc => SendNpcDamageAsync(stream, npc, 0f, 0f, suppressHitReaction: true, fatal: true);
         _sendHorseInfo = horseName => SendHorseInfoAsync(stream, horseName, cts.Token);
         _sendCombatEvent = (evt, sid) => SendCombatEventAsync(stream, evt, sid, cts.Token);
@@ -1872,6 +1884,7 @@ public partial class GameBridge(ClientConfig config)
             _sendPlayerHit = null;
             _sendNpcState = null;
             _sendNpcDrag = null;
+            _resyncStream = null;   // WO-102 Phase 6
             _sendNpcDeath = null;
             _sendTimeSkip = null;
             _sendHorseInfo = null;
@@ -2510,6 +2523,8 @@ public partial class GameBridge(ClientConfig config)
         {
             _awaitSkipDoneTime = false;
             _ = _sendTimeSkip?.Invoke(Protocol.TimeSkipPhaseDone, _localSkipKind, worldTime);
+            // WO-102 Phase 6: a finished sleep/wait is a resync point.
+            _ = RequestNpcResyncAsync(NpcResyncReason.Sleep, _resyncStream, CancellationToken.None);
             _localSkipKind = Protocol.TimeSkipKindUnknown;
             // Our own skip may have raced a peer's: apply the queued target
             // now that our skip is over. Forward-only, so a stale one is a no-op.
@@ -2557,6 +2572,7 @@ public partial class GameBridge(ClientConfig config)
             _timeSyncPending = false;
             Console.WriteLine($"[timeskip] announcing clock t={worldTime} (connect/new-peer sync)");
             _ = _sendTimeSkip?.Invoke(Protocol.TimeSkipPhaseSync, Protocol.TimeSkipKindUnknown, worldTime);
+            _ = RequestNpcResyncAsync(NpcResyncReason.NewPeer, _resyncStream, CancellationToken.None);   // WO-102 Phase 6
         }
 
         if (_lastPolledWorldTime is uint last)
@@ -2623,6 +2639,7 @@ public partial class GameBridge(ClientConfig config)
         if (send is null) return;
         await send(Protocol.TimeSkipPhaseStart, Protocol.TimeSkipKindFastTravel, 0);
         await send(Protocol.TimeSkipPhaseDone, Protocol.TimeSkipKindFastTravel, worldTime);
+        await RequestNpcResyncAsync(NpcResyncReason.FastTravel, _resyncStream, CancellationToken.None);   // WO-102 Phase 6
     }
 
     /// <summary>
@@ -2637,6 +2654,9 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private async Task OnReloadDetectedAsync(uint preReloadTime, uint currentTime)
     {
+        // WO-102 Phase 6: a reload replaced this machine's NPC state wholesale;
+        // ask the owner for a burst (or burst, if this is the owner).
+        _ = RequestNpcResyncAsync(NpcResyncReason.Reload, _resyncStream, CancellationToken.None);
         // A different save means different per-save Soul.Guids -- both
         // damage-translation caches are stale the moment a reload happens.
         _soulNameByGuid.Clear();
@@ -3373,6 +3393,10 @@ public partial class GameBridge(ClientConfig config)
             await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
                 "if KCD2MP_ApplyTimeSkip then KCD2MP_ApplyTimeSkip(\"{0}\",{1},{2},{3}) end",
                 EscapeLua(who), kind, worldTime, quiet ? "true" : "false"));
+            // WO-102 Phase 6: a peer's announced sleep/wait/fast travel is a
+            // resync point here too (quiet clock reports are not).
+            if (!quiet)
+                await RequestNpcResyncAsync(kind == Protocol.TimeSkipKindFastTravel ? NpcResyncReason.FastTravel : NpcResyncReason.Sleep, _resyncStream, ct);
         }
         catch { /* game might have unloaded */ }
 
@@ -3638,20 +3662,10 @@ public partial class GameBridge(ClientConfig config)
             return;
         }
 
-        byte[] nameBytes = Encoding.UTF8.GetBytes(npcName);
-        int payloadLen = 1 + nameBytes.Length + Protocol.NpcStateFixedTail;
-        var packet = new byte[3 + payloadLen];
-        packet[0] = Protocol.NpcStateUp;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)payloadLen);
-        packet[3] = (byte)nameBytes.Length;
-        nameBytes.CopyTo(packet, 4);
-        int o = 4 + nameBytes.Length;
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o), x);
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 4), y);
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 8), z);
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 12), rotZ);
-        BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 16), health);
-        packet[o + 20] = flags;
+        // WO-102 Phase 6: bytes from NpcStateCodec so the relay round-trip gate
+        // sends exactly what this method sends (the WO-101 rule).
+        var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags);
+        if ((flags & Protocol.NpcStateFlagResync) != 0) _resyncEmitted++;
         try { await WritePacketAsync(stream, packet, ct); }
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
     }
@@ -3873,6 +3887,18 @@ public partial class GameBridge(ClientConfig config)
                         if (a.Kind == ActionKind.NpcRequest)
                         {
                             OnNpcRequestIn(a);
+                        }
+                        else if (a.Kind == ActionKind.NpcResync)
+                        {
+                            // WO-102 Phase 6: a non-owner asks for a burst.
+                            byte rr = a.Payload.Length >= 1 ? a.Payload[0] : (byte)0;
+                            _resyncInRequests++;
+                            if (!_hostAuthority || !_isDamageAuthority)
+                            {
+                                _resyncInRefused++;
+                                Console.WriteLine($"MP-NPCRESYNC dir=in from={a.SourceGhostId} reason={NpcResyncReason.Name(rr)} result=refused cause={(!_hostAuthority ? "host-authority-off" : "not-owner")}");
+                            }
+                            else await BurstNpcResyncAsync(rr, $"ghost-{a.SourceGhostId}", ct);
                         }
                         else
                         // No receiver acts on this yet: Phase 1's block write
@@ -4190,6 +4216,8 @@ public partial class GameBridge(ClientConfig config)
                             // living NPC on the strength of a stranger's save.
                             byte  nsrc    = payload[0];
                             bool  nDead   = (nflags & Protocol.NpcStateFlagDead) != 0;
+                            bool  nResync = (nflags & Protocol.NpcStateFlagResync) != 0;   // WO-102 Phase 6
+                            if (nResync) _resyncInPackets++;
                             bool  nSeen   = _npcLastDead.TryGetValue(npcName, out bool nWasDead);
                             _npcLastDead[npcName] = nDead;
                             if (nDead && (!nSeen || !nWasDead))
@@ -4209,6 +4237,16 @@ public partial class GameBridge(ClientConfig config)
 
                             if (nDead && nSeen && !nWasDead)
                                 await ApplyRemoteNpcDeathAsync(npcName, null, nsrc, "0x27 dead transition", ct);
+                            else if (nDead && nResync && _hostAuthority && !nWasDead)
+                            {
+                                // WO-102 Phase 6: under host authority the owner's
+                                // life state IS the truth, including on a first
+                                // packet -- the WO-86 "freeze only on a first dead
+                                // packet" rule is the claim model's caution about a
+                                // stranger's save, and here the stranger is the owner.
+                                _resyncDeadApplied++;
+                                await ApplyRemoteNpcDeathAsync(npcName, null, nsrc, "0x27 resync dead", ct);
+                            }
 
                             if (npcSwingNative)
                             {
@@ -4753,6 +4791,11 @@ public partial class GameBridge(ClientConfig config)
                 _ = send(hitGhostId, loss, 0f);
                 break;
             }
+
+            case "npc_resync_request":
+                // WO-102 Phase 6: mp_resync_npcs from the console.
+                _ = RequestNpcResyncAsync(NpcResyncReason.Manual, _resyncStream, CancellationToken.None);
+                break;
 
             case "npc_target":
             {
@@ -5583,6 +5626,50 @@ public partial class GameBridge(ClientConfig config)
             }
         }
         foreach (var l in lines) Console.WriteLine(l);
+    }
+
+    /// <summary>
+    /// WO-102 Phase 6: ask for (or perform) an NPC state resync. Under the
+    /// claim model there is no single owner to resync from, so it is skipped
+    /// and said so. The owner runs the mod's burst; a non-owner sends an
+    /// NpcResync action to the owner.
+    /// </summary>
+    private async Task RequestNpcResyncAsync(byte reason, NetworkStream? stream, CancellationToken ct)
+    {
+        string why = NpcResyncReason.Name(reason);
+        if (!_hostAuthority)
+        {
+            _resyncSkipped++;
+            Console.WriteLine($"MP-NPCRESYNC dir=skip reason={why} cause=host-authority-off");
+            return;
+        }
+        if (_isDamageAuthority)
+        {
+            await BurstNpcResyncAsync(reason, "self", ct);
+            return;
+        }
+        if (stream is null) { _resyncSkipped++; Console.WriteLine($"MP-NPCRESYNC dir=skip reason={why} cause=not-connected"); return; }
+        var pkt = _actionOut.Build(ActionKind.NpcResync, ActionPhase.Commit, new[] { reason });
+        await WritePacketAsync(stream, pkt, ct);
+        _resyncOut++;
+        Console.WriteLine($"MP-NPCRESYNC dir=out reason={why} gen={_actionOut.Gen}");
+    }
+
+    /// <summary>The owner's burst: the mod scans around every player and emits one flagged sample per NPC.</summary>
+    private async Task BurstNpcResyncAsync(byte reason, string from, CancellationToken ct)
+    {
+        string why = NpcResyncReason.Name(reason);
+        var now = DateTime.UtcNow;
+        if (now - _lastResyncBurstUtc < ResyncBurstMinGap)
+        {
+            Console.WriteLine($"MP-NPCRESYNC dir=burst reason={why} from={from} result=collapsed (within {ResyncBurstMinGap.TotalSeconds:F0} s of the last burst)");
+            return;
+        }
+        _lastResyncBurstUtc = now;
+        _resyncBursts++;
+        Console.WriteLine($"MP-NPCRESYNC dir=burst reason={why} from={from}");
+        try { await ExecLuaAsync($"if KCD2MP_NpcResyncBurst then KCD2MP_NpcResyncBurst(\"{why}\") end"); }
+        catch (Exception ex) { Console.WriteLine($"MP-NPCRESYNC dir=burst reason={why} result=failed err=\"{ex.Message}\""); }
     }
 
     /// <summary>WO-102 Phase 1: the 30 s cadence window for both paths, plus the oracle window.</summary>

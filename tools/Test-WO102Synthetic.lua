@@ -465,6 +465,73 @@ do
     check("u: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
+-- ---------------------------------------------------------------- Phase 6
+--   (v) the owner's burst emits one npc_state per NPC near the player OR a
+--       peer ghost, flagged 64 (+dead/ko/drawn), capped; a non-authority
+--       burst emits nothing and logs a skip
+--   (w) a RESYNC packet for a name with no puppet snaps the copy once when it
+--       is > 1 m off, creates no puppet, logs MP-NPCRESYNC dir=apply; a copy
+--       0.5 m off is not moved; a copy within 2 m of the player or a local
+--       corpse is skipped and named; an existing puppet treats it as an
+--       ordinary packet (target updated, no apply line)
+--   (x) mp_resync_npcs is registered argless and emits npc_resync_request
+do -- (v)
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = true; KCD2MP.wo102.authorityHost = true
+    local ghostEnt = { GetWorldPos = function() return { x = 100, y = 0, z = 0 } end }
+    KCD2MP.ghosts = { ["1"] = { entity = ghostEnt, istate = {} } }
+    local a = mkEntity("v_a", 5, 0, 0); a.dead = true; a.hp = 0
+    local b = mkEntity("v_b", 95, 0, 0)
+    local ghostBody = mkEntity("kcd2mp_1", 1, 0, 0)          -- excluded name
+    SPHERE = { a, b, ghostBody }
+    local n = KCD2MP_NpcResyncBurst("manual")
+    check("v: burst emits one sample per eligible NPC", n == 2, n)
+    check("v: excluded names are not emitted", logCount("npc_state kcd2mp_1") == 0)
+    local la = lastLog("npc_state v_a") or ""
+    check("v: dead NPC carries dead+resync (65)", la:match("(%d+)%s*$") == "65", la)
+    local lb = lastLog("npc_state v_b") or ""
+    check("v: live NPC carries resync (64)", lb:match("(%d+)%s*$") == "64", lb)
+    check("v: burst line", logCount("MP-NPCRESYNC dir=burst reason=manual n=2 anchors=2") == 1, lastLog("MP-NPCRESYNC"))
+    clearLog(); KCD2MP.hitSensorOn = false
+    check("v: non-authority burst emits nothing", KCD2MP_NpcResyncBurst("manual") == 0 and logCount("npc_state") == 0 and logCount("dir=skip reason=manual cause=not-authority") == 1)
+    check("v: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+do -- (w)
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityHost = true; KCD2MP.hitSensorOn = false
+    local far = mkEntity("w_far", 10, 10, 0); ENTS["w_far"] = far
+    KCD2MP_ApplyNpcState("w_far", 20, 10, 0, 1.0, 100, 64, 0)
+    check("w: far copy snapped once", #far.writes == 1 and far.px == 20 and far.rz == 1.0)
+    check("w: no puppet created", KCD2MP.npcPuppets["w_far"] == nil)
+    check("w: apply line", logCount("MP-NPCRESYNC dir=apply npc=w_far dist_m=10.00 moved=1 dead=0 owner=0") == 1, lastLog("MP-NPCRESYNC"))
+    local close = mkEntity("w_close", 10, 0, 0); ENTS["w_close"] = close
+    KCD2MP_ApplyNpcState("w_close", 10.5, 0, 0, 0, 100, 64, 0)
+    check("w: 0.5 m off is not moved", #close.writes == 0 and logCount("npc=w_close dist_m=0.50 moved=0") == 1)
+    local near = mkEntity("w_near", 1, 0, 0); ENTS["w_near"] = near      -- 1 m from the player at (0,0)
+    KCD2MP_ApplyNpcState("w_near", 30, 0, 0, 0, 100, 64, 0)
+    check("w: a body next to the player is skipped", #near.writes == 0 and logCount("npc=w_near dist_m=29.00 moved=0 dead=0 owner=0 skipped=near-player") == 1, lastLog("npc=w_near"))
+    local corpse = mkEntity("w_corpse", 10, 0, 0); corpse.dead = true; ENTS["w_corpse"] = corpse
+    KCD2MP_ApplyNpcState("w_corpse", 30, 0, 0, 0, 100, 64, 0)
+    check("w: a local corpse is skipped", #corpse.writes == 0 and logCount("npc=w_corpse dist_m=20.00 moved=0 dead=0 owner=0 skipped=local-corpse") == 1)
+    -- existing puppet: ordinary handling
+    local pup = mkEntity("w_pup", 0, 5, 0); ENTS["w_pup"] = pup
+    KCD2MP_ApplyNpcState("w_pup", 0, 5, 0, 0, 100, 0, 0)
+    clearLog()
+    KCD2MP_ApplyNpcState("w_pup", 0, 7, 0, 0, 100, 64, 0)
+    check("w: an existing puppet takes it as a stream packet", KCD2MP.npcPuppets["w_pup"] ~= nil and KCD2MP.npcPuppets["w_pup"].ty == 7 and logCount("dir=apply npc=w_pup") == 0)
+    check("w: summary counts", (function() clearLog(); KCD2MP_LogSummary("t"); return (lastLog("MP-SUMMARY-MOD") or ""):find("resync_applied=4 resync_moved=1 resync_skipped=2", 1, true) ~= nil end)(), lastLog("MP-SUMMARY-MOD"))
+    check("w: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+do -- (x)
+    clearLog()
+    local c = CCMDS["mp_resync_npcs"]
+    check("x: mp_resync_npcs registered argless", c ~= nil and not string.find(c.body, "%LINE", 1, true))
+    KCD2MP_NpcResyncRequest()
+    check("x: emits npc_resync_request", logCount("npc_resync_request manual") == 1)
+end
+
 -- Summary.
 local pass, fail = 0, 0
 for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end

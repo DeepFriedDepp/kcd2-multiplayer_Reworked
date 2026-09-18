@@ -344,7 +344,8 @@ function KCD2MP_LogSummary(reason)
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
         .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d"
         .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s"
-        .. " auth_pauses=%d auth_resumes=%d auth_violations=%d",
+        .. " auth_pauses=%d auth_resumes=%d auth_violations=%d"
+        .. " resync_bursts=%d resync_emitted=%d resync_applied=%d resync_moved=%d resync_skipped=%d",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
         (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
@@ -354,7 +355,10 @@ function KCD2MP_LogSummary(reason)
         (KCD2MP._authStats or {}).ownerChange or 0,
         (KCD2MP.wo102 and KCD2MP.wo102.authorityHost) and "host" or "claim",
         (KCD2MP._authStats or {}).pause or 0, (KCD2MP._authStats or {}).resume or 0,
-        (KCD2MP._authStats or {}).violation or 0))
+        (KCD2MP._authStats or {}).violation or 0,
+        (KCD2MP._resyncStats or {}).bursts or 0, (KCD2MP._resyncStats or {}).emitted or 0,
+        (KCD2MP._resyncStats or {}).applied or 0, (KCD2MP._resyncStats or {}).moved or 0,
+        (KCD2MP._resyncStats or {}).skipped or 0))
 end
 
 -- ===== Player Position =====
@@ -3154,6 +3158,83 @@ function KCD2MP_ProbeNpcPause()
     end)
 end
 
+-- ===== WO-102 Phase 6: NPC resync burst (the sleep / fast-travel / reload net) =====
+--
+-- The owner (damage authority, host authority on) emits ONE npc_state sample
+-- per NPC it has loaded within MP_NPC_RESYNC_RADIUS of its own player or any
+-- peer ghost, flagged RESYNC (bit 64), on the events that already resync
+-- world time (the agent calls this) and on `mp_resync_npcs`. Receivers snap
+-- their copy once (KCD2MP_ApplyNpcState) -- no puppet, no stream follows.
+-- This is the net for ambient drift, and nothing more: an NPC mid-interaction
+-- is Phase 4's business (the stream), and an NPC only the other game has
+-- loaded cannot be in this scan (docs/WO-102-findings.md S6).
+local MP_NPC_RESYNC_RADIUS = 60     -- metres around each anchor
+local MP_NPC_RESYNC_MAX    = 40     -- hard cap per burst (one 0x26 each, ~40 bytes)
+KCD2MP._resyncStats = { bursts = 0, emitted = 0, applied = 0, moved = 0, skipped = 0 }
+
+function KCD2MP_NpcResyncBurst(reason)
+    reason = tostring(reason or "?")
+    if not KCD2MP.hitSensorOn then
+        mp_log("MP-NPCRESYNC dir=skip reason=" .. reason .. " cause=not-authority")
+        return 0
+    end
+    if not player then return 0 end
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return 0 end
+    local anchors = { pp }
+    for _, g in pairs(KCD2MP.ghosts or {}) do
+        local gp = nil
+        pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
+        if not gp and g.istate and g.istate.tx then gp = { x = g.istate.tx, y = g.istate.ty, z = g.istate.tz or pp.z } end
+        if gp then anchors[#anchors + 1] = gp end
+    end
+    local seen, n = {}, 0
+    for _, a in ipairs(anchors) do
+        for _, e in ipairs(System.GetEntitiesInSphere(a, MP_NPC_RESYNC_RADIUS) or {}) do
+            if n >= MP_NPC_RESYNC_MAX then break end
+            local cls = e.class
+            local isHorse = (cls == "Horse")
+            if (cls == "NPC" or cls == "NPC_Female" or isHorse) and not mp_is_mod_entity(e)
+               and not (isHorse and KCD2MP._mountedHorseName and e:GetName() == KCD2MP._mountedHorseName) then
+                local name = e:GetName()
+                if name and not seen[name] and string.find(name, "^[%w_]+$") and not mp_is_excluded_npc_name(name) then
+                    seen[name] = true
+                    pcall(function()
+                        local ep = e:GetWorldPos()
+                        local rot = 0
+                        pcall(function() rot = e:GetWorldAngles().z or 0 end)
+                        local hp, dead, ko, drawn = -1, false, false, false
+                        if e.actor then
+                            pcall(function() hp = e.actor:GetHealth() or -1 end)
+                            pcall(function() dead = e.actor:IsDead() == true end)
+                            pcall(function() ko = e.actor:IsUnconscious() == true end)
+                        end
+                        pcall(function() drawn = e.human and e.human:IsWeaponDrawn() == true end)
+                        local flags = (dead and 1 or 0) + (ko and 2 or 0) + (drawn and 4 or 0) + 64
+                        KCD2MP_EmitEvent("npc_state", string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
+                            name, ep.x, ep.y, ep.z, rot, hp, flags))
+                        n = n + 1
+                    end)
+                end
+            end
+        end
+    end
+    local st = KCD2MP._resyncStats
+    st.bursts = st.bursts + 1
+    st.emitted = st.emitted + n
+    mp_log(string.format("MP-NPCRESYNC dir=burst reason=%s n=%d anchors=%d radius_m=%d cap=%d",
+        reason, n, #anchors, MP_NPC_RESYNC_RADIUS, MP_NPC_RESYNC_MAX))
+    return n
+end
+
+-- `mp_resync_npcs` (argless): the agent decides -- owner bursts, non-owner
+-- asks the owner over the action channel, claim model logs a skip.
+function KCD2MP_NpcResyncRequest()
+    mp_log("MP-NPCRESYNC dir=request reason=manual model=" .. (KCD2MP.wo102.authorityHost and "host" or "claim (no single owner -- the agent will skip)"))
+    KCD2MP_EmitEvent("npc_resync_request", "manual")
+end
+
 local function mp_npc_rescan()
     if not player then return end
     local pp = nil
@@ -3534,6 +3615,48 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
     -- be a second writer fighting it every tick.
     for _, hd in pairs(KCD2MP.horseGhosts or {}) do
         if hd.isWorldHorse and hd.worldName == name then return end
+    end
+
+    -- WO-102 Phase 6: a RESYNC sample (bit 64). With no puppet for the name it
+    -- is a ONE-SHOT snap of this world's copy onto the owner's position -- no
+    -- puppet is created and no stream follows. With a puppet it is an ordinary
+    -- packet (a > 5 m jump snaps through the ring as before). Never moves a
+    -- body this player is within 2 m of or talking to, and never a local corpse.
+    local fIn = tonumber(flags) or 0
+    if (math.floor(fIn / 64) % 2) == 1 then
+        flags = fIn - 64
+        if not KCD2MP.npcPuppets[name] then
+            local st = KCD2MP._resyncStats
+            local cur = nil
+            pcall(function() cur = e:GetWorldPos() end)
+            if not cur then return end
+            local dx, dy, dz = x - cur.x, y - cur.y, z - cur.z
+            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            local streamDead = (math.floor(fIn) % 2) == 1
+            local locallyDead, inDialog, nearPlayer = false, false, false
+            if e.actor then pcall(function() locallyDead = e.actor:IsDead() == true end) end
+            pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end)
+            if player then
+                pcall(function()
+                    local pp = player:GetWorldPos()
+                    nearPlayer = ((cur.x - pp.x)^2 + (cur.y - pp.y)^2) < 4.0
+                end)
+            end
+            local skip = locallyDead and "local-corpse" or inDialog and "in-dialog" or nearPlayer and "near-player" or nil
+            local moved = false
+            if not skip and dist > 1.0 then
+                pcall(function() e:SetWorldPos({ x = x, y = y, z = z }) end)
+                pcall(function() e:SetWorldAngles({ x = 0, y = 0, z = rot }) end)
+                moved = true
+            end
+            st.applied = st.applied + 1
+            if moved then st.moved = st.moved + 1 end
+            if skip then st.skipped = st.skipped + 1 end
+            mp_log(string.format("MP-NPCRESYNC dir=apply npc=%s dist_m=%.2f moved=%d dead=%d owner=%s%s",
+                name, dist, moved and 1 or 0, streamDead and 1 or 0, tostring(src == nil and "?" or src),
+                skip and (" skipped=" .. skip) or ""))
+            return
+        end
     end
 
     local p = KCD2MP.npcPuppets[name]
@@ -9801,6 +9924,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). UNVERIFIED live -- run mp_probe_npc_pause first")
     System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
     System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")
+    System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
