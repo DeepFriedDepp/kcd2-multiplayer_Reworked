@@ -14,7 +14,7 @@ Session 2026-09-18. Findings: `docs/WO-102-findings.md`.
 | 5 — request channel | **built**: `ActionKind.NpcRequest` (accepted input + target name) at the commit edge, owner-side correlation with the `0x30` that follows, specific refusals; `0x76500` on an NPC is a STOP deferred to the maintainer; resolution = the existing damage path | (synthetic) agent 146/146, relay 11/11 incl. the new round-trip case, Lua 81/81 |
 | 6 — sleep resync + limits | **built**: owner bursts `0x26` + `NpcStateFlagResync` (0x40) around every player on sleep / fast travel / reload / new peer / `mp_resync_npcs`; non-owner asks via `ActionKind.NpcResync`; one-shot snap + owner death state on receive; limits and the still-divergent categories stated in §6.2–6.3 | (synthetic) agent 150/150, relay 12/12, Lua 99/99 |
 | 7 — verification + A/B | **done**: invariant scenario (y), three pre-publish gates in `Build-Installer.ps1`, `docs/WO-102-field-runbook.md` | (synthetic) Lua 109/109, agent 150/150, relay 12/12 |
-| end gate | pending — needs a version string from the maintainer | |
+| end gate | **defaults decided and committed** (host authority on, native position off, pause lever off — findings §8); all commits pushed; `rollback/0.23.2` tagged; **build waits on the version string from the maintainer** | (synthetic) Lua 109/109 + eleven older suites, agent 150/150, relay 12/12 |
 
 ## Commits (all `WO-102:` on `origin main`)
 

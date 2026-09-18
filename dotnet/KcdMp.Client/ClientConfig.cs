@@ -79,11 +79,16 @@ public sealed class ClientConfig
     /// (no claims, no proximity, no expiry). Off = the 0.23.2 per-NPC claim
     /// model, exactly. Pushed into the mod at connect as the session's
     /// starting state; flips at runtime from the console
-    /// (mp_authority_host_on|off) without a restart. The shipped default is
-    /// decided at the WO-102 end gate; off is the session's working default
-    /// so each phase measures against its own baseline.
+    /// (mp_authority_host_on|off) without a restart.
+    ///
+    /// SHIPS ON (WO-102 end gate). The 0.23.2 behaviour it replaces is
+    /// known-broken from the 2026-09-17 bundles -- claims expiring mid-fight
+    /// and 24-97 m divergences -- so leaving it off to guard against an
+    /// unproven improvement is the wrong side of the trade; the claim model
+    /// stays one console command away (mp_authority_host_off), which is the
+    /// actual safety. Synthetic evidence only (109/109); no live session yet.
     /// </summary>
-    public bool HostAuthorityEnabled { get; set; } = false;
+    public bool HostAuthorityEnabled { get; set; } = true;
 
     /// <summary>
     /// WO-102 Phase 1: read the local position/rotation/riding state through
@@ -91,6 +96,11 @@ public sealed class ClientConfig
     /// the [KCD2-MP-DATA] log line. Off = the 0.23.2 log-tail path. The log
     /// tail keeps running either way (it carries vitals and every event line)
     /// and is the fallback when the pipe refuses.
+    ///
+    /// SHIPS OFF (WO-102 end gate): the interval comparison it exists for
+    /// has not been measured (findings S1.4 runbook). What settles it: two
+    /// MP-POSCADENCE windows per path from one solo session with the native
+    /// path measurably steadier at p95.
     /// </summary>
     public bool NativePositionEnabled { get; set; } = false;
 

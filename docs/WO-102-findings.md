@@ -687,3 +687,56 @@ entirely** under host authority, and that a non-owner logs **zero
 `MP-AUTHORITY` line that names the other acquirer is the lead. The honest
 failure modes (worse jitter without the pause lever; the categories §6.3
 names) are listed so they are recognised rather than explained away.
+
+---
+
+## 8. End gate — the defaults, decided per toggle
+
+Off was the session's working default so each phase measured against its
+own baseline. It is the wrong default to ship for anything that earned its
+place; a build that installs and changes nothing is a failed build.
+
+| toggle | shipped | evidence behind it | what would change the decision |
+|---|---|---|---|
+| `mp_authority_host_on\|off` | **on** | the behaviour it replaces is known-broken (§2.1: every claim to the joiner, 19 of 27 releases mid-fight expiries, 24–97 m divergences, two of them never even caught); the new model has 109/109 synthetic checks including the 200-tick invariant run; the legacy path is one argless command away on either machine — that is the actual safety | a two-machine session (runbook) in which arm B shows more or larger divergences than arm A, or any `owner-change` under `model=host` |
+| `mp_authority_pause_on\|off` | **off** | the lever exists and is the engine's own refcounted NPC pause (§3.5), but what it does to a body's animation and hit registration is **unverified** | `mp_probe_npc_pause` reporting HELD + animation change + hit registered + clean resume (§3.3) |
+| `mp_pos_native_on\|off` | **off** | the read is established (§1.2) but the interval comparison it exists for is **unmeasured** | two `MP-POSCADENCE` windows per path from one solo session with `path=native` measurably lower at p95 (§1.4) |
+
+Where the defaults live: `ClientConfig.HostAuthorityEnabled = true`,
+`NativePositionEnabled = false` (the agent pushes both at connect) and the
+mod's own `KCD2MP.wo102` table set the same way, so an agent that pushes
+nothing leaves the same state. The pause lever has no agent-side default; it
+is mod-only.
+
+**Consequence stated for the release notes:** with host authority on and
+the pause lever off, a fought NPC on the non-owner is written by the stream
+every tick *and* by its own brain — the WO-98 §3 tug-of-war, no longer
+resolved by a yield or a release. That is continuous contention instead of
+divergence; the A/B measures it as `MP-AUTHORITY-VIOLATION kind=contention`,
+and the pause lever is the intended fix once the probe passes.
+
+The eleven older Lua suites pin the claim model explicitly now (one line
+after the splice marker: `KCD2MP.wo102.authorityHost = false`), since the
+model they test ships as `mp_authority_host_off`. All unchanged in count.
+
+### 8.1 Wire compatibility with 0.23.2 — the whole WO in one place
+
+| change | 0.23.2 ↔ WO-102 pair |
+|---|---|
+| Position/Ghost, relay, every fixed-length packet | unchanged |
+| `NpcState` flag `0x40` (resync) | an old receiver puppets the sample and releases it 3 s later — noisy, harmless. An old owner never sends it |
+| `ActionKind.NpcRequest` (4), `NpcResync` (5) | an old receiver counts them as `unknown_kind`; an old sender never sends them |
+| claims | an old joiner still claims and the unchanged relay grants → that joiner runs the claim model against a new host; a new joiner never claims against an old host, whose scan has no anchors → the joiner's neighbourhood is unsynced |
+| pipe `0x0A` | an old DLL never answers; with `mp_pos_native_on` the agent gives up after 20 no-answers (~100 s of the tick blocking on the 5 s reply deadline) and stays on the log line |
+
+**Verdict: degrades, never fails.** Nothing presents as "we can't see each
+other" (WO-101's class). The matched-set rule still applies because a mixed
+pair is not running the model the release notes describe.
+
+### 8.2 Build — waiting on the version string
+
+Everything above is pushed to `origin main` and `rollback/0.23.2` is tagged
+at `4d720cf` (the last 0.23.2 commit, one docs change after the `eb4b8dc`
+the installer was built from). The fresh-clone build, README badge, release
+notes, pak check and privacy sweep run once the maintainer names the version
+(docs/VERSIONING.md: never chosen by a session).

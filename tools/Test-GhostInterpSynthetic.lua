@@ -40,6 +40,10 @@ end
 
 -- @@KDCMP@@
 
+-- WO-102: these scenarios pin the 0.23.2 CLAIM model, which now ships as `mp_authority_host_off`
+-- (host authority is the shipped default since WO-102; Test-WO102Synthetic.lua covers that side).
+KCD2MP.wo102.authorityHost = false
+
 -- Part 2: scenarios.
 
 local RESULTS = {}

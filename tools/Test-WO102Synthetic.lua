@@ -87,10 +87,15 @@ local function clearLog() LOG = {} end
 
 -- ---------------------------------------------------------------- Phase 0
 
--- (f) first: the off state IS the 0.23.2 state.
-check("f: wo102 toggles default off", KCD2MP.wo102.authorityHost == false and KCD2MP.wo102.posNative == false)
+-- (f) first: the SHIPPED defaults (WO-102 end gate) -- host authority on,
+--     the unmeasured/unverified levers off -- and the 0.23.2 knobs untouched.
+check("f: shipped defaults: authority_host on, pos_native off, authority_pause off",
+      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.authorityPause == false)
 check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
       and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == true)
+-- Every scenario below starts from the OFF baseline (the 0.23.2 model) and
+-- switches on what it tests, so the off state is proven to be 0.23.2.
+KCD2MP_Wo102Set("authority_host", false, "agent")
 
 -- (a) console flip.
 clearLog()
@@ -159,6 +164,7 @@ local function mkEntity(name, x, y, z)
     return e
 end
 local function resetNpc()
+    KCD2MP.wo102.authorityHost = false; KCD2MP.wo102.authorityPause = false   -- the 0.23.2 baseline
     KCD2MP.npcPuppets = {}; KCD2MP.npcTracked = {}; KCD2MP.dragging = {}; KCD2MP.dragWatch = {}
     KCD2MP.npcPuppetRunning = false; KCD2MP._npcDivergeUntil = {}
     KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0 }

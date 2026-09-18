@@ -2749,10 +2749,14 @@ KCD2MP.npcProx = {
 --                  docs/WO-102-findings.md S3). Live behaviour UNVERIFIED as
 --                  of this build -- default off, `mp_probe_npc_pause` is the
 --                  single-machine proof. Does nothing unless authorityHost.
+-- Shipped defaults (WO-102 end gate): host authority ON, the two levers that
+-- have no measurement behind them OFF. The agent pushes ClientConfig's values
+-- at connect; these are what an agent that pushes nothing leaves in place, so
+-- they agree with ClientConfig by construction.
 KCD2MP.wo102 = {
-    authorityHost  = false,
-    posNative      = false,
-    authorityPause = false,
+    authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
+    posNative      = false,   -- unmeasured (findings S1.4)
+    authorityPause = false,   -- unverified live (findings S3.3)
 }
 KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause" }
 
