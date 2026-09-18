@@ -50,6 +50,31 @@ public sealed class ClientConfig
     public bool WeatherSyncEnabled { get; set; } = true;
 
     /// <summary>
+    /// WO-100.5 Phase 4: whether the guid-addressed damage fallback (0x12/0x14)
+    /// may fire.
+    ///
+    /// These are the ONLY two wire paths left that carry unstable identity
+    /// (WO-100 S3.4's audit). The 16-byte guid is documented as a
+    /// SharedSoulGuid but WO-39 Phase 3 proved it is the PER-SAVE Soul Guid,
+    /// and WO-40 field-confirmed it resolves on some NPCs and not others --
+    /// 571 of 571 failures on one machine, 176 of 176 successes on another. So
+    /// on the evidence this path silently does nothing on the majority of
+    /// NPCs.
+    ///
+    /// It already fires only when the name lookup failed, which is the gate
+    /// WO-100.5 asked for. What it lacked was a way to SEE it: every use now
+    /// prints MP-DMG with route=guid-fallback and is counted, so a field
+    /// session can answer "how often does this fire, and how often does it
+    /// land" instead of inferring it.
+    ///
+    /// DEFAULT TRUE -- true is exactly the behaviour every previous release
+    /// had. Setting it false removes the fallback entirely, which is the
+    /// experiment this toggle exists to make possible; it has never been run,
+    /// so it is not the default.
+    /// </summary>
+    public bool GuidDamageFallbackEnabled { get; set; } = true;
+
+    /// <summary>
     /// How the agent reads player state from the game.
     ///
     ///   "logtail" — the mod pushes state into kcd.log and the agent tails it.
@@ -237,6 +262,12 @@ public sealed class ClientConfig
                         break;
                     case "--no-voice":
                         VoiceChatEnabled = false;
+                        break;
+                    case "--guid-damage-fallback":
+                        GuidDamageFallbackEnabled = true;
+                        break;
+                    case "--no-guid-damage-fallback":
+                        GuidDamageFallbackEnabled = false;
                         break;
                     case "--weather-sync":
                         WeatherSyncEnabled = true;

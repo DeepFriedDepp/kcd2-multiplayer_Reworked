@@ -1353,11 +1353,35 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else
                 {
+                    // WO-100.5 Phase 4: the guid-addressed fallback. Already
+                    // gated on the name lookup having failed (npcName is null)
+                    // or on the target being a ghost body, whose soul guid IS
+                    // the shared roster soul and therefore stable. What it
+                    // lacked was visibility: WO-40 field-measured 571/571
+                    // failures on one machine and 176/176 successes on
+                    // another, and nothing in a field log distinguished "this
+                    // path fired and did nothing" from "this path never fired".
+                    bool ghostTarget = npcName is not null;   // i.e. a kcd2mp_ body
+                    if (!ghostTarget && !config.GuidDamageFallbackEnabled)
+                    {
+                        _stats.DmgOutDropped++;
+                        Console.WriteLine(FormattableString.Invariant(
+                            $"MP-DMG dir=drop route=guid-fallback soul={soul} hp={health:F1} st={stamina:F1} fatal={(died ? 1 : 0)} reason=fallback-disabled"));
+                        return;
+                    }
                     await SendLocalHitAsync(stream, soul, stamina, health, suppressHitReaction: true);
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"MP-DMG dir=out route={(ghostTarget ? "guid-ghost" : "guid-fallback")} soul={soul} hp={health:F1} st={stamina:F1} fatal={(died ? 1 : 0)} reason={(ghostTarget ? "ghost-body" : "name-lookup-failed")}"));
                     Console.WriteLine($"[combat] sent hit {health:F1} on {soul}"
                         + (npcName is null ? " (name lookup failed -- guid-addressed)" : ""));
                     if (died && npcName is null)
                     {
+                        // WO-100.5 Phase 4: gated by the same toggle, implicitly
+                        // -- npcName is null means this is not a ghost target,
+                        // so the early return above has already fired when the
+                        // fallback is off. Said out loud rather than left to be
+                        // re-derived.
+                        //
                         // WO-86: the guid-addressed death packet (0x14) has had
                         // a sender since WO-4 and no caller until now. It is
                         // the fallback for the fallback: it lands only when the
@@ -3851,10 +3875,17 @@ public partial class GameBridge(ClientConfig config)
                     float health   = ReadFloat(payload, 21);
                     bool  suppress = (payload[25] & Protocol.DamageFlagSuppressHitReaction) != 0;
 
-                    bool applied = await _combat.ApplyDamageAsync(soul, stamina, health, suppress, ct);
+                    bool applied = config.GuidDamageFallbackEnabled
+                                && await _combat.ApplyDamageAsync(soul, stamina, health, suppress, ct);
+                    // WO-100.5 Phase 4: the receiving half of the same
+                    // visibility. A guid that does not resolve here is the
+                    // per-save-identity hazard WO-39/WO-40 measured, and it now
+                    // says so on the MP-DMG channel instead of only in prose.
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"MP-DMG dir=in route=guid-fallback ghost={sourceId} soul={soul} hp={health:F1} st={stamina:F1} result={(!config.GuidDamageFallbackEnabled ? "disabled" : applied ? "applied" : "unresolved")}"));
                     if (!applied)
                         Console.WriteLine($"[combat] damage from ghost {sourceId} not applied " +
-                                          $"(soul {soul} not loaded here, or the DLL is absent)");
+                                          $"(soul {soul} not loaded here, the fallback is off, or the DLL is absent)");
                     else
                         // WO-17: the ghost representing sourceId just landed a
                         // real hit in this world -- the "Henry is attacking an
@@ -3928,10 +3959,18 @@ public partial class GameBridge(ClientConfig config)
                     // reaching zero, and the DLL treats it as idempotent.
                     byte sourceId = payload[0];
                     var  soul     = new Guid(payload.AsSpan(1, 16));
-                    bool applied  = await _combat.ApplyDeathAsync(soul, ct);
+                    // WO-100.5 Phase 4: 0x14 carries the same per-save guid as
+                    // 0x12 and is gated by the same toggle, for the same
+                    // reason. Reported on the MP-DMG channel so "the death
+                    // never arrived" and "the death arrived and the guid did
+                    // not resolve" stop looking identical in a field log.
+                    bool applied  = config.GuidDamageFallbackEnabled
+                                 && await _combat.ApplyDeathAsync(soul, ct);
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"MP-DMG dir=in route=guid-fallback-death ghost={sourceId} soul={soul} result={(!config.GuidDamageFallbackEnabled ? "disabled" : applied ? "applied" : "unresolved")}"));
                     if (!applied)
                         Console.WriteLine($"[combat] death from ghost {sourceId} not applied " +
-                                          $"(soul {soul} not loaded here, or the DLL is absent)");
+                                          $"(soul {soul} not loaded here, the fallback is off, or the DLL is absent)");
                 }
                 else if (type == Protocol.PauseDown && payloadLen == Protocol.PauseDownPayloadLen)
                 {
