@@ -291,7 +291,13 @@ public partial class GameBridge(ClientConfig config)
     private const int PosNpcScanGiveUpAfter = 20;
     private static readonly TimeSpan NpcScanInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan NpcScanGhostStaleAfter = TimeSpan.FromSeconds(5);   // an anchor this old is dropped, not used
-    private const float  NpcScanRadiusM = 45.0f;   // matches KCD2MP.npcSync.radius * NPC_TRACK_EXIT_FACTOR (30 * 1.5)
+    // WO-102.5 Phase 3: the mod's authority radius is runtime-adjustable
+    // (#KCD2MP_SetAuthorityRadius) and Lua-owned -- the mod announces a
+    // change on the event channel ("authority_radius") because this agent
+    // cannot read KCD2MP.wo1025 back, mirrored the same way _hostAuthority
+    // etc. mirror the wo102_toggle events. Starts at the mod's own default
+    // (45 m = today's exit radius) so the two agree before any change.
+    private volatile float _npcScanRadiusM = 45.0f;
     private const int    NpcScanMaxNamesPushed = 200;   // ExecuteString batching chunks safely past this; a bound anyway
     private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
 
@@ -4868,6 +4874,27 @@ public partial class GameBridge(ClientConfig config)
                 break;
             }
 
+            case "authority_radius":
+            {
+                // WO-102.5 Phase 3: #KCD2MP_SetAuthorityRadius announces its
+                // new value here so the native scan's own radius (agent-side,
+                // NpcScanTickAsync) does not silently stay capped at the old
+                // number -- Lua's fallback path (System.GetEntitiesInSphere)
+                // already reads the mod's own config directly and needs no
+                // mirror.
+                if (float.TryParse(arg, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var radiusM) && radiusM > 0)
+                {
+                    _npcScanRadiusM = radiusM;
+                    Console.WriteLine(FormattableString.Invariant($"[npcscan] authority radius set to {radiusM:F1}m"));
+                }
+                else
+                {
+                    Console.WriteLine($"[npcscan] ignored malformed authority_radius '{arg}'");
+                }
+                break;
+            }
+
             case "npc_deathsync":
                 // WO-86: mp_npc_deathsync on|off, mirrored here because the
                 // inbound death apply runs in the agent (Lua writes are inert)
@@ -5598,7 +5625,7 @@ public partial class GameBridge(ClientConfig config)
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         NpcScanResult? r = null;
-        try { r = await _combat.ScanNpcsAsync(anchors, NpcScanRadiusM, ct); }
+        try { r = await _combat.ScanNpcsAsync(anchors, _npcScanRadiusM, ct); }
         catch (OperationCanceledException) { throw; }
         catch { }
         sw.Stop();
@@ -5631,7 +5658,7 @@ public partial class GameBridge(ClientConfig config)
         }
 
         Console.WriteLine(FormattableString.Invariant(
-            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={NpcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={names.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
+            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={_npcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={names.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
         if (res.Truncated) _npcScanTruncatedWire++;
 
         _npcScanPushes++;

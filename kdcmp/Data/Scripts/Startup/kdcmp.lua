@@ -2189,6 +2189,75 @@ KCD2MP.npcSync = {
     releaseS   = 3.0,     -- receiver: packet age at which a puppet is released
 }
 KCD2MP.npcSyncRunning  = false
+
+-- WO-102.5 Phase 3: uncapped co-located ownership, host authority only.
+-- npcSync.radius/maxTracked above are untouched and still govern the 0.23.2
+-- claim model (mp_authority_host_off) exactly as before -- these are a
+-- SEPARATE parameter set that only applies under host authority, so flipping
+-- authorityHost off returns to the old numbers, not just the old cap logic.
+KCD2MP.wo1025 = {
+    -- Ownership radius: under host authority, EVERY NPC within this of any
+    -- anchor is owned -- no per-anchor cap (mp_npc_rescan). Runtime-
+    -- adjustable, not baked: #KCD2MP_SetAuthorityRadius("<metres>") from the
+    -- console. Default = today's exit radius (30 * 1.5, WO-32/WO-102), the
+    -- conservative starting point findings S2/S5's runbook raises from
+    -- measurement, not assumption -- the maintainer's target is 150 m, NOT
+    -- shipped as the default because nothing has measured what it costs.
+    authorityRadius = 45.0,
+    -- Cull radius: within authorityRadius but beyond THIS, an owned NPC is
+    -- not actively streamed (mp_npc_cull_on, default on) -- it is still
+    -- tracked (nobody else can claim it) but KCD2MP_NpcSyncTick skips its
+    -- emission. What makes a large authorityRadius affordable: most of a
+    -- 150 m circle in a town is behind buildings or just far from both
+    -- players. An engaged NPC (fighting a player) is never culled by
+    -- construction -- NPC_ENGAGE_RANGE_SQ's 12 m is always inside this.
+    cullRadius = 30.0,
+    npcCull = true,   -- mp_npc_cull_on|off
+}
+
+-- name:string metres, from the console via #KCD2MP_SetAuthorityRadius("90").
+-- NOT a registered console command -- WO-94: the console drops arguments
+-- from Lua-registered commands, and a bare mp_x_on/_off pair cannot carry a
+-- number. The '#<lua>' console syntax bypasses that (it evaluates the line
+-- as Lua directly), which is the intended and only supported way to call
+-- this. Clamped, not merely validated: a runaway radius is a runaway scan
+-- cost, and the wrong side of that mistake is silent, not a crash.
+local AUTHORITY_RADIUS_MIN, AUTHORITY_RADIUS_MAX = 10.0, 300.0
+function KCD2MP_SetAuthorityRadius(arg)
+    local m = tonumber(arg)
+    if not m or m ~= m then   -- m ~= m catches NaN
+        mp_log("WO1025-RADIUS rejected '" .. tostring(arg) .. "' -- expected a number of metres")
+        return false
+    end
+    if m < AUTHORITY_RADIUS_MIN or m > AUTHORITY_RADIUS_MAX then
+        mp_log(string.format("WO1025-RADIUS rejected %.1f -- must be %.0f..%.0f", m, AUTHORITY_RADIUS_MIN, AUTHORITY_RADIUS_MAX))
+        return false
+    end
+    local was = KCD2MP.wo1025.authorityRadius
+    KCD2MP.wo1025.authorityRadius = m
+    mp_log(string.format("WO1025-RADIUS set=%.1f was=%.1f", m, was))
+    KCD2MP_ShowInteractionMsg(string.format("Authority radius: %.0fm", m))
+    -- The agent's native scan (WO-102.5 Phase 2) has its own copy of this
+    -- number -- it cannot read this table, only the event channel -- so a
+    -- radius change here is silently capped at whatever the agent last knew
+    -- unless it is told. Radius is Lua-owned (set from the console, not
+    -- pushed by the agent at connect like the wo102 booleans), so the mod is
+    -- the one side that must announce a change.
+    KCD2MP_EmitEvent("authority_radius", string.format("%.1f", m))
+    return true
+end
+
+function KCD2MP_SetNpcCull(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.wo1025.npcCull = true
+    elseif s:find("off") then KCD2MP.wo1025.npcCull = false
+    else
+        mp_log("mp_npc_cull: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    mp_log("WO1025-CULL " .. (KCD2MP.wo1025.npcCull and "on" or "off"))
+    return true
+end
 KCD2MP._npcSyncAliveAt = nil
 KCD2MP.npcTracked      = {}   -- name -> {lastX,lastY,lastZ,lastRot,lastHp,lastSentAt}
 KCD2MP._npcScanAt      = 0
@@ -3409,15 +3478,20 @@ local function mp_npc_rescan()
     if not pp then return end
 
     local found = {}
-    local enterRadius = KCD2MP.npcSync.radius
+    -- WO-102.5 Phase 3: under host authority, ownership uses the runtime-
+    -- adjustable authority radius (KCD2MP.wo1025.authorityRadius, default 45m
+    -- = today's value) instead of npcSync.radius -- the claim model
+    -- (authorityHost off) is untouched, npcSync.radius/30m exactly as before.
+    local underHostAuthority = KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn
+    local enterRadius = underHostAuthority and KCD2MP.wo1025.authorityRadius or KCD2MP.npcSync.radius
     local exitRadius  = enterRadius * NPC_TRACK_EXIT_FACTOR
     -- WO-102 Phase 4: under host authority the authority owns the NPCs near
     -- the OTHER players too, so it scans around every peer ghost as well as
-    -- its own player -- one anchor per body, the per-anchor cap unchanged.
-    -- An NPC only the peer's game has loaded cannot be scanned here; that is
-    -- the stated limit (findings S4.4), not a gap in the scan.
+    -- its own player -- one anchor per body. An NPC only the peer's game has
+    -- loaded cannot be scanned here; that is the stated limit (findings
+    -- S4.4), not a gap in the scan.
     local anchors = { pp }
-    if KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn then
+    if underHostAuthority then
         for _, g in pairs(KCD2MP.ghosts or {}) do
             local gp = nil
             pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
@@ -3425,10 +3499,15 @@ local function mp_npc_rescan()
             if gp then anchors[#anchors + 1] = gp end
         end
     end
-    local cap = KCD2MP.npcSync.maxTracked * #anchors
+    -- WO-102.5 Phase 3: the per-anchor cap is a claim-model bound (Lua could
+    -- not afford more before the native scan paid for the walk). Under host
+    -- authority it is removed entirely -- every NPC in radius is owned.
+    local cap = underHostAuthority and math.huge or (KCD2MP.npcSync.maxTracked * #anchors)
+    KCD2MP._lastAnchors = anchors   -- WO-102.5 Phase 3: read by KCD2MP_NpcSyncTick's cull check
     if #anchors ~= (KCD2MP._npcScanAnchors or 1) then
         KCD2MP._npcScanAnchors = #anchors
-        mp_log(string.format("WO102-AUTHORITY scan anchors=%d cap=%d", #anchors, cap))
+        mp_log(string.format("WO102-AUTHORITY scan anchors=%d cap=%s radius_m=%.1f", #anchors,
+            underHostAuthority and "uncapped" or tostring(cap), enterRadius))
     end
     -- WO-102.5 Phase 2: the enumerate+read half of this function, natively.
     -- When on and fresh, `ents` is resolved from the agent's pushed name list
@@ -3741,6 +3820,33 @@ function KCD2MP_NpcSyncTick()
             if drawn and not dead and not ko and ppos then
                 local gx, gy = p.x - ppos.x, p.y - ppos.y
                 engaged = (gx * gx + gy * gy) <= NPC_ENGAGE_RANGE_SQ
+            end
+
+            -- WO-102.5 Phase 3: culling. Owned (tracked, so nobody else can
+            -- claim it) but not actively streamed while nothing is close
+            -- enough to care -- the network cost the larger authority radius
+            -- would otherwise add. Engaged is exempt by construction:
+            -- NPC_ENGAGE_RANGE_SQ's 12 m is always inside cullRadius. t.last*
+            -- is deliberately left untouched below (this returns first), so
+            -- the tick after re-entry reads as "moved" against the pre-cull
+            -- values and sends immediately, at the entity's CURRENT position
+            -- and life state (read fresh above, every tick, cull or not) --
+            -- never a stale resume.
+            if isAuthority and KCD2MP.wo102.authorityHost and KCD2MP.wo1025.npcCull and not engaged then
+                local dCull = 1e9
+                for _, a in ipairs(KCD2MP._lastAnchors or {}) do
+                    local dx, dy = p.x - a.x, p.y - a.y
+                    local da = math.sqrt(dx * dx + dy * dy)
+                    if da < dCull then dCull = da end
+                end
+                if dCull > KCD2MP.wo1025.cullRadius then
+                    t.culled = true
+                    return
+                end
+            end
+            if t.culled then
+                t.culled = false
+                mp_log("WO1025-CULL re-entry " .. name)
             end
 
             local moved = not t.lastX
@@ -10144,6 +10250,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
     System.AddCCommand("mp_npc_scan_compare",    "KCD2MP_NpcScanCompare()",                   "WO-102.5 Phase 2 known-answer check: diff the native scan's last pushed name set against a fresh Lua GetEntitiesInSphere enumerate over the same anchors/radius")
+    System.AddCCommand("mp_npc_cull_on",         'KCD2MP_SetNpcCull("on")',                   "WO-102.5 Phase 3: under host authority, an owned NPC beyond cullRadius is tracked but not streamed (default on). Radius: #KCD2MP_SetAuthorityRadius(\"<metres>\")")
+    System.AddCCommand("mp_npc_cull_off",        'KCD2MP_SetNpcCull("off")',                  "WO-102.5 Phase 3: stream every owned NPC regardless of distance")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

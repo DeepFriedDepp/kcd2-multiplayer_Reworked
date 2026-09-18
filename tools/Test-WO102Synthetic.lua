@@ -317,7 +317,7 @@ do -- (n)
     KCD2MP_NpcSyncTick()
     check("n: NPC near the peer ghost is tracked by the authority", KCD2MP.npcTracked["n_far"] ~= nil)
     check("n: NPC near the player is tracked too", KCD2MP.npcTracked["n_near"] ~= nil)
-    check("n: anchors line logged with cap = maxTracked x 2", logCount("WO102-AUTHORITY scan anchors=2 cap=" .. (KCD2MP.npcSync.maxTracked * 2)) == 1)
+    check("n: anchors line logged uncapped under host authority (WO-102.5 Phase 3)", logCount("WO102-AUTHORITY scan anchors=2 cap=uncapped") == 1)
     check("n: both stream as npc_state", logCount("npc_state n_far") >= 1 and logCount("npc_state n_near") >= 1)
     -- control: same scene with host authority off -> the far NPC is not tracked
     KCD2MP.wo102.authorityHost = false; KCD2MP.npcTracked = {}; clearLog()
@@ -733,6 +733,95 @@ do
 
     KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false; KCD2MP.wo102.npcScanNative = false
     check("z: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ------------------------------------------------------------ WO-102.5 Phase 3
+--   (bb) uncapped co-located ownership: every NPC in radius is tracked
+--        regardless of maxTracked*anchors; the authority radius is
+--        runtime-adjustable and validated, and announced to the agent on
+--        the event channel; culling stops the stream for a tracked NPC
+--        nobody is near, and re-entry (moving closer) streams it fresh --
+--        at its current position, never a stale one -- rather than waiting
+--        for the heartbeat
+do
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = true
+    KCD2MP.wo102.authorityHost = true
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    KCD2MP.wo1025.authorityRadius = 45.0
+    KCD2MP.wo1025.cullRadius = 30.0
+    KCD2MP.wo1025.npcCull = true
+
+    -- more entities than maxTracked (5), all within the default radius
+    local ents8 = {}
+    for i = 1, 8 do
+        local e = mkEntity("bb_npc" .. i, 5 + i, 0, 0)   -- 6..13 m from the player
+        ENTS["bb_npc" .. i] = e
+        ents8[#ents8 + 1] = e
+    end
+    SPHERE = ents8
+    NOW = 2100; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    local trackedN = 0
+    for _ in pairs(KCD2MP.npcTracked) do trackedN = trackedN + 1 end
+    check("bb: every NPC in radius is tracked, uncapped", trackedN == 8, trackedN)
+
+    -- radius validation.
+    check("bb: rejects a non-numeric radius", KCD2MP_SetAuthorityRadius("banana") == false
+        and KCD2MP.wo1025.authorityRadius == 45.0)
+    check("bb: rejects an out-of-range radius", KCD2MP_SetAuthorityRadius("1000") == false
+        and KCD2MP.wo1025.authorityRadius == 45.0)
+    clearLog()
+    check("bb: accepts a valid radius", KCD2MP_SetAuthorityRadius("90") == true
+        and KCD2MP.wo1025.authorityRadius == 90.0)
+    check("bb: logs the change", logCount("WO1025-RADIUS set=90.0 was=45.0") == 1)
+    check("bb: announces it to the agent", logCount("authority_radius 90.0") == 1)
+
+    -- an NPC beyond the OLD radius but within the new one is picked up on the next rescan.
+    local far = mkEntity("bb_far", 80, 0, 0); ENTS["bb_far"] = far
+    SPHERE = { far }
+    NOW = 2101; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("bb: the wider radius reaches it", KCD2MP.npcTracked["bb_far"] ~= nil)
+
+    -- culling: bb_far (80 m) is tracked but beyond cullRadius (30 m) -- no stream.
+    CMDS = {}; clearLog()
+    NOW = 2102
+    KCD2MP_NpcSyncTick()
+    check("bb: a far tracked NPC is not streamed", logCount("npc_state bb_far") == 0)
+
+    -- move it into cull range: streamed fresh on the very next tick, at its
+    -- CURRENT position (read live every tick, cull or not) -- not a stale one.
+    far.px = 20   -- inside cullRadius of the player at (0,0)
+    NOW = 2103
+    KCD2MP_NpcSyncTick()
+    check("bb: re-entry streams it immediately", logCount("npc_state bb_far 20.000") == 1, lastLog("npc_state bb_far"))
+    check("bb: re-entry is logged", logCount("WO1025-CULL re-entry bb_far") == 1)
+
+    -- cull off: it streams even while far.
+    KCD2MP.wo1025.npcCull = false
+    far.px = 80
+    NOW = 2200; KCD2MP._npcScanAt = 0   -- force a rescan so bb_far is re-evaluated fresh
+    KCD2MP_NpcSyncTick()
+    check("bb: mp_npc_cull_off streams a far NPC too", logCount("npc_state bb_far 80.000") == 1)
+
+    -- claim model unaffected: off host authority, the old cap and radius apply.
+    KCD2MP.wo102.authorityHost = false; KCD2MP.npcTracked = {}; clearLog()
+    SPHERE = ents8
+    NOW = 2201; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    local claimTracked = 0
+    for _ in pairs(KCD2MP.npcTracked) do claimTracked = claimTracked + 1 end
+    check("bb: the claim model keeps its old cap", claimTracked == KCD2MP.npcSync.maxTracked, claimTracked)
+
+    for _, cname in ipairs({ "mp_npc_cull_on", "mp_npc_cull_off" }) do
+        local c = CCMDS[cname]
+        check("bb: " .. cname .. " registered argless", c ~= nil and not string.find(c.body, "%LINE", 1, true))
+    end
+
+    KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false
+    KCD2MP.wo1025.authorityRadius = 45.0; KCD2MP.wo1025.npcCull = true
+    check("bb: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary.
