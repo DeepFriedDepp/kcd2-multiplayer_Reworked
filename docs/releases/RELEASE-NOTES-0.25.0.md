@@ -9,6 +9,34 @@ model in one command.
 
 ---
 
+## ⚠ Updated the same day, after this build was packaged
+
+A live solo field session ran against this exact build immediately after
+it shipped (`docs/WO-102.5-findings.md` §6). Two changes as a direct
+result, **not yet re-packaged into a new Setup exe** — current as of the
+repo, not as of the `KCDMP-Setup-0.25.0.exe` file itself:
+
+* **`mp_npc_scan_native_on` now defaults ON** (was off, below). Live-
+  verified clean: 37,079 entities walked, zero vptr mismatches,
+  known-answer check clean (`only_lua=0`). The maintainer's own call:
+  exercise what is new by default so real play surfaces what still needs
+  fixing, rather than defaulting back to the already-known-broken
+  pre-WO-102.5 path.
+* **`mp_probe_npc_pause` now carries an explicit warning**: never run it
+  against an NPC actively engaged in combat. A live run on one was
+  followed by the maintainer being launched into the air, timing
+  suggestive of the probe's own position-displacement step (not proven).
+  Does not implicate the real pause lever, which never touches position.
+* The pause lever's own live sample grew: 5/8 HELD on ambient NPCs (was
+  8/8 in WO-102's original sample), 1/1 HELD in one combat case. Stays on
+  by the same "exercise it" reasoning — see the toggle table below, now
+  corrected.
+
+The rest of this document is as originally written for the packaged
+0.25.0 build; read it alongside the correction above, not instead of it.
+
+---
+
 ## ⚠ Matched set, both machines
 
 Agent, pak, `KCDMP.dll` and relay all from 0.25.0, on both machines,
@@ -38,7 +66,7 @@ live game, but not a fake engine either).
 | item | status |
 |---|---|
 | pause lever default | (observed) WO-102's own 8/8 solo probe, unchanged this release — **still never run under a live two-machine puppet stream** |
-| native NPC scan | (code-verified) the read recipe (Ghidra, this session); **zero live known-answer-check runs**; ships off |
+| native NPC scan | (code-verified) the read recipe (Ghidra, this session); **updated same day: live-verified clean** (37,079 entities, zero vptr mismatches, known-answer check passed) — now ships on, see the correction at the top |
 | uncapped ownership + runtime radius | (synthetic) scenario `bb`, 17 checks; **not live-verified**, radius stays at 45 m (unmeasured) |
 | culling | (synthetic) re-entry proven never-stale; **never seen against a real puppet stream** |
 | co-location gating (hysteresis + dwell) | (synthetic) scenario `cc`, 19 checks; **the 60/90/10 numbers are a first guess** |
@@ -63,7 +91,7 @@ prints every WO-102/WO-102.5 flag.
 |---|---|---|
 | `mp_authority_host_on` / `_off` | **on** (unchanged from 0.24.0) | now also carries uncapped ownership, culling and co-location gating — all of it reachable through this one existing switch |
 | `mp_authority_pause_on` / `_off` | **on** (was off in 0.24.0) | the solo probe passed 8/8; the alternative (no suppression at all under an uncapped radius) is continuous brain-vs-stream contention with no lever even tried |
-| `mp_npc_scan_native_on` / `_off` | **off** | zero live verification of a NEW native memory read — the class of risk that can crash the game, not just mis-sync it; same caution `mp_pos_native` already ships under |
+| `mp_npc_scan_native_on` / `_off` | ~~off~~ **on**, updated same day | originally shipped off (zero live verification of a NEW native memory read); flipped after a live session verified it clean (37,079 entities, zero vptr mismatches) — see the correction at the top of this document |
 | `mp_npc_cull_on` / `_off` | **on** | pure Lua logic (no native read, so no crash-class risk), the direct mitigation for the cap removal that ships on by default with it, and its one correctness property (re-entry is never stale) is synthetically proven |
 | `#KCD2MP_SetAuthorityRadius` | **45 m** (unchanged effective value) | the 150 m target is not shipped as the default because nothing has measured what it costs — the radius runbook is how it gets raised |
 | co-location hysteresis (enter/exit/dwell) | **60 m / 90 m / 10 s**, always on under host authority | no separate toggle — `mp_authority_host_off` is the escape hatch for all of it; the constants themselves are a first guess with no live tuning knob yet (a named gap) |
@@ -74,7 +102,7 @@ prints every WO-102/WO-102.5 flag.
 
 ## What is actually in this build
 
-### The native NPC scan (`mp_npc_scan_native_on`, default off)
+### The native NPC scan (`mp_npc_scan_native_on`, default **on** as of the same-day correction above)
 
 The enumerate+read half of the mod's own NPC-tracking scan, moved to C++.
 Decompiled this session: the Lua binding behind `System.GetEntitiesInSphere`
