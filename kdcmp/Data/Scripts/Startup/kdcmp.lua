@@ -2981,6 +2981,72 @@ local NPC_TRACK_STICKY_BONUS = 8.0   -- metres subtracted from a tracked NPC's r
 -- hold on that entity's claim. 12 m covers a melee fight's footwork without
 -- holding claims on every armed guard the player merely walks past.
 local NPC_ENGAGE_RANGE_SQ    = 12.0 * 12.0
+-- WO-102 Phase 3 live probe (argless: nearest NPC within 15 m, or the
+-- nearest puppet/tracked NPC). Proves, on one machine, what
+-- `wh_ai_PauseNPC` does to a body: does it stay where WE put it (no brain
+-- write-back, the WO-32 1.5 s snap-back is the negative), does it still
+-- animate on StartAnimation, does it resume cleanly. Every step logs
+-- MP-PAUSEPROBE; the verdict line is the last one. Reversible: it always
+-- ends in wh_ai_ResumeNPC and puts the body back where it was.
+function KCD2MP_ProbeNpcPause()
+    if not player then return end
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return end
+    local best, bestD = nil, 1e9
+    for _, e in ipairs(System.GetEntitiesInSphere(pp, 15) or {}) do
+        local cls = e.class
+        if (cls == "NPC" or cls == "NPC_Female") and not mp_is_mod_entity(e) then
+            local n = e:GetName()
+            if n and string.find(n, "^[%w_]+$") and not mp_is_excluded_npc_name(n) then
+                local ep = e:GetWorldPos()
+                local d = (ep.x - pp.x) ^ 2 + (ep.y - pp.y) ^ 2
+                if d < bestD then best, bestD = e, d end
+            end
+        end
+    end
+    if not best then mp_log("MP-PAUSEPROBE step=abort reason=no-npc-within-15m"); return end
+    local name = best:GetName()
+    local p0 = best:GetWorldPos()
+    local anim0 = nil
+    pcall(function() anim0 = best:GetCurAnimation() end)
+    mp_log(string.format("MP-PAUSEPROBE step=0 npc=%s pos=(%.2f,%.2f,%.2f) anim=%s action=wh_ai_PauseNPC", name, p0.x, p0.y, p0.z, tostring(anim0)))
+    local okc, errc = pcall(System.ExecuteCommand, "wh_ai_PauseNPC " .. name)
+    mp_log(string.format("MP-PAUSEPROBE step=1 npc=%s execute_ok=%s err=%s", name, tostring(okc), tostring(errc)))
+    local target = { x = p0.x + 2.0, y = p0.y, z = p0.z }
+    Script.SetTimer(1000, function()
+        local e = System.GetEntityByName(name); if not e then mp_log("MP-PAUSEPROBE step=abort reason=entity-gone"); return end
+        local pa = e:GetWorldPos()
+        mp_log(string.format("MP-PAUSEPROBE step=2 npc=%s paused_1s_pos=(%.2f,%.2f,%.2f) moved_m=%.2f action=SetWorldPos+2m", name, pa.x, pa.y, pa.z, math.sqrt((pa.x-p0.x)^2+(pa.y-p0.y)^2)))
+        pcall(function() e:SetWorldPos(target) end)
+        Script.SetTimer(3000, function()
+            local e2 = System.GetEntityByName(name); if not e2 then mp_log("MP-PAUSEPROBE step=abort reason=entity-gone"); return end
+            local pb = e2:GetWorldPos()
+            local heldM = math.sqrt((pb.x-target.x)^2+(pb.y-target.y)^2)
+            mp_log(string.format("MP-PAUSEPROBE step=3 npc=%s after_3s_pos=(%.2f,%.2f,%.2f) off_target_m=%.2f verdict_pos=%s action=StartAnimation(walk)",
+                name, pb.x, pb.y, pb.z, heldM, heldM < 0.5 and "HELD (no brain write-back)" or "SNAPPED BACK (brain still writes)"))
+            pcall(function() e2:StartAnimation(0, "3d_relaxed_walk_turn_strafe", 0, 0.15, 1.0, true) end)
+            Script.SetTimer(2000, function()
+                local e3 = System.GetEntityByName(name); if not e3 then return end
+                local anim1 = nil
+                pcall(function() anim1 = e3:GetCurAnimation() end)
+                local pc = e3:GetWorldPos()
+                mp_log(string.format("MP-PAUSEPROBE step=4 npc=%s anim_after=%s (was %s) pos=(%.2f,%.2f,%.2f) action=SetWorldPos(back)+wh_ai_ResumeNPC", name, tostring(anim1), tostring(anim0), pc.x, pc.y, pc.z))
+                pcall(function() e3:SetWorldPos(p0) end)
+                pcall(System.ExecuteCommand, "wh_ai_ResumeNPC " .. name)
+                Script.SetTimer(4000, function()
+                    local e4 = System.GetEntityByName(name); if not e4 then return end
+                    local pd = e4:GetWorldPos()
+                    local anim2 = nil
+                    pcall(function() anim2 = e4:GetCurAnimation() end)
+                    mp_log(string.format("MP-PAUSEPROBE step=5 npc=%s resumed_4s_pos=(%.2f,%.2f,%.2f) moved_since_resume_m=%.2f anim=%s -- probe done; report steps 3 and 4 verbatim",
+                        name, pd.x, pd.y, pd.z, math.sqrt((pd.x-p0.x)^2+(pd.y-p0.y)^2), tostring(anim2)))
+                end)
+            end)
+        end)
+    end)
+end
+
 local function mp_npc_rescan()
     if not player then return end
     local pp = nil
@@ -9538,6 +9604,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_pos_native_on",      'KCD2MP_Wo102Set("pos_native", true)',      "WO-102: the agent reads position/rotation/riding over the DLL pipe instead of the kcd.log line")
     System.AddCCommand("mp_pos_native_off",     'KCD2MP_Wo102Set("pos_native", false)',     "WO-102: position back on the [KCD2-MP-DATA] log tail (0.23.2 path)")
     System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
+    System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

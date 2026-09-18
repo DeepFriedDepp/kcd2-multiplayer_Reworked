@@ -267,3 +267,100 @@ against, with proper per-path instrumentation instead of the console line.
 No wire change. New relay log lines and two additive JSON fields on an
 HTTP diagnostics endpoint. A 0.23.2 agent against this relay, or this agent
 against a 0.23.2 relay, behaves as before.
+
+---
+
+## 3. Phase 3 — can the local AI be suppressed? (native search, read-only)
+
+### 3.1 What was searched (code-verified)
+
+* Identifier sweeps over `WHGame.dll`, `XGenAIModule.dll` (51 MB — the
+  Warhorse brain), `EntityModule.dll`, `CryAISystem.dll`, `CryAction.dll`,
+  `AnimationModule.dll`, `CryEntitySystem.dll` for brain / puppet /
+  locomotion / movement / possess / pause / suspend / enable / disable
+  families (the MT build keeps `__FUNCTION__` strings and RTTI).
+* The shipped console reference `ConsoleHTMLHelp/CONSOLEPREFIX.html` (46
+  files, WO-73's "unmined authoritative command+cvar reference").
+* Warhorse's scriptbind reference (`Tools/modding/docs/script_bind`, 5,017
+  pages): `CScriptBind_AI` (315 methods), `C_ScriptBindActor`,
+  `CScriptBind_Entity`, `C_ScriptBind_XGenAIModule` method lists.
+* MSVC RTTI of `C_NPC`, `C_IntelligentObject`, `C_AIPuppet`,
+  `C_MovementControllerAdapter` parsed from `XGenAIModule.dll`.
+* Not searched: a decompile of the XGenAI candidates — the 51 MB import
+  crashed once in Ghidra's FID analyzer (two headless instances shared one
+  FID database) and the retry was still analysing when this phase closed.
+  What that decompile would add is stated in §3.4.
+
+### 3.2 Candidates, with verdicts
+
+| candidate | where | what it is | verdict |
+|---|---|---|---|
+| **`wh_ai_PauseNPC <name>` / `wh_ai_ResumeNPC <name>`** | XGenAIModule, `C_XGenAICommands::PauseNPCInternal`; help text: *"Pauses the execution of the NPC with given name. Debugging of the pausing system only"* | a shipped, per-NPC, by-name pause/resume of "the execution of the NPC" — the brain's owner. `wh_ai_NPCPauseRequestDebugDraw` (*"NPC pause requests … resume requests as well"*) shows the engine pauses NPCs through the same system in normal play, so the paused state is a first-class engine state, not a debug hack | **the lever. Exists (code-verified); live behaviour UNVERIFIED** — §3.3 is the proof |
+| `wh_ai_UpdateEnabled 0` | XGenAIModule cvar: *"Controls XGenAI module update. 1 - on, 0 - off"* | every brain off at once | global, so not the lever; a useful control for the probe |
+| update suspender (`C_UpdateSuspender`, `C_IntelligentObject::Suspend`, `wh_ai_UpdateSuspenderEnabled/RemoveAll`) | XGenAIModule | the engine's own per-NPC update suspension *"during profile streaming"* | internal; only debug remove-all is exposed. The mechanism PauseNPC most likely drives; not directly addressable |
+| `Entity.Activate(0)` | `CScriptBind_Entity::Activate`: *"if false will deactivate and stop being updated every frame"* | stops the whole entity update | probably freezes animation too, not just the brain; untested (WO-64's pilot never ran). Second probe if PauseNPC fails |
+| `AI.SetBehaviorTreeEvaluationEnabled`, `AI.StopModularBehaviorTree`, `AI.RequestToStopMovement`, `AI.SetForcedNavigation`, `AI.AutoDisable`, `AI.IsEnabled` | `CScriptBind_AI` (CryAISystem) | CryAISystem MBT / goal-pipe levers | WO-21 established the CryAISystem trees are inert for KCD2 NPCs (the brain is XGenAI); `RequestToStopMovement` is a one-shot request, not a suppression. Not the lever |
+| `Actor.SetMovementRestriction(bAllowSprint, bAllowRun)`, `Actor.SetMovementControlledByAnimation(bool)` | `C_ScriptBindActor` | speed-class restriction; root-motion switch | neither removes the writer. `SetMovementControlledByAnimation(true)` is a possible *driving* aid for puppets later, not this phase |
+| `XGenAIModule.SpawnEntity{NoAI=true}` | WO-100.5 | spawn-time only | not applicable to an existing NPC |
+| `C_MovementControllerAdapter`, `C_MovementTaskManager`, `C_FakeMovementManager` (`WH_AI_LOD_MLUseFakeMovementMinimalDistance`), `C_ActorMovementController::Update` | XGenAI / EntityModule natives | the brain→body movement path and its LOD "fake movement" | **the deeper native lever if PauseNPC fails**; needs the XGenAI decompile (§3.4). Not attempted: read-only phase, and a shipped command was found first |
+
+Established negatives were not re-derived: Lua behaviour trees (WO-21),
+`DisableSituationParticipation` (social only, WO-99.5/WO-100).
+
+### 3.3 The runbook — one machine, ~3 minutes, reversible
+
+`mp_probe_npc_pause` (argless) does the whole sequence and logs
+`MP-PAUSEPROBE step=0..5`. Synthetic 75/75 covers its sequencing; the engine's
+answer is what the run is for.
+
+1. Solo Modding Tools game, any town. Stand within 15 m of an ambient NPC
+   that is walking or working (not seated). Console: `mp_probe_npc_pause`.
+2. Read `kcd.log`:
+   * `step=1 … execute_ok=true` — the command was accepted (a refused or
+     unknown command still returns `true` from `ExecuteCommand`; the engine
+     prints its own "unknown command" line right above if so — **report it**).
+   * `step=2 … moved_m=` — how far the NPC moved in the 1 s after the pause.
+     Near 0 = the brain stopped driving.
+   * `step=3 … verdict_pos=HELD` — the body stayed where the probe put it
+     (2 m off) for 3 s. **This is the lever working.** `SNAPPED BACK` = the
+     brain (or its movement controller) still writes the body = **not a
+     lever**, exactly the WO-32 1.5 s snap-back.
+   * `step=4 … anim_after=3d_relaxed_walk_turn_strafe` (or any change from
+     `anim=` at step 0) — the body still animates while paused. If the name
+     did not change, the pause also froze animation: **usable for statues
+     only**, and Phase 4's pause toggle must stay off.
+   * `step=5 … moved_since_resume_m=` a few seconds after `wh_ai_ResumeNPC`
+     — the NPC walks off again = clean resume.
+3. While paused (between steps 1 and 4, or a second run with a longer manual
+   pause: `wh_ai_PauseNPC <name>`), hit the NPC once. The engine's own
+   `Skirmish event: HitTarget on Dude (target <name>)` line means a paused
+   body is still a hittable combat participant — required for the request
+   channel (Phase 5) to resolve through the existing damage path.
+4. Optional: `wh_ai_NPCPauseRequestDebugDraw 2` before step 1 shows the
+   pause request the engine registered.
+5. Everything is undone by the probe itself (`wh_ai_ResumeNPC`, body put
+   back). If the game were to crash mid-probe, restart it — pause state is
+   process-local as far as the console reference says; whether it is saved
+   with a savegame is **(inconclusive)** and the probe should be run on a
+   disposable save.
+
+**Pass** = HELD + animation changes + hit registers + clean resume. Then
+`mp_authority_pause_on` is safe to try in a two-machine session (Phase 7).
+**Fail on HELD** = the deeper native lever (§3.4) or the `NPC_NAI` replica
+path (Phase 4 fallback) is the next work order; Phase 4 ships with the
+pause toggle off regardless.
+
+### 3.4 Verdict
+
+**A lever exists, and it is a shipped console command, not a hook.**
+`wh_ai_PauseNPC <name>` pauses the execution of one named NPC through the
+engine's own NPC-pause-request system. What is *not* known until the runbook
+runs: whether "execution" stops at the brain (locomotion, schedule — what
+we want) or also stops animation and hit registration (statue — not
+enough). Phase 4 therefore builds on it **behind its own toggle, off**, and
+a negative probe result leaves Phase 4's other half (single ownership,
+claim bypass, violation logging) intact and switches this half off for
+good — the honest "no" the prompt asked for, deferred to the one test that
+can give it. The XGenAI decompile of `PauseNPCInternal` and
+`C_MovementControllerAdapter` (started, not finished this session) is the
+follow-up if the probe fails.
