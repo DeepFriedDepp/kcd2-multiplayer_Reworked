@@ -434,6 +434,37 @@ do
     check("t: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
+-- ---------------------------------------------------------------- Phase 5
+--   (u) the request channel's Lua half: on a NON-authority under host
+--       authority the puppet tick emits `npc_target <name>` for the nearest
+--       live puppet within 4 m, `-` when none, once per change; nothing is
+--       emitted with host authority off (byte-identical event channel)
+do
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityHost = true; KCD2MP.hitSensorOn = false
+    local e = mkEntity("u_npc", 1.5, 0, 0); ENTS["u_npc"] = e
+    NOW = 1100
+    KCD2MP_ApplyNpcState("u_npc", 1.5, 0, 0, 0, 100, 0, 1)
+    KCD2MP.npcPuppetRunning = true
+    KCD2MP_NpcPuppetTick("ext")
+    check("u: nearest puppet within 4 m is announced", logCount("npc_target u_npc") == 1, lastLog("npc_target"))
+    KCD2MP_NpcPuppetTick("ext")
+    check("u: announced once, not per tick", logCount("npc_target u_npc") == 1)
+    -- the stream moves it out of reach
+    for i = 1, 30 do NOW = NOW + 0.05; KCD2MP_ApplyNpcState("u_npc", 12, 0, 0, 0, 100, 0, 1); KCD2MP_NpcPuppetTick("ext") end
+    check("u: out of reach -> npc_target -", logCount("npc_target -") >= 1, lastLog("npc_target"))
+    -- a dead puppet is never a target
+    clearLog()
+    NOW = NOW + 0.05; KCD2MP_ApplyNpcState("u_npc", 1, 0, 0, 0, 0, 1, 1); e.px = 1
+    KCD2MP_NpcPuppetTick("ext")
+    check("u: a dead puppet is not a target", logCount("npc_target u_npc") == 0)
+    -- host authority off: the channel goes quiet, with one final "-" if a target was held
+    KCD2MP.wo102.authorityHost = false; clearLog()
+    KCD2MP_NpcPuppetTick("ext"); KCD2MP_NpcPuppetTick("ext")
+    check("u: host authority off emits no npc_target", logCount("npc_target") <= 1)
+    check("u: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
 -- Summary.
 local pass, fail = 0, 0
 for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end

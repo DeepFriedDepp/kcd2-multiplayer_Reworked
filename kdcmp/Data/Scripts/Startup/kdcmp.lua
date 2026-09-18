@@ -3797,6 +3797,34 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             KCD2MP._npcDeathSuppressedN or 0))
         st.n, st.sum, st.min, st.max, st.idleN = 0, 0, 1e9, 0, 0
     end
+    -- WO-102 Phase 5: which owned NPC is this player facing? The nearest live
+    -- puppet within 4 m, re-evaluated every tick, emitted on change as
+    -- `npc_target <name|->`. The agent turns a committed attack at it into an
+    -- NpcRequest to the owner. Only meaningful on a non-authority under host
+    -- authority (a puppet IS an owned body there); off that model nothing is
+    -- emitted, so the event channel is byte-identical to 0.23.2.
+    if KCD2MP.wo102.authorityHost and not KCD2MP.hitSensorOn and player then
+        local ppos = nil
+        pcall(function() ppos = player:GetWorldPos() end)
+        local best, bestD = nil, 16.0   -- 4 m squared
+        if ppos then
+            for name, p in pairs(KCD2MP.npcPuppets) do
+                if not (p.dead or p.ko) and p.cx then
+                    local dx, dy = p.cx - ppos.x, p.cy - ppos.y
+                    local d = dx * dx + dy * dy
+                    if d < bestD then best, bestD = name, d end
+                end
+            end
+        end
+        if best ~= KCD2MP._npcTarget then
+            KCD2MP._npcTarget = best
+            KCD2MP_EmitEvent("npc_target", best or "-")
+        end
+    elseif KCD2MP._npcTarget ~= nil then
+        KCD2MP._npcTarget = nil
+        KCD2MP_EmitEvent("npc_target", "-")
+    end
+
     local any = false
     for name, p in pairs(KCD2MP.npcPuppets) do
         pcall(function()

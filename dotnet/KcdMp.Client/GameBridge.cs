@@ -279,6 +279,20 @@ public partial class GameBridge(ClientConfig config)
     private const double OracleMaxM = 3.0;         // log sample may lag the frame by ~60 ms+; a horse covers ~0.7 m in that
     private const int    OracleBadRunToRefuse = 20;
     private static readonly TimeSpan CadenceReportInterval = TimeSpan.FromSeconds(30);
+
+    // WO-102 Phase 5: the request channel. _npcTarget is the nearest owned
+    // puppet the mod reports us facing (npc_target event); a COMMIT edge at it
+    // becomes an NpcRequest action. The owner correlates each inbound request
+    // with the 0x30 damage that follows from the same sender for the same
+    // name; the requester correlates its own outbound request with the hit it
+    // then sends. Both sides print MP-REQUEST; nothing else acts on it yet.
+    private volatile string? _npcTarget;
+    private readonly Dictionary<(byte From, string Npc), DateTime> _requestsIn = new();
+    private readonly Dictionary<string, DateTime> _requestsOut = new();
+    private readonly Dictionary<string, DateTime> _ownedNpcSeenUtc = new();   // names this authority streamed recently
+    private long _reqOut, _reqOutResolved, _reqIn, _reqInResolved, _reqInUnresolved, _reqInRefused, _reqOutUnresolved;
+    private static readonly TimeSpan RequestResolveWindow = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan OwnedNpcRecent = TimeSpan.FromSeconds(10);
     private static double NowMs() => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
 
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
@@ -669,6 +683,8 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=wo102 authority_host={(_hostAuthority ? 1 : 0)} pos_native={(_posNative ? 1 : 0)} pos_native_gave_up={(_posNativeGaveUp ? 1 : 0)} pos_native_oracle_refused={(_posNativeRefusedByOracle ? 1 : 0)} native_reads={_combat.LocalStateReads} native_refused={_combat.LocalStateRefused} authority={(_isDamageAuthority ? 1 : 0)}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-REQUEST section=summary out={_reqOut} out_resolved={_reqOutResolved} out_unresolved={_reqOutUnresolved} in={_reqIn} in_resolved={_reqInResolved} in_unresolved={_reqInUnresolved} in_refused={_reqInRefused}"));
         if (_cadLog.Summary("log") is string cl) Console.WriteLine(cl);
         if (_cadNative.Summary("native") is string cn) Console.WriteLine(cn);
         Console.WriteLine(FormattableString.Invariant(
@@ -1371,6 +1387,7 @@ public partial class GameBridge(ClientConfig config)
                 {
                     await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true, fatal: died);
                     Console.WriteLine($"[combat] sent hit {health:F1} on '{npcName}' ({soul}){(died ? " FATAL" : "")}");
+                    NoteRequestResolvedOut(npcName);   // WO-102 Phase 5
                     _stats.DmgOut++; if (died) _stats.DmgOutFatal++;
                     Console.WriteLine(FormattableString.Invariant($"MP-DMG dir=out npc={npcName} hp={health:F1} st={stamina:F1} fatal={(died ? 1 : 0)} authority={(_isDamageAuthority ? 1 : 0)}"));
                     if (died)
@@ -1539,6 +1556,7 @@ public partial class GameBridge(ClientConfig config)
             long lastWeatherTick = nowTimestamp;
             long lastPositionHeartbeat = nowTimestamp;
             long lastCadenceReport = Stopwatch.GetTimestamp();   // WO-102 Phase 1
+            long lastRequestSweep = Stopwatch.GetTimestamp();     // WO-102 Phase 5
             long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
             long lastSummary = nowTimestamp;        // WO-99 Phase 4
 
@@ -1752,6 +1770,8 @@ public partial class GameBridge(ClientConfig config)
                     _cadNative.Break();
                 if (IntervalElapsed(ref lastCadenceReport, CadenceReportInterval, nowTimestamp))
                     ReportCadence();
+                if (IntervalElapsed(ref lastRequestSweep, RequestResolveWindow, nowTimestamp))
+                    SweepRequests();   // WO-102 Phase 5
 
                 if (state.HasValue)
                 {
@@ -3850,6 +3870,11 @@ public partial class GameBridge(ClientConfig config)
                         string detail = a.Kind == ActionKind.Attack && a.Payload.Length >= AttackPayload.Len
                             ? AttackPayload.FromBytes(a.Payload).ToString()
                             : $"payload_len={a.Payload.Length}";
+                        if (a.Kind == ActionKind.NpcRequest)
+                        {
+                            OnNpcRequestIn(a);
+                        }
+                        else
                         // No receiver acts on this yet: Phase 1's block write
                         // was refused by the engine (docs/WO-100.5-findings.md
                         // S2.3), so an accepted action is logged and dropped.
@@ -3978,6 +4003,7 @@ public partial class GameBridge(ClientConfig config)
                             float ndHealth  = ReadFloat(payload, no + 4);
                             bool  ndSupp    = (payload[no + 8] & Protocol.DamageFlagSuppressHitReaction) != 0;
                             bool  ndFatal   = (payload[no + 8] & Protocol.NpcDamageFlagFatal) != 0;   // WO-86
+                            NoteRequestResolvedIn(ndSource, ndName);   // WO-102 Phase 5
                             Guid? localGuid = await ResolveLocalSoulGuidAsync(ndName, ct);
                             // WO-99 Phase 0: a name that resolves to OUR player
                             // soul is the peer's player, not a shared NPC --
@@ -4728,6 +4754,21 @@ public partial class GameBridge(ClientConfig config)
                 break;
             }
 
+            case "npc_target":
+            {
+                // WO-102 Phase 5: "<name>" or "-" from the puppet tick -- the
+                // owned NPC this player is facing, for the request channel.
+                string tgt = arg.Trim();
+                if (tgt == "-" || tgt.Length == 0) { _npcTarget = null; break; }
+                if (!NpcNamePattern.IsMatch(tgt) || tgt.Length > NpcRequestPayload.MaxNameLen)
+                {
+                    Console.WriteLine($"[request] rejected npc_target '{arg}' (not an authored entity name)");
+                    break;
+                }
+                _npcTarget = tgt;
+                break;
+            }
+
             case "wo102_toggle":
             {
                 // WO-102 Phase 0: "<name> on|off" from KCD2MP_Wo102Set (console).
@@ -4816,6 +4857,7 @@ public partial class GameBridge(ClientConfig config)
                 byte nsflags = f.Length > 6 && byte.TryParse(f[6], out byte nf) ? nf : (byte)0;
                 var sendNpc = name == "npc_state" ? _sendNpcState : _sendNpcDrag;
                 if (sendNpc is null) break;
+                if (name == "npc_state") lock (_requestsIn) _ownedNpcSeenUtc[f[0]] = DateTime.UtcNow;   // WO-102 Phase 5
                 _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
                 if (name == "npc_state") _stats.NpcStateOut++; else if (name == "npc_claim") _stats.NpcClaimOut++; else _stats.NpcDragOut++;   // WO-98
                 break;
@@ -5454,6 +5496,95 @@ public partial class GameBridge(ClientConfig config)
         return ls;
     }
 
+    /// <summary>
+    /// WO-102 Phase 5: an inbound NpcRequest. Refusals are specific: a request
+    /// at a machine that is not the owner, or with the model off, or for a
+    /// name this authority has not streamed in the last 10 s, is named as
+    /// such. An accepted one is logged with dispatch=logged-awaiting-damage and
+    /// resolved by the 0x30 that follows (NoteRequestResolvedIn) or reported
+    /// unresolved after RequestResolveWindow (SweepRequests) -- a miss, or a
+    /// blow the requester's world never landed.
+    /// </summary>
+    private void OnNpcRequestIn(InboundAction a)
+    {
+        if (!NpcRequestPayload.TryFromBytes(a.Payload, out var req))
+        {
+            lock (_requestsIn) _reqInRefused++;
+            Console.WriteLine(FormattableString.Invariant(
+                $"MP-REQUEST dir=in from={a.SourceGhostId} result=refused reason=malformed-name payload_len={a.Payload.Length}"));
+            return;
+        }
+        string why = !_hostAuthority ? "host-authority-off"
+                   : !_isDamageAuthority ? "not-owner"
+                   : "";
+        if (why.Length == 0)
+        {
+            lock (_requestsIn)
+            {
+                if (!_ownedNpcSeenUtc.TryGetValue(req.TargetName, out var seen) || DateTime.UtcNow - seen > OwnedNpcRecent)
+                    why = "target-not-owned";
+            }
+        }
+        lock (_requestsIn)
+        {
+            _reqIn++;
+            if (why.Length > 0) _reqInRefused++;
+            else _requestsIn[(a.SourceGhostId, req.TargetName)] = DateTime.UtcNow;
+        }
+        if (why.Length > 0)
+            Console.WriteLine(FormattableString.Invariant(
+                $"MP-REQUEST dir=in from={a.SourceGhostId} kind=attack {req} result=refused reason={why}"));
+        else
+            Console.WriteLine(FormattableString.Invariant(
+                $"MP-REQUEST dir=in from={a.SourceGhostId} kind=attack {req} seq={a.Seq} gen={a.Gen} dispatch=logged-awaiting-damage resolve=damage-path"));
+    }
+
+    private void NoteRequestResolvedIn(byte from, string npc)
+    {
+        double dtMs;
+        lock (_requestsIn)
+        {
+            if (!_requestsIn.Remove((from, npc), out var at)) return;
+            dtMs = (DateTime.UtcNow - at).TotalMilliseconds;
+            _reqInResolved++;
+        }
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-REQUEST dir=in from={from} target={npc} result=resolved via=damage-path dt_ms={dtMs:F0}"));
+    }
+
+    private void NoteRequestResolvedOut(string npc)
+    {
+        double dtMs;
+        lock (_requestsIn)
+        {
+            if (!_requestsOut.Remove(npc, out var at)) return;
+            dtMs = (DateTime.UtcNow - at).TotalMilliseconds;
+            _reqOutResolved++;
+        }
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-REQUEST dir=out target={npc} result=resolved via=damage-sent dt_ms={dtMs:F0}"));
+    }
+
+    private void SweepRequests()
+    {
+        var now = DateTime.UtcNow;
+        var lines = new List<string>();
+        lock (_requestsIn)
+        {
+            foreach (var kv in _requestsIn.Where(kv => now - kv.Value > RequestResolveWindow).ToList())
+            {
+                _requestsIn.Remove(kv.Key); _reqInUnresolved++;
+                lines.Add(FormattableString.Invariant($"MP-REQUEST dir=in from={kv.Key.From} target={kv.Key.Npc} result=unresolved after_ms={RequestResolveWindow.TotalMilliseconds:F0}"));
+            }
+            foreach (var kv in _requestsOut.Where(kv => now - kv.Value > RequestResolveWindow).ToList())
+            {
+                _requestsOut.Remove(kv.Key); _reqOutUnresolved++;
+                lines.Add(FormattableString.Invariant($"MP-REQUEST dir=out target={kv.Key} result=unresolved after_ms={RequestResolveWindow.TotalMilliseconds:F0} (no blow landed here)"));
+            }
+        }
+        foreach (var l in lines) Console.WriteLine(l);
+    }
+
     /// <summary>WO-102 Phase 1: the 30 s cadence window for both paths, plus the oracle window.</summary>
     private void ReportCadence()
     {
@@ -5509,6 +5640,21 @@ public partial class GameBridge(ClientConfig config)
         await WritePacketAsync(stream, packet, ct);
         Console.WriteLine(FormattableString.Invariant(
             $"MP-ACTION section=outbound kind=attack phase={phase} gen={_actionOut.Gen} {payload}"));
+
+        // WO-102 Phase 5: under host authority a non-owner's committed attack
+        // at an owned NPC is a REQUEST to the owner. Same accepted input, plus
+        // the target's name. The owner resolves it through the existing
+        // damage path (our 0x30 follows when the blow lands here); this packet
+        // is the intent, sent first, so both sides can measure the gap.
+        if (phase == ActionPhase.Commit && _hostAuthority && !_isDamageAuthority && _npcTarget is string target)
+        {
+            var req = new NpcRequestPayload(payload, target);
+            var rpkt = _actionOut.Build(ActionKind.NpcRequest, ActionPhase.Commit, req.ToBytes());
+            await WritePacketAsync(stream, rpkt, ct);
+            lock (_requestsIn) { _requestsOut[target] = DateTime.UtcNow; _reqOut++; }
+            Console.WriteLine(FormattableString.Invariant(
+                $"MP-REQUEST dir=out kind=attack target={target} {payload} gen={_actionOut.Gen} resolve=damage-path"));
+        }
     }
 
     private async Task WritePacketAsync(NetworkStream stream, byte[] packet, CancellationToken ct = default)

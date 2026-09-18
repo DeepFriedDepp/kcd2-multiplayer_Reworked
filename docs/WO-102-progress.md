@@ -11,7 +11,7 @@ Session 2026-09-18. Findings: `docs/WO-102-findings.md`.
 | 2 — baseline the claim model | **done** (committed before Phase 1, which waits on Ghidra) | (observed) figures reproduced + corrected in findings §2.1; (synthetic) 31/31 WO-102 suite, puppet suites unchanged; relay 10/10, agent 101/101 |
 | 3 — locomotion suppression lever (native, read-only) | **lever named: `wh_ai_PauseNPC`/`wh_ai_ResumeNPC` (shipped console commands), live behaviour unverified; runbook = `mp_probe_npc_pause`** | (code-verified) strings, console help, scriptbind docs, RTTI in findings §3; (synthetic) probe sequencing 75/75 |
 | 4 — permanent host authority | **built behind `mp_authority_host_on` (off): claim bypass, multi-anchor scan, diverge/yield refused + violation log, pause lever behind `mp_authority_pause_on` (off)** | (synthetic) 75/75 WO-102 suite + eleven older suites unchanged; not live-verified |
-| 5 — request channel | pending | |
+| 5 — request channel | **built**: `ActionKind.NpcRequest` (accepted input + target name) at the commit edge, owner-side correlation with the `0x30` that follows, specific refusals; `0x76500` on an NPC is a STOP deferred to the maintainer; resolution = the existing damage path | (synthetic) agent 146/146, relay 11/11 incl. the new round-trip case, Lua 81/81 |
 | 6 — sleep resync + limits | pending | |
 | 7 — verification + A/B | pending | |
 | end gate | pending — needs a version string from the maintainer | |

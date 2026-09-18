@@ -318,6 +318,38 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
     }
 
     [Fact]
+    public async Task Npc_request_payload_crosses_the_relay_intact()
+    {
+        // WO-102 Phase 5: the request channel's payload is a new SHAPE on the
+        // action channel (attack input + a name, up to the 64-byte ceiling),
+        // so it gets a case here in both extreme lengths.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        var outbox = new ActionOutbox();
+        var inbox = new ActionInbox();
+        var shortReq = new NpcRequestPayload(new AttackPayload(1, 3, 2, AttackPayload.FlagPrepared), "ttkc_man_20");
+        var longReq  = new NpcRequestPayload(new AttackPayload(0, 0, 0, 0), new string('x', NpcRequestPayload.MaxNameLen));
+
+        foreach (var req in new[] { shortReq, longReq })
+        {
+            var up = outbox.Build(ActionKind.NpcRequest, ActionPhase.Commit, req.ToBytes());
+            Assert.True(up.Length - 3 <= Protocol.ActionUpHeaderLen + Protocol.ActionPayloadMaxLen);
+            await a.SendRawAsync(up);
+
+            var down = await b.ReadUntilAsync(Protocol.ActionDown, Wait);
+            Assert.Equal(1 + up.Length - 3, down.Length);
+            var accepted = inbox.Accept(down, out var reject);
+            Assert.Equal(ActionReject.None, reject);
+            Assert.NotNull(accepted);
+            Assert.Equal(a.Id, accepted!.Value.SourceGhostId);
+            Assert.Equal(ActionKind.NpcRequest, accepted.Value.Kind);
+            Assert.True(NpcRequestPayload.TryFromBytes(accepted.Value.Payload, out var got));
+            Assert.Equal(req, got);
+        }
+    }
+
+    [Fact]
     public async Task Action_with_empty_payload_arrives()
     {
         // The other valid length: header only (ActionUpHeaderLen), len byte 0.

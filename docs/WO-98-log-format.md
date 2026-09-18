@@ -170,6 +170,19 @@ per 10 s; `n` is the exact per-NPC count; `auth_violations=` in
 reason). `WO102-AUTHORITY scan anchors= cap=` records the authority's
 anchor count when it changes.
 
+### MP-REQUEST — the request channel (agent.log, WO-102 Phase 5)
+requester: `MP-REQUEST dir=out kind=attack target=<name> <attack payload> gen=<gen> resolve=damage-path`
+requester: `MP-REQUEST dir=out target=<name> result=resolved via=damage-sent dt_ms=<F0>` | `result=unresolved after_ms=1500 (no blow landed here)`
+owner:     `MP-REQUEST dir=in from=<ghostId> kind=attack <attack payload> target=<name> seq= gen= dispatch=logged-awaiting-damage resolve=damage-path`
+owner:     `MP-REQUEST dir=in from=<ghostId> target=<name> result=resolved via=damage-path dt_ms=<F0>` | `result=unresolved after_ms=1500`
+owner:     `MP-REQUEST dir=in from=<ghostId> kind=attack … result=refused reason=host-authority-off|not-owner|target-not-owned|malformed-name`
+summary:   `MP-REQUEST section=summary out= out_resolved= out_unresolved= in= in_resolved= in_unresolved= in_refused=`
+
+Only under `mp_authority_host_on`. A request is a non-owner's committed
+attack at the owned NPC it is facing (`npc_target`, nearest live puppet
+within 4 m); it resolves through the existing name-addressed damage path
+(`0x30`), and `dt_ms` is the request-to-damage gap on each side.
+
 ### relay `[CLAIM]` lines (relay log, WO-81 + WO-102 Phase 2)
 `[CLAIM] granted npc= owner= pos=(x,y,z)` -- a non-authority's first accepted packet for an unclaimed name (WO-81).
 `[CLAIM] muted npc= owner= authority= claimAgeSec=` -- **WO-102**: the damage authority's own stream for a claimed name was dropped for the first time under this claim. This is the authority's implicit request being denied, which WO-98 §2 could not see. Once per claim; every muted packet is counted (`AuthorityMutedPackets` at `GET api/information/npc-claims`).

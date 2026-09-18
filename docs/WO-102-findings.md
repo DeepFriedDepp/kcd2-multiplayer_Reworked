@@ -485,3 +485,72 @@ the new host's stream is muted for those names — i.e. that joiner runs the
 claim model. A new joiner against a 0.23.2 host never claims and the old
 host streams only its own neighbourhood (no anchors) — the joiner's nearby
 NPCs are then unsynced. Both directions are 0.23.2-or-less, never a crash.
+
+---
+
+## 5. Phase 5 — the request channel
+
+### 5.1 What "request → resolve" already was, and what was missing
+
+On 0.23.2 a non-owner's blow at an NPC already travels as a *report*: its
+DLL sees the local copy lose health → `0x30 NpcDamageUp` by name → the owner
+applies the same delta to its copy → the owner's stream carries the outcome
+(hp, dead bit, WO-86 FATAL). WO-101 confirmed six applies each way. What did
+not exist was the **intent**: nothing said "this player committed an attack
+at *that* owned NPC" before the blow landed, so nothing could measure the gap
+between asking and resolving, or tell a miss from a dropped packet.
+
+### 5.2 What was built (code-verified; synthetic agent 146/146, relay 11/11, Lua 81/81)
+
+* **`ActionKind.NpcRequest = 4`** on the WO-100.5 action channel
+  (`0x3B`/`0x3C`), payload `NpcRequestPayload` =
+  `[inputClass][zone][attackType][flags][nameLen][name]` — the accepted input
+  WO-100 §4.1 named, plus the target's authored entity name (≤ 59 bytes, so
+  the whole payload sits at the channel's 64-byte ceiling). Same `seq`,
+  `phase` and `gen` triple as every action. The relay forwards it verbatim
+  (its `len` byte check is the only gate) — **new relay round-trip case**,
+  both the short and the 64-byte extreme.
+* **Target.** The mod's puppet tick, on a non-authority under host authority,
+  names the nearest live puppet within 4 m of the player (`npc_target
+  <name|->`, emitted on change only; nothing on the event channel with the
+  toggle off).
+* **Requester.** At the attack **commit** edge (`AttackEdgeDetector`), under
+  host authority, as a non-authority, with a target: one `NpcRequest` after
+  the ordinary attack action. `MP-REQUEST dir=out kind=attack target= …
+  resolve=damage-path`, then `result=resolved via=damage-sent dt_ms=` when
+  this machine's own `0x30` for that name goes out, or `result=unresolved
+  after_ms=1500 (no blow landed here)`.
+* **Owner.** `MP-REQUEST dir=in from= kind=attack … dispatch=logged-awaiting-damage
+  resolve=damage-path`, then `result=resolved via=damage-path dt_ms=` when
+  the requester's `0x30` for that name arrives (correlated before the
+  WO-99 damage guard, so a refused delta still resolves the intent), or
+  `result=unresolved after_ms=1500`.
+* **Refusal vocabulary, specific** (WO-100 §3.2 discipline):
+  `reason=host-authority-off` (a request under the claim model),
+  `reason=not-owner` (a request that reached a non-authority),
+  `reason=target-not-owned` (a name this authority has not streamed in the
+  last 10 s), `reason=malformed-name` (not `[A-Za-z0-9_]+`, or a lying
+  length byte). Counted in `MP-REQUEST section=summary out= out_resolved=
+  out_unresolved= in= in_resolved= in_unresolved= in_refused=`.
+
+### 5.3 The native half — STOP, deferred, and which path resolves
+
+`CombatModule 0x76500 RequestAction(I_CombatActor*, out, actionType, zone,
+hand, param6)` has been fired six times, all on the **player**, all null
+(WO-100.5 §2.3); it has never been called on an NPC's combat actor, and a
+first call is a native write into a live combat model. This session ran no
+game and made no native writes, so it was **not attempted**. It is a STOP
+that needs the maintainer at the keyboard with the WO-100.5 probe pointed
+at an NPC — recorded here as the open question, not answered.
+
+**Which path resolves, therefore: the existing damage path.** A request is
+intent + correlation; the owner's world resolves the blow when the
+requester's `0x30` arrives, exactly as today, and streams the result back.
+If `0x76500` ever queues an attack on an NPC, the same `NpcRequest` packet
+is the payload it consumes; nothing on the wire changes.
+
+### 5.4 Wire compatibility (Phase 5)
+
+Additive. A 0.23.2 receiver drops `kind=4` as `UnknownKind` (counted,
+`MP-ACTION section=inbound unknown_kind=`), and a 0.23.2 sender never sends
+it. The relay is unchanged.

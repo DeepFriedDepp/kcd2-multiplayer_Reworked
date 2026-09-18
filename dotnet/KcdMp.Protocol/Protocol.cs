@@ -1456,6 +1456,16 @@ public enum ActionKind : byte
     Jump = 2,
     /// <summary>Reserved: an emote.</summary>
     Emote = 3,
+    /// <summary>
+    /// WO-102 Phase 5: a non-owner's attack REQUEST at an owned NPC -- the
+    /// accepted input (WO-100 S4.1) plus the target's authored entity name.
+    /// Sent at the COMMIT edge by a non-authority under host authority; the
+    /// owner logs it (MP-REQUEST) and correlates it with the damage that
+    /// follows on 0x30, which is how the request is resolved on this build
+    /// (the native queued-action resolution, CombatModule 0x76500, has never
+    /// been fired on an NPC and is a STOP -- docs/WO-102-findings.md S5).
+    /// </summary>
+    NpcRequest = 4,
 }
 
 /// <summary>
@@ -1492,6 +1502,47 @@ public readonly record struct ActionGen(ushort Incarnation, byte Epoch, byte Rev
 /// selector tuple, never by an index, so a build mismatch cannot silently
 /// select a different attack.
 /// </summary>
+/// <summary>
+/// WO-102 Phase 5: the NpcRequest action payload --
+/// <c>[inputClass:1][zone:1][attackType:1][flags:1][nameLen:1][name:utf8]</c>.
+/// The name is the target NPC's authored entity name (the same key
+/// NpcState/NpcDamage use); it is validated <c>[A-Za-z0-9_]+</c> by the
+/// receiver before it reaches anything, exactly like those two.
+/// </summary>
+public readonly record struct NpcRequestPayload(AttackPayload Attack, string TargetName)
+{
+    public const int FixedLen = AttackPayload.Len + 1;
+    /// <summary>ActionPayloadMaxLen (64) minus the fixed part.</summary>
+    public const int MaxNameLen = Protocol.ActionPayloadMaxLen - FixedLen;   // 59
+
+    public byte[] ToBytes()
+    {
+        var name = System.Text.Encoding.UTF8.GetBytes(TargetName);
+        if (name.Length > MaxNameLen) throw new ArgumentOutOfRangeException(nameof(TargetName), $"name {name.Length} > {MaxNameLen}");
+        var b = new byte[FixedLen + name.Length];
+        Attack.ToBytes().CopyTo(b, 0);
+        b[AttackPayload.Len] = (byte)name.Length;
+        name.CopyTo(b, FixedLen);
+        return b;
+    }
+
+    /// <summary>False on a truncated frame or a name that is not an authored entity name.</summary>
+    public static bool TryFromBytes(ReadOnlySpan<byte> b, out NpcRequestPayload p)
+    {
+        p = default;
+        if (b.Length < FixedLen) return false;
+        int n = b[AttackPayload.Len];
+        if (n == 0 || n > MaxNameLen || b.Length < FixedLen + n) return false;
+        string name = System.Text.Encoding.UTF8.GetString(b.Slice(FixedLen, n));
+        foreach (char c in name)
+            if (!(c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '_')) return false;
+        p = new NpcRequestPayload(AttackPayload.FromBytes(b), name);
+        return true;
+    }
+
+    public override string ToString() => $"{Attack} target={TargetName}";
+}
+
 public readonly record struct AttackPayload(sbyte InputClass, sbyte Zone, sbyte AttackType, byte Flags)
 {
     public const int Len = 4;
