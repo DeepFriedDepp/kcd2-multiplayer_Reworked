@@ -89,6 +89,41 @@ KCD2MP.ghostIsolate = true
 -- and KCD2MP_PickFaceForPlayer always returns "NPC", so the swap is total
 -- today -- but a future female roster entry must NOT be swapped.
 KCD2MP.ghostNai = false
+-- WO-100.5 Phase 0, LIVE 2026-09-17: the better lever, found by testing the
+-- class swap above and watching it fail.
+--
+-- XGenAIModule.SpawnEntity takes a NoAI parameter (it is in Warhorse's own
+-- shipped scriptbind doc for SpawnEntity, alongside Name/ClassName/
+-- SharedSoulGuid/SchedulerProxyName -- the same doc WO-22 read the flat-table
+-- shape out of). Passing NoAI=true keeps EVERYTHING the class swap threw away:
+--
+--   * the entity class stays NPC, so bWH_PerceptibleObject is present and the
+--     body is a real hit target. Live tally of the engine's own
+--     "Skirmish event: HitTarget on Dude (target X)" lines across one session:
+--         NPC + NoAI=true   7 hits registered
+--         NPC               2
+--         NPC_NAI           0    -- despite "a shitload of hits" landed
+--     An NPC_NAI body is not merely imperceptible; the skirmish system never
+--     books a hit on it at all. A nearby ordinary NPC DID witness and report
+--     an assault on the NoAI body (SVEDEK_BEZI_HLASIT / SVEDEK_REPORTUJE_
+--     STRAZI), so it remains a crime victim -- WO-68's ghost-as-crime-victim
+--     behaviour survives.
+--   * the soul binds, because this is still the XGenAI path. The class swap
+--     could not have both: XGenAIModule.SpawnEntity silently builds NPC
+--     whatever ClassName says (observed 3x, with and without NoAI), and
+--     System.SpawnEntity honours the class but does not bind SharedSoulGuid
+--     (WO-22). Class or soul, never both.
+--
+-- and it still removes the brain: zero SituationController registrations, zero
+-- npc_basic_scheduler behaviour-tree lines, zero self-initiated dialogue, and
+-- the engine's own "'<name>': no valid reaction found" when hit.
+--
+-- DEFAULT OFF. It is a real behaviour change on every ghost and the thing it
+-- is meant to fix -- WO-98's sub-metre tug-of-war -- can only be measured with
+-- two machines. Turning it on also gives up WO-26's reactive self-defence,
+-- which is a product decision, not a technical one. Field runbook:
+-- docs/WO-100.5-findings.md S5.
+KCD2MP.ghostNoAi = false
 KCD2MP._horseInfoSentName = nil -- last horse_info payload actually emitted (change gate)
 KCD2MP._horseInfoSentAt = 0     -- for the 30s re-emit while mounted (late joiners)
 KCD2MP.workingClass = "AnimObject"
@@ -4077,12 +4112,17 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
     local ghostClass = KCD2MP_GhostClassName(facePick.className)
     local entity = nil
     pcall(function()
-        XGenAIModule.SpawnEntity{
+        -- WO-100.5: NoAI is a shipped SpawnEntity parameter. Passed only when
+        -- the toggle is on, so the default spawn table is byte-identical to
+        -- what every session before this one sent.
+        local t = {
             Name           = name,
             ClassName      = ghostClass,
             Pos            = {x, y, z},
             SharedSoulGuid = facePick.guid,
         }
+        if KCD2MP.ghostNoAi then t.NoAI = true end
+        XGenAIModule.SpawnEntity(t)
         entity = System.GetEntityByName(name)
     end)
     if not entity then
@@ -4173,12 +4213,14 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         facePick = KCD2MP.faceFallback
         ghostClass = KCD2MP_GhostClassName(facePick.className)
         pcall(function()
-            XGenAIModule.SpawnEntity{
+            local t = {
                 Name           = name,
                 ClassName      = ghostClass,
                 Pos            = {x, y, z},
                 SharedSoulGuid = facePick.guid,
             }
+            if KCD2MP.ghostNoAi then t.NoAI = true end
+            XGenAIModule.SpawnEntity(t)
             entity = System.GetEntityByName(name)
         end)
         if not entity then
@@ -8091,10 +8133,34 @@ function KCD2MP_SetGhostNai(on)
     local n = 0
     for _ in pairs(KCD2MP.ghosts or {}) do n = n + 1 end
     System.LogAlways(string.format(
-        "[KCD2-MP] mp_ghost_nai=%s -- ghosts spawn as %s from now on."
-        .. " %d ghost(s) already in the world keep the class they were built with;"
-        .. " respawn them (mp_remove_all, or a reconnect) to apply this.",
+        "[KCD2-MP] mp_ghost_nai=%s -- requested class is now %s."
+        .. " %d ghost(s) already in the world keep the class they were built with.",
         tostring(KCD2MP.ghostNai), KCD2MP_GhostClassName("NPC"), n))
+    if KCD2MP.ghostNai then
+        -- Said every time it is switched on, because it is the opposite of
+        -- what the name promises and it was established live.
+        System.LogAlways(
+            "[KCD2-MP] mp_ghost_nai WARNING: XGenAIModule.SpawnEntity -- the ghost path's"
+            .. " PRIMARY spawn -- builds class NPC whatever ClassName says (live 2026-09-17,"
+            .. " 3 of 3, with and without NoAI). So on the primary path this toggle changes"
+            .. " NOTHING; it only bites on the System.SpawnEntity fallback. And where it does"
+            .. " bite it is harmful: an NPC_NAI body registered 0 of N hits with the skirmish"
+            .. " system. Use mp_ghost_noai_on instead -- see docs/WO-100.5-findings.md S1.")
+    end
+end
+
+-- WO-100.5 Phase 0: the toggle that actually works. See KCD2MP.ghostNoAi.
+function KCD2MP_SetGhostNoAi(on)
+    KCD2MP.ghostNoAi = on and true or false
+    local n = 0
+    for _ in pairs(KCD2MP.ghosts or {}) do n = n + 1 end
+    System.LogAlways(string.format(
+        "[KCD2-MP] mp_ghost_noai=%s -- new ghosts spawn %s a brain."
+        .. " %d ghost(s) already in the world are unchanged; respawn them"
+        .. " (mp_remove_all, or a reconnect) to apply this."
+        .. " ON gives up WO-26 reactive self-defence and should remove the WO-98"
+        .. " position tug-of-war; that half needs two machines to measure.",
+        tostring(KCD2MP.ghostNoAi), KCD2MP.ghostNoAi and "WITHOUT" or "with", n))
 end
 
 -- Split "a,b,c" -> {"a","b","c"}, trims whitespace
@@ -9116,6 +9182,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_ghost_nai_on",  "KCD2MP_SetGhostNai(true)",  "WO-100.5: spawn ghosts as NPC_NAI (no local brain, no contention with the position stream). Applies to the NEXT spawn")
     System.AddCCommand("mp_ghost_nai_off", "KCD2MP_SetGhostNai(false)", "WO-100.5: spawn ghosts as the ordinary NPC class (brain and perception, WO-26 reactive combat)")
     System.AddCCommand("mp_nai_ab",        "KCD2MP_Wo1005NaiAB()",      "WO-100.5: spawn one NPC_NAI ghost and one NPC ghost side by side, for the perception comparison")
+    System.AddCCommand("mp_ghost_noai_on",  "KCD2MP_SetGhostNoAi(true)",  "WO-100.5: spawn ghosts with NoAI=true -- keeps class NPC, perception, hit registration and the soul; removes the brain. Applies to the NEXT spawn")
+    System.AddCCommand("mp_ghost_noai_off", "KCD2MP_SetGhostNoAi(false)", "WO-100.5: spawn ghosts with their ordinary brain (WO-26 reactive self-defence)")
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
     System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     -- mp_spawn_armor <guid1,guid2,...>  -- inventory only (no visual unless preset given as 2nd arg)

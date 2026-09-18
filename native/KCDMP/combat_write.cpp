@@ -38,8 +38,17 @@
 //     The caller contract, transcribed from FireAction's tail (0x1268C9):
 //         if (out) out->vtbl[2]();          // release our reference
 //         else     log "Automated block was not triggered - anim queue failed!"
-//     -- so the engine reports this action's own failure, in kcd.log, without
-//     us instrumenting anything.
+//
+//     WO-100 read that as "the engine reports this action's failure in
+//     kcd.log". It does not. That line is printed BY THE CALLER, so a direct
+//     call to 0x76500 produces no engine log line at all -- confirmed live,
+//     2026-09-17: six refused calls, zero occurrences of the string in the
+//     whole 71k-line log. The null return IS the whole report.
+//
+//     LIVE RESULT, 2026-09-17: on the PLAYER, in a real fight, this returned
+//     null for actionType 6 across zones 0,1,2,3,5 and hand slots 0 and 1 --
+//     so the refusal is not the arguments. Untried on an NPC, which is the
+//     case every shipped call site actually exercises. See WO-100.5 S2.
 //
 // (b) CombatModule 0xF4C20 -- WO-100 called it "the property setter,
 //     (propertyBase, value, flag)". IT IS NOT. Refuted, code-verified:
@@ -336,9 +345,16 @@ void cmd_action(HMODULE combatModule, void* actor, int type, int zone, int hand,
         return;
     }
     if (!out) {
+        // CORRECTED 2026-09-17, live: the line
+        // "Automated block was not triggered - anim queue failed!" belongs to
+        // the shipped CALLER (C_CombatAutomationBlock::FireAction, 0x126800),
+        // not to 0x76500. Calling the callee directly cannot produce it, and
+        // the whole log confirms it: zero occurrences across six refused
+        // calls. Do not send anyone looking for it.
         logf("CW-ACT: returned NULL -- the engine did not queue the action."
-             " Its own line for this is \"Automated block was not triggered - anim queue failed!\";"
-             " check kcd.log. A null return is a REAL answer, not a crash.");
+             " A null return is a REAL answer, not a crash. No engine log line"
+             " accompanies it: the \"anim queue failed\" message is printed by the"
+             " shipped caller, not by this function.");
         return;
     }
     logf("CW-ACT: returned %p (non-null). NOTE: a non-null return is NOT proof the block happened."
