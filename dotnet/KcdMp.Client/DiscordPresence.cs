@@ -107,15 +107,23 @@ public sealed class DiscordPresence : IDisposable
                 {
                     LargeImageKey = _largeImageKey,
                     LargeImageText = "Kingdom Come: Deliverance II Multiplayer",
-                    // Must be non-null, not just unset: DiscordRPC 1.6.1's
-                    // Assets.Merge calls other._smallimagekey.StartsWith(...)
-                    // with no null guard (fixed later upstream, not in this
-                    // release) and NREs on its own background thread the
-                    // moment Discord's ack round-trips a presence with no
-                    // small image at all. No second art asset is uploaded
-                    // for this project, so this key is never resolved to a
-                    // visible badge — it only exists to keep the string
-                    // non-null.
+                    // WO-50 set this to "" believing it stopped DiscordRPC
+                    // 1.6.1's Assets.Merge NRE. WO-101 field logs (every
+                    // bundle since) show it does not: the null is on the
+                    // OTHER side. Discord's ack echoes the presence back
+                    // without a small_image field, the library merges that
+                    // reply into ours, and other._smallimagekey.StartsWith()
+                    // throws on the reply's null. The library catches it on
+                    // its own read thread and logs "Unhandled Exception while
+                    // processing event"; the presence itself was already sent
+                    // and shows, later SetPresence calls work, and the only
+                    // loss is the OnPresenceUpdate callback (our
+                    // "[discord] presence ack" line never prints). Benign.
+                    // Upstream has the null guard on master but the only
+                    // newer NuGet package (1.143.0) is deprecated/unlisted
+                    // "critical bugs", so there is nothing to upgrade to.
+                    // Kept at "" -- harmless -- rather than a second real
+                    // asset key, which would put a badge on the art.
                     SmallImageKey = ""
                 },
                 Timestamps = _startTimestamp

@@ -187,3 +187,52 @@ passes, in both lengths, before a build ships.
 Not proven here, by construction: that the live agent's `body` is non-null in
 the field (the DLL read) — but §0.5's `MP-ANIM reads=1703 refused=0` already
 shows that (observed).
+
+## 3. Two loose ends from the same bundle
+
+### 3.1 Startup `NullReferenceException`s — benign, mechanism corrected
+
+`ERR : Unhandled Exception while processing event: System.NullReferenceException`
+at `DiscordRPC.Assets.Merge(Assets other)` ← `RichPresence.Merge` ←
+`DiscordRpcClient.ProcessMessage` ← `RpcConnection.EnqueueMessage`. (observed:
+2×–4× per agent run in every bundle, 09-16 and 09-17, host and joiner; always
+~1–2 s after a `[discord] SetPresence` line.)
+
+* The message text is DiscordRPC's own catch-and-log on its read thread. The
+  exception never reaches our code; `IsInitialized` stays true and the later
+  `SetPresence` calls at `19:41:43` and `19:42:27` went out. (observed)
+* WO-50's workaround (`SmallImageKey = ""`) null-guards **our** side. The null
+  is in **Discord's reply**: the ack echoes the presence back with no
+  `small_image`, the library merges the reply into ours, and
+  `other._smallimagekey.StartsWith(...)` is called on the reply's null. So the
+  workaround cannot work, and the only consequence is that
+  `OnPresenceUpdate` never fires — `[discord] presence ack` appears **0** times
+  in every bundle. (code-verified against the WO-50 source read; observed)
+* No fix available without a code fork: the upstream null guard is on
+  `master`; the only NuGet version newer than 1.6.1.70 is 1.143.0, which is
+  **deprecated and unlisted** ("critical bugs", 2020). Not upgrading a
+  dependency blind in a hotfix. The misleading comment in `DiscordPresence.cs`
+  is corrected; the `""` is kept because it is harmless.
+
+**Verdict: benign.** Cost = one lost log line per presence update.
+
+### 3.2 `[appearance] unequip … failed: 404` — long-standing race, amplified by §0
+
+* The call is `GET …/SoulsByName/kcd2mp_1/EquipmentManager/UnequipItem`
+  (`HttpGameTransport.cs:313-318`); 404 = the game has no soul named
+  `kcd2mp_1` **yet**. The ghost entity is spawned by the first
+  `KCD2MP_UpdateGhost` (`kdcmp.lua:4815`), i.e. by the first **Ghost packet**.
+  The Appearance packet arrives at connect, before that. (code-verified)
+* Working session 09-16 (HOST bundle): first `[ghost 1]` at `19:13:44.808`,
+  the single unequip 404 at `19:13:44.834` — 26 ms later, the spawn
+  `ExecuteString` not yet landed. **1** failure, then the 30 s appearance
+  heartbeat succeeded. JOINER.prev: 1. (observed)
+* 09-17 (HOST (2)): joiner connected `19:39:40.110`, first `[ghost 1]`
+  `19:41:43.020` — **2 min 3 s** with no ghost entity because §0 dropped every
+  live Position. All 10 preset-item unequips 404'd at once, then again on each
+  30 s heartbeat: **50** in the log. After the ghost finally spawned:
+  `[appearance] ghost 1: 9 item(s) still not applied, retrying`. (observed)
+
+**Verdict: long-standing (1 per session when positions flow), not a
+regression; the 09-17 volume is §0's consequence and goes away with §1. Left
+alone, as instructed.**
