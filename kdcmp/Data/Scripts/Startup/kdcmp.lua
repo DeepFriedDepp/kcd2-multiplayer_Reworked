@@ -343,7 +343,8 @@ function KCD2MP_LogSummary(reason)
     mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
         .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d"
-        .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s",
+        .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s"
+        .. " auth_pauses=%d auth_resumes=%d auth_violations=%d",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
         (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
@@ -351,7 +352,9 @@ function KCD2MP_LogSummary(reason)
         KCD2MP._npcYieldN or 0, KCD2MP._npcRepinN or 0,
         (KCD2MP._authStats or {}).acquire or 0, (KCD2MP._authStats or {}).release or 0,
         (KCD2MP._authStats or {}).ownerChange or 0,
-        (KCD2MP.wo102 and KCD2MP.wo102.authorityHost) and "host" or "claim"))
+        (KCD2MP.wo102 and KCD2MP.wo102.authorityHost) and "host" or "claim",
+        (KCD2MP._authStats or {}).pause or 0, (KCD2MP._authStats or {}).resume or 0,
+        (KCD2MP._authStats or {}).violation or 0))
 end
 
 -- ===== Player Position =====
@@ -2734,11 +2737,20 @@ KCD2MP.npcProx = {
 --                  pipe instead of the [KCD2-MP-DATA] log line. Agent-side;
 --                  the mod only relays the switch (and keeps emitting the
 --                  log line, which stays the fallback).
+--   authorityPause mp_authority_pause_on|off Phase 3/4: the local-brain
+--                  suppression lever. Under host authority a non-authority
+--                  issues the engine's own `wh_ai_PauseNPC <name>` when a
+--                  puppet starts and `wh_ai_ResumeNPC <name>` when it is
+--                  released ("the pausing system", shipped console commands,
+--                  docs/WO-102-findings.md S3). Live behaviour UNVERIFIED as
+--                  of this build -- default off, `mp_probe_npc_pause` is the
+--                  single-machine proof. Does nothing unless authorityHost.
 KCD2MP.wo102 = {
-    authorityHost = false,
-    posNative     = false,
+    authorityHost  = false,
+    posNative      = false,
+    authorityPause = false,
 }
-KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative" }
+KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause" }
 
 -- name: "authority_host" | "pos_native"; on: boolean; source: "console" | "agent".
 function KCD2MP_Wo102Set(name, on, source)
@@ -2761,7 +2773,8 @@ function KCD2MP_Wo102Set(name, on, source)
     end
     if source ~= "agent" or was ~= want then
         KCD2MP_ShowInteractionMsg(string.format("%s: %s",
-            field == "authorityHost" and "Host NPC authority" or "Native position", want and "ON" or "OFF"))
+            field == "authorityHost" and "Host NPC authority"
+                or field == "authorityPause" and "NPC brain pause lever" or "Native position", want and "ON" or "OFF"))
     end
     -- Phase 4 hooks its side effects here (a non-authority dropping its
     -- claim stream on the spot when host authority switches on), Phase 1 has
@@ -2771,10 +2784,13 @@ function KCD2MP_Wo102Set(name, on, source)
 end
 
 function KCD2MP_Wo102Status()
-    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority=%s",
+    local paused = 0
+    for _ in pairs(KCD2MP._npcPaused or {}) do paused = paused + 1 end
+    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s authority=%s paused_npcs=%d",
         KCD2MP.wo102.authorityHost and "on" or "off",
         KCD2MP.wo102.posNative and "on" or "off",
-        KCD2MP.hitSensorOn and "self" or "peer"))
+        KCD2MP.wo102.authorityPause and "on" or "off",
+        KCD2MP.hitSensorOn and "self" or "peer", paused))
 end
 
 -- WO-102 Phase 2: MP-AUTHORITY -- per NPC, who owns it, how it was acquired,
@@ -2800,17 +2816,108 @@ end
 -- change hands; under host authority (Phase 4) a non-authority must only ever
 -- see acquire via=stream from the one authority and no owner-change at all --
 -- that absence is what the Phase 7 A/B reads.
-KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0 }
+KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0, pause = 0, resume = 0, violation = 0 }
 local function mp_auth_log(name, event, owner, via, heldS, from)
     local st = KCD2MP._authStats
     if event == "acquire" then st.acquire = st.acquire + 1
     elseif event == "release" then st.release = st.release + 1
-    elseif event == "owner-change" then st.ownerChange = st.ownerChange + 1 end
+    elseif event == "owner-change" then st.ownerChange = st.ownerChange + 1
+    elseif event == "pause" then st.pause = st.pause + 1
+    elseif event == "resume" then st.resume = st.resume + 1 end
     mp_log(string.format("MP-AUTHORITY npc=%s event=%s owner=%s via=%s held_s=%.1f model=%s%s",
         tostring(name), event, tostring(owner), via, heldS or 0,
         KCD2MP.wo102.authorityHost and "host" or "claim",
         from ~= nil and (" from=" .. tostring(from)) or ""))
 end
+
+-- ===== WO-102 Phase 4: host authority -- the pause lever and the violation log =====
+--
+-- Under host authority (mp_authority_host_on) exactly one machine -- the
+-- damage-authority holder, KCD2MP.hitSensorOn -- decides every NPC. What
+-- that means in this file:
+--   * a NON-authority never claims: KCD2MP_NpcSyncTick returns before the
+--     drag sensor and the proximity emitter (both are bypassed, not removed);
+--     flipping the toggle on drops any claim stream it was running;
+--   * the AUTHORITY scans around every peer ghost as well as its own player
+--     (mp_npc_rescan anchors), with the per-anchor cap, so the NPCs near the
+--     other player are streamed too;
+--   * a puppet is never handed back: the WO-90 divergence release and the
+--     WO-99 yield are refused and logged as MP-AUTHORITY-VIOLATION instead --
+--     under a single writer there is nothing to diverge FROM, so a body that
+--     still moves on its own is a bug to see, not a case to accommodate;
+--   * optionally (mp_authority_pause_on) the local brain of every puppet is
+--     paused with the engine's own `wh_ai_PauseNPC <name>` ("Pauses the
+--     execution of the NPC with given name", ConsoleHTMLHelp) and resumed on
+--     release. That is the Phase 3 lever; its live behaviour is unverified,
+--     so it ships off with `mp_probe_npc_pause` as the proof.
+--
+--   MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention dist_m=<F2> owner=<id> paused=0|1 n=<int>
+--   (per-NPC throttled to one line per 10 s; the count is exact)
+KCD2MP._npcPaused = {}           -- name -> os.clock() when wh_ai_PauseNPC was issued
+KCD2MP._authViolationAt = {}     -- name -> last logged
+KCD2MP._authViolationN = {}      -- name -> count
+
+local function mp_wo102_pause(name, p)
+    if not (KCD2MP.wo102.authorityHost and KCD2MP.wo102.authorityPause) then return end
+    if KCD2MP._npcPaused[name] then return end
+    KCD2MP._npcPaused[name] = os.clock()
+    local ok, err = pcall(System.ExecuteCommand, "wh_ai_PauseNPC " .. tostring(name))
+    mp_auth_log(name, "pause", p and p.owner or "?", "wh_ai_PauseNPC", 0)
+    if not ok then mp_log("WO102-PAUSE ExecuteCommand failed for " .. tostring(name) .. ": " .. tostring(err)) end
+end
+
+local function mp_wo102_resume(name, why)
+    local at = KCD2MP._npcPaused[name]
+    if not at then return end
+    KCD2MP._npcPaused[name] = nil
+    pcall(System.ExecuteCommand, "wh_ai_ResumeNPC " .. tostring(name))
+    mp_auth_log(name, "resume", "?", why, os.clock() - at)
+end
+
+local function mp_wo102_resume_all(why)
+    local names = {}
+    for name in pairs(KCD2MP._npcPaused) do names[#names + 1] = name end
+    for _, name in ipairs(names) do mp_wo102_resume(name, why) end
+end
+
+local function mp_wo102_violation(name, p, kind, distM)
+    local st = KCD2MP._authStats
+    st.violation = st.violation + 1
+    KCD2MP._authViolationN[name] = (KCD2MP._authViolationN[name] or 0) + 1
+    local now = os.clock()
+    if (now - (KCD2MP._authViolationAt[name] or -1e9)) >= 10.0 then
+        KCD2MP._authViolationAt[name] = now
+        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s paused=%d n=%d",
+            tostring(name), kind, distM or 0, tostring(p and p.owner or "?"),
+            KCD2MP._npcPaused[name] and 1 or 0, KCD2MP._authViolationN[name]))
+    end
+    if (now - (KCD2MP._authViolationToastAt or -1e9)) >= 300.0 then
+        KCD2MP._authViolationToastAt = now
+        pcall(function() KCD2MP_ShowNativeToast("KCD2-MP: an NPC is being moved by this machine's own AI under host authority -- see kcd.log (MP-AUTHORITY-VIOLATION)") end)
+    end
+end
+
+-- Toggle side effects (called by KCD2MP_Wo102Set).
+function KCD2MP_Wo102OnChange(field, want, was)
+    if field == "authorityHost" then
+        if want and not KCD2MP.hitSensorOn then
+            local n = 0
+            for name, t in pairs(KCD2MP.npcTracked or {}) do
+                n = n + 1
+                mp_auth_log(name, "release", "self", "host-authority-on", os.clock() - ((t and t.since) or os.clock()))
+            end
+            KCD2MP.npcTracked = {}
+            for name in pairs(KCD2MP.dragging or {}) do KCD2MP.dragging[name] = nil end
+            mp_log(string.format("WO102-AUTHORITY host authority ON on a non-authority: dropped %d claim stream(s); this machine now only displays", n))
+        elseif want then
+            mp_log("WO102-AUTHORITY host authority ON on the authority: scanning around every peer ghost as well as this player")
+        end
+        if not want then mp_wo102_resume_all("host-authority-off") end
+    elseif field == "authorityPause" then
+        if not want then mp_wo102_resume_all("pause-lever-off") end
+    end
+end
+
 
 -- WO-40 Phase 5: dump every puppet's tug-of-war evidence -- how often the
 -- entity was found away from where we wrote it, and the clustered positions
@@ -3056,7 +3163,32 @@ local function mp_npc_rescan()
     local found = {}
     local enterRadius = KCD2MP.npcSync.radius
     local exitRadius  = enterRadius * NPC_TRACK_EXIT_FACTOR
-    local ents = System.GetEntitiesInSphere(pp, exitRadius) or {}
+    -- WO-102 Phase 4: under host authority the authority owns the NPCs near
+    -- the OTHER players too, so it scans around every peer ghost as well as
+    -- its own player -- one anchor per body, the per-anchor cap unchanged.
+    -- An NPC only the peer's game has loaded cannot be scanned here; that is
+    -- the stated limit (findings S4.4), not a gap in the scan.
+    local anchors = { pp }
+    if KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn then
+        for _, g in pairs(KCD2MP.ghosts or {}) do
+            local gp = nil
+            pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
+            if not gp and g.istate and g.istate.tx then gp = { x = g.istate.tx, y = g.istate.ty, z = g.istate.tz or pp.z } end
+            if gp then anchors[#anchors + 1] = gp end
+        end
+    end
+    local cap = KCD2MP.npcSync.maxTracked * #anchors
+    if #anchors ~= (KCD2MP._npcScanAnchors or 1) then
+        KCD2MP._npcScanAnchors = #anchors
+        mp_log(string.format("WO102-AUTHORITY scan anchors=%d cap=%d", #anchors, cap))
+    end
+    local ents, seenEnt = {}, {}
+    for _, a in ipairs(anchors) do
+        for _, e in ipairs(System.GetEntitiesInSphere(a, exitRadius) or {}) do
+            local key = e.id or e
+            if not seenEnt[key] then seenEnt[key] = true; ents[#ents + 1] = e end
+        end
+    end
     for _, e in ipairs(ents) do
         local cls = e.class
         -- WO-38 Phase 5: Horse-class entities travel on the same channel --
@@ -3079,8 +3211,12 @@ local function mp_npc_rescan()
             if name and string.find(name, "^[%w_]+$")
                and not mp_is_excluded_npc_name(name) then
                 local ep = e:GetWorldPos()
-                local dx, dy = ep.x - pp.x, ep.y - pp.y
-                local d = math.sqrt(dx*dx + dy*dy)
+                local d = 1e9
+                for _, a in ipairs(anchors) do
+                    local dx, dy = ep.x - a.x, ep.y - a.y
+                    local da = math.sqrt(dx*dx + dy*dy)
+                    if da < d then d = da end
+                end
                 local tracked = KCD2MP.npcTracked[name] ~= nil
                 -- New NPCs must be inside the enter radius; tracked ones
                 -- survive out to the exit radius (the sphere query bound).
@@ -3094,7 +3230,7 @@ local function mp_npc_rescan()
     table.sort(found, function(a, b) return a.rank < b.rank end)
 
     local keep = {}
-    for i = 1, math.min(#found, KCD2MP.npcSync.maxTracked) do
+    for i = 1, math.min(#found, cap) do
         local name = found[i].name
         keep[name] = true
         if not KCD2MP.npcTracked[name] then
@@ -3234,6 +3370,10 @@ function KCD2MP_NpcSyncTick()
     if not KCD2MP.npcSync.enabled then return end
     local isAuthority = KCD2MP.hitSensorOn
     if not isAuthority then
+        -- WO-102 Phase 4: under host authority a non-authority never claims
+        -- -- not by drag, not by proximity. The claim code below is bypassed,
+        -- not removed; mp_authority_host_off returns to it on the next tick.
+        if KCD2MP.wo102.authorityHost then return end
         -- WO-39 Phase 2: a non-authority always watches for bodies its own
         -- player is dragging, proximity toggle or no.
         pcall(mp_drag_sensor)
@@ -3428,6 +3568,7 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
         mp_log("NPC-SYNC puppet start " .. name)
         p.owner, p.ownerSince = src, os.clock()
         mp_auth_log(name, "acquire", src == nil and "?" or src, "stream", 0)   -- WO-102
+        mp_wo102_pause(name, p)   -- WO-102 Phase 4: no-op unless authorityHost + authorityPause
         -- WO-49: report this world's copy's entity id so the agent can
         -- address it on the native swing path. Same tostring-hex idiom as
         -- SpawnGhost's ghostid emit -- a decimal path would corrupt ids
@@ -3665,12 +3806,17 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 KCD2MP.npcPuppets[name] = nil
                 mp_log("NPC-SYNC release " .. name .. " (stream silent)")
                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "silence", now - (p.ownerSince or now))   -- WO-102
+                mp_wo102_resume(name, "silence")   -- WO-102 Phase 4
                 return
             end
             any = true
 
             local e = System.GetEntityByName(name)
             if not e then return end
+            -- WO-102 Phase 4: a puppet that existed before the pause lever was switched on.
+            if KCD2MP.wo102.authorityHost and KCD2MP.wo102.authorityPause and not KCD2MP._npcPaused[name] then
+                mp_wo102_pause(name, p)
+            end
 
             -- WO-34's corpse lesson, applied on both death sources: if the
             -- authority says dead, or this world's copy died locally, stop
@@ -3819,7 +3965,20 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                     local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
                     -- WO-99 Phase 2: sustained sub-8 m contention -> yield.
                     local yc = KCD2MP.npcYield
-                    if yc and yc.enabled and not p.yielded then
+                    if KCD2MP.wo102.authorityHost then
+                        -- WO-102 Phase 4: no yielding -- no second writer is
+                        -- allowed. Sustained contention is a violation, logged,
+                        -- never a hand-back.
+                        if yc and (fx*fx + fy*fy) > yc.dispM * yc.dispM then
+                            p.yieldStreak = (p.yieldStreak or 0) + 1
+                            if p.yieldStreak >= (yc.ticks or 10) then
+                                mp_wo102_violation(name, p, "contention", math.sqrt(fx*fx + fy*fy))
+                                p.yieldStreak = 0
+                            end
+                        else
+                            p.yieldStreak = 0
+                        end
+                    elseif yc and yc.enabled and not p.yielded then
                         if (fx*fx + fy*fy) > yc.dispM * yc.dispM then
                             p.yieldStreak = (p.yieldStreak or 0) + 1
                             if p.yieldStreak >= yc.ticks then
@@ -3915,7 +4074,14 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         -- not 760 (we write every tick, so most ticks read
                         -- back exactly where we put it; the engine yanks it
                         -- away intermittently).
-                        if KCD2MP.npcDiverge and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
+                        if KCD2MP.wo102.authorityHost and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
+                            -- WO-102 Phase 4: under host authority there is no
+                            -- second world to diverge from. The body is NOT
+                            -- released -- the stream stays the truth -- and the
+                            -- event is logged loudly as what it is: something
+                            -- on this machine is still writing this body.
+                            mp_wo102_violation(name, p, "diverge", math.sqrt(fx*fx + fy*fy))
+                        elseif KCD2MP.npcDiverge and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
                             local keep = {}
                             for _, t0 in ipairs(p.farHits or {}) do
                                 if (now - t0) <= MP_NPC_DIVERGE_WINDOW_S then keep[#keep + 1] = t0 end
@@ -9604,6 +9770,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_pos_native_on",      'KCD2MP_Wo102Set("pos_native", true)',      "WO-102: the agent reads position/rotation/riding over the DLL pipe instead of the kcd.log line")
     System.AddCCommand("mp_pos_native_off",     'KCD2MP_Wo102Set("pos_native", false)',     "WO-102: position back on the [KCD2-MP-DATA] log tail (0.23.2 path)")
     System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
+    System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). UNVERIFIED live -- run mp_probe_npc_pause first")
+    System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
     System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")
 
     -- Dropped-item sync (WO-48)

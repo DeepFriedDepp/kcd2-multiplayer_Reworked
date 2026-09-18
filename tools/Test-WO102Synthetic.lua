@@ -121,7 +121,7 @@ check("c: unknown toggle changes nothing", KCD2MP.wo102.authorityHost == false a
 -- (d) status.
 clearLog()
 KCD2MP_Wo102Status()
-check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority=peer") == 1)
+check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off authority=peer paused_npcs=0") == 1, lastLog("WO102-STATUS"))
 
 -- (e) argless commands (registration runs at file load, captured in CCMDS).
 local names = { "mp_authority_host_on", "mp_authority_host_off", "mp_pos_native_on", "mp_pos_native_off", "mp_wo102_status" }
@@ -236,6 +236,202 @@ do -- (l) summary counters
     KCD2MP_LogSummary("test")
     local sm = lastLog("MP-SUMMARY-MOD") or ""
     check("l: summary carries auth counters", sm:find("auth_acquire=1 auth_release=0 auth_owner_changes=0 auth_model=claim", 1, true) ~= nil, sm)
+end
+
+-- ---------------------------------------------------------------- Phase 4
+-- Host authority (mp_authority_host_on):
+--   (m) a NON-authority never claims: the sync tick emits no npc_claim, tracks
+--       nothing, runs no drag sensor; flipping the toggle on drops an existing
+--       claim stream (release via=host-authority-on)
+--   (n) the AUTHORITY scans around every peer ghost: an NPC 95 m from the
+--       player but 5 m from a ghost is tracked; cap = maxTracked x anchors;
+--       the WO102-AUTHORITY scan anchors line is logged once
+--   (o) a puppet the local world drags 97 m is NOT released: no MP-NPCDIVERGE,
+--       an MP-AUTHORITY-VIOLATION kind=diverge line, the puppet still exists
+--       and is still written
+--   (p) sustained sub-8 m contention does NOT yield: no MP-NPCYIELD, a
+--       kind=contention violation after `ticks` ticks
+--   (q) pause lever: with authority_pause on, a puppet start executes
+--       "wh_ai_PauseNPC <name>", a silence release executes wh_ai_ResumeNPC,
+--       and switching the lever off resumes everything still paused
+--   (r) with authority_host OFF the 0.23.2 paths run: the same 97 m drag
+--       releases with MP-NPCDIVERGE and no violation is ever logged
+--   (s) the pause lever alone (authority_host off) does nothing
+
+local function cmdCount(pat)
+    local n = 0
+    for _, c in ipairs(CMDS) do if string.find(c, pat, 1, true) then n = n + 1 end end
+    return n
+end
+local function resetAll4()
+    resetNpc(); CMDS = {}; KCD2MP._npcPaused = {}; KCD2MP._authViolationAt = {}; KCD2MP._authViolationN = {}
+    KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0, pause = 0, resume = 0, violation = 0 }
+    KCD2MP.wo102.authorityHost = false; KCD2MP.wo102.authorityPause = false
+    KCD2MP.npcDiverge = true; KCD2MP.npcYield.enabled = true
+    KCD2MP.ghosts = {}; KCD2MP._npcScanAnchors = nil
+end
+
+do -- (m)
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = false
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    KCD2MP.ghosts = { ["1"] = { entity = {}, istate = {} } }
+    local e = mkEntity("m_npc", 4, 0, 0); ENTS["m_npc"] = e; SPHERE = { e }
+    NOW = 400; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("m: claim model first -- the non-authority claims (control)", logCount("npc_claim m_npc") >= 1 and KCD2MP.npcTracked["m_npc"] ~= nil)
+    clearLog()
+    KCD2MP_Wo102Set("authority_host", true, "agent")
+    check("m: flipping on drops the claim stream", KCD2MP.npcTracked["m_npc"] == nil
+          and logCount("MP-AUTHORITY npc=m_npc event=release owner=self via=host-authority-on") == 1, lastLog("MP-AUTHORITY"))
+    check("m: the drop is logged", logCount("WO102-AUTHORITY host authority ON on a non-authority: dropped 1 claim stream") == 1)
+    clearLog()
+    NOW = 401; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick(); NOW = 402; KCD2MP._npcScanAt = 0; KCD2MP_NpcSyncTick()
+    check("m: under host authority the non-authority emits no npc_claim", logCount("npc_claim") == 0)
+    check("m: and tracks nothing", next(KCD2MP.npcTracked) == nil)
+    check("m: and logs no NPC-DRAG", logCount("NPC-DRAG") == 0)
+    KCD2MP.npcSyncRunning = false
+    check("m: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+do -- (n)
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = true
+    KCD2MP.wo102.authorityHost = true
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    local ghostEnt = { GetWorldPos = function() return { x = 100, y = 0, z = 0 } end }
+    KCD2MP.ghosts = { ["1"] = { entity = ghostEnt, istate = {} } }
+    local far = mkEntity("n_far", 95, 0, 0); ENTS["n_far"] = far          -- 95 m from the player, 5 m from the ghost
+    local near = mkEntity("n_near", 3, 0, 0); ENTS["n_near"] = near
+    -- the sphere stub ignores the centre, so return both for every anchor
+    SPHERE = { far, near }
+    NOW = 500; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("n: NPC near the peer ghost is tracked by the authority", KCD2MP.npcTracked["n_far"] ~= nil)
+    check("n: NPC near the player is tracked too", KCD2MP.npcTracked["n_near"] ~= nil)
+    check("n: anchors line logged with cap = maxTracked x 2", logCount("WO102-AUTHORITY scan anchors=2 cap=" .. (KCD2MP.npcSync.maxTracked * 2)) == 1)
+    check("n: both stream as npc_state", logCount("npc_state n_far") >= 1 and logCount("npc_state n_near") >= 1)
+    -- control: same scene with host authority off -> the far NPC is not tracked
+    KCD2MP.wo102.authorityHost = false; KCD2MP.npcTracked = {}; clearLog()
+    NOW = 503; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("n: control -- claim model tracks only the player's neighbourhood", KCD2MP.npcTracked["n_far"] == nil and KCD2MP.npcTracked["n_near"] ~= nil)
+    KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false
+    check("n: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- Drives a puppet through `n` 50 ms ticks while the "local world" drags the
+-- body `dragM` metres off our write each tick (the WO-90/WO-99 fixture shape).
+local function dragPuppet(name, e, dragM, n, srcId)
+    for i = 1, n do
+        NOW = NOW + 0.05
+        KCD2MP_ApplyNpcState(name, 10, 0, 0, 0, 100, 0, srcId or 1)   -- stream keeps it at x=10
+        KCD2MP.npcPuppetRunning = true
+        KCD2MP_NpcPuppetTick("ext")
+        -- the local brain moves it away AFTER our write
+        e.px = e.px + dragM
+    end
+end
+
+do -- (o) diverge refused under host authority
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityHost = true
+    local e = mkEntity("o_npc", 10, 0, 0); ENTS["o_npc"] = e
+    NOW = 600
+    dragPuppet("o_npc", e, 97, 6)
+    check("o: no MP-NPCDIVERGE under host authority", logCount("MP-NPCDIVERGE") == 0)
+    check("o: puppet still exists", KCD2MP.npcPuppets["o_npc"] ~= nil)
+    check("o: violation logged as kind=diverge", logCount("MP-AUTHORITY-VIOLATION npc=o_npc kind=diverge") >= 1, lastLog("MP-AUTHORITY-VIOLATION"))
+    check("o: violation counter counts every event", (KCD2MP._authStats.violation or 0) >= 3, KCD2MP._authStats.violation)
+    check("o: the body is still written each tick", #e.writes >= 6)
+    check("o: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+do -- (p) yield refused under host authority
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityHost = true
+    local e = mkEntity("p_npc", 10, 0, 0); ENTS["p_npc"] = e
+    NOW = 700
+    dragPuppet("p_npc", e, 0.6, KCD2MP.npcYield.ticks + 3)
+    check("p: no MP-NPCYIELD under host authority", logCount("MP-NPCYIELD") == 0)
+    check("p: puppet never yielded", KCD2MP.npcPuppets["p_npc"] ~= nil and not KCD2MP.npcPuppets["p_npc"].yielded)
+    check("p: violation logged as kind=contention", logCount("MP-AUTHORITY-VIOLATION npc=p_npc kind=contention") >= 1, lastLog("MP-AUTHORITY-VIOLATION"))
+    check("p: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+do -- (q) pause lever
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityHost = true; KCD2MP.wo102.authorityPause = true
+    local e = mkEntity("q_npc", 0, 0, 0); ENTS["q_npc"] = e
+    NOW = 800
+    KCD2MP_ApplyNpcState("q_npc", 1, 0, 0, 0, 100, 0, 1)
+    check("q: puppet start executes wh_ai_PauseNPC", cmdCount("wh_ai_PauseNPC q_npc") == 1, table.concat(CMDS, " | "))
+    check("q: MP-AUTHORITY event=pause", logCount("MP-AUTHORITY npc=q_npc event=pause owner=1 via=wh_ai_PauseNPC") == 1)
+    KCD2MP_ApplyNpcState("q_npc", 1.2, 0, 0, 0, 100, 0, 1)
+    check("q: not paused twice", cmdCount("wh_ai_PauseNPC q_npc") == 1)
+    NOW = 800 + (KCD2MP.npcSync.releaseS or 3) + 1
+    KCD2MP.npcPuppetRunning = true; KCD2MP_NpcPuppetTick("ext")
+    check("q: silence release executes wh_ai_ResumeNPC", cmdCount("wh_ai_ResumeNPC q_npc") == 1)
+    check("q: MP-AUTHORITY event=resume via=silence", logCount("event=resume owner=? via=silence") == 1)
+    -- lever off resumes everything still paused
+    CMDS = {}
+    local e2 = mkEntity("q2_npc", 0, 0, 0); ENTS["q2_npc"] = e2
+    KCD2MP_ApplyNpcState("q2_npc", 1, 0, 0, 0, 100, 0, 1)
+    check("q: second puppet paused", cmdCount("wh_ai_PauseNPC q2_npc") == 1)
+    KCD2MP_Wo102Set("authority_pause", false)
+    check("q: lever off resumes it", cmdCount("wh_ai_ResumeNPC q2_npc") == 1 and next(KCD2MP._npcPaused) == nil)
+    -- host authority off also resumes
+    KCD2MP.wo102.authorityPause = true; CMDS = {}
+    local e3 = mkEntity("q3_npc", 0, 0, 0); ENTS["q3_npc"] = e3
+    KCD2MP_ApplyNpcState("q3_npc", 1, 0, 0, 0, 100, 0, 1)
+    KCD2MP_Wo102Set("authority_host", false)
+    check("q: host authority off resumes too", cmdCount("wh_ai_ResumeNPC q3_npc") == 1)
+    check("q: summary carries pause counters", (function() clearLog(); KCD2MP_LogSummary("t"); local l = lastLog("MP-SUMMARY-MOD") or ""; return l:find("auth_pauses=3 auth_resumes=3", 1, true) ~= nil end)(), lastLog("MP-SUMMARY-MOD"))
+    check("q: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+do -- (r) the 0.23.2 path with the toggle off
+    resetAll4(); clearLog()
+    local e = mkEntity("r_npc", 10, 0, 0); ENTS["r_npc"] = e
+    NOW = 900
+    dragPuppet("r_npc", e, 97, 6)
+    check("r: claim model releases on divergence (MP-NPCDIVERGE)", logCount("MP-NPCDIVERGE npc=r_npc") == 1)
+    check("r: puppet released", KCD2MP.npcPuppets["r_npc"] == nil)
+    check("r: no violation ever logged with the toggle off", logCount("MP-AUTHORITY-VIOLATION") == 0 and (KCD2MP._authStats.violation or 0) == 0)
+    check("r: no pause command with the toggle off", cmdCount("wh_ai_PauseNPC") == 0)
+end
+
+do -- (s) pause lever alone is inert
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityPause = true
+    local e = mkEntity("s_npc", 0, 0, 0); ENTS["s_npc"] = e
+    KCD2MP_ApplyNpcState("s_npc", 1, 0, 0, 0, 100, 0, 1)
+    check("s: pause lever without host authority issues nothing", cmdCount("wh_ai_PauseNPC") == 0 and next(KCD2MP._npcPaused) == nil)
+end
+
+-- ---------------------------------------------------------------- Phase 3
+--   (t) the live probe's Lua half: mp_probe_npc_pause picks the nearest NPC,
+--       issues wh_ai_PauseNPC, moves it, judges HELD when the body stays,
+--       animates, resumes with wh_ai_ResumeNPC and puts it back. (Only the
+--       sequencing is provable here; what the engine does is the live probe.)
+do
+    resetAll4(); clearLog(); TIMERS = {}
+    local e = mkEntity("t_npc", 3, 0, 0); ENTS["t_npc"] = e; SPHERE = { e }
+    e.GetCurAnimation = function() return "relaxed_idle_both" end
+    NOW = 1000
+    KCD2MP_ProbeNpcPause()
+    check("t: step 0/1 issue wh_ai_PauseNPC", cmdCount("wh_ai_PauseNPC t_npc") == 1 and logCount("MP-PAUSEPROBE step=1 npc=t_npc execute_ok=true") == 1)
+    -- fire the timer chain in order (each step arms the next)
+    local guard = 0
+    while #TIMERS > 0 and guard < 10 do
+        local tm = table.remove(TIMERS, 1); NOW = NOW + tm.ms / 1000; tm.f(); guard = guard + 1
+    end
+    check("t: step 3 judges HELD on a body that stayed put", logCount("verdict_pos=HELD") == 1, lastLog("MP-PAUSEPROBE step=3"))
+    check("t: step 4 animates and resumes", logCount("MP-PAUSEPROBE step=4") == 1 and cmdCount("wh_ai_ResumeNPC t_npc") == 1)
+    check("t: step 5 closes the probe", logCount("MP-PAUSEPROBE step=5") == 1)
+    check("t: body put back", math.abs(e.px - 3) < 0.01)
+    check("t: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary.

@@ -364,3 +364,89 @@ good — the honest "no" the prompt asked for, deferred to the one test that
 can give it. The XGenAI decompile of `PauseNPCInternal` and
 `C_MovementControllerAdapter` (started, not finished this session) is the
 follow-up if the probe fails.
+
+---
+
+## 4. Phase 4 — permanent host authority (behind `mp_authority_host_on`, default off)
+
+Approach taken: **Phase 3 found a lever**, so this is the "suppress the local
+brain, drive the bodies from the owner's stream" path — with the suppression
+half behind its own toggle (`mp_authority_pause_on`, default off) because
+the lever is unverified live, and the ownership half standing on its own.
+The `NPC_NAI` replica fallback was **not built** (§4.4).
+
+### 4.1 Who owns
+
+The damage-authority holder (Rule 2, relay-assigned lowest ready id,
+`KCD2MP.hitSensorOn` on that client) owns every NPC. "Permanent and single"
+holds for as long as that client is connected; if the authority disconnects
+the relay re-assigns Rule 2 to the next lowest id (0x25 `CombatRole`) and
+ownership moves once, with it — the only migration that exists.
+
+### 4.2 What changes, exactly (code-verified; synthetic 75/75)
+
+| where | claim model (`_off`, 0.23.2) | host authority (`_on`) |
+|---|---|---|
+| non-authority emitter (`KCD2MP_NpcSyncTick`) | drag sensor claims downed bodies; proximity emitter claims NPCs near its player (WO-39/60) | **returns before both** — never emits `npc_drag` or `npc_claim`. Flipping on drops the running claim streams at once (`MP-AUTHORITY … release via=host-authority-on`, `WO102-AUTHORITY … dropped N claim stream(s)`) |
+| authority rescan (`mp_npc_rescan`) | sphere around the local player, cap `maxTracked`=5 | sphere around the local player **and every peer ghost** (the ghost entity's position, `istate.tx/ty/tz` as fallback), cap `maxTracked × anchors`, distance = nearest anchor; `WO102-AUTHORITY scan anchors= cap=` logged on change |
+| relay | per-name claims, expiry, engaged hold | **unchanged and bypassed**: with no claim packets arriving the table stays empty and the authority's default stream broadcasts every name. A stale claim from before the flip expires on the ordinary 5/15 s path |
+| receiver: WO-90 divergence release (≥ 8 m, 3 hits / 30 s) | releases the puppet for 180 s | **refused.** The stream stays the truth; `MP-AUTHORITY-VIOLATION npc= kind=diverge dist_m= owner= paused= n=` (one line per NPC per 10 s, exact count) + one native toast per 5 min |
+| receiver: WO-99 yield (0.30 m × 10 ticks) | stops writing, hands the body to the local brain | **refused**: no second writer is allowed; sustained contention logs `kind=contention` |
+| receiver: pause lever (`mp_authority_pause_on`) | — | on puppet start: `wh_ai_PauseNPC <name>` (`MP-AUTHORITY event=pause via=wh_ai_PauseNPC`); on silence release, toggle-off or host-authority-off: `wh_ai_ResumeNPC <name>` (`event=resume`). A puppet that predates the flip is paused on its next tick. Counted as `auth_pauses= auth_resumes=` in `MP-SUMMARY-MOD` |
+| `MP-AUTHORITY` | `model=claim` | `model=host` — a non-authority must only ever log `acquire via=stream` and never `owner-change`; anything else under `model=host` is a defect |
+
+Everything is a gate at tick time, so both toggles flip mid-fight without a
+restart, and off is the 0.23.2 code path line for line (scenarios m–s, and
+the eleven older suites unchanged: NpcSmooth 48, WO-84 72, WO-86 47, WO-90
+70, WO-94 101, WO-95 32, WO-96 160, WO-98 50, WO-99 39, WO-100.5 33, ghost
+interp 35).
+
+### 4.3 The `NPC-DIVERGE` rule under host authority
+
+It cannot fire silently: the release is not taken and the event is logged
+as a violation instead. It still *detects* — deliberately. With the pause
+lever off, the local brain is still a writer and violations are expected
+(that is the A/B's "off" arm of the pause toggle: contention visible, not
+hidden). With the pause lever on and working, the violation count must go
+to zero; a non-zero count with `paused=1` in the line means the pause does
+not stop the writer — the loud log the prompt asked for.
+
+### 4.4 What this costs, and which NPCs it covers
+
+* **Nothing is replaced.** The pause approach keeps every NPC's soul, home,
+  schedule, perception and quest state; it is paused and then resumed. That
+  is why the `NPC_NAI` replica (WO-100 §5.3: no perception, no home, not a
+  crime victim, a different character) was not built: it would have been a
+  second, worse answer to a problem the lever addresses, and it destroys
+  identity for exactly the quest-relevant NPCs the prompt says cannot be
+  promoted. It stays the fallback **if** the probe fails on HELD.
+* **Ownable:** every world NPC and horse the authority's game has loaded
+  within 45 m (`radius × 1.5`) of the authority's player or any peer ghost,
+  up to 5 per anchor.
+* **Not ownable, stated plainly:**
+  * an NPC only the joiner's game has loaded (the joiner far from the host,
+    beyond the host's streaming range) — the host cannot scan what it has
+    not loaded. It runs on the joiner's local AI, unsynced, until the two
+    players are near enough for the host to have it; then it is owned. The
+    Phase 6 resync covers position/life state when it becomes visible.
+  * the mod's own bodies (`kcd2mp_*`) and the engine's conversation
+    stand-ins (`DialogTwin_*`) — excluded as before (WO-90).
+  * a **quest-divergent NPC** (WO-90's Hans at the lake vs the camp) is owned
+    like any other, which means the joiner's copy stands where the *host's*
+    story has it. Under the claim model the release handed it back so the
+    joiner's quest could use it; under host authority it will not. That is
+    the design — one world decides — and the WO-94/96 quest layer is what
+    tells the joiner why. If the joiner's own quest needs that NPC
+    elsewhere, it is blocked until the host catches up or the toggle is
+    flipped off. **Stated as a cost, not hidden.**
+* The per-anchor cap means crowd scenes still stream at most 5 NPCs per
+  player; the rest run on local AI on every machine, as in 0.23.2.
+
+### 4.5 Wire compatibility (Phase 4)
+
+No wire change. A mixed pair degrades, it does not fail: a 0.23.2 joiner
+still claims (its Lua predates the gate), the unchanged relay grants, and
+the new host's stream is muted for those names — i.e. that joiner runs the
+claim model. A new joiner against a 0.23.2 host never claims and the old
+host streams only its own neighbourhood (no anchors) — the joiner's nearby
+NPCs are then unsynced. Both directions are 0.23.2-or-less, never a crash.

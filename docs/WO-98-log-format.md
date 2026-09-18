@@ -156,6 +156,20 @@ Under host authority (`model=host`) a non-authority must only ever log
 any `via=claim`, `via=drag` or `owner-change` under `model=host` is a
 violation, not traffic.
 
+### MP-AUTHORITY-VIOLATION — a second writer under host authority (kcd.log, WO-102 Phase 4)
+`MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention dist_m=<F2> owner=<ghostId|?> paused=0|1 n=<int>`
+
+Only under `mp_authority_host_on`. `diverge` = the WO-90 rule fired (≥ 8 m
+in one tick) and was refused instead of releasing; `contention` = the WO-99
+yield rule fired (> 0.30 m for 10 ticks) and was refused instead of
+yielding. `paused=1` = the pause lever had issued `wh_ai_PauseNPC` for this
+body, so the writer is not the brain the lever addresses. One line per NPC
+per 10 s; `n` is the exact per-NPC count; `auth_violations=` in
+`MP-SUMMARY-MOD` is the session total. `event=pause|resume` on
+`MP-AUTHORITY` records the lever (`via=wh_ai_PauseNPC` / the release
+reason). `WO102-AUTHORITY scan anchors= cap=` records the authority's
+anchor count when it changes.
+
 ### relay `[CLAIM]` lines (relay log, WO-81 + WO-102 Phase 2)
 `[CLAIM] granted npc= owner= pos=(x,y,z)` -- a non-authority's first accepted packet for an unclaimed name (WO-81).
 `[CLAIM] muted npc= owner= authority= claimAgeSec=` -- **WO-102**: the damage authority's own stream for a claimed name was dropped for the first time under this claim. This is the authority's implicit request being denied, which WO-98 §2 could not see. Once per claim; every muted packet is counted (`AuthorityMutedPackets` at `GET api/information/npc-claims`).
