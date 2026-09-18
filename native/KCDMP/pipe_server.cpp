@@ -1,6 +1,7 @@
 ﻿#include "pipe_server.h"
 #include "mannequin_read.h"
 #include "local_state.h"
+#include "npc_scan.h"
 #include "main_thread.h"
 #include "rttr_abi.h"
 #include "combat_swing.h"
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace kcdmp::pipe {
 
@@ -205,6 +207,39 @@ void send_local_state(HANDLE h, bool ok, uint8_t seq, const kcdmp::localstate::L
     body[39] = b.reqPrepared;
     EnterCriticalSection(&g_write_lock);
     send_frame(h, kLocalState, body, sizeof(body));
+    LeaveCriticalSection(&g_write_lock);
+}
+
+// WO-102.5 Phase 2. Variable length, so this does NOT go through
+// send_frame's fixed 1024-byte stack buffer -- a scan reply can run past
+// that (npc_scan.h's kMaxReplyBytes budget is 8000). Built directly and
+// written under the same write lock every other send_* uses.
+void send_npc_scan_result(HANDLE h, bool ok, uint8_t seq, const kcdmp::npcscan::ScanResult& r) {
+    std::vector<BYTE> frame;
+    frame.reserve(3 + 14 + (ok ? r.entries.size() * 80 : 0));
+    frame.resize(3);   // header filled in below once the payload length is known
+    auto put = [&](const void* p, size_t n) {
+        const BYTE* b = static_cast<const BYTE*>(p);
+        frame.insert(frame.end(), b, b + n);
+    };
+    BYTE okB = ok ? 1 : 0, truncB = r.truncated ? 1 : 0;
+    put(&okB, 1); put(&seq, 1); put(&r.refuse, 1); put(&truncB, 1);
+    put(&r.totalWalked, 4); put(&r.nameRejects, 4);
+    const uint16_t count = static_cast<uint16_t>(r.entries.size());
+    put(&count, 2);
+    for (const auto& e : r.entries) {
+        const BYTE nameLen = static_cast<BYTE>(std::strlen(e.name));
+        put(&nameLen, 1);
+        put(e.name, nameLen);
+        put(&e.x, 4); put(&e.y, 4); put(&e.z, 4); put(&e.yaw, 4);
+        put(&e.isHorse, 1);
+    }
+    const size_t payloadLen = frame.size() - 3;
+    frame[0] = kNpcScanResult;
+    frame[1] = static_cast<BYTE>(payloadLen & 0xFF);
+    frame[2] = static_cast<BYTE>((payloadLen >> 8) & 0xFF);
+    EnterCriticalSection(&g_write_lock);
+    write_all(h, frame.data(), static_cast<DWORD>(frame.size()));
     LeaveCriticalSection(&g_write_lock);
 }
 
@@ -465,6 +500,42 @@ void serve(HANDLE h) {
                     [&ls](bool& result) { result = kcdmp::localstate::read_local_state(&ls); },
                     "ReadLocalState", ok);
                 send_local_state(h, ran && ok, seq, ls);
+                break;
+            }
+
+            // WO-102.5 Phase 2: the batched native NPC scan (npc_scan.h).
+            // Read-only and quiet like 0x0A: the reply's refuse/truncated
+            // bytes carry every gate, one native log line per verdict change.
+            case kScanNpcs: {
+                kcdmp::npcscan::ScanResult sr{};
+                if (len < kScanNpcsMinLen || len > kScanNpcsMaxLen) {
+                    logf("PIPE: ScanNpcs wrong length %u", len);
+                    sr.refuse = kcdmp::npcscan::kModuleMissing;
+                    send_npc_scan_result(h, false, seq, sr);
+                    break;
+                }
+                const uint8_t anchorCount = body[0];
+                if (anchorCount < 1 || anchorCount > kScanNpcsAnchorMax ||
+                    static_cast<int>(len) != 1 + 4 + anchorCount * 12) {
+                    logf("PIPE: ScanNpcs anchorCount=%u inconsistent with len=%u", anchorCount, len);
+                    sr.refuse = kcdmp::npcscan::kModuleMissing;
+                    send_npc_scan_result(h, false, seq, sr);
+                    break;
+                }
+                float radius = 0;
+                std::memcpy(&radius, body + 1, 4);
+                std::vector<kcdmp::npcscan::Anchor> anchors(anchorCount);
+                for (int i = 0; i < anchorCount; ++i) {
+                    std::memcpy(&anchors[i], body + 5 + i * 12, 12);
+                }
+                bool ok = false;
+                const bool ran = run_sync_bounded<kcdmp::npcscan::ScanResult>(
+                    [anchors, radius](kcdmp::npcscan::ScanResult& result) {
+                        kcdmp::npcscan::scan(anchors.data(), static_cast<int>(anchors.size()), radius, &result);
+                    }, "ScanNpcs", sr);
+                ok = ran && sr.refuse == kcdmp::npcscan::kOk;
+                if (!ran) logf("PIPE: ScanNpcs timed out waiting for a frame");
+                send_npc_scan_result(h, ok, seq, sr);
                 break;
             }
 

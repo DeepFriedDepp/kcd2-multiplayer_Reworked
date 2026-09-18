@@ -105,6 +105,22 @@ public sealed class ClientConfig
     public bool NativePositionEnabled { get; set; } = false;
 
     /// <summary>
+    /// WO-102.5 Phase 2: the agent periodically calls the DLL's batched NPC
+    /// scan (pipe 0x0B) around its own position and every peer ghost, and
+    /// pushes the resulting name list into the mod as
+    /// <c>KCD2MP_ApplyNativeScan(...)</c>. When <c>KCD2MP.wo102.npcScanNative</c>
+    /// (mirrored here) is on and the push is fresh, Lua's mp_npc_rescan reads
+    /// candidate names from it instead of walking System.GetEntitiesInSphere
+    /// per anchor -- the enumerate+read moves to C++, ranking/cap/tracking
+    /// stays in Lua (docs/WO-102.5-findings.md Phase 2).
+    ///
+    /// SHIPS OFF: the known-answer check (native set == Lua set for one
+    /// scene) and the cost comparison this toggle exists to earn have not run
+    /// live. See docs/WO-102.5-findings.md Phase 2's runbook.
+    /// </summary>
+    public bool NpcScanNativeEnabled { get; set; } = false;
+
+    /// <summary>
     /// How the agent reads player state from the game.
     ///
     ///   "logtail" — the mod pushes state into kcd.log and the agent tails it.
@@ -325,6 +341,12 @@ public sealed class ClientConfig
                         break;
                     case "--no-pos-native":
                         NativePositionEnabled = false;
+                        break;
+                    case "--npc-scan-native":
+                        NpcScanNativeEnabled = true;
+                        break;
+                    case "--no-npc-scan-native":
+                        NpcScanNativeEnabled = false;
                         break;
                     case "--benchmark":
                         // Handled in Program before the agent starts; listed

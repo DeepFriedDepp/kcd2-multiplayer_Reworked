@@ -62,6 +62,15 @@
 //                        reply's ok/refuse bytes, one native log line per
 //                        verdict change.
 //
+//     0x0B ScanNpcs [anchorCount:1][radius:4f]
+//                   [anchor: x:4f,y:4f,z:4f]*anchorCount -> replies 0x87
+//                        WO-102.5 Phase 2: one batched native NPC scan
+//                        (npc_scan.h) replacing the enumerate+read half of
+//                        Lua's mp_npc_rescan. anchorCount 1..8. STRICTLY
+//                        READ-ONLY. Quiet like 0x09/0x0A: the reply's
+//                        refuse byte carries every gate, one native log
+//                        line per verdict change.
+//
 //     0x08 ConceptProbe [path:N utf8, no NUL, may be empty]        (0..480)
 //                        WO-97: read-only probe of the quest concept tree.
 //                        Enumerates C_ConceptManager's root modules by name
@@ -84,6 +93,17 @@
 //                        WO-102 Phase 1. Always 40 bytes, refusal or not;
 //                        the body block is byte-identical to 0x85's bytes
 //                        2..12. flags bit 0 = riding (Stance reads horse).
+//     0x87 NpcScanResult [ok:1][seq:1][refuse:1][truncated:1]
+//                        [totalWalked:4 LE][nameRejects:4 LE][count:2 LE]
+//                        { [nameLen:1][name:N][x:4f][y:4f][z:4f][yaw:4f][isHorse:1] }*count
+//                        WO-102.5 Phase 2. Variable length (14-byte header
+//                        + count entries, each nameLen+17 bytes). No
+//                        exclusion policy applied natively (mod bodies,
+//                        mounted horse, name pattern beyond a printable-
+//                        ASCII read gate) -- every matching entity within
+//                        radius of any anchor is returned; Lua applies its
+//                        existing filters against this list exactly as it
+//                        did against System.GetEntitiesInSphere's result.
 //     0x85 BodyState    [ok:1][seq:1][pace:1][dir:1][stance:1]
 //                       [animSpeedCenti:2 LE][unknownTags:1]        (8)
 //                        WO-100.5 Phase 2. seq sits at body[1], exactly where
@@ -137,11 +157,13 @@ constexpr uint8_t kGhostIsolate       = 0x07;
 constexpr uint8_t kConceptProbe       = 0x08;   // WO-97, read-only
 constexpr uint8_t kReadBodyState      = 0x09;   // WO-100.5 Phase 2, read-only
 constexpr uint8_t kReadLocalState     = 0x0A;   // WO-102 Phase 1, read-only
+constexpr uint8_t kScanNpcs           = 0x0B;   // WO-102.5 Phase 2, read-only
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;
 constexpr uint8_t kBodyState          = 0x85;   // WO-100.5 Phase 2
 constexpr uint8_t kLocalState         = 0x86;   // WO-102 Phase 1
+constexpr uint8_t kNpcScanResult      = 0x87;   // WO-102.5 Phase 2
 constexpr uint8_t kLocalHit           = 0x90;
 
 constexpr int kGuidLen                  = 16;
@@ -156,6 +178,9 @@ constexpr int kConceptProbeMaxLen       = 480;    // matches concept_read.cpp's 
 constexpr int kReadBodyStateLen         = 4;      // entityId LE; 0 means "the player"
 constexpr int kReadLocalStateLen        = 4;      // WO-102: entityId LE, must be 0 (the player)
 constexpr int kLocalStateLen            = 40;     // WO-102: the fixed 0x86 reply body
+constexpr int kScanNpcsAnchorMax        = 8;       // WO-102.5: self + up to 7 peer ghosts
+constexpr int kScanNpcsMinLen           = 1 + 4 + 1 * 12;               // anchorCount + radius + >=1 anchor
+constexpr int kScanNpcsMaxLen           = 1 + 4 + kScanNpcsAnchorMax * 12;
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not

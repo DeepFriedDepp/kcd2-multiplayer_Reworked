@@ -2749,6 +2749,15 @@ KCD2MP.npcProx = {
 --                  docs/WO-102-findings.md S3). Live behaviour UNVERIFIED as
 --                  of this build -- default off, `mp_probe_npc_pause` is the
 --                  single-machine proof. Does nothing unless authorityHost.
+--   npcScanNative  mp_npc_scan_native_on|off WO-102.5 Phase 2: the agent
+--                  periodically calls the DLL's batched native NPC scan and
+--                  pushes the candidate name list here as
+--                  KCD2MP_ApplyNativeScan(csv); mp_npc_rescan reads it
+--                  instead of walking System.GetEntitiesInSphere per anchor
+--                  when this is on and the push is fresh. Agent-side (like
+--                  posNative); the mod only relays the switch and keeps the
+--                  Lua enumerate as the fallback. UNMEASURED as of this
+--                  session -- docs/WO-102.5-findings.md Phase 2 runbook.
 -- Shipped defaults (WO-102 end gate): host authority ON, the two levers that
 -- have no measurement behind them OFF. The agent pushes ClientConfig's values
 -- at connect; these are what an agent that pushes nothing leaves in place, so
@@ -2757,8 +2766,9 @@ KCD2MP.wo102 = {
     authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
     posNative      = false,   -- unmeasured (findings S1.4)
     authorityPause = false,   -- unverified live (findings S3.3)
+    npcScanNative  = false,   -- WO-102.5: unmeasured
 }
-KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause" }
+KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause", npc_scan_native = "npcScanNative" }
 
 -- name: "authority_host" | "pos_native"; on: boolean; source: "console" | "agent".
 function KCD2MP_Wo102Set(name, on, source)
@@ -2782,7 +2792,8 @@ function KCD2MP_Wo102Set(name, on, source)
     if source ~= "agent" or was ~= want then
         KCD2MP_ShowInteractionMsg(string.format("%s: %s",
             field == "authorityHost" and "Host NPC authority"
-                or field == "authorityPause" and "NPC brain pause lever" or "Native position", want and "ON" or "OFF"))
+                or field == "authorityPause" and "NPC brain pause lever"
+                or field == "npcScanNative" and "Native NPC scan" or "Native position", want and "ON" or "OFF"))
     end
     -- Phase 4 hooks its side effects here (a non-authority dropping its
     -- claim stream on the spot when host authority switches on), Phase 1 has
@@ -2794,10 +2805,11 @@ end
 function KCD2MP_Wo102Status()
     local paused = 0
     for _ in pairs(KCD2MP._npcPaused or {}) do paused = paused + 1 end
-    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s authority=%s paused_npcs=%d",
+    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s npc_scan_native=%s authority=%s paused_npcs=%d",
         KCD2MP.wo102.authorityHost and "on" or "off",
         KCD2MP.wo102.posNative and "on" or "off",
         KCD2MP.wo102.authorityPause and "on" or "off",
+        KCD2MP.wo102.npcScanNative and "on" or "off",
         KCD2MP.hitSensorOn and "self" or "peer", paused))
 end
 
@@ -3239,6 +3251,100 @@ function KCD2MP_NpcResyncRequest()
     KCD2MP_EmitEvent("npc_resync_request", "manual")
 end
 
+-- WO-102.5 Phase 2: the agent's push target (GameBridge.cs's NpcScanTickAsync).
+-- csv is a comma-separated authored-name list, already gated to [A-Za-z0-9_]+
+-- agent-side -- re-gated here too, never trusted blind. Empty/nil clears it
+-- rather than erroring, since "the scan found nothing near you" is a normal
+-- reply, not a malformed one.
+KCD2MP._nativeScan = { at = nil, names = {} }
+
+function KCD2MP_ApplyNativeScan(csv)
+    local names = {}
+    if csv and #csv > 0 then
+        for name in string.gmatch(csv, "[^,]+") do
+            if string.find(name, "^[%w_]+$") then
+                names[#names + 1] = name
+            end
+        end
+    end
+    KCD2MP._nativeScan.names = names
+    KCD2MP._nativeScan.at = os.clock()
+end
+
+-- WO-102.5 Phase 2 known-answer check: the native scan's last pushed name set
+-- against a fresh Lua GetEntitiesInSphere enumerate over the SAME anchors and
+-- radius mp_npc_rescan itself would compute right now. only_native names are
+-- expected to include some the Lua side would still drop (mod bodies, a
+-- mounted horse, an excluded name) -- native does not replicate that
+-- filtering (findings Phase 2); only_lua names are the interesting failure,
+-- since every one means the native scan missed something the Lua walk finds.
+function KCD2MP_NpcScanCompare()
+    if not player then mp_log("MP-NPCSCAN dir=compare verdict=no-player"); return end
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then mp_log("MP-NPCSCAN dir=compare verdict=no-pos"); return end
+
+    local enterRadius = KCD2MP.npcSync.radius
+    local exitRadius = enterRadius * NPC_TRACK_EXIT_FACTOR
+    local anchors = { pp }
+    if KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn then
+        for _, g in pairs(KCD2MP.ghosts or {}) do
+            local gp = nil
+            pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)
+            if not gp and g.istate and g.istate.tx then gp = { x = g.istate.tx, y = g.istate.ty, z = g.istate.tz or pp.z } end
+            if gp then anchors[#anchors + 1] = gp end
+        end
+    end
+
+    local luaSet, luaCount, seenEnt = {}, 0, {}
+    for _, a in ipairs(anchors) do
+        for _, e in ipairs(System.GetEntitiesInSphere(a, exitRadius) or {}) do
+            local key = e.id or e
+            if not seenEnt[key] then
+                seenEnt[key] = true
+                local cls = e.class
+                local isHorse = (cls == "Horse")
+                local isHuman = (cls == "NPC" or cls == "NPC_Female")
+                if (isHuman or isHorse) and not mp_is_mod_entity(e)
+                   and not (isHorse and KCD2MP._mountedHorseName and e:GetName() == KCD2MP._mountedHorseName) then
+                    local name = e:GetName()
+                    if name and string.find(name, "^[%w_]+$") and not mp_is_excluded_npc_name(name) then
+                        local ep = e:GetWorldPos()
+                        local d = 1e9
+                        for _, aa in ipairs(anchors) do
+                            local dx, dy = ep.x - aa.x, ep.y - aa.y
+                            local da = math.sqrt(dx*dx + dy*dy)
+                            if da < d then d = da end
+                        end
+                        if d <= enterRadius and not luaSet[name] then
+                            luaSet[name] = true; luaCount = luaCount + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local nativeSet, nativeCount = {}, 0
+    for _, name in ipairs(KCD2MP._nativeScan.names or {}) do
+        if not nativeSet[name] then nativeSet[name] = true; nativeCount = nativeCount + 1 end
+    end
+
+    local onlyLua, onlyNative, both = {}, {}, 0
+    for name in pairs(luaSet) do
+        if nativeSet[name] then both = both + 1 else onlyLua[#onlyLua + 1] = name end
+    end
+    for name in pairs(nativeSet) do
+        if not luaSet[name] then onlyNative[#onlyNative + 1] = name end
+    end
+
+    mp_log(string.format("MP-NPCSCAN dir=compare anchors=%d lua_n=%d native_n=%d both=%d only_lua=%d only_native=%d native_age_s=%s",
+        #anchors, luaCount, nativeCount, both, #onlyLua, #onlyNative,
+        KCD2MP._nativeScan.at and string.format("%.1f", os.clock() - KCD2MP._nativeScan.at) or "never"))
+    if #onlyLua > 0 then mp_log("MP-NPCSCAN dir=compare only_lua=" .. table.concat(onlyLua, ",")) end
+    if #onlyNative > 0 then mp_log("MP-NPCSCAN dir=compare only_native=" .. table.concat(onlyNative, ",")) end
+end
+
 local function mp_npc_rescan()
     if not player then return end
     local pp = nil
@@ -3267,11 +3373,38 @@ local function mp_npc_rescan()
         KCD2MP._npcScanAnchors = #anchors
         mp_log(string.format("WO102-AUTHORITY scan anchors=%d cap=%d", #anchors, cap))
     end
+    -- WO-102.5 Phase 2: the enumerate+read half of this function, natively.
+    -- When on and fresh, `ents` is resolved from the agent's pushed name list
+    -- (KCD2MP_ApplyNativeScan) instead of walking System.GetEntitiesInSphere
+    -- per anchor -- the C++ scan already did the class+radius filtering
+    -- against the SAME anchors/radius this function computed above.
+    -- Everything from here on (mod-entity/mounted-horse/puppet exclusion,
+    -- name-pattern gate, distance-to-nearest-anchor ranking, the cap, the
+    -- tracked-set diff) is unchanged and runs over `ents` exactly as before,
+    -- so a native candidate list is a speed change, not a behaviour change.
     local ents, seenEnt = {}, {}
-    for _, a in ipairs(anchors) do
-        for _, e in ipairs(System.GetEntitiesInSphere(a, exitRadius) or {}) do
-            local key = e.id or e
-            if not seenEnt[key] then seenEnt[key] = true; ents[#ents + 1] = e end
+    local staleAfterS = (KCD2MP.npcSync.scanMs / 1000) * 3
+    if KCD2MP.wo102.npcScanNative and KCD2MP._nativeScan.at
+       and (os.clock() - KCD2MP._nativeScan.at) <= staleAfterS then
+        for _, name in ipairs(KCD2MP._nativeScan.names) do
+            local e = System.GetEntityByName(name)
+            if e then
+                local key = e.id or e
+                if not seenEnt[key] then seenEnt[key] = true; ents[#ents + 1] = e end
+            end
+        end
+        mp_log(string.format("MP-NPCSCAN dir=consume verdict=native pushed=%d resolved=%d age_s=%.1f",
+            #KCD2MP._nativeScan.names, #ents, os.clock() - KCD2MP._nativeScan.at))
+    else
+        if KCD2MP.wo102.npcScanNative then
+            mp_log(string.format("MP-NPCSCAN dir=consume verdict=fallback reason=%s",
+                KCD2MP._nativeScan.at and "stale" or "never-received"))
+        end
+        for _, a in ipairs(anchors) do
+            for _, e in ipairs(System.GetEntitiesInSphere(a, exitRadius) or {}) do
+                local key = e.id or e
+                if not seenEnt[key] then seenEnt[key] = true; ents[#ents + 1] = e end
+            end
         end
     end
     for _, e in ipairs(ents) do
@@ -9929,6 +10062,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
     System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
+    System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
+    System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
+    System.AddCCommand("mp_npc_scan_compare",    "KCD2MP_NpcScanCompare()",                   "WO-102.5 Phase 2 known-answer check: diff the native scan's last pushed name set against a fresh Lua GetEntitiesInSphere enumerate over the same anchors/radius")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

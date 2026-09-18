@@ -30,10 +30,12 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte GhostIsolate      = 0x07;
     private const byte ReadBodyState     = 0x09;   // WO-100.5 Phase 2, read-only
     private const byte ReadLocalState    = 0x0A;   // WO-102 Phase 1, read-only
+    private const byte ScanNpcs          = 0x0B;   // WO-102.5 Phase 2, read-only
     private const byte Result            = 0x81;
     private const byte Pong              = 0x83;
     private const byte BodyStateReply    = 0x85;   // WO-100.5 Phase 2
     private const byte LocalStateReply   = 0x86;   // WO-102 Phase 1
+    private const byte NpcScanReply      = 0x87;   // WO-102.5 Phase 2
 
     private const int GuidLen = 16;
 
@@ -401,6 +403,51 @@ public sealed class CombatPipe : IAsyncDisposable
     public long BodyStateRefused { get; private set; }
     /// <summary>WO-100.5: running total of tags the native decode could not place. Healthy value is 0.</summary>
     public long BodyStateUnknownTags { get; private set; }
+
+    /// <summary>WO-102.5 Phase 2: 0x0B scans issued.</summary>
+    public long NpcScanReads { get; private set; }
+    /// <summary>WO-102.5 Phase 2: 0x0B scans the DLL refused or never answered.</summary>
+    public long NpcScanRefused { get; private set; }
+    /// <summary>WO-102.5 Phase 2: refusals by reason code (index = <see cref="NpcScanRefuse"/>; 255 folds into slot 7).</summary>
+    public long[] NpcScanRefuseByCode { get; } = new long[8];
+
+    /// <summary>
+    /// WO-102.5 Phase 2: one batched native NPC scan (pipe 0x0B -> 0x87).
+    /// <paramref name="anchors"/> is 1..8 world positions (self + peer
+    /// ghosts); an entity is returned if it is within <paramref name="radius"/>
+    /// of ANY anchor. Null on any refusal, the reason counted, never guessed
+    /// -- same discipline as <see cref="ReadLocalStateAsync"/>.
+    /// </summary>
+    public async Task<NpcScanResult?> ScanNpcsAsync(
+        IReadOnlyList<(float X, float Y, float Z)> anchors, float radius, CancellationToken ct = default)
+    {
+        if (anchors.Count is < 1 or > 8) throw new ArgumentOutOfRangeException(nameof(anchors));
+        var payload = new byte[1 + 4 + anchors.Count * 12];
+        payload[0] = (byte)anchors.Count;
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(1), radius);
+        int o = 5;
+        foreach (var a in anchors)
+        {
+            BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(o), a.X); o += 4;
+            BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(o), a.Y); o += 4;
+            BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(o), a.Z); o += 4;
+        }
+        var (body, _) = await SendAndAwaitAsync(ScanNpcs, payload, NpcScanReply, ct);
+        NpcScanReads++;
+        if (body is null)
+        {
+            NpcScanRefused++; NpcScanRefuseByCode[7]++;
+            return null;
+        }
+        if (!NpcScanCodec.TryParse(body, out var res, out var why))
+        {
+            NpcScanRefused++;
+            int slot = (byte)why < 7 ? (byte)why : 7;
+            NpcScanRefuseByCode[slot]++;
+            return null;
+        }
+        return res;
+    }
 
     /// <summary>
     /// The shared send-and-wait core. Sequence matching is identical for every

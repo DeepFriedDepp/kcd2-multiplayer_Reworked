@@ -126,7 +126,7 @@ check("c: unknown toggle changes nothing", KCD2MP.wo102.authorityHost == false a
 -- (d) status.
 clearLog()
 KCD2MP_Wo102Status()
-check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off authority=peer paused_npcs=0") == 1, lastLog("WO102-STATUS"))
+check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off npc_scan_native=off authority=peer paused_npcs=0") == 1, lastLog("WO102-STATUS"))
 
 -- (e) argless commands (registration runs at file load, captured in CCMDS).
 local names = { "mp_authority_host_on", "mp_authority_host_off", "mp_pos_native_on", "mp_pos_native_off", "mp_wo102_status" }
@@ -589,6 +589,85 @@ do
     check("y: and no violation is logged under the claim model", logCount("MP-AUTHORITY-VIOLATION") == 0)
     KCD2MP.npcSyncRunning = false
     check("y: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ------------------------------------------------------------ WO-102.5 Phase 2
+--   (z) the native scan: KCD2MP_ApplyNativeScan gates non-conforming names;
+--       mp_npc_rescan sources its candidate set from the push (not
+--       System.GetEntitiesInSphere) only when npcScanNative is on AND the
+--       push is fresh; a stale or never-received push falls back to the Lua
+--       enumerate exactly as with the toggle off; mp_npc_scan_compare logs a
+--       diff line
+do
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = true
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    KCD2MP._nativeScan = { at = nil, names = {} }
+
+    NOW = 699
+    KCD2MP_ApplyNativeScan("z_a,z_b,bad name,z_c")
+    check("z: gates a non-conforming name", #KCD2MP._nativeScan.names == 3
+        and KCD2MP._nativeScan.names[1] == "z_a" and KCD2MP._nativeScan.names[2] == "z_b" and KCD2MP._nativeScan.names[3] == "z_c",
+        table.concat(KCD2MP._nativeScan.names, ","))
+    check("z: stamps a timestamp", KCD2MP._nativeScan.at == NOW)
+
+    local za = mkEntity("z_a", 5, 0, 0); ENTS["z_a"] = za
+    local zb = mkEntity("z_b", 6, 0, 0); ENTS["z_b"] = zb
+    -- z_c is named but never spawned -- GetEntityByName returning nil for it
+    -- must be tolerated, not error.
+    local sphereOnly = mkEntity("z_sphere_only", 7, 0, 0); ENTS["z_sphere_only"] = sphereOnly
+    SPHERE = { sphereOnly }
+
+    -- toggle off: the push exists but is ignored, the Lua enumerate runs.
+    NOW = 700; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("z: toggle off uses the Lua enumerate", KCD2MP.npcTracked["z_sphere_only"] ~= nil
+        and KCD2MP.npcTracked["z_a"] == nil, next(KCD2MP.npcTracked))
+    check("z: toggle off logs no MP-NPCSCAN consume line", logCount("MP-NPCSCAN dir=consume") == 0)
+
+    -- toggle on, push fresh: the native names drive tracking, not SPHERE.
+    KCD2MP.npcTracked = {}; clearLog()
+    KCD2MP_Wo102Set("npc_scan_native", true, "agent")
+    KCD2MP_ApplyNativeScan("z_a,z_b,z_c")
+    NOW = 701; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("z: native path tracks the pushed names it can resolve",
+        KCD2MP.npcTracked["z_a"] ~= nil and KCD2MP.npcTracked["z_b"] ~= nil and KCD2MP.npcTracked["z_sphere_only"] == nil,
+        next(KCD2MP.npcTracked))
+    check("z: logs verdict=native with the resolved count",
+        logCount("MP-NPCSCAN dir=consume verdict=native pushed=3 resolved=2") == 1, lastLog("MP-NPCSCAN"))
+
+    -- a stale push falls back to the Lua enumerate again (staleAfterS = 6 at scanMs=2000).
+    KCD2MP.npcTracked = {}; clearLog()
+    NOW = 701 + 7; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("z: a stale push falls back", KCD2MP.npcTracked["z_sphere_only"] ~= nil and KCD2MP.npcTracked["z_a"] == nil)
+    check("z: logs the fallback reason", logCount("MP-NPCSCAN dir=consume verdict=fallback reason=stale") == 1)
+
+    -- never received: same fallback, different reason.
+    KCD2MP._nativeScan = { at = nil, names = {} }
+    KCD2MP.npcTracked = {}; clearLog()
+    NOW = NOW + 1; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("z: never-received also falls back", logCount("MP-NPCSCAN dir=consume verdict=fallback reason=never-received") == 1)
+
+    -- compare: a fresh native push against the current Lua enumerate (SPHERE unchanged: {sphereOnly}).
+    KCD2MP_ApplyNativeScan("z_a,z_only_native")
+    clearLog()
+    KCD2MP_NpcScanCompare()
+    check("z: compare logs lua/native counts",
+        logCount("MP-NPCSCAN dir=compare anchors=1 lua_n=1 native_n=2 both=0") == 1, lastLog("MP-NPCSCAN dir=compare anchors"))
+    check("z: compare names the lua-only miss", logCount("only_lua=z_sphere_only") == 1)
+    check("z: compare names the native-only extras", logCount("dir=compare only_native=") == 1)
+
+    -- console commands registered argless (WO-94: the console drops arguments).
+    for _, name in ipairs({ "mp_npc_scan_native_on", "mp_npc_scan_native_off", "mp_npc_scan_compare" }) do
+        local c = CCMDS[name]
+        check("z: " .. name .. " registered argless", c ~= nil and not string.find(c.body, "%LINE", 1, true))
+    end
+
+    KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false; KCD2MP.wo102.npcScanNative = false
+    check("z: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary.

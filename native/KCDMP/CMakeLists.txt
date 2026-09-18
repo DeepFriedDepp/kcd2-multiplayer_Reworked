@@ -13,6 +13,7 @@
     mannequin_read.cpp
     combat_write.cpp
     local_state.cpp
+    npc_scan.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -280,6 +280,21 @@ public partial class GameBridge(ClientConfig config)
     private const int    OracleBadRunToRefuse = 20;
     private static readonly TimeSpan CadenceReportInterval = TimeSpan.FromSeconds(30);
 
+    // WO-102.5 Phase 2: the native NPC scan's own state. Same give-up
+    // discipline as pos-native (PosNativeGiveUpAfter above): a run of
+    // consecutive refusals means an older DLL or an unmapped gEnv hop, not a
+    // transient hiccup, so the path disarms itself for the session rather
+    // than retrying forever.
+    private volatile bool _npcScanNative = config.NpcScanNativeEnabled;
+    private int  _npcScanMisses;
+    private bool _npcScanGaveUp;
+    private const int PosNpcScanGiveUpAfter = 20;
+    private static readonly TimeSpan NpcScanInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan NpcScanGhostStaleAfter = TimeSpan.FromSeconds(5);   // an anchor this old is dropped, not used
+    private const float  NpcScanRadiusM = 45.0f;   // matches KCD2MP.npcSync.radius * NPC_TRACK_EXIT_FACTOR (30 * 1.5)
+    private const int    NpcScanMaxNamesPushed = 200;   // ExecuteString batching chunks safely past this; a bound anyway
+    private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
+
     // WO-102 Phase 5: the request channel. _npcTarget is the nearest owned
     // puppet the mod reports us facing (npc_target event); a COMMIT edge at it
     // becomes an NpcRequest action. The owner correlates each inbound request
@@ -692,6 +707,8 @@ public partial class GameBridge(ClientConfig config)
             $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=wo102 authority_host={(_hostAuthority ? 1 : 0)} pos_native={(_posNative ? 1 : 0)} pos_native_gave_up={(_posNativeGaveUp ? 1 : 0)} pos_native_oracle_refused={(_posNativeRefusedByOracle ? 1 : 0)} native_reads={_combat.LocalStateReads} native_refused={_combat.LocalStateRefused} authority={(_isDamageAuthority ? 1 : 0)}"));
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-SUMMARY section=wo1025 npc_scan_native={(_npcScanNative ? 1 : 0)} npc_scan_gave_up={(_npcScanGaveUp ? 1 : 0)} npc_scan_reads={_combat.NpcScanReads} npc_scan_refused={_combat.NpcScanRefused} npc_scan_pushes={_npcScanPushes} npc_scan_wire_truncated={_npcScanTruncatedWire} npc_scan_names_truncated={_npcScanNamesTruncated}"));
         Console.WriteLine(FormattableString.Invariant(
             $"MP-REQUEST section=summary out={_reqOut} out_resolved={_reqOutResolved} out_unresolved={_reqOutUnresolved} in={_reqIn} in_resolved={_reqInResolved} in_unresolved={_reqInUnresolved} in_refused={_reqInRefused}"));
         Console.WriteLine(FormattableString.Invariant(
@@ -1569,6 +1586,7 @@ public partial class GameBridge(ClientConfig config)
             long lastPositionHeartbeat = nowTimestamp;
             long lastCadenceReport = Stopwatch.GetTimestamp();   // WO-102 Phase 1
             long lastRequestSweep = Stopwatch.GetTimestamp();     // WO-102 Phase 5
+            long lastNpcScan = Stopwatch.GetTimestamp();          // WO-102.5 Phase 2
             long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
             long lastSummary = nowTimestamp;        // WO-99 Phase 4
 
@@ -1620,7 +1638,7 @@ public partial class GameBridge(ClientConfig config)
                         // the session's starting toggle state; the mod
                         // mirrors them (source "agent" -> no echo back).
                         await ExecLuaAsync(FormattableString.Invariant(
-                            $"if KCD2MP_Wo102Set then KCD2MP_Wo102Set(\"authority_host\", {(_hostAuthority ? "true" : "false")}, \"agent\") KCD2MP_Wo102Set(\"pos_native\", {(_posNative ? "true" : "false")}, \"agent\") end"));
+                            $"if KCD2MP_Wo102Set then KCD2MP_Wo102Set(\"authority_host\", {(_hostAuthority ? "true" : "false")}, \"agent\") KCD2MP_Wo102Set(\"pos_native\", {(_posNative ? "true" : "false")}, \"agent\") KCD2MP_Wo102Set(\"npc_scan_native\", {(_npcScanNative ? "true" : "false")}, \"agent\") end"));
                         // WO-48: the item-sync tick is a Script.SetTimer chain
                         // like the others and dies with them on a save load.
                         await ExecLuaAsync("if KCD2MP_StartItemSync then KCD2MP_StartItemSync() end");
@@ -1814,6 +1832,12 @@ public partial class GameBridge(ClientConfig config)
                         _voice.LocalPos = (x, y, z);
                         _voice.UpdateAllVolumes();
                     }
+
+                    // WO-102.5 Phase 2: its own cadence, independent of the
+                    // position tick's -- this feeds a background candidate
+                    // list, not a per-frame read.
+                    if (_npcScanNative && IntervalElapsed(ref lastNpcScan, NpcScanInterval, nowTimestamp))
+                        _ = NpcScanTickAsync(x, y, z, cts.Token);
 
                     bool posHeartbeat = IntervalElapsed(
                         ref lastPositionHeartbeat, PositionHeartbeatInterval, nowTimestamp);
@@ -4829,6 +4853,10 @@ public partial class GameBridge(ClientConfig config)
                         _oracleBadRun = 0; _oracleN = 0; _oracleSum = 0; _oracleMax = 0;
                         _cadNative.Reset(); _lastNativeFrame = 0; _lastNative = null;
                         break;
+                    case "npc_scan_native":
+                        _npcScanNative = on;
+                        _npcScanMisses = 0; _npcScanGaveUp = false;
+                        break;
                     default: Console.WriteLine($"[wo102] unknown toggle '{tp[0]}'"); break;
                 }
                 Console.WriteLine($"WO102-TOGGLE name={tp[0]} state={(on ? "on" : "off")} source=console authority={(_isDamageAuthority ? 1 : 0)}");
@@ -5537,6 +5565,73 @@ public partial class GameBridge(ClientConfig config)
         }
         else _oracleBadRun = 0;
         return ls;
+    }
+
+    /// <summary>
+    /// WO-102.5 Phase 2: the native NPC scan's own tick, on <see cref="NpcScanInterval"/>
+    /// rather than the position tick's cadence -- this is a background
+    /// population step, not a per-frame read. Anchors are this player's own
+    /// current position plus every peer ghost whose last-known position is
+    /// fresher than <see cref="NpcScanGhostStaleAfter"/> (a stale anchor would
+    /// scan around a body that has since moved, which is worse than not
+    /// scanning around it). Only the candidate NAME list is pushed to Lua --
+    /// position/hp/etc are re-read fresh per name in the mod's existing
+    /// KCD2MP_NpcSyncTick, exactly as they are today, so the push stays small
+    /// regardless of how many NPCs are in radius.
+    /// </summary>
+    private async Task NpcScanTickAsync(float px, float py, float pz, CancellationToken ct)
+    {
+        if (!_npcScanNative || _npcScanGaveUp) return;
+
+        var anchors = new List<(float X, float Y, float Z)> { (px, py, pz) };
+        var cutoff = DateTime.UtcNow - NpcScanGhostStaleAfter;
+        foreach (var kv in _ghostLastPos)
+        {
+            if (anchors.Count >= 8) break;
+            if (kv.Value.AtUtc >= cutoff) anchors.Add((kv.Value.X, kv.Value.Y, kv.Value.Z));
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        NpcScanResult? r = null;
+        try { r = await _combat.ScanNpcsAsync(anchors, NpcScanRadiusM, ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { }
+        sw.Stop();
+
+        if (r is not NpcScanResult res)
+        {
+            if (++_npcScanMisses == PosNpcScanGiveUpAfter)
+            {
+                _npcScanGaveUp = true;
+                var by = _combat.NpcScanRefuseByCode;
+                Console.WriteLine(FormattableString.Invariant(
+                    $"MP-NPCSCAN verdict=gave-up after={PosNpcScanGiveUpAfter} refused={_combat.NpcScanRefused} module_missing={by[1]} genv_unmapped={by[2]} class_unmapped={by[3]} faulted={by[4]} no_answer={by[7]} -- native NPC scan stays off this session (mp_npc_scan_native_off then _on to retry)"));
+            }
+            return;
+        }
+        _npcScanMisses = 0;
+
+        // Same name gate the mod itself applies (kdcmp.lua's "^[%w_]+$"):
+        // dropped here too, both so a stray non-conforming read (WO-97's
+        // CryString caution -- npc_scan.cpp's own printable-ASCII gate is
+        // looser than this) cannot reach the Lua string literal below, and so
+        // the pushed list only ever contains names Lua would have kept anyway.
+        var names = new List<string>(res.Entries.Count);
+        int filtered = 0;
+        foreach (var e in res.Entries)
+        {
+            if (!NpcNamePattern.IsMatch(e.Name)) { filtered++; continue; }
+            if (names.Count >= NpcScanMaxNamesPushed) { _npcScanNamesTruncated++; break; }
+            names.Add(e.Name);
+        }
+
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={NpcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={names.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
+        if (res.Truncated) _npcScanTruncatedWire++;
+
+        _npcScanPushes++;
+        string csv = EscapeLua(string.Join(',', names));
+        _ = ExecLuaAsync($"if KCD2MP_ApplyNativeScan then KCD2MP_ApplyNativeScan(\"{csv}\") end");
     }
 
     /// <summary>
