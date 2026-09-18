@@ -50,6 +50,23 @@ struct BodyState {
     uint8_t  stance      = kStanceUpright;
     uint16_t animSpeedCenti = 0;   // pseudo-speed in 0.01 m/s, clamped 0..65535
     uint8_t  unknownTags = 0;      // tags the decode could not place; 0 is the healthy value
+
+    // --- WO-100.5 Phase 3: the ACCEPTED INPUT -------------------------------
+    // The game's own first-class "what did the player ask for", upstream of
+    // the animation (WO-100 S4.1, live-verified: 20 of 20 properties read back
+    // their own registered name, and a whole attack was captured in flight).
+    //
+    // These are combat_input_class / combat_zone / combat_attack_type ROW IDS,
+    // which the wire converts to names before sending. -1 is the table's own
+    // "none"/"undefined" row and is the value at rest.
+    //
+    // haveCombat is false when the body has no combat actor yet -- no fight
+    // has begun -- which is the ordinary state, not an error.
+    bool    haveCombat   = false;
+    int8_t  reqInputClass = -1;    // model + 0x300, int32
+    int8_t  reqAtkZone    = -1;    // model + 0x200, int32
+    int8_t  atkType       = -1;    // model + 0x2C0, int32 (the resolved half)
+    uint8_t reqPrepared   = 0;     // model + 0x380, ONE-BYTE BOOL (WO-100 S10.5)
 };
 
 // Reads one actor's tag state and reduces it to the wire fields above.

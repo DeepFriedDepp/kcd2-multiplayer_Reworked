@@ -868,6 +868,48 @@ bool read_body_state(bool wantPlayer, uint32_t entityId, BodyState* out) {
     }
 
     out->unknownTags = (unknown > 255) ? 255 : static_cast<uint8_t>(unknown);
+
+    // --- WO-100.5 Phase 3: the accepted input -------------------------------
+    //
+    // Read off the same combat model WO-100 S10.4 verified live, at the SAME
+    // WIDTHS. RequestedPreparedToAttack is a one-byte bool; reading it as an
+    // int32 does not fail, it returns a plausible number (WO-100 S10.5 caught
+    // exactly that: 925523968, 1156810496, -1813265152 were three bools).
+    //
+    // The row ids are small (-1..9) so they travel as int8. The wire converts
+    // them to NAMES before sending; nothing here puts a table index on a wire.
+    //
+    // No combat actor means no fight has begun on this body. That is the
+    // ordinary resting state, so it sets haveCombat=false and is not a refusal
+    // of the whole read.
+    void* combatActor = nullptr;
+    if (read_ptr(actor, kOffActorCombatActor, &combatActor) && combatActor) {
+        void* model = nullptr;
+        if (read_ptr(combatActor, kOffCombatActorModel, &model) && model) {
+            // KNOWN-ANSWER, every time: the property must name itself. The
+            // model is reached through two pointer hops on a body whose class
+            // we did not check, so a plausible-looking struct is exactly the
+            // failure this project keeps meeting.
+            void* namePtr = nullptr;
+            char  nameBuf[64]{};
+            if (read_ptr(static_cast<char*>(model) + 0x200, kPropName, &namePtr) && namePtr &&
+                copy_cstr(static_cast<const char*>(namePtr), nameBuf, sizeof(nameBuf)) &&
+                std::strcmp(nameBuf, "RequestedAtkZone") == 0) {
+                int32_t v = 0;
+                auto clamp8 = [](int32_t x) -> int8_t {
+                    if (x < -128) return -1;
+                    if (x > 127)  return -1;
+                    return static_cast<int8_t>(x);
+                };
+                if (read_i32(static_cast<char*>(model) + 0x300, kPropValue, &v)) out->reqInputClass = clamp8(v);
+                if (read_i32(static_cast<char*>(model) + 0x200, kPropValue, &v)) out->reqAtkZone    = clamp8(v);
+                if (read_i32(static_cast<char*>(model) + 0x2C0, kPropValue, &v)) out->atkType       = clamp8(v);
+                uint8_t b = 0;
+                if (read_u8(static_cast<char*>(model) + 0x380, kPropValue, &b)) out->reqPrepared    = (b != 0) ? 1 : 0;
+                out->haveCombat = true;
+            }
+        }
+    }
     return true;
 }
 

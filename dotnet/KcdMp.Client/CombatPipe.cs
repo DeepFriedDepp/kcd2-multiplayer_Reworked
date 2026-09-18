@@ -336,18 +336,26 @@ public sealed class CombatPipe : IAsyncDisposable
     /// caller counts those; nothing here logs per call, because this runs at
     /// the position stream's cadence.
     /// </summary>
-    public async Task<BodyState?> ReadBodyStateAsync(uint entityId, CancellationToken ct = default)
+    public async Task<LocalBodyState?> ReadBodyStateAsync(uint entityId, CancellationToken ct = default)
     {
         var payload = new byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(payload, entityId);
         var (body, _) = await SendAndAwaitAsync(ReadBodyState, payload, BodyStateReply, ct);
         BodyStateReads++;
         // [ok:1][seq:1][pace:1][dir:1][stance:1][animSpeedCenti:2 LE][unknownTags:1]
+        //   + WO-100.5 Phase 3: [haveCombat:1][inputClass:1][zone:1][atkType:1][prepared:1]
         if (body is null || body.Length < 8 || body[0] != 1) { BodyStateRefused++; return null; }
         BodyStateUnknownTags += body[7];
-        return new BodyState(
+        var b = new BodyState(
             (BodyPace)body[2], (BodyDir)body[3], (BodyStance)body[4],
             BinaryPrimitives.ReadUInt16LittleEndian(body.AsSpan(5)));
+
+        // Length-checked, not assumed: a DLL that predates Phase 3 answers with
+        // the 8-byte form and this degrades to "no combat state", which is
+        // exactly right rather than a fabricated -1 triple.
+        if (body.Length < 13) return new LocalBodyState(b, false, -1, -1, -1, false);
+        return new LocalBodyState(b, body[8] == 1,
+            (sbyte)body[9], (sbyte)body[10], (sbyte)body[11], body[12] != 0);
     }
 
     /// <summary>WO-100.5: how many body-state reads were attempted.</summary>

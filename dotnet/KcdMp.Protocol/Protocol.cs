@@ -705,7 +705,7 @@ namespace KcdMp.Wire;
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
 /// exactly one copy of the wire contract to keep in sync with itself.
 /// </summary>
-public static class Protocol
+public static partial class Protocol
 {
     /// <summary>
     /// Protocol version, negotiated in the Handshake.
@@ -746,6 +746,7 @@ public static class Protocol
     public const byte ItemClaimUp    = 0x34;
     public const byte StoryBeatUp    = 0x37;
     public const byte ClockSyncUp    = 0x39;   // WO-98
+    public const byte ActionUp       = 0x3B;   // WO-100.5 Phase 3
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -781,6 +782,7 @@ public static class Protocol
     public const byte ServerFull       = 0x36;
     public const byte StoryBeatDown    = 0x38;
     public const byte ClockSyncDown    = 0x3A;   // WO-98
+    public const byte ActionDown       = 0x3C;   // WO-100.5 Phase 3
     public const byte Ack              = 0xFF;
 
     /// <summary>WO-98: ClockSyncUp payload -- one int64 of client UTC ticks.</summary>
@@ -1425,4 +1427,123 @@ public readonly record struct BodyState(BodyPace Pace, BodyDir Dir, BodyStance S
 
     public override string ToString() =>
         $"pace={Pace} dir={Dir} stance={Stance} animSpeed={AnimSpeed:F2}";
+}
+
+// ---------------------------------------------------------------------------
+// WO-100.5 Phase 3 -- the discrete action channel (0x3B / 0x3C).
+//
+//   C->S  0x3B  ActionUp:   [kind:1][seq:2 LE][phase:1][gen:4][len:1][payload:len]
+//   S->C  0x3C  ActionDown: [sourceGhostId:1] + the upstream body verbatim
+//
+// ONE packet pair for every action kind, so a new action costs a payload and
+// not a protocol.
+//
+// This is the INPUT, not the result. `phase` is what makes that true: a press
+// that is never committed is a real thing the remote body should show and then
+// abandon, and a cancel is a first-class message rather than the absence of
+// one. WO-100 S10.4 captured the reference shape live -- RequestedInputClass
+// arriving one sample before the resolved half, with RequestedPreparedToAttack
+// as the commit.
+// ---------------------------------------------------------------------------
+
+/// <summary>WO-100.5: which action an ActionUp/ActionDown describes. APPEND-ONLY.</summary>
+public enum ActionKind : byte
+{
+    /// <summary>An attack, carrying the accepted input from the combat model.</summary>
+    Attack = 1,
+    /// <summary>Reserved: a jump. Not yet sent -- the airborne tags are not in the
+    /// global tag context on this build (WO-100 S1.5).</summary>
+    Jump = 2,
+    /// <summary>Reserved: an emote.</summary>
+    Emote = 3,
+}
+
+/// <summary>
+/// WO-100.5: where in its life the action is. A press that never commits is a
+/// real event, not a missing one.
+/// </summary>
+public enum ActionPhase : byte
+{
+    Press = 0, Commit = 1, Cancel = 2, Complete = 3,
+}
+
+/// <summary>
+/// WO-100.5 Phase 3: the validity counter, four bytes on the wire as
+/// [incarnation:2 LE][epoch:1][revision:1].
+///
+/// Locally, ONE counter is enough and that is what SwingInbox uses: death,
+/// respawn and save load all replace the ghost body and therefore change its
+/// CryEngine entity id, so a single observable covers all three. Across the
+/// wire there is no such shared observable -- the receiver cannot see the
+/// sender's discontinuity -- so the sender must NAME which kind happened.
+/// </summary>
+public readonly record struct ActionGen(ushort Incarnation, byte Epoch, byte Revision)
+{
+    public uint Pack() => (uint)(Incarnation | (Epoch << 16) | (Revision << 24));
+    public static ActionGen Unpack(uint v) =>
+        new((ushort)(v & 0xFFFF), (byte)((v >> 16) & 0xFF), (byte)((v >> 24) & 0xFF));
+    public override string ToString() => $"{Incarnation}.{Epoch}.{Revision}";
+}
+
+/// <summary>
+/// WO-100.5 Phase 3: the attack payload -- the accepted input, as NAMES
+/// resolved to our own append-only enums rather than as the engine's table row
+/// ids. WO-100 S2.2: an attack row is addressed by an authored GUID or by the
+/// selector tuple, never by an index, so a build mismatch cannot silently
+/// select a different attack.
+/// </summary>
+public readonly record struct AttackPayload(sbyte InputClass, sbyte Zone, sbyte AttackType, byte Flags)
+{
+    public const int Len = 4;
+    /// <summary>Flags bit 0: the sender had RequestedPreparedToAttack set -- the commit.</summary>
+    public const byte FlagPrepared = 0x01;
+
+    public byte[] ToBytes() => new[] { (byte)InputClass, (byte)Zone, (byte)AttackType, Flags };
+    public static AttackPayload FromBytes(ReadOnlySpan<byte> b) =>
+        new((sbyte)b[0], (sbyte)b[1], (sbyte)b[2], b[3]);
+
+    public string InputClassName => Protocol.CombatInputClassName(InputClass);
+    public string ZoneName       => Protocol.CombatZoneName(Zone);
+    public string AttackTypeName => Protocol.CombatAttackTypeName(AttackType);
+
+    public override string ToString() =>
+        $"input={InputClassName} zone={ZoneName} type={AttackTypeName} prepared={((Flags & FlagPrepared) != 0 ? 1 : 0)}";
+}
+
+public static partial class Protocol
+{
+    /// <summary>WO-100.5: exact ActionUp payload length for a given body length.</summary>
+    public const int ActionUpHeaderLen = 1 + 2 + 1 + 4 + 1;   // kind, seq, phase, gen, len
+    /// <summary>WO-100.5: the largest payload an action may carry.</summary>
+    public const int ActionPayloadMaxLen = 64;
+
+    // The shipped Libs/Tables/combat/* vocabularies (WO-100 S2.1), so a log
+    // reads in the game's own words. An id with no row prints as the number --
+    // never as a guessed name.
+    public static string CombatInputClassName(int v) => v switch
+    {
+        -1 => "none", 0 => "attack_light", 1 => "attack_heavy", 2 => "attack_special",
+        3 => "move_left", 4 => "move_right", 5 => "move_back", 6 => "move_forward", 7 => "block",
+        _ => v.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
+    public static string CombatZoneName(int v) => v switch
+    {
+        -1 => "undefined", 0 => "head", 1 => "upper_left", 2 => "upper_right",
+        3 => "lower_left", 4 => "lower_right", 5 => "lower",
+        _ => v.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
+    public static string CombatAttackTypeName(int v) => v switch
+    {
+        -1 => "none", 0 => "stab", 1 => "slash", 2 => "smash", 3 => "throw", 4 => "kick",
+        5 => "punch", 6 => "hook", 7 => "direct", 8 => "bite", 9 => "backoff",
+        _ => v.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
+
+    /// <summary>
+    /// WO-100.5: is <paramref name="candidate"/> newer than <paramref name="last"/>?
+    /// Modulo comparison over a half-range window -- the same shape CombatPipe
+    /// uses for its sequence byte, widened to 16 bits.
+    /// </summary>
+    public static bool SeqIsNewer(ushort candidate, ushort last) =>
+        (ushort)(candidate - last) is > 0 and < 0x8000;
 }

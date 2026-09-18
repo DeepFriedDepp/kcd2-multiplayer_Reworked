@@ -431,6 +431,28 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Discrete action channel (WO-100.5 Phase 3) ---
+                // [kind:1][seq:2][phase:1][gen:4][len:1][payload:len].
+                // Forwarded verbatim, prefixed with the sender -- the relay
+                // does not interpret the payload, exactly as it does not
+                // interpret a session event. A fact about the sender's own
+                // input, so no authority gate.
+                //
+                // The relay DOES check the declared payload length against the
+                // frame, because a body whose len byte lies is the one thing a
+                // verbatim forward would otherwise pass straight through to
+                // every receiver's decoder.
+                if (type == Protocol.ActionUp
+                    && payloadLen >= Protocol.ActionUpHeaderLen
+                    && payloadLen <= Protocol.ActionUpHeaderLen + Protocol.ActionPayloadMaxLen)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (body[Protocol.ActionUpHeaderLen - 1] == payloadLen - Protocol.ActionUpHeaderLen)
+                        _broadcastService.BroadcastAction(this, body);
+                    continue;
+                }
+
                 // --- Name-addressed NPC damage (WO-40 Phase 5) ---
                 // [nameLen:1][name][stamina:4f][health:4f][flags:1]. Same
                 // shape discipline as NpcStateUp; no authority gate -- like
@@ -681,6 +703,18 @@ public class ClientSession
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
         EnqueueRaw(BuildPacket(Protocol.CombatEventDown, payload));
+    }
+
+    /// <summary>
+    /// Thread-safe: enqueue an ActionDown (0x3C, WO-100.5 Phase 3). The body is
+    /// the upstream payload verbatim, prefixed with who sent it.
+    /// </summary>
+    public void EnqueueAction(byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(Protocol.ActionDown, payload));
     }
 
     /// <summary>

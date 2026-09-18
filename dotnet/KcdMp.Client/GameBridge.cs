@@ -83,6 +83,11 @@ public partial class GameBridge(ClientConfig config)
     private int  _bodyStateMisses;
     private const int BodyStateGiveUpAfter = 20;
 
+    // --- WO-100.5 Phase 3: the discrete action channel ----------------------
+    private readonly ActionOutbox       _actionOut  = new();
+    private readonly ActionInbox        _actionIn   = new();
+    private readonly AttackEdgeDetector _attackEdge = new();
+
     // WO-99 Phase 0: local-player exclusion + echo memory for the 0x30/0x31
     // NPC damage path (docs/WO-99-findings.md Phase 0). The player identity
     // is re-read on a TTL and forced after a save load / MOD INIT.
@@ -645,6 +650,9 @@ public partial class GameBridge(ClientConfig config)
         Console.WriteLine(FormattableString.Invariant(
             $"MP-ANIM section=outbound reads={_combat.BodyStateReads} refused={_combat.BodyStateRefused} unknown_tags={_combat.BodyStateUnknownTags} disabled={(_bodyStateOff ? 1 : 0)}"));
         foreach (var line in s.BodyStateSummaryLines()) Console.WriteLine(line);
+        Console.WriteLine(_actionIn.SummaryLine());
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-ACTION section=outbound sent={_actionOut.Sent} gen={_actionOut.Gen}"));
         _ = ExecLuaAsync($"if KCD2MP_LogSummary then KCD2MP_LogSummary(\"{reason}\") end");
     }
 
@@ -1150,6 +1158,10 @@ public partial class GameBridge(ClientConfig config)
 
         _hasPushed = false;
         _staleRun = 0;                              // WO-99 Phase 1
+        // WO-100.5 Phase 3: a new connection is a new epoch, so an action that
+        // survived a relay round trip across the drop is discarded by every
+        // receiver rather than replayed onto a body that has moved on.
+        _actionOut.BumpEpoch();
         _lastSentAppearance = null;
         _ghostAppearance.Clear();
         _ghostKnownItemClasses.Clear();
@@ -1691,8 +1703,13 @@ public partial class GameBridge(ClientConfig config)
                         // earlier "flicker" was 300 ms sampling over tapped
                         // keys. Adding smoothing here would be inventing a
                         // problem the engine does not have.
+                        var local = await ReadLocalBodyStateAsync(cts.Token);
                         await SendPositionAsync(stream, x, y, z, rotZ, riding,
-                                                body: await ReadLocalBodyStateAsync(cts.Token));
+                                                body: local?.Body);
+                        // WO-100.5 Phase 3: the accepted input rides the same
+                        // read -- one pipe round trip serves both channels.
+                        if (local is LocalBodyState lb)
+                            await SendAttackEdgeAsync(stream, lb, cts.Token);
                         if (moved)
                             Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
                     }
@@ -3442,6 +3459,10 @@ public partial class GameBridge(ClientConfig config)
 
         if (_sentDeathForThisLife) return;
         _sentDeathForThisLife = true;
+        // WO-100.5 Phase 3: our body is about to be replaced. Everything in
+        // flight for the old one is now invalid, and the receiver cannot see
+        // that discontinuity -- so name it.
+        _actionOut.BumpIncarnation();
 
         var packet = new byte[3];
         packet[0] = Protocol.PlayerDeathUp;
@@ -3729,6 +3750,30 @@ public partial class GameBridge(ClientConfig config)
                     _ghostLastPos[ghostId] = (x, y, z, DateTime.UtcNow);
                     _voice?.UpdateGhostPos(ghostId, x, y, z);
                     await UpdateGhostAsync(ghostId.ToString(), x, y, z, rotZ, isRiding, body);
+                }
+                else if (type == Protocol.ActionDown)
+                {
+                    // WO-100.5 Phase 3. The inbox does the ordering, the
+                    // generation check and the counting; dispatch is separate
+                    // so the wire half stands on its own.
+                    var action = _actionIn.Accept(payload.AsSpan(0, payloadLen), out var reject);
+                    if (action is InboundAction a)
+                    {
+                        string detail = a.Kind == ActionKind.Attack && a.Payload.Length >= AttackPayload.Len
+                            ? AttackPayload.FromBytes(a.Payload).ToString()
+                            : $"payload_len={a.Payload.Length}";
+                        // No receiver acts on this yet: Phase 1's block write
+                        // was refused by the engine (docs/WO-100.5-findings.md
+                        // S2.3), so an accepted action is logged and dropped.
+                        // Named as a drop rather than left looking applied.
+                        Console.WriteLine(FormattableString.Invariant(
+                            $"MP-ACTION section=inbound ghost={a.SourceGhostId} kind={a.Kind} phase={a.Phase} seq={a.Seq} gen={a.Gen} {detail} dispatch=dropped-no-receiver"));
+                    }
+                    else
+                    {
+                        Console.WriteLine(FormattableString.Invariant(
+                            $"MP-ACTION section=inbound reject={reject}"));
+                    }
                 }
                 else if (type == Protocol.Name && payloadLen >= 2)
                 {
@@ -5245,10 +5290,10 @@ public partial class GameBridge(ClientConfig config)
     /// Null is an ordinary outcome, not an error: no DLL, an older DLL, or a
     /// refusal gate. The packet then goes out in its pre-WO-100.5 shape.
     /// </summary>
-    private async Task<BodyState?> ReadLocalBodyStateAsync(CancellationToken ct)
+    private async Task<LocalBodyState?> ReadLocalBodyStateAsync(CancellationToken ct)
     {
         if (_bodyStateOff) return null;
-        BodyState? b = null;
+        LocalBodyState? b = null;
         try { b = await _combat.ReadBodyStateAsync(0, ct); }
         catch (OperationCanceledException) { throw; }
         catch { /* the pipe reports its own faults; treat as a miss */ }
@@ -5263,6 +5308,24 @@ public partial class GameBridge(ClientConfig config)
                 "animation path. Usual cause: KCDMP.dll is older than this agent and has no 0x09 command.");
         }
         return null;
+    }
+
+    /// <summary>
+    /// WO-100.5 Phase 3: publish an attack edge if this sample produced one.
+    ///
+    /// Sent whether or not the RECEIVING side can act on it. Phase 1's block
+    /// write was refused by the engine, so today a peer logs this and drops it
+    /// -- and that is the point: it proves the wire half on its own, so that
+    /// when the native write lands the only new thing is the dispatch.
+    /// </summary>
+    private async Task SendAttackEdgeAsync(NetworkStream stream, LocalBodyState lb, CancellationToken ct)
+    {
+        var edge = _attackEdge.Feed(lb.HaveCombat, lb.InputClass, lb.Zone, lb.AttackType, lb.Prepared);
+        if (edge is not (ActionPhase phase, AttackPayload payload)) return;
+        var packet = _actionOut.Build(ActionKind.Attack, phase, payload.ToBytes());
+        await WritePacketAsync(stream, packet, ct);
+        Console.WriteLine(FormattableString.Invariant(
+            $"MP-ACTION section=outbound kind=attack phase={phase} gen={_actionOut.Gen} {payload}"));
     }
 
     private async Task WritePacketAsync(NetworkStream stream, byte[] packet, CancellationToken ct = default)

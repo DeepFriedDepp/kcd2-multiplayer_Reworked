@@ -159,12 +159,19 @@ void send_closure_info(HANDLE h, const kcdmp::luaintrospect::ClosureInfo& info) 
 // carries it, so the agent's sequence matching needs no special case.
 void send_body_state(HANDLE h, bool ok, uint8_t seq,
                      const kcdmp::mannequin::BodyState& b) {
-    BYTE body[8] = {
+    // WO-100.5 Phase 3 appends the accepted-input block. Additive: an agent
+    // that only knows the 8-byte form reads the first eight bytes and stops.
+    BYTE body[13] = {
         static_cast<BYTE>(ok ? 1 : 0), seq,
         b.pace, b.dir, b.stance,
         static_cast<BYTE>(b.animSpeedCenti & 0xFF),
         static_cast<BYTE>((b.animSpeedCenti >> 8) & 0xFF),
         b.unknownTags,
+        static_cast<BYTE>(b.haveCombat ? 1 : 0),
+        static_cast<BYTE>(b.reqInputClass),
+        static_cast<BYTE>(b.reqAtkZone),
+        static_cast<BYTE>(b.atkType),
+        b.reqPrepared,
     };
     EnterCriticalSection(&g_write_lock);
     send_frame(h, kBodyState, body, sizeof(body));

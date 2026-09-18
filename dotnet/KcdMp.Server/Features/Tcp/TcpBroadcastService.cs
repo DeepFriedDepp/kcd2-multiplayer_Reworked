@@ -170,6 +170,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// Relays an ActionUp (0x3B) from <paramref name="source"/> to all other
+    /// ready clients as an ActionDown (0x3C) (WO-100.5 Phase 3). The payload is
+    /// opaque here by design -- one packet pair serves every action kind, so a
+    /// new action costs a payload and not a protocol change at the relay.
+    /// </summary>
+    public void BroadcastAction(ClientSession source, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueAction(source.Id, body);
+    }
+
+    /// <summary>
     /// Relays a StoryBeatUp (0x37) from <paramref name="source"/> to all other
     /// ready clients as a StoryBeatDown (0x38) (WO-90). A fact about the
     /// sender's own campaign -- no authority gate, nothing to arbitrate, and
