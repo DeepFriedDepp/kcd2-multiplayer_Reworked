@@ -648,3 +648,42 @@ WO-32 3 s silence release then drops (one `puppet start` / `release` pair
 per resynced NPC on an old client — noisy, harmless, 0.23.2-or-less). A
 0.23.2 owner never sends it. `ActionKind.NpcResync` is `UnknownKind` to a
 0.23.2 receiver. The relay is unchanged.
+
+---
+
+## 7. Phase 7 — verification and A/B
+
+### 7.1 Synthetic coverage (all (synthetic))
+
+| suite | count | what it pins |
+|---|---|---|
+| `tools/Test-WO102Synthetic.ps1` (MoonSharp, real `kdcmp.lua`) | **109/109** | Phase 0 toggles (a–f); Phase 2 MP-AUTHORITY (g–l); Phase 4 host authority (m–s): a non-authority never claims, the authority scans around peer ghosts, diverge and yield refused and logged, pause lever pauses/resumes, toggle off returns the 0.23.2 paths exactly; Phase 3 probe sequencing (t); Phase 5 `npc_target` (u); Phase 6 burst / one-shot apply / manual command (v–x); **Phase 7 invariants (y)**: over a simulated 200-tick session on a non-authority with two owned puppets and a "local brain" dragging both — zero `owner-change`, every acquire `via=stream` from the owner, nothing emitted that claims, no puppet handed back, contention and yanks logged as violations, writes land on the stream's position, and `mp_authority_host_off` makes the very next drag release with `MP-NPCDIVERGE` and no violation |
+| `dotnet/KcdMp.Client.Tests` | **150/150** | LocalState codec (7), CadenceStats (5), NpcRequestPayload (8 incl. the in-process action-channel pass), NpcStateCodec (4), plus the 126 pre-existing |
+| `dotnet/KcdMp.Relay.Tests` — the WO-101 standing gate | **12/12** | the 10 WO-101 cases + **NpcRequest payload** (short and 64-byte) + **NpcState with the RESYNC flag from the authority**. Every packet-shape change this WO made has a case that crosses the real relay |
+| eleven older Lua suites | unchanged: NpcSmooth 48, WO-84 72, WO-86 47, WO-90 70, WO-94 101, WO-95 32, WO-96 160, WO-98 50, WO-99 39, WO-100.5 33, ghost interp 35 | every toggle off = 0.23.2 |
+
+`tools/Build-Installer.ps1` now runs **three** gates before publishing: the
+relay round-trip gate (WO-101), the agent unit tests, and the WO-102 Lua
+suite. `KcdMp.Client.Tests` is not in `KcdMp.sln` (found here: a solution
+build never compiled it), so the script names the project explicitly.
+
+### 7.2 What synthetic coverage does not prove — restated
+
+Codec and in-process tests prove parse and routing, not the engine. Nothing
+in this WO has run on a live game, and the six things that decide it are
+listed in the runbook: the pause probe (§3.3), the position cadence
+comparison (§1.4), the two-arm brawl (`docs/WO-102-field-runbook.md` §1),
+the request/damage correlation, the resync burst after a sleep, and the
+relay log staying free of `[CLAIM] granted` under host authority.
+
+### 7.3 The A/B
+
+`docs/WO-102-field-runbook.md`: the same fight twice, `mp_authority_host_off`
+then `_on` on both machines mid-session, read against §2.1's baseline. The
+expected result is stated as a table of signals per arm; the headline is
+that the 24–97 m divergences (`MP-NPCDIVERGE`, `MP-NPCFIGHT max_m`) **vanish
+entirely** under host authority, and that a non-owner logs **zero
+`owner-change`**. If either survives, ownership is not single and the
+`MP-AUTHORITY` line that names the other acquirer is the lead. The honest
+failure modes (worse jitter without the pause lever; the categories §6.3
+names) are listed so they are recognised rather than explained away.

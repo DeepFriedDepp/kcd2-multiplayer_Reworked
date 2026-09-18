@@ -73,6 +73,17 @@ if (-not $SkipPublish) {
     & dotnet test (Join-Path $root "dotnet\KcdMp.Relay.Tests\KcdMp.Relay.Tests.csproj") -c Release --nologo -v q
     if ($LASTEXITCODE -ne 0) { throw "relay round-trip gate FAILED -- a packet does not cross the real relay. Not shipping." }
 
+    # WO-102 Phase 7: the agent's unit tests (codecs, cadence stats, the
+    # request/resync payloads) and the mod's synthetic authority suite run
+    # here too. KcdMp.Client.Tests is NOT in KcdMp.sln, so a plain solution
+    # build never compiles it -- it has to be named. A failure does not ship.
+    Write-Host "Agent unit tests (dotnet\KcdMp.Client.Tests) ..."
+    & dotnet test (Join-Path $root "dotnet\KcdMp.Client.Tests\KcdMp.Client.Tests.csproj") -c Release --nologo -v q
+    if ($LASTEXITCODE -ne 0) { throw "agent unit tests FAILED. Not shipping." }
+    Write-Host "WO-102 synthetic authority suite (tools\Test-WO102Synthetic.ps1) ..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Test-WO102Synthetic.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "WO-102 synthetic suite FAILED. Not shipping." }
+
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Publish-Release.ps1 failed" }
 }

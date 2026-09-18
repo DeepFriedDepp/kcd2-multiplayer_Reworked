@@ -532,6 +532,59 @@ do -- (x)
     check("x: emits npc_resync_request", logCount("npc_resync_request manual") == 1)
 end
 
+-- ---------------------------------------------------------------- Phase 7
+--   (y) the authority model's invariants over a simulated 200-tick session
+--       on a NON-authority under host authority with two owned puppets fed
+--       by owner 0 while its "local brain" keeps dragging both: ownership
+--       never changes (zero owner-change), every acquire is via=stream from
+--       owner 0, the machine emits nothing that claims (no npc_claim, no
+--       npc_drag, no npc_state), no puppet is ever released to the local
+--       world (no NPCDIVERGE, no NPCYIELD), and every write goes to the
+--       stream's position; then mp_authority_host_off returns the claim
+--       model exactly (the next drag releases with MP-NPCDIVERGE)
+do
+    resetAll4(); clearLog()
+    KCD2MP.wo102.authorityHost = true; KCD2MP.hitSensorOn = false
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    KCD2MP.ghosts = { ["0"] = { entity = {}, istate = {} } }
+    local a = mkEntity("y_a", 10, 0, 0); ENTS["y_a"] = a
+    local b = mkEntity("y_b", 20, 0, 0); ENTS["y_b"] = b
+    SPHERE = { a, b }
+    NOW = 2000
+    for i = 1, 200 do
+        NOW = NOW + 0.05
+        KCD2MP_ApplyNpcState("y_a", 10, 0, 0, 0, 100, 0, 0)
+        KCD2MP_ApplyNpcState("y_b", 20, 0, 0, 0, 100, 0, 0)
+        KCD2MP.npcPuppetRunning = true
+        KCD2MP_NpcPuppetTick("ext")
+        KCD2MP._npcScanAt = 0
+        KCD2MP_NpcSyncTick()
+        a.px = a.px + 0.4           -- sustained sub-8 m contention
+        if i % 20 == 0 then b.px = b.px + 50 end   -- and the occasional 50 m yank
+    end
+    check("y: zero owner-change", logCount("event=owner-change") == 0)
+    check("y: every acquire is via=stream from owner 0", logCount("event=acquire owner=0 via=stream") == 2 and logCount("event=acquire owner=self") == 0)
+    check("y: the non-owner never emits a claim or state", logCount("npc_claim") == 0 and logCount("npc_drag") == 0 and logCount("npc_state") == 0)
+    check("y: no puppet handed back", logCount("MP-NPCDIVERGE") == 0 and logCount("MP-NPCYIELD") == 0 and KCD2MP.npcPuppets["y_a"] ~= nil and KCD2MP.npcPuppets["y_b"] ~= nil)
+    check("y: contention and yanks are logged as violations", logCount("MP-AUTHORITY-VIOLATION npc=y_a kind=contention") >= 1 and logCount("MP-AUTHORITY-VIOLATION npc=y_b kind=diverge") >= 1)
+    local lastWrite = a.writes[#a.writes]
+    check("y: writes go to the stream's position", lastWrite ~= nil and math.abs(lastWrite.x - 10) < 0.6, lastWrite and lastWrite.x)
+    check("y: summary says model=host owner_changes=0", (function() clearLog(); KCD2MP_LogSummary("t"); local l = lastLog("MP-SUMMARY-MOD") or ""; return l:find("auth_owner_changes=0 auth_model=host", 1, true) ~= nil end)(), lastLog("MP-SUMMARY-MOD"))
+    -- and back: the claim model returns exactly
+    clearLog()
+    KCD2MP_Wo102Set("authority_host", false)
+    for i = 1, 8 do
+        NOW = NOW + 0.05
+        KCD2MP_ApplyNpcState("y_b", 20, 0, 0, 0, 100, 0, 0)
+        KCD2MP_NpcPuppetTick("ext")
+        b.px = b.px + 97
+    end
+    check("y: toggle off -> the WO-90 release fires again", logCount("MP-NPCDIVERGE npc=y_b") == 1 and KCD2MP.npcPuppets["y_b"] == nil)
+    check("y: and no violation is logged under the claim model", logCount("MP-AUTHORITY-VIOLATION") == 0)
+    KCD2MP.npcSyncRunning = false
+    check("y: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
 -- Summary.
 local pass, fail = 0, 0
 for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end
