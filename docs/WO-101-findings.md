@@ -236,3 +236,21 @@ at `DiscordRPC.Assets.Merge(Assets other)` ← `RichPresence.Merge` ←
 **Verdict: long-standing (1 per session when positions flow), not a
 regression; the 09-17 volume is §0's consequence and goes away with §1. Left
 alone, as instructed.**
+
+## 4. End gate — 0.23.2
+
+Details in `docs/WO-101-progress.md`. Headline facts:
+
+* Built from a fresh `--depth 1` clone of `origin main` at `eb4b8dc`; the
+  relay round-trip gate ran inside that build and passed 10/10 before publish.
+* `KCDMP-Setup-0.23.2.exe` 100,537,299 bytes, sha256
+  `723A8D90F5B9C56DEC3962CFE922996DE0C0BC5AD59D9E1B013C2B3A2066A1EA`.
+* Privacy: 1024 files, UTF-8 + UTF-16LE, zero first-party hits (six NAudio
+  DLLs carry their author's `C:\Users`, as in WO-98 / WO-100.5).
+* Shipped pak: `kdcmp.lua` sha256-identical to the repo's; the pak container
+  differs from the committed one in 16 bytes, all zip mod-time fields (no Lua
+  changed this WO).
+* `KCDMP.dll`: rebuilt from unchanged source (`git diff d663f15 -- native`
+  empty); sha256 differs from the working tree only by MSVC timestamp.
+* **Not live-verified across two machines.** The next field session starts
+  there.
