@@ -87,16 +87,22 @@ local function clearLog() LOG = {} end
 
 -- ---------------------------------------------------------------- Phase 0
 
--- (f) first: the SHIPPED defaults (WO-102 end gate) -- host authority on,
---     the unmeasured/unverified levers off -- and the 0.23.2 knobs untouched.
-check("f: shipped defaults: authority_host on, pos_native off, authority_pause on (WO-102.5 Phase 1)",
-      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.authorityPause == true)
+-- (f) first: the SHIPPED defaults -- host authority on, pos_native off
+--     (still genuinely unmeasured), authority_pause and npc_scan_native on
+--     (both live-verified 2026-09-18, the maintainer's own call to keep
+--     new WO-102.5 machinery exercised rather than default back to the
+--     already-known-broken pre-WO-102.5 path) -- and the 0.23.2 knobs
+--     untouched.
+check("f: shipped defaults: authority_host on, pos_native off, authority_pause on, npc_scan_native on",
+      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false
+      and KCD2MP.wo102.authorityPause == true and KCD2MP.wo102.npcScanNative == true)
 check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
       and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == true)
 -- Every scenario below starts from the OFF baseline (the 0.23.2 model) and
 -- switches on what it tests, so the off state is proven to be 0.23.2.
 KCD2MP_Wo102Set("authority_host", false, "agent")
 KCD2MP_Wo102Set("authority_pause", false, "agent")
+KCD2MP_Wo102Set("npc_scan_native", false, "agent")
 
 -- (a) console flip.
 clearLog()
@@ -166,6 +172,7 @@ local function mkEntity(name, x, y, z)
 end
 local function resetNpc()
     KCD2MP.wo102.authorityHost = false; KCD2MP.wo102.authorityPause = false   -- the 0.23.2 baseline
+    KCD2MP.wo102.npcScanNative = false   -- default flipped on 2026-09-18; tests still exercise the off path explicitly
     KCD2MP.npcPuppets = {}; KCD2MP.npcTracked = {}; KCD2MP.dragging = {}; KCD2MP.dragWatch = {}
     KCD2MP.npcPuppetRunning = false; KCD2MP._npcDivergeUntil = {}
     KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0 }

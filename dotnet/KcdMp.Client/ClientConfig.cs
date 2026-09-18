@@ -114,11 +114,16 @@ public sealed class ClientConfig
     /// per anchor -- the enumerate+read moves to C++, ranking/cap/tracking
     /// stays in Lua (docs/WO-102.5-findings.md Phase 2).
     ///
-    /// SHIPS OFF: the known-answer check (native set == Lua set for one
-    /// scene) and the cost comparison this toggle exists to earn have not run
-    /// live. See docs/WO-102.5-findings.md Phase 2's runbook.
+    /// SHIPS ON: live-verified 2026-09-18 (docs/WO-102.5-findings.md S6.2) --
+    /// 37,079 entities walked, zero vptr mismatches, known-answer check
+    /// clean (only_lua=0). The maintainer's own call after that session:
+    /// keep new WO-102.5 machinery exercised by default so real play keeps
+    /// surfacing what still needs fixing, rather than defaulting back to
+    /// the already-known-broken pre-WO-102.5 path. The per-path cost
+    /// comparison (native vs Lua `dur_ms`) still has not run -- a real
+    /// gap, not resolved by this decision.
     /// </summary>
-    public bool NpcScanNativeEnabled { get; set; } = false;
+    public bool NpcScanNativeEnabled { get; set; } = true;
 
     /// <summary>
     /// How the agent reads player state from the game.

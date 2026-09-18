@@ -2869,17 +2869,26 @@ KCD2MP.npcProx = {
 --                  instead of walking System.GetEntitiesInSphere per anchor
 --                  when this is on and the push is fresh. Agent-side (like
 --                  posNative); the mod only relays the switch and keeps the
---                  Lua enumerate as the fallback. UNMEASURED as of this
---                  session -- docs/WO-102.5-findings.md Phase 2 runbook.
--- Shipped defaults (WO-102 end gate): host authority ON, the two levers that
--- have no measurement behind them OFF. The agent pushes ClientConfig's values
--- at connect; these are what an agent that pushes nothing leaves in place, so
--- they agree with ClientConfig by construction.
+--                  Lua enumerate as the fallback. Live-verified once
+--                  (2026-09-18 field session): 37,079 entities walked, zero
+--                  vptr mismatches, known-answer check clean (only_lua=0)
+--                  -- docs/WO-102.5-findings.md S6.2. ON by the maintainer's
+--                  own call: exercise what is new rather than default back
+--                  to the already-known-broken path.
+-- Shipped defaults: host authority ON (replaces a known-broken model);
+-- native position OFF (still genuinely unmeasured, no live session has
+-- touched it); the pause lever and the native NPC scan ON -- both
+-- live-tested this session (mixed but non-fatal for the pause lever,
+-- clean for the scan) and kept on deliberately so real usage keeps
+-- surfacing what still needs fixing, not reverting to the pre-WO-102.5
+-- code path. The agent pushes ClientConfig's values at connect; these are
+-- what an agent that pushes nothing leaves in place, so they agree with
+-- ClientConfig by construction.
 KCD2MP.wo102 = {
     authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
     posNative      = false,   -- unmeasured (findings S1.4)
-    authorityPause = true,    -- WO-102.5 Phase 1: solo probe passed 8/8; not yet run under a live two-machine puppet stream
-    npcScanNative  = false,   -- WO-102.5: unmeasured
+    authorityPause = true,    -- solo probe 5/8 HELD + 1/1 combat HELD (findings S6.1); kept on per the maintainer's call
+    npcScanNative  = true,    -- live-verified clean 2026-09-18 (findings S6.2); kept on per the maintainer's call
 }
 KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause", npc_scan_native = "npcScanNative" }
 
