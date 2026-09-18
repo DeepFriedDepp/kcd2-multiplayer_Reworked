@@ -2199,11 +2199,17 @@ KCD2MP.wo1025 = {
     -- Ownership radius: under host authority, EVERY NPC within this of any
     -- anchor is owned -- no per-anchor cap (mp_npc_rescan). Runtime-
     -- adjustable, not baked: #KCD2MP_SetAuthorityRadius("<metres>") from the
-    -- console. Default = today's exit radius (30 * 1.5, WO-32/WO-102), the
-    -- conservative starting point findings S2/S5's runbook raises from
-    -- measurement, not assumption -- the maintainer's target is 150 m, NOT
-    -- shipped as the default because nothing has measured what it costs.
-    authorityRadius = 45.0,
+    -- console. Default = 150 m, the maintainer's original target, shipped
+    -- 2026-09-18: the live radius runbook (findings S6.3) held 45/90/150m
+    -- with zero MP-AUTHORITY-VIOLATION/crashes in a busy town, native-scan
+    -- cost is radius-independent (S6.2, 37,079 entities walked regardless),
+    -- and culling kept 150m's actual streaming cost to 22-of-78 tracked.
+    -- The FPS-floor reading that had kept this at 45m was RETRACTED the
+    -- same session (S6.3) -- it measured the game window being unfocused,
+    -- not the radius -- so "unmeasured" is the honest status of the cost,
+    -- not "measured and expensive". #KCD2MP_SetAuthorityRadius("45") is one
+    -- line if a focused-window measurement finds a real cost.
+    authorityRadius = 150.0,
     -- Cull radius: within authorityRadius but beyond THIS, an owned NPC is
     -- not actively streamed (mp_npc_cull_on, default on) -- it is still
     -- tracked (nobody else can claim it) but KCD2MP_NpcSyncTick skips its
@@ -2834,6 +2840,15 @@ KCD2MP.npcProx = {
 --                  pipe instead of the [KCD2-MP-DATA] log line. Agent-side;
 --                  the mod only relays the switch (and keeps emitting the
 --                  log line, which stays the fallback).
+--                  WO-102.5: ships ON. Still genuinely unverified live (zero
+--                  path=native/LOCALSTATE lines in any bundle to date), but
+--                  fail-closed on its own (GameBridge.cs: 20 consecutive
+--                  pipe refusals or 20 samples >3m from the log-line oracle
+--                  disarms it for the session, no player action needed) and
+--                  both machines are expected on this build together, so the
+--                  older-DLL stall this would otherwise risk does not apply.
+--                  Same principle as npcScanNative below: unmeasured is not
+--                  a reason to park a fail-closed path.
 --   authorityPause mp_authority_pause_on|off Phase 3/4: the local-brain
 --                  suppression lever. Under host authority a non-authority
 --                  issues the engine's own `wh_ai_PauseNPC <name>` when a
@@ -2876,17 +2891,18 @@ KCD2MP.npcProx = {
 --                  own call: exercise what is new rather than default back
 --                  to the already-known-broken path.
 -- Shipped defaults: host authority ON (replaces a known-broken model);
--- native position OFF (still genuinely unmeasured, no live session has
--- touched it); the pause lever and the native NPC scan ON -- both
--- live-tested this session (mixed but non-fatal for the pause lever,
--- clean for the scan) and kept on deliberately so real usage keeps
--- surfacing what still needs fixing, not reverting to the pre-WO-102.5
--- code path. The agent pushes ClientConfig's values at connect; these are
--- what an agent that pushes nothing leaves in place, so they agree with
--- ClientConfig by construction.
+-- native position, the pause lever and the native NPC scan ALL ON --
+-- position is the one of the four never yet run live, kept on anyway
+-- (fail-closed, matched-build sessions expected, unmeasured is not a
+-- reason to park it); the other two live-tested this session (mixed but
+-- non-fatal for the pause lever, clean for the scan) -- all four kept on
+-- deliberately so real usage keeps surfacing what still needs fixing, not
+-- reverting to the pre-WO-102.5 code path. The agent pushes ClientConfig's
+-- values at connect; these are what an agent that pushes nothing leaves in
+-- place, so they agree with ClientConfig by construction.
 KCD2MP.wo102 = {
     authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
-    posNative      = false,   -- unmeasured (findings S1.4)
+    posNative      = true,    -- never run live; fail-closed, kept on per the maintainer's call (same principle as npcScanNative)
     authorityPause = true,    -- solo probe 5/8 HELD + 1/1 combat HELD (findings S6.1); kept on per the maintainer's call
     npcScanNative  = true,    -- live-verified clean 2026-09-18 (findings S6.2); kept on per the maintainer's call
 }

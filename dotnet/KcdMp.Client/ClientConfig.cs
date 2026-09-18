@@ -97,12 +97,18 @@ public sealed class ClientConfig
     /// tail keeps running either way (it carries vitals and every event line)
     /// and is the fallback when the pipe refuses.
     ///
-    /// SHIPS OFF (WO-102 end gate): the interval comparison it exists for
-    /// has not been measured (findings S1.4 runbook). What settles it: two
-    /// MP-POSCADENCE windows per path from one solo session with the native
-    /// path measurably steadier at p95.
+    /// SHIPS ON (WO-102.5, maintainer's call 2026-09-18): still genuinely
+    /// unverified live -- zero "path=native" / LOCALSTATE lines in any
+    /// bundle to date -- but "unmeasured" is not by itself a reason to park
+    /// a fail-closed path. Same discipline as <see cref="NpcScanNativeEnabled"/>
+    /// below: GameBridge disarms this for the session (falls back to the
+    /// log tail on its own, no player action needed) after 20 consecutive
+    /// pipe refusals, or 20 consecutive samples more than 3 m from the
+    /// log-line oracle. The interval-comparison question it was shipped off
+    /// to protect (findings S1.4) still has not run; this stopped being a
+    /// reason to keep it off.
     /// </summary>
-    public bool NativePositionEnabled { get; set; } = false;
+    public bool NativePositionEnabled { get; set; } = true;
 
     /// <summary>
     /// WO-102.5 Phase 2: the agent periodically calls the DLL's batched NPC

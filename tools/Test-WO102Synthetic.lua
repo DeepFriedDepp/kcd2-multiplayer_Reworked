@@ -87,14 +87,15 @@ local function clearLog() LOG = {} end
 
 -- ---------------------------------------------------------------- Phase 0
 
--- (f) first: the SHIPPED defaults -- host authority on, pos_native off
---     (still genuinely unmeasured), authority_pause and npc_scan_native on
---     (both live-verified 2026-09-18, the maintainer's own call to keep
---     new WO-102.5 machinery exercised rather than default back to the
---     already-known-broken pre-WO-102.5 path) -- and the 0.23.2 knobs
---     untouched.
-check("f: shipped defaults: authority_host on, pos_native off, authority_pause on, npc_scan_native on",
-      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false
+-- (f) first: the SHIPPED defaults -- all four of host authority, pos_native,
+--     authority_pause and npc_scan_native ship ON. pos_native has never run
+--     live (fail-closed, kept on anyway per the maintainer's call); the
+--     other three were live-verified or live-tested 2026-09-18 -- all kept
+--     on deliberately so real usage keeps surfacing what still needs
+--     fixing, rather than defaulting back to the already-known-broken
+--     pre-WO-102.5 path. The 0.23.2 knobs are untouched.
+check("f: shipped defaults: authority_host on, pos_native on, authority_pause on, npc_scan_native on",
+      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == true
       and KCD2MP.wo102.authorityPause == true and KCD2MP.wo102.npcScanNative == true)
 check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
       and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == true)
@@ -103,6 +104,7 @@ check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and K
 KCD2MP_Wo102Set("authority_host", false, "agent")
 KCD2MP_Wo102Set("authority_pause", false, "agent")
 KCD2MP_Wo102Set("npc_scan_native", false, "agent")
+KCD2MP_Wo102Set("pos_native", false, "agent")
 
 -- (a) console flip.
 clearLog()

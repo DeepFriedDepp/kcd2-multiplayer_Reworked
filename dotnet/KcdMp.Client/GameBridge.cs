@@ -296,8 +296,11 @@ public partial class GameBridge(ClientConfig config)
     // change on the event channel ("authority_radius") because this agent
     // cannot read KCD2MP.wo1025 back, mirrored the same way _hostAuthority
     // etc. mirror the wo102_toggle events. Starts at the mod's own default
-    // (45 m = today's exit radius) so the two agree before any change.
-    private volatile float _npcScanRadiusM = 45.0f;
+    // (150 m, the maintainer's target -- shipped 2026-09-18 after the live
+    // runbook held 45/90/150m with zero violations and culling kept 150m's
+    // streaming cost to 22-of-78; findings S6.3's FPS-cost reading was
+    // retracted, see the same section) so the two agree before any change.
+    private volatile float _npcScanRadiusM = 150.0f;
     private const int    NpcScanMaxNamesPushed = 200;   // ExecuteString batching chunks safely past this; a bound anyway
     private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
 

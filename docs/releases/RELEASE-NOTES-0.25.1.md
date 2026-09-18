@@ -10,6 +10,37 @@ claim model in one command.
 
 ---
 
+## ⚠ Updated the same day, after this build was packaged
+
+`KCDMP-Setup-0.25.1.exe` was already built and handed off when two more
+source changes landed the same day. **Not yet re-packaged** — current as
+of the repo, not as of that exe file:
+
+* **`mp_pos_native_on` now defaults ON** (was off). Never once run live —
+  zero `path=native`/`LOCALSTATE` lines in any bundle to date — but it is
+  fail-closed the same way the native NPC scan is (GameBridge disarms it
+  after 20 consecutive pipe refusals or 20 samples more than 3 m from the
+  log-line oracle, falling back to the log tail with no player action
+  needed), and both machines are expected on a matched 0.25.1+ build, so
+  the older-DLL stall risk doesn't apply either. Same call as the native
+  scan: unmeasured stopped being treated as a reason to keep it parked.
+* **The authority radius default is now 150 m** (was 45 m). The live radius
+  runbook already held 45/90/150 m clean with zero violations, and culling
+  kept 150 m's actual streaming cost to 22-of-78 tracked — the cost model
+  was better than assumed. `#KCD2MP_SetAuthorityRadius("45")` is one line
+  to go back.
+* **The 0.25.0 field session's "150 m measurably cost FPS" finding is
+  RETRACTED**, not reinterpreted. The maintainer identified that the whole
+  session ran with the KCD2 window unfocused (alt-tabbed, driven from the
+  coding shell) — CryEngine throttles an unfocused window regardless of
+  the mod, and the maintainer holds 80–100 fps in focus. The `tickstat`
+  correlation this release notes doc previously cited was reading that
+  throttle, not the radius. The radius's real cost is **(unmeasured)**
+  again, not "measured and expensive" — see `docs/WO-102.5-findings.md`
+  §6.3 for the retraction in full.
+
+---
+
 ## Why 0.25.1 and not a re-tag of 0.25.0
 
 `KCDMP-Setup-0.25.0.exe` was built and packaged, then a live solo field
@@ -80,7 +111,8 @@ of, not a re-run of.
 | co-location gating (hysteresis + dwell) | (synthetic) scenario `cc`, 19 checks; the 60/90/10 numbers are still a first guess — no two-machine session has exercised the transition itself |
 | departure handoff (Rule 2 + idle timeout) | (synthetic Lua) + (real TCP round trip) for the idle-timeout mechanism specifically |
 | pause save-persistence | (code-verified) `C_IntelligentObject::Save` DOES write the suspend byte to a save chunk, conditionally; load-side re-application still unconfirmed |
-| 150 m radius FPS cost | (observed) a real, measured drop (~35fps baseline → `DEGRADED ~25fps floor` at 150m, WO-59's own `tickstat` diagnostic) — **not** why 150 m stays unshipped as the default (nothing has cleanly attributed the recovery time yet); the 45 m default is unaffected |
+| 150 m radius FPS cost | **(unmeasured)** — a same-day reading of a real drop was RETRACTED once identified as a window-focus throttling artefact (the session ran with the game window unfocused throughout), not a radius measurement; zero (observed) cost evidence in either direction now |
+| native position (`mp_pos_native`) | **never run live** — zero `path=native`/`LOCALSTATE` lines in any bundle to date. Ships on anyway: fail-closed (20 consecutive refusals or 20 samples >3m off the log-line oracle disarms it for the session), same principle as the native NPC scan |
 | combat pause-probe safety | (observed) one live run of `mp_probe_npc_pause` against an actively-engaged NPC was followed by the maintainer being launched into the air, timing suggestive of the probe's own position-displacement step — **not proven**, does not implicate the pause lever itself (which never touches position); the probe now warns against this explicitly |
 
 `docs/WO-102.5-field-runbook.md` is the two-machine session this build
@@ -103,9 +135,9 @@ prints every WO-102/WO-102.5 flag.
 | `mp_authority_pause_on` / `_off` | **on** (was off in 0.24.0) | the solo probe now has 13/16 ambient HELD across two sessions; the alternative (no suppression at all under an uncapped radius) is continuous brain-vs-stream contention with no lever even tried — see the maintainer's standing call on defaults, below |
 | `mp_npc_scan_native_on` / `_off` | **on** | flipped after a live session verified it clean (37,079 entities, zero vptr mismatches) and the compare-tool's own radius bug was found and fixed; 0.25.0 shipped this off, 0.25.1 ships what the field session actually validated |
 | `mp_npc_cull_on` / `_off` | **on** | pure Lua logic (no native read, so no crash-class risk), the direct mitigation for the cap removal that ships on by default with it, and its one correctness property (re-entry is never stale) is both synthetically proven and live-confirmed (78 tracked → 22 streaming at 150 m) |
-| `#KCD2MP_SetAuthorityRadius` | **45 m** (unchanged effective value) | the live radius runbook held 45/90/150 m all clean, but 150 m has a measured FPS cost with no clean recovery story yet — the default stays where it was measured safest without a caveat |
+| `#KCD2MP_SetAuthorityRadius` | ~~45 m~~ **150 m**, updated same day | the live radius runbook held 45/90/150 m all clean with culling keeping 150m's streaming cost to 22-of-78; the FPS-cost reading that had kept this at 45 m was retracted as a window-focus artefact, so "unmeasured" is the honest status, not a reason to stay conservative — see the correction at the top |
 | co-location hysteresis (enter/exit/dwell) | **60 m / 90 m / 10 s**, always on under host authority | no separate toggle — `mp_authority_host_off` is the escape hatch for all of it; the constants themselves are a first guess with no live tuning knob yet (a named gap) |
-| `mp_pos_native_on` / `_off` | **off** (unchanged from 0.24.0) | still unmeasured |
+| `mp_pos_native_on` / `_off` | ~~off~~ **on**, updated same day | never run live, but fail-closed and both machines expected matched — same call as `mp_npc_scan_native_on`; see the correction at the top |
 | everything from 0.23.2 / 0.24.0 | unchanged | untouched by this WO except where stated above |
 
 **Standing rule for this project's toggle defaults, stated by the
@@ -139,10 +171,28 @@ Under host authority, the 5-per-anchor cap is gone: every NPC within the
 authority radius is owned, not just the nearest five. The radius is
 runtime-adjustable (`#KCD2MP_SetAuthorityRadius`) and independent of the
 0.23.2 claim model's own 30 m, which is untouched. Live-verified at 45, 90
-and 150 m in a busy town with zero violations or crashes; 150 m measurably
-cost FPS (a pre-existing WO-59 `tickstat` diagnostic: ~35fps baseline →
-`DEGRADED ~25fps floor`), so it stays a manually-dialled ceiling, not the
-default.
+and 150 m in a busy town with zero violations or crashes, and culling kept
+150 m's actual streaming cost to 22-of-78 tracked — the cost model is
+better than first assumed, which is why 150 m now ships as the default. A
+same-day FPS-floor reading that would have argued against this was
+retracted as a window-focus throttling artefact, not a radius measurement
+(see the correction at the top) — the real in-focus cost is unmeasured,
+not "safe," and `#KCD2MP_SetAuthorityRadius("45")` is one line back if it
+turns out to cost real frames.
+
+### Native position (`mp_pos_native_on`, default on)
+
+WO-102's own mechanism, untouched by WO-102.5's own code: reads the local
+player's position/rotation/riding state through the DLL pipe every frame
+instead of the `[KCD2-MP-DATA]` log line, with the log tail as the
+always-on fallback. Never once run live — zero `path=native`/`LOCALSTATE`
+lines in any bundle to date — but fail-closed by construction (GameBridge
+disarms it after 20 consecutive pipe refusals, or 20 consecutive samples
+more than 3 m from the log-line oracle, and falls back to the log tail on
+its own) and both machines are expected on a matched 0.25.1+ build, so the
+older-DLL stall this would otherwise risk does not apply. Shipped on for
+the same reason as the native NPC scan: unmeasured is not, by itself, a
+reason to keep a fail-closed path parked.
 
 ### Culling (`mp_npc_cull_on`, default on)
 
