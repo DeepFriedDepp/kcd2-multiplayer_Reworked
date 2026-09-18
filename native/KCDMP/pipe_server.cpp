@@ -1,5 +1,6 @@
 ﻿#include "pipe_server.h"
 #include "mannequin_read.h"
+#include "local_state.h"
 #include "main_thread.h"
 #include "rttr_abi.h"
 #include "combat_swing.h"
@@ -175,6 +176,35 @@ void send_body_state(HANDLE h, bool ok, uint8_t seq,
     };
     EnterCriticalSection(&g_write_lock);
     send_frame(h, kBodyState, body, sizeof(body));
+    LeaveCriticalSection(&g_write_lock);
+}
+
+// WO-102 Phase 1. Fixed 40 bytes whatever the verdict; seq at body[1] as
+// every reply frame carries it. The body block reuses 0x85's byte order.
+void send_local_state(HANDLE h, bool ok, uint8_t seq, const kcdmp::localstate::LocalState& s) {
+    BYTE body[kLocalStateLen]{};
+    body[0] = ok ? 1 : 0;
+    body[1] = seq;
+    body[2] = s.refuse;
+    std::memcpy(body + 3, &s.frame, 8);
+    std::memcpy(body + 11, &s.x, 4);
+    std::memcpy(body + 15, &s.y, 4);
+    std::memcpy(body + 19, &s.z, 4);
+    std::memcpy(body + 23, &s.rotZ, 4);
+    body[27] = s.flags;
+    body[28] = s.haveBody ? 1 : 0;
+    const kcdmp::mannequin::BodyState& b = s.body;
+    body[29] = b.pace; body[30] = b.dir; body[31] = b.stance;
+    body[32] = static_cast<BYTE>(b.animSpeedCenti & 0xFF);
+    body[33] = static_cast<BYTE>((b.animSpeedCenti >> 8) & 0xFF);
+    body[34] = b.unknownTags;
+    body[35] = b.haveCombat ? 1 : 0;
+    body[36] = static_cast<BYTE>(b.reqInputClass);
+    body[37] = static_cast<BYTE>(b.reqAtkZone);
+    body[38] = static_cast<BYTE>(b.atkType);
+    body[39] = b.reqPrepared;
+    EnterCriticalSection(&g_write_lock);
+    send_frame(h, kLocalState, body, sizeof(body));
     LeaveCriticalSection(&g_write_lock);
 }
 
@@ -408,6 +438,33 @@ void serve(HANDLE h) {
                         result = kcdmp::mannequin::read_body_state(wantPlayer, entityId, &bs);
                     }, "ReadBodyState", ok);
                 send_body_state(h, ran && ok, seq, bs);
+                break;
+            }
+
+            // WO-102 Phase 1: position + yaw + riding + body state from one
+            // frame. Read-only and quiet, like 0x09: the refuse byte carries
+            // every gate, the native log gets one line per verdict change.
+            case kReadLocalState: {
+                kcdmp::localstate::LocalState ls{};
+                if (len != kReadLocalStateLen) {
+                    logf("PIPE: ReadLocalState wrong length %u", len);
+                    ls.refuse = kcdmp::localstate::kModuleMissing;
+                    send_local_state(h, false, seq, ls);
+                    break;
+                }
+                uint32_t entityId = 0;
+                std::memcpy(&entityId, body, 4);
+                if (entityId != 0) {
+                    logf("PIPE: ReadLocalState entityId=%u refused -- only the player (0) is supported", entityId);
+                    ls.refuse = kcdmp::localstate::kNoPlayerActor;
+                    send_local_state(h, false, seq, ls);
+                    break;
+                }
+                bool ok = false;
+                const bool ran = run_sync_bounded<bool>(
+                    [&ls](bool& result) { result = kcdmp::localstate::read_local_state(&ls); },
+                    "ReadLocalState", ok);
+                send_local_state(h, ran && ok, seq, ls);
                 break;
             }
 

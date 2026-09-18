@@ -65,6 +65,114 @@ compile-time `false`.
 
 ---
 
+## 1. Phase 1 — position off the log tail
+
+### 1.1 What the log path actually costs (observed, §2.1 table)
+
+The mod emits a `[KCD2-MP-DATA]` line every 20 ms; the agent saw a *fresh*
+line every 58–59 ms typical (p50) with p95 127–139 ms and a mean of 75–80 ms
+on both machines. The spread is the file: buffered writes, a tail polling at
+`emitIntervalMs/4`, and a 10 ms agent tick. Nothing in that chain is
+per-frame.
+
+### 1.2 The native read — established, not guessed (code-verified)
+
+Ghidra 12.1.3 headless, fresh imports of `CryEntitySystem.dll` and
+`EntityModule.dll` (this build), plus MSVC RTTI parsed straight out of the
+PE files:
+
+| fact | evidence |
+|---|---|
+| `CScriptBind_Entity::GetWorldPos` reads the position out of the entity's world matrix, no virtual call: `x = *(float*)(e+0x64)`, `y = e+0x74`, `z = e+0x84` | decompile of handler `FUN_18000c990`, registered under the string `"GetWorldPos"` |
+| `CScriptBind_Entity::GetWorldAngles` reads the same `Matrix34` at `e+0x58` and yaws by `atan2(m10, m00)` (`e+0x68`, `e+0x58`), with CryEngine's `Ang3::GetAnglesXYZ` gimbal branch `atan2(-m01, m11)` | decompile of `FUN_18000d170` |
+| `SetWorldPos` writes the same matrix through `CEntity::SetWorldTM` (`FUN_180090620`) — so this IS the entity's transform, not a cache | decompile of `FUN_18000c8f0` |
+| `CEntity::vftable` = `CryEntitySystem.dll + 0x14FA18`; its RTTI complete-object locator names `.?AVCEntity@@` at offset 0; `CEntity`'s only base is `IEntity` at 0 | Ghidra symbol + RTTI COL parse |
+| `C_Actor` (and `C_Human`, `C_Player`) is `CGameObjectExtensionHelper<C_Actor, IActor, 64>` → `IActor` → `IGameObjectExtension` → `IComponent` (+ `enable_shared_from_this` at +0x8, `IGameObjectView` at +0x40, `IGameObjectProfileManager` at +0x48) | RTTI base-class arrays in `EntityModule.dll`, all `mdisp` values read |
+| so the engine entity is the extension's `m_pEntity` member; by the CryEngine layout it sits at `actor+0x28` (vptr, weak_ptr ×2, `m_pGameObject`, `m_entityId`) | layout inference — **not** trusted alone, see the gate below |
+| `FUN_180B3C2D0` (WO-42's "resolve actor by id") is `IActorSystem::GetActor(id)` (`bind+0x70 → vtbl+0xC8 → vtbl+0x18(id)`) behind an `IActor` predicate (`vtbl+0x2A8`), not an entity lookup — corrects the reading that it returns an entity | decompile |
+
+**The hop is gated, not assumed.** `native/KCDMP/local_state.cpp` scans
+`actor+{0x28,0x30,0x38,0x18,0x20}` and accepts only a slot whose pointee's
+vptr equals `CEntity::vftable`; no match refuses with `EntityHopUnmapped`.
+Only the *offset* is cached and it is re-checked on every read (WO-99.5
+§1.3). The position and yaw are then the same bytes `player:GetWorldPos()` /
+`GetWorldAngles()` return, so the log line is an exact oracle for them,
+modulo frame timing.
+
+### 1.3 What was built (code-verified; synthetic 139/139 agent tests incl. 12 new)
+
+* **Pipe `0x0A ReadLocalState → 0x86 LocalState`** (40 bytes, one shape for
+  refusal and success): frame counter, x/y/z, yaw, flags (bit 0 riding =
+  Mannequin `Stance` reads `horse`), and the WO-100.5 body block byte-for-byte
+  as `0x85` carries it. One request per tick replaces the `0x09` request the
+  tick already made, so the pipe carries **the same number of round trips as
+  0.23.2** when the native path is on; `0x09` is still issued on the log
+  path. `nMaxInstances=1` and the agent's `_gate` serialisation are
+  untouched; the WO-100 sequence matching applies unchanged (`seq` at
+  `body[1]`).
+* **Agent, behind `mp_pos_native_on`** (`_posNative`): the tick reads
+  `0x0A`, dedupes by frame, and sends position + yaw + riding + body from that
+  one read. Vitals stay on the log line; the STALE heartbeat still keys on the
+  emitter's silence (a paused game never streams "live" frames). Two
+  independent fail-closed verdicts: **gave-up** after 20 consecutive
+  refusals (older DLL / unmapped hop), and **oracle-mismatch** after 20
+  consecutive samples more than 3.0 m from the log line's position — a
+  plausible wrong position is worse than the log path. Both print
+  `MP-POSNATIVE verdict=…` once and fall back for the session;
+  `mp_pos_native_off` then `_on` retries.
+* **Instrumentation** (`CadenceStats`, 1 ms buckets, exact p50/p95):
+  `MP-POSCADENCE path=log|native n= mean_ms= p50_ms= p95_ms= max_ms=
+  window_s=30`, every 30 s for **both** paths at once (the log path is free
+  to measure whatever the toggle says — a seq change is a fresh line), plus a
+  `scope=session` line each in `MP-SUMMARY`; `MP-POSNATIVE oracle n=
+  delta_mean_m= delta_max_m=` every 30 s. `[pos]` lines carry `path=`.
+* **Wire: unchanged.** The Position packet is the same 17/22 bytes with the
+  same fields; the WO-101 relay round-trip gate covers it as-is (10/10).
+
+### 1.4 The measurement — NOT DONE. Runbook for the maintainer
+
+No game ran this session; the DLL was built (`native/build/KCDMP/KCDMP.dll`,
+383,488 bytes) and not injected. The interval comparison the phase exists
+for is therefore **(inconclusive)** until this runs:
+
+1. Launch the Modding Tools game normally, connect the agent as usual, and
+   inject the *build-directory* DLL: `KCDMP_LauncherInjector.exe --pid <pid>
+   --dll <repo>\native\build\KCDMP\KCDMP.dll`; verify `ModuleMemorySize`
+   on the loaded module equals the build's `SizeOfImage` (WO-99.5 §6.1).
+2. Walk, jog, sprint, mount, ride and dismount for ≥ 2 minutes with
+   `mp_pos_native_off` (the default). Read two `MP-POSCADENCE path=log`
+   windows. There will be no `path=native` lines.
+3. `mp_pos_native_on`. Expect within seconds in `kcdmp-native.mirror.log`:
+   `LOCALSTATE: entity hop = actor+0x28 (pointee vptr == CEntity::vftable)`
+   (the offset may differ; **any** offset is fine, `EntityHopUnmapped` is
+   not) then `LOCALSTATE: first read OK … pos=(…) yaw=…`. In `agent.log`
+   expect `[pos] … path=native` and, at the first 30 s mark,
+   `MP-POSNATIVE oracle … delta_max_m=` **well under 3 m** — that is the
+   known-answer check passing. Repeat the same movement set for ≥ 2 minutes.
+4. **The decision:** compare `p50_ms` and `p95_ms` of `path=native` against
+   `path=log`. The native path earns its default only if p95 is measurably
+   lower; if it is not, the honest result is "no measurable improvement" and
+   the default stays off. `max_ms` on both paths will show menu/load gaps —
+   compare p95, not max.
+5. Riding: `[pos] … riding=True path=native` while mounted; if the flag
+   disagrees with the log path's (`riding=` on the same line before the
+   flip), that is a finding, not a fix — report both.
+6. Peer side, optional: a second machine's `MP-GHOSTPKT ghost=<id> ia_mean_ms=`
+   for your ghost before and after the flip is the receiver's view of the same
+   cadence.
+
+### 1.5 Wire compatibility (Phase 1)
+
+No wire change. Pipe change is additive: a 0.23.2 DLL answers nothing to
+`0x0A`, the agent counts 20 no-answers (~100 s at the 5 s reply deadline) and
+prints `MP-POSNATIVE verdict=gave-up … no_answer=20`, staying on the log
+path — **so on a 0.23.2 DLL the toggle costs ~100 s of the tick blocking on
+the reply deadline before it gives up.** That is the one rough edge of a
+mixed pair and it only exists while the toggle is on; the shipped default
+decides whether anyone meets it (end gate).
+
+---
+
 ## 2. Phase 2 — baseline the claim model (done before Phase 1; independent of it)
 
 ### 2.1 The 2026-09-17 figures, reproduced and corrected in place (observed)

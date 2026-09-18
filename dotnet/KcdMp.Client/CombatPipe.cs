@@ -29,9 +29,11 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte GhostSwing        = 0x06;
     private const byte GhostIsolate      = 0x07;
     private const byte ReadBodyState     = 0x09;   // WO-100.5 Phase 2, read-only
+    private const byte ReadLocalState    = 0x0A;   // WO-102 Phase 1, read-only
     private const byte Result            = 0x81;
     private const byte Pong              = 0x83;
     private const byte BodyStateReply    = 0x85;   // WO-100.5 Phase 2
+    private const byte LocalStateReply   = 0x86;   // WO-102 Phase 1
 
     private const int GuidLen = 16;
 
@@ -360,6 +362,41 @@ public sealed class CombatPipe : IAsyncDisposable
 
     /// <summary>WO-100.5: how many body-state reads were attempted.</summary>
     public long BodyStateReads { get; private set; }
+
+    /// <summary>WO-102 Phase 1: 0x0A reads issued.</summary>
+    public long LocalStateReads { get; private set; }
+    /// <summary>WO-102 Phase 1: 0x0A reads the DLL refused or never answered.</summary>
+    public long LocalStateRefused { get; private set; }
+    /// <summary>WO-102 Phase 1: refusals by reason code (index = <see cref="LocalStateRefuse"/>; 255 folds into slot 7).</summary>
+    public long[] LocalStateRefuseByCode { get; } = new long[8];
+
+    /// <summary>
+    /// WO-102 Phase 1: one native read of the local player's position, yaw,
+    /// riding state and body state, all from one frame (pipe 0x0A -> 0x86).
+    /// Null on any refusal; the reason is counted, never guessed. A DLL that
+    /// predates the command answers nothing and lands in "Unknown" after the
+    /// reply deadline -- the caller gives up on the path after a run of those.
+    /// </summary>
+    public async Task<LocalState?> ReadLocalStateAsync(CancellationToken ct = default)
+    {
+        var payload = new byte[4];   // entityId 0 = the local player (reserved for a per-entity read)
+        var (body, _) = await SendAndAwaitAsync(ReadLocalState, payload, LocalStateReply, ct);
+        LocalStateReads++;
+        if (body is null)
+        {
+            LocalStateRefused++; LocalStateRefuseByCode[7]++;
+            return null;
+        }
+        if (!LocalStateCodec.TryParse(body, out var st, out var why))
+        {
+            LocalStateRefused++;
+            int slot = (byte)why < 7 ? (byte)why : 7;
+            LocalStateRefuseByCode[slot]++;
+            return null;
+        }
+        BodyStateUnknownTags += LocalStateCodec.UnknownTags(body);
+        return st;
+    }
     /// <summary>WO-100.5: how many of those the DLL refused (a gate said no, or it is an older DLL).</summary>
     public long BodyStateRefused { get; private set; }
     /// <summary>WO-100.5: running total of tags the native decode could not place. Healthy value is 0.</summary>

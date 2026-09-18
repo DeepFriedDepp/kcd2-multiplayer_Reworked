@@ -108,6 +108,31 @@ render position is re-seeded from the body. Toggle `mp_npc_yield_on|off`
 measure against), so a live A/B reads as: fewer NPCFIGHT events, NPCYIELD
 lines appearing.
 
+### MP-POSCADENCE — position sample cadence (agent.log, WO-102 Phase 1)
+`MP-POSCADENCE path=log|native n=<int> mean_ms=<F1> p50_ms=<int|>=2000> p95_ms=<int|>=2000> max_ms=<F0> window_s=<F0>`
+`MP-POSCADENCE path=log|native n= mean_ms= p50_ms= p95_ms= max_ms= scope=session`
+
+Sample-to-sample intervals of fresh local position samples, per source.
+`path=log` = a new `[KCD2-MP-DATA]` seq seen by the agent; `path=native` = a
+new DLL frame read over pipe `0x0A`. Both are measured whenever they have
+samples (the log path always; the native path only while
+`mp_pos_native_on` and not refused), so one session with the native path on
+yields both distributions. 1 ms buckets, exact percentiles; intervals
+across a suspension (menu, load, toggle flip) are not counted. The
+`scope=session` lines ride in `MP-SUMMARY`.
+
+### MP-POSNATIVE — native position path verdicts (agent.log, WO-102 Phase 1)
+`MP-POSNATIVE verdict=gave-up after=20 refused= module_missing= no_player= hop_unmapped= faulted= nonfinite= vtable= no_answer=`
+`MP-POSNATIVE verdict=refused reason=oracle-mismatch run= last_delta_m= native=(x,y,z) log=(x,y,z)`
+`MP-POSNATIVE oracle n= delta_mean_m= delta_max_m= bad_run= active=0|1`
+
+`gave-up`: 20 consecutive DLL refusals/no-answers -- the reason histogram
+says why (an older DLL shows as `no_answer`). `refused`: the known-answer
+check failed -- 20 consecutive native samples more than 3 m from the log
+line's position. `oracle`: every 30 s, the native-vs-log position delta
+(the log sample can lag by a few frames, so a delta well under 1 m is the
+healthy reading). `[pos]` lines carry `path=log|native`.
+
 ### MP-AUTHORITY — NPC ownership transitions (kcd.log, WO-102 Phase 2)
 `MP-AUTHORITY npc=<name> event=acquire|release|owner-change owner=<self|ghostId|?> via=<how> held_s=<F1> model=claim|host [from=<ghostId>]`
 

@@ -90,6 +90,14 @@ public sealed class LogTailGameTransport : IGameTransport
     public long FramesReceived { get; private set; }
 
     /// <summary>
+    /// WO-102 Phase 1: the sequence number of the most recent [KCD2-MP-DATA]
+    /// line parsed, or -1. A change here is one fresh sample on the log path
+    /// -- the agent's cadence instrumentation samples on it, so the log path
+    /// is measured on exactly the same footing as the native pipe path.
+    /// </summary>
+    public long LatestSeq { get { lock (_stateLock) return _latestSeq; } }
+
+    /// <summary>
     /// Frames missing according to the emitter's sequence numbers. Non-zero
     /// means the log dropped lines or the tailer could not keep up, which is
     /// the signal that this transport is not delivering what it promises.

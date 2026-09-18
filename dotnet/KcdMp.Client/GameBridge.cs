@@ -262,6 +262,25 @@ public partial class GameBridge(ClientConfig config)
     private volatile bool _hostAuthority = config.HostAuthorityEnabled;
     private volatile bool _posNative     = config.NativePositionEnabled;
 
+    // WO-102 Phase 1: the native position path's own state. Both cadences are
+    // measured every tick whatever the toggle says (the log path is free to
+    // measure: a seq change is a fresh line), so a session with the native
+    // path on yields both distributions on one machine.
+    private readonly CadenceStats _cadLog = new(), _cadNative = new();
+    private long _lastLogSeq = -1;
+    private ulong _lastNativeFrame;
+    private LocalState? _lastNative;
+    private int _posNativeMisses;
+    private bool _posNativeGaveUp;                 // 20 consecutive refusals: DLL too old / hop unmapped
+    private bool _posNativeRefusedByOracle;        // the known-answer check failed: native disagrees with the log line
+    private int _oracleBadRun;
+    private long _oracleN; private double _oracleSum, _oracleMax;
+    private const int    PosNativeGiveUpAfter = 20;
+    private const double OracleMaxM = 3.0;         // log sample may lag the frame by ~60 ms+; a horse covers ~0.7 m in that
+    private const int    OracleBadRunToRefuse = 20;
+    private static readonly TimeSpan CadenceReportInterval = TimeSpan.FromSeconds(30);
+    private static double NowMs() => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
+
     // ghostId → release version, from ReleaseVersion packets (WO-19). Empty
     // for a peer whose Handshake carried none (an old build). Read by
     // VersionIpcServer so the launcher can compare it against this agent's
@@ -649,7 +668,9 @@ public partial class GameBridge(ClientConfig config)
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=npc state_out={s.NpcStateOut} claim_out={s.NpcClaimOut} drag_out={s.NpcDragOut}"));
         Console.WriteLine(FormattableString.Invariant(
-            $"MP-SUMMARY section=wo102 authority_host={(_hostAuthority ? 1 : 0)} pos_native={(_posNative ? 1 : 0)} authority={(_isDamageAuthority ? 1 : 0)}"));
+            $"MP-SUMMARY section=wo102 authority_host={(_hostAuthority ? 1 : 0)} pos_native={(_posNative ? 1 : 0)} pos_native_gave_up={(_posNativeGaveUp ? 1 : 0)} pos_native_oracle_refused={(_posNativeRefusedByOracle ? 1 : 0)} native_reads={_combat.LocalStateReads} native_refused={_combat.LocalStateRefused} authority={(_isDamageAuthority ? 1 : 0)}"));
+        if (_cadLog.Summary("log") is string cl) Console.WriteLine(cl);
+        if (_cadNative.Summary("native") is string cn) Console.WriteLine(cn);
         Console.WriteLine(FormattableString.Invariant(
             $"MP-SUMMARY section=story divergences_pushed={s.StoryDivergencesPushed} cutscene_local_edges={s.CutsceneLocalEdges} cutscene_peer_edges={s.CutscenePeerEdges} ghost_packets={s.GhostPackets}"));
         if (_swingInbox is { } inbox) Console.WriteLine(inbox.SummaryLine());
@@ -1517,6 +1538,7 @@ public partial class GameBridge(ClientConfig config)
             long lastTimeAnnounce = nowTimestamp;   // WO-88: periodic quiet clock announce
             long lastWeatherTick = nowTimestamp;
             long lastPositionHeartbeat = nowTimestamp;
+            long lastCadenceReport = Stopwatch.GetTimestamp();   // WO-102 Phase 1
             long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
             long lastSummary = nowTimestamp;        // WO-99 Phase 4
 
@@ -1706,11 +1728,46 @@ public partial class GameBridge(ClientConfig config)
                     if (++_staleRun == 1)
                         Console.WriteLine("[pos] mod emitter silent -- sending stale heartbeats until it resumes");
                 }
+                // WO-102 Phase 1: cadence of the log path -- a seq change is one
+                // fresh emitter line. Measured whatever the toggle says.
+                if (_transport is LogTailGameTransport cadTail)
+                {
+                    long seqNow = cadTail.LatestSeq;
+                    if (seqNow >= 0 && seqNow != _lastLogSeq)
+                    {
+                        if (_lastLogSeq >= 0 && seqNow < _lastLogSeq) _cadLog.Break();   // emitter restart
+                        _lastLogSeq = seqNow;
+                        _cadLog.Sample(NowMs());
+                    }
+                }
+                // The native read, when the toggle is on and the mod's emitter is
+                // live. The emitter's silence is the pause signal (menu, load,
+                // cutscene -- WO-99 Phase 1) and the STALE heartbeat below keys
+                // on it; the native read is not consulted while it is silent, so
+                // a paused game never streams "live" frames.
+                LocalState? nat = null;
+                if (_posNative && state.HasValue)
+                    nat = await ReadNativeStateAsync(state.Value, cts.Token);
+                else if (!_posNative || !state.HasValue)
+                    _cadNative.Break();
+                if (IntervalElapsed(ref lastCadenceReport, CadenceReportInterval, nowTimestamp))
+                    ReportCadence();
+
                 if (state.HasValue)
                 {
                     var st = state.Value;
-                    float x = st.X, y = st.Y, z = st.Z, rotZ = st.RotZ;
-                    bool riding = st.IsRiding;
+                    // WO-102 Phase 1: one frame, one read, one packet -- position,
+                    // yaw, riding and body state all from the native sample when
+                    // there is one; the log line otherwise (0.23.2 behaviour).
+                    float x, y, z, rotZ; bool riding; LocalBodyState? local = null;
+                    if (nat is LocalState ns)
+                    {
+                        x = ns.X; y = ns.Y; z = ns.Z; rotZ = ns.RotZ; riding = ns.IsRiding; local = ns.Body;
+                    }
+                    else
+                    {
+                        x = st.X; y = st.Y; z = st.Z; rotZ = st.RotZ; riding = st.IsRiding;
+                    }
 
                     // WO-28 Flows A and C ride the same sample the position
                     // push already reads, so neither adds a read of its own.
@@ -1741,7 +1798,7 @@ public partial class GameBridge(ClientConfig config)
                         // earlier "flicker" was 300 ms sampling over tapped
                         // keys. Adding smoothing here would be inventing a
                         // problem the engine does not have.
-                        var local = await ReadLocalBodyStateAsync(cts.Token);
+                        if (nat is null) local = await ReadLocalBodyStateAsync(cts.Token);   // log path: the separate 0x09 read, as before
                         await SendPositionAsync(stream, x, y, z, rotZ, riding,
                                                 body: local?.Body);
                         // WO-100.5 Phase 3: the accepted input rides the same
@@ -1749,7 +1806,7 @@ public partial class GameBridge(ClientConfig config)
                         if (local is LocalBodyState lb)
                             await SendAttackEdgeAsync(stream, lb, cts.Token);
                         if (moved)
-                            Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms");
+                            Console.WriteLine($"[pos] {x:F1} {y:F1} {z:F1}  rot={rotZ:F2}  riding={riding}  read={sw.ElapsedMilliseconds}ms path={(nat is null ? "log" : "native")}");
                     }
                 }
 
@@ -4680,7 +4737,14 @@ public partial class GameBridge(ClientConfig config)
                 switch (tp[0])
                 {
                     case "authority_host": _hostAuthority = on; break;
-                    case "pos_native":     _posNative = on; break;
+                    case "pos_native":
+                        _posNative = on;
+                        // A fresh start each time it is switched on: the give-up
+                        // and oracle verdicts belong to the previous run.
+                        _posNativeMisses = 0; _posNativeGaveUp = false; _posNativeRefusedByOracle = false;
+                        _oracleBadRun = 0; _oracleN = 0; _oracleSum = 0; _oracleMax = 0;
+                        _cadNative.Reset(); _lastNativeFrame = 0; _lastNative = null;
+                        break;
                     default: Console.WriteLine($"[wo102] unknown toggle '{tp[0]}'"); break;
                 }
                 Console.WriteLine($"WO102-TOGGLE name={tp[0]} state={(on ? "on" : "off")} source=console authority={(_isDamageAuthority ? 1 : 0)}");
@@ -5328,6 +5392,80 @@ public partial class GameBridge(ClientConfig config)
         // release sent. WO-101: the bytes come from PositionCodec so the relay
         // round-trip gate sends exactly what this method sends.
         await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, body));
+    }
+
+    /// <summary>
+    /// WO-102 Phase 1: the native sample for this tick, or null when the log
+    /// path must be used. Three ways to null, each counted and each logged
+    /// once: the DLL refuses/does not answer (gives up after
+    /// <see cref="PosNativeGiveUpAfter"/> in a row -- an older DLL, or a build
+    /// whose actor-to-entity hop is unmapped); the known-answer check fails
+    /// (<see cref="OracleBadRunToRefuse"/> consecutive samples more than
+    /// <see cref="OracleMaxM"/> from the log line's position -- a plausible
+    /// number is not a read, WO-100 S10.5); or the same frame was already
+    /// sampled (returned as the cached sample so the coordinates stay native,
+    /// but not counted as a fresh one).
+    /// </summary>
+    private async Task<LocalState?> ReadNativeStateAsync(PlayerState oracle, CancellationToken ct)
+    {
+        if (_posNativeGaveUp || _posNativeRefusedByOracle) return null;
+        LocalState? r = null;
+        try { r = await _combat.ReadLocalStateAsync(ct); }
+        catch (OperationCanceledException) { throw; }
+        catch { }
+        if (r is not LocalState ls)
+        {
+            if (++_posNativeMisses == PosNativeGiveUpAfter)
+            {
+                _posNativeGaveUp = true;
+                var by = _combat.LocalStateRefuseByCode;
+                Console.WriteLine(FormattableString.Invariant(
+                    $"MP-POSNATIVE verdict=gave-up after={PosNativeGiveUpAfter} refused={_combat.LocalStateRefused} module_missing={by[1]} no_player={by[2]} hop_unmapped={by[3]} faulted={by[4]} nonfinite={by[5]} vtable={by[6]} no_answer={by[7]} -- position stays on the log tail this session (mp_pos_native_off then _on to retry)"));
+            }
+            _cadNative.Break();
+            return null;
+        }
+        _posNativeMisses = 0;
+        if (ls.Frame == _lastNativeFrame && _lastNative is LocalState same) return same;   // same frame: not a new sample
+        _lastNativeFrame = ls.Frame;
+        _lastNative = ls;
+        _cadNative.Sample(NowMs());
+
+        // Known-answer check against the log line's own reading of the same
+        // player. The log sample can be a few frames old, so the tolerance is
+        // generous and the refusal needs a sustained run -- but it is a hard
+        // refusal: a native path that reads a plausible wrong position is worse
+        // than the log path it replaces.
+        double dx = ls.X - oracle.X, dy = ls.Y - oracle.Y, dz = ls.Z - oracle.Z;
+        double d = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        _oracleN++; _oracleSum += d; if (d > _oracleMax) _oracleMax = d;
+        if (d > OracleMaxM)
+        {
+            if (++_oracleBadRun >= OracleBadRunToRefuse)
+            {
+                _posNativeRefusedByOracle = true;
+                Console.WriteLine(FormattableString.Invariant(
+                    $"MP-POSNATIVE verdict=refused reason=oracle-mismatch run={_oracleBadRun} last_delta_m={d:F2} native=({ls.X:F2},{ls.Y:F2},{ls.Z:F2}) log=({oracle.X:F2},{oracle.Y:F2},{oracle.Z:F2}) -- the native read is not this player's position; position stays on the log tail"));
+                _cadNative.Break();
+                return null;
+            }
+        }
+        else _oracleBadRun = 0;
+        return ls;
+    }
+
+    /// <summary>WO-102 Phase 1: the 30 s cadence window for both paths, plus the oracle window.</summary>
+    private void ReportCadence()
+    {
+        double now = NowMs();
+        if (_cadLog.Report("log", now) is string l) Console.WriteLine(l);
+        if (_cadNative.Report("native", now) is string n) Console.WriteLine(n);
+        if (_oracleN > 0)
+        {
+            Console.WriteLine(FormattableString.Invariant(
+                $"MP-POSNATIVE oracle n={_oracleN} delta_mean_m={_oracleSum / _oracleN:F2} delta_max_m={_oracleMax:F2} bad_run={_oracleBadRun} active={(_posNative && !_posNativeGaveUp && !_posNativeRefusedByOracle ? 1 : 0)}"));
+            _oracleN = 0; _oracleSum = 0; _oracleMax = 0;
+        }
     }
 
     /// <summary>

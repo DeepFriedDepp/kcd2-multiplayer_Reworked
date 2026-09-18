@@ -52,6 +52,16 @@
 //                        reply's ok byte and counted by the agent, not logged
 //                        per sample.
 //
+//     0x0A ReadLocalState [entityId:4 LE]          -> replies 0x86   (4)
+//                        WO-102 Phase 1: the local player's position, yaw,
+//                        riding flag and body state, all from ONE frame
+//                        (local_state.h). entityId must be 0 (the player);
+//                        the field is reserved for a per-entity read.
+//                        STRICTLY READ-ONLY. Queried at the position
+//                        stream's cadence, so quiet: refusals travel in the
+//                        reply's ok/refuse bytes, one native log line per
+//                        verdict change.
+//
 //     0x08 ConceptProbe [path:N utf8, no NUL, may be empty]        (0..480)
 //                        WO-97: read-only probe of the quest concept tree.
 //                        Enumerates C_ConceptManager's root modules by name
@@ -66,6 +76,14 @@
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
 //     0x83 Pong         []
+//     0x86 LocalState   [ok:1][seq:1][refuse:1][frame:8 LE]
+//                       [x:4f][y:4f][z:4f][rotZ:4f][flags:1][haveBody:1]
+//                       [pace:1][dir:1][stance:1][animSpeedCenti:2 LE]
+//                       [unknownTags:1][haveCombat:1][inputClass:1][zone:1]
+//                       [atkType:1][prepared:1]                      (40)
+//                        WO-102 Phase 1. Always 40 bytes, refusal or not;
+//                        the body block is byte-identical to 0x85's bytes
+//                        2..12. flags bit 0 = riding (Stance reads horse).
 //     0x85 BodyState    [ok:1][seq:1][pace:1][dir:1][stance:1]
 //                       [animSpeedCenti:2 LE][unknownTags:1]        (8)
 //                        WO-100.5 Phase 2. seq sits at body[1], exactly where
@@ -118,10 +136,12 @@ constexpr uint8_t kGhostSwing         = 0x06;
 constexpr uint8_t kGhostIsolate       = 0x07;
 constexpr uint8_t kConceptProbe       = 0x08;   // WO-97, read-only
 constexpr uint8_t kReadBodyState      = 0x09;   // WO-100.5 Phase 2, read-only
+constexpr uint8_t kReadLocalState     = 0x0A;   // WO-102 Phase 1, read-only
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;
 constexpr uint8_t kBodyState          = 0x85;   // WO-100.5 Phase 2
+constexpr uint8_t kLocalState         = 0x86;   // WO-102 Phase 1
 constexpr uint8_t kLocalHit           = 0x90;
 
 constexpr int kGuidLen                  = 16;
@@ -134,6 +154,8 @@ constexpr int kGhostSwingMaxLen         = 4 + 191;    // spec cap matches combat
 constexpr int kGhostIsolateLen          = kGuidLen + 1;
 constexpr int kConceptProbeMaxLen       = 480;    // matches concept_read.cpp's kMaxPath
 constexpr int kReadBodyStateLen         = 4;      // entityId LE; 0 means "the player"
+constexpr int kReadLocalStateLen        = 4;      // WO-102: entityId LE, must be 0 (the player)
+constexpr int kLocalStateLen            = 40;     // WO-102: the fixed 0x86 reply body
 constexpr uint8_t kFlagSuppressHitReaction = 0x01;
 
 /// Start the listener thread. Safe to call once; returns false if it could not
