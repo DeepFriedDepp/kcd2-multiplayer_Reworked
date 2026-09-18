@@ -339,12 +339,18 @@ function KCD2MP_LogSummary(reason)
     end
     local puppets = 0
     for _ in pairs(KCD2MP.npcPuppets or {}) do puppets = puppets + 1 end
+    -- WO-102.5 Phase 1: how many NPCs this client believes it still has
+    -- paused, right now -- the number a bundle audit compares against
+    -- (auth_pauses - auth_resumes). A mismatch between the two means some
+    -- pause was lost track of without a matching resume log line.
+    local pausedNow = 0
+    for _ in pairs(KCD2MP._npcPaused or {}) do pausedNow = pausedNow + 1 end
     local q = KCD2MP.quest
     mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
         .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d"
         .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s"
-        .. " auth_pauses=%d auth_resumes=%d auth_violations=%d"
+        .. " auth_pauses=%d auth_resumes=%d auth_paused_now=%d auth_violations=%d"
         .. " resync_bursts=%d resync_emitted=%d resync_applied=%d resync_moved=%d resync_skipped=%d",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
@@ -354,7 +360,7 @@ function KCD2MP_LogSummary(reason)
         (KCD2MP._authStats or {}).acquire or 0, (KCD2MP._authStats or {}).release or 0,
         (KCD2MP._authStats or {}).ownerChange or 0,
         (KCD2MP.wo102 and KCD2MP.wo102.authorityHost) and "host" or "claim",
-        (KCD2MP._authStats or {}).pause or 0, (KCD2MP._authStats or {}).resume or 0,
+        (KCD2MP._authStats or {}).pause or 0, (KCD2MP._authStats or {}).resume or 0, pausedNow,
         (KCD2MP._authStats or {}).violation or 0,
         (KCD2MP._resyncStats or {}).bursts or 0, (KCD2MP._resyncStats or {}).emitted or 0,
         (KCD2MP._resyncStats or {}).applied or 0, (KCD2MP._resyncStats or {}).moved or 0,
@@ -2746,9 +2752,29 @@ KCD2MP.npcProx = {
 --                  issues the engine's own `wh_ai_PauseNPC <name>` when a
 --                  puppet starts and `wh_ai_ResumeNPC <name>` when it is
 --                  released ("the pausing system", shipped console commands,
---                  docs/WO-102-findings.md S3). Live behaviour UNVERIFIED as
---                  of this build -- default off, `mp_probe_npc_pause` is the
---                  single-machine proof. Does nothing unless authorityHost.
+--                  docs/WO-102-findings.md S3). Does nothing unless
+--                  authorityHost.
+--                  WO-102.5 Phase 1: ships ON. The solo probe passed 8/8
+--                  (HELD + animation continues + hit registers + clean
+--                  resume, findings S3.3's runbook) -- tested solo, on
+--                  single NPCs, NEVER under a live puppet stream with two
+--                  machines. Resume is guaranteed on release/silence,
+--                  toggle-off, host-authority-off, `mp_stop`
+--                  (KCD2MP_Stop), the AGENT going away
+--                  (KCD2MP_Wo102ResumeAll, called from GameBridge.cs's own
+--                  disconnect path -- the game and its Lua state keep
+--                  running without the agent, so this reaches them from
+--                  outside), and a periodic reconciliation sweep (every 5s,
+--                  from KCD2MP_NpcSyncTick) that resumes anything still
+--                  believed-paused but no longer a tracked puppet -- the
+--                  catch-all for peer disconnect and any other way a puppet
+--                  stops existing without the normal release call. See
+--                  docs/WO-102.5-findings.md S1 for what is and is not
+--                  covered (notably: whether the pause survives INTO a
+--                  savegame written mid-pause is still open, see S1.3 --
+--                  there is no engine hook to resume-before-save, so the
+--                  reconciliation sweep's 5s exposure window is the actual
+--                  mitigation, not a real "before" guarantee).
 --   npcScanNative  mp_npc_scan_native_on|off WO-102.5 Phase 2: the agent
 --                  periodically calls the DLL's batched native NPC scan and
 --                  pushes the candidate name list here as
@@ -2765,7 +2791,7 @@ KCD2MP.npcProx = {
 KCD2MP.wo102 = {
     authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
     posNative      = false,   -- unmeasured (findings S1.4)
-    authorityPause = false,   -- unverified live (findings S3.3)
+    authorityPause = true,    -- WO-102.5 Phase 1: solo probe passed 8/8; not yet run under a live two-machine puppet stream
     npcScanNative  = false,   -- WO-102.5: unmeasured
 }
 KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause", npc_scan_native = "npcScanNative" }
@@ -2898,6 +2924,37 @@ local function mp_wo102_resume_all(why)
     local names = {}
     for name in pairs(KCD2MP._npcPaused) do names[#names + 1] = name end
     for _, name in ipairs(names) do mp_wo102_resume(name, why) end
+end
+
+-- WO-102.5 Phase 1: the agent's own disconnect/shutdown path (GameBridge.cs,
+-- alongside its existing KCD2MP_RemoveAllGhosts() call) has no other way to
+-- reach this local function. Guarantees resume when the AGENT goes away --
+-- closed, crashed, or the relay dropped it -- even though the game and its
+-- Lua state keep running.
+function KCD2MP_Wo102ResumeAll(why)
+    mp_wo102_resume_all(tostring(why or "agent-disconnect"))
+end
+
+-- WO-102.5 Phase 1: the safety net for every case that is not one of the
+-- three explicit resume paths above (release/silence, toggle-off,
+-- host-authority-off) -- peer disconnect, agent shutdown, mod unload, game
+-- exit, or any other way a puppet can stop existing without going through
+-- the normal release call. A name in KCD2MP._npcPaused with no entry in
+-- KCD2MP.npcPuppets is, by definition, a body nothing is streaming to
+-- anymore: there is no reason left for its brain to stay suppressed.
+-- Rate-limited by the caller (KCD2MP_NpcSyncTick), not on every tick --
+-- this runs regardless of npcSync.enabled or authority role, since a
+-- stray pause can outlive either.
+local NPC_RECONCILE_INTERVAL_S = 5.0
+local function mp_wo102_reconcile_pauses()
+    local names = {}
+    for name in pairs(KCD2MP._npcPaused) do
+        if not KCD2MP.npcPuppets[name] then names[#names + 1] = name end
+    end
+    for _, name in ipairs(names) do
+        mp_wo102_resume(name, "reconcile")
+        mp_log("WO102-AUTHORITY reconcile: resumed " .. name .. " (paused but no longer a tracked puppet)")
+    end
 end
 
 local function mp_wo102_violation(name, p, kind, distM)
@@ -3582,6 +3639,15 @@ function KCD2MP_NpcSyncTick()
     if not KCD2MP.npcSyncRunning then return end
     Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)  -- reschedule FIRST
     KCD2MP._npcSyncAliveAt = os.clock()
+
+    -- WO-102.5 Phase 1: the pause reconciliation sweep, independent of
+    -- npcSync.enabled and the authority gate below -- a stray pause is a
+    -- native engine state this tick's own early returns must not hide.
+    local nowRec = os.clock()
+    if (nowRec - (KCD2MP._npcReconcileAt or 0)) >= NPC_RECONCILE_INTERVAL_S then
+        KCD2MP._npcReconcileAt = nowRec
+        pcall(mp_wo102_reconcile_pauses)
+    end
 
     -- Gate at tick time, not start time: mp_npc_sync can flip and authority
     -- can migrate mid-session, and both must take effect without a restart.
@@ -7713,6 +7779,19 @@ function KCD2MP_Stop()
     if KCD2MP.interpGen then KCD2MP._interpRetired[KCD2MP.interpGen] = true end
     KCD2MP.labelRunning = false
     KCD2MP.labelCache = {}
+    -- WO-102.5 Phase 1: guarantee resume on `mp_stop` (and any other path
+    -- that reaches KCD2MP_Stop -- there is no live one today besides the
+    -- console command, but a future one gets this for free). Before
+    -- KCD2MP_RemoveAllGhosts, which would otherwise delete the puppet
+    -- entries mp_wo102_reconcile_pauses uses to decide "still needed" --
+    -- here every paused NPC is unpaused unconditionally. Agent shutdown and
+    -- disconnect are a SEPARATE path (KCD2MP_Wo102ResumeAll, called from
+    -- GameBridge.cs -- KCD2MP_Stop is never reached from there).
+    if KCD2MP._npcPaused then
+        local n = 0
+        for _ in pairs(KCD2MP._npcPaused) do n = n + 1 end
+        if n > 0 then mp_wo102_resume_all("mod-stop") end
+    end
     KCD2MP_RemoveAllGhosts()
     System.LogAlways("[KCD2-MP] Stopped")
 end

@@ -1949,6 +1949,11 @@ public partial class GameBridge(ClientConfig config)
 
             Console.WriteLine("Removing all ghosts...");
             try { await ExecLuaAsync("KCD2MP_RemoveAllGhosts()"); } catch { }
+            // WO-102.5 Phase 1: guarantee resume when THIS agent goes away --
+            // closed, crashed, or the relay dropped it. The game and its Lua
+            // state keep running without us, so whatever it still believes is
+            // paused must not be left that way.
+            try { await ExecLuaAsync("if KCD2MP_Wo102ResumeAll then KCD2MP_Wo102ResumeAll(\"agent-disconnect\") end"); } catch { }
         }
     }
 

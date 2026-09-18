@@ -89,13 +89,14 @@ local function clearLog() LOG = {} end
 
 -- (f) first: the SHIPPED defaults (WO-102 end gate) -- host authority on,
 --     the unmeasured/unverified levers off -- and the 0.23.2 knobs untouched.
-check("f: shipped defaults: authority_host on, pos_native off, authority_pause off",
-      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.authorityPause == false)
+check("f: shipped defaults: authority_host on, pos_native off, authority_pause on (WO-102.5 Phase 1)",
+      KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.authorityPause == true)
 check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
       and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == true)
 -- Every scenario below starts from the OFF baseline (the 0.23.2 model) and
 -- switches on what it tests, so the off state is proven to be 0.23.2.
 KCD2MP_Wo102Set("authority_host", false, "agent")
+KCD2MP_Wo102Set("authority_pause", false, "agent")
 
 -- (a) console flip.
 clearLog()
@@ -589,6 +590,70 @@ do
     check("y: and no violation is logged under the claim model", logCount("MP-AUTHORITY-VIOLATION") == 0)
     KCD2MP.npcSyncRunning = false
     check("y: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ------------------------------------------------------------ WO-102.5 Phase 1
+--   (aa) resume guarantees beyond the three WO-102 paths: a paused name with
+--        no tracked puppet is caught by the periodic reconciliation sweep
+--        (rate-limited, runs from KCD2MP_NpcSyncTick regardless of npcSync
+--        enabled or authority role); KCD2MP_Stop (`mp_stop`) and
+--        KCD2MP_Wo102ResumeAll (the agent's own disconnect path) both
+--        resume everything still paused
+do
+    resetAll4(); clearLog()
+    KCD2MP.npcSyncRunning = true; KCD2MP.npcSync.enabled = true
+    KCD2MP._npcReconcileAt = nil
+
+    -- A pause with no puppet -- as if the puppet had been removed by some
+    -- path that does not itself resume (the case this sweep exists for).
+    KCD2MP._npcPaused["aa_orphan"] = 100
+    KCD2MP.npcPuppets["aa_orphan"] = nil
+    NOW = 1000; KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("aa: the sweep resumes an orphaned pause", cmdCount("wh_ai_ResumeNPC aa_orphan") == 1
+        and KCD2MP._npcPaused["aa_orphan"] == nil)
+    check("aa: logs the reconcile line", logCount("WO102-AUTHORITY reconcile: resumed aa_orphan") == 1)
+    check("aa: counted as a resume", logCount("MP-AUTHORITY npc=aa_orphan event=resume owner=? via=reconcile") == 1)
+
+    -- Rate-limited: a second orphan appearing inside the same 5s window is
+    -- NOT caught until the interval elapses again.
+    CMDS = {}
+    KCD2MP._npcPaused["aa_orphan2"] = NOW
+    NOW = NOW + 1
+    KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("aa: rate-limited -- not swept inside the same window", cmdCount("wh_ai_ResumeNPC aa_orphan2") == 0)
+    NOW = NOW + 5.0   -- >= kdcmp.lua's NPC_RECONCILE_INTERVAL_S
+    KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("aa: swept once the interval elapses", cmdCount("wh_ai_ResumeNPC aa_orphan2") == 1)
+
+    -- mp_stop resumes everything still paused, tracked or not.
+    CMDS = {}
+    local e = mkEntity("aa_tracked", 0, 0, 0); ENTS["aa_tracked"] = e
+    KCD2MP.npcPuppets["aa_tracked"] = { owner = 1 }
+    KCD2MP._npcPaused["aa_tracked"] = NOW
+    KCD2MP.running = true
+    KCD2MP_Stop()
+    check("aa: mp_stop resumes the tracked pause too", cmdCount("wh_ai_ResumeNPC aa_tracked") == 1
+        and next(KCD2MP._npcPaused) == nil)
+
+    -- KCD2MP_Wo102ResumeAll: the agent's own disconnect path.
+    CMDS = {}
+    KCD2MP._npcPaused["aa_agent"] = NOW
+    KCD2MP_Wo102ResumeAll("agent-disconnect")
+    check("aa: agent-disconnect wrapper resumes it", cmdCount("wh_ai_ResumeNPC aa_agent") == 1
+        and next(KCD2MP._npcPaused) == nil)
+    check("aa: logged with via=agent-disconnect", logCount("event=resume owner=? via=agent-disconnect") == 1)
+
+    -- MP-SUMMARY-MOD carries the currently-paused count.
+    KCD2MP._npcPaused["aa_now"] = NOW
+    clearLog(); KCD2MP_LogSummary("t")
+    check("aa: summary carries auth_paused_now", logCount("auth_paused_now=1") == 1, lastLog("MP-SUMMARY-MOD"))
+    KCD2MP._npcPaused["aa_now"] = nil
+
+    KCD2MP.npcSyncRunning = false
+    check("aa: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- ------------------------------------------------------------ WO-102.5 Phase 2
