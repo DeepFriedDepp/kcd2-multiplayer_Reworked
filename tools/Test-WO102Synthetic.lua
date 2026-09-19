@@ -675,18 +675,27 @@ end
 --       push is fresh; a stale or never-received push falls back to the Lua
 --       enumerate exactly as with the toggle off; mp_npc_scan_compare logs a
 --       diff line
+--
+--       WO-103 Phase 2: KCD2MP_ApplyNativeScan's payload format changed from
+--       a bare name CSV to "name:x:y:z:yaw:isHorse" entries -- updated here
+--       to match; position/yaw substitution itself is scenario (dd) below.
 do
     resetAll4(); clearLog()
     KCD2MP.hitSensorOn = true
     KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
-    KCD2MP._nativeScan = { at = nil, names = {} }
+    KCD2MP._nativeScan = { at = nil, names = {}, pos = {} }
 
     NOW = 699
-    KCD2MP_ApplyNativeScan("z_a,z_b,bad name,z_c")
+    KCD2MP_ApplyNativeScan("z_a:1:2:3:0.5:0,z_b:4:5:6:1.0:0,bad name:1:2:3:0:0,z_c:7:8:9:0:1")
     check("z: gates a non-conforming name", #KCD2MP._nativeScan.names == 3
         and KCD2MP._nativeScan.names[1] == "z_a" and KCD2MP._nativeScan.names[2] == "z_b" and KCD2MP._nativeScan.names[3] == "z_c",
         table.concat(KCD2MP._nativeScan.names, ","))
     check("z: stamps a timestamp", KCD2MP._nativeScan.at == NOW)
+    check("z: parses position/yaw/isHorse per entry",
+        KCD2MP._nativeScan.pos["z_a"].x == 1 and KCD2MP._nativeScan.pos["z_a"].y == 2
+        and KCD2MP._nativeScan.pos["z_a"].z == 3 and KCD2MP._nativeScan.pos["z_a"].yaw == 0.5
+        and KCD2MP._nativeScan.pos["z_a"].isHorse == false
+        and KCD2MP._nativeScan.pos["z_c"].isHorse == true)
 
     local za = mkEntity("z_a", 5, 0, 0); ENTS["z_a"] = za
     local zb = mkEntity("z_b", 6, 0, 0); ENTS["z_b"] = zb
@@ -705,7 +714,7 @@ do
     -- toggle on, push fresh: the native names drive tracking, not SPHERE.
     KCD2MP.npcTracked = {}; clearLog()
     KCD2MP_Wo102Set("npc_scan_native", true, "agent")
-    KCD2MP_ApplyNativeScan("z_a,z_b,z_c")
+    KCD2MP_ApplyNativeScan("z_a:5:0:0:0:0,z_b:6:0:0:0:0,z_c:7:0:0:0:0")
     NOW = 701; KCD2MP._npcScanAt = 0
     KCD2MP_NpcSyncTick()
     check("z: native path tracks the pushed names it can resolve",
@@ -722,14 +731,14 @@ do
     check("z: logs the fallback reason", logCount("MP-NPCSCAN dir=consume verdict=fallback reason=stale") == 1)
 
     -- never received: same fallback, different reason.
-    KCD2MP._nativeScan = { at = nil, names = {} }
+    KCD2MP._nativeScan = { at = nil, names = {}, pos = {} }
     KCD2MP.npcTracked = {}; clearLog()
     NOW = NOW + 1; KCD2MP._npcScanAt = 0
     KCD2MP_NpcSyncTick()
     check("z: never-received also falls back", logCount("MP-NPCSCAN dir=consume verdict=fallback reason=never-received") == 1)
 
     -- compare: a fresh native push against the current Lua enumerate (SPHERE unchanged: {sphereOnly}).
-    KCD2MP_ApplyNativeScan("z_a,z_only_native")
+    KCD2MP_ApplyNativeScan("z_a:5:0:0:0:0,z_only_native:1:2:3:0:0")
     clearLog()
     KCD2MP_NpcScanCompare()
     check("z: compare logs lua/native counts",
@@ -781,12 +790,20 @@ do
     -- radius validation.
     check("bb: rejects a non-numeric radius", KCD2MP_SetAuthorityRadius("banana") == false
         and KCD2MP.wo1025.authorityRadius == 45.0)
-    check("bb: rejects an out-of-range radius", KCD2MP_SetAuthorityRadius("1000") == false
+    check("bb: rejects NaN", KCD2MP_SetAuthorityRadius(0/0) == false
         and KCD2MP.wo1025.authorityRadius == 45.0)
+    check("bb: rejects below the floor", KCD2MP_SetAuthorityRadius("5") == false
+        and KCD2MP.wo1025.authorityRadius == 45.0)
+    -- WO-103 Phase 1: the upper clamp is gone -- a large radius is now
+    -- accepted outright (the ceiling is meant to be found by testing to
+    -- failure, not stopped here). 1000 used to be rejected (WO-102.5); now
+    -- it is not.
+    check("bb: no longer rejects a large radius", KCD2MP_SetAuthorityRadius("1000") == true
+        and KCD2MP.wo1025.authorityRadius == 1000.0)
     clearLog()
     check("bb: accepts a valid radius", KCD2MP_SetAuthorityRadius("90") == true
         and KCD2MP.wo1025.authorityRadius == 90.0)
-    check("bb: logs the change", logCount("WO1025-RADIUS set=90.0 was=45.0") == 1)
+    check("bb: logs the change", logCount("WO1025-RADIUS set=90.0 was=1000.0") == 1)
     check("bb: announces it to the agent", logCount("authority_radius 90.0") == 1)
 
     -- an NPC beyond the OLD radius but within the new one is picked up on the next rescan.
@@ -944,6 +961,102 @@ do
 
     KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false
     check("cc: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ------------------------------------------------------------------ WO-103
+--   (dd) Phase 2 read substitution: a fresh native push is used for
+--        position/yaw instead of e:GetWorldPos()/GetWorldAngles() (proven by
+--        the EMITTED coordinates, not just a flag); a stale push falls back
+--        to the live read; mp_npc_read_native_off always uses the live read;
+--        mp_npc_read_compare matches within tolerance and fails the toggle
+--        closed on a real mismatch; mp_npc_read_native_on re-arms a fresh
+--        compare; the Phase 0 MP-NPCREAD/MP-NPCTRACK periodic lines fire.
+do
+    resetAll4(); clearLog()
+    KCD2MP.hitSensorOn = true                    -- authority; claim-model radius (30m), untouched by wo1025
+    KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
+    KCD2MP.wo102.npcScanNative = false           -- isolate: candidate discovery via the Lua sphere enumerate,
+                                                  -- read substitution via KCD2MP._nativeScan.pos directly
+    KCD2MP.wo1025.readNative = true
+    KCD2MP._nativeScan = { at = nil, names = {}, pos = {} }
+
+    local ddA = mkEntity("dd_a", 10, 0, 0); ENTS["dd_a"] = ddA; SPHERE = { ddA }
+    NOW = 5000; KCD2MP._npcScanAt = 0
+    KCD2MP._wo103ReportAt = NOW   -- suppress the periodic report until step 13 asks for it explicitly
+
+    KCD2MP_NpcSyncTick()
+    check("dd: tracked via the Lua enumerate", KCD2MP.npcTracked["dd_a"] ~= nil)
+    check("dd: no native push yet -- reads live", logCount("npc_state dd_a 10.000") == 1)
+
+    -- substitution: a fresh push at a DIFFERENT position is what gets
+    -- emitted -- proof it came from the push, not from the entity (whose
+    -- own px never changes in this scenario).
+    clearLog()
+    KCD2MP_ApplyNativeScan("dd_a:10.4:0:0:0:0")
+    NOW = NOW + 0.1
+    KCD2MP_NpcSyncTick()
+    check("dd: substitution -- the native push's position is what's emitted",
+        logCount("npc_state dd_a 10.400") == 1, lastLog("npc_state dd_a"))
+    check("dd: the entity's own live position was never touched", ddA.px == 10)
+    check("dd: this tick classified path=native", KCD2MP._npcReadStat.native.winN >= 1, KCD2MP._npcReadStat.native.winN)
+
+    -- staleness: the SAME push, now past mp_native_scan_stale_after_s()
+    -- (6s at the default scanMs=2000, same gate scenario z's fallback uses).
+    clearLog()
+    NOW = NOW + 7
+    KCD2MP_NpcSyncTick()
+    check("dd: a stale push falls back to the live read",
+        logCount("npc_state dd_a 10.000") == 1, lastLog("npc_state dd_a"))
+    check("dd: this tick classified path=lua", KCD2MP._npcReadStat.lua.winN >= 1, KCD2MP._npcReadStat.lua.winN)
+
+    -- toggle off: a FRESH push is ignored outright. (No emit is guaranteed
+    -- here -- the live position hasn't moved since the last tick read it --
+    -- so this checks the path classification and the absence of the native
+    -- value, not a specific emitted line.)
+    KCD2MP_ApplyNativeScan("dd_a:55:0:0:0:0")
+    clearLog()
+    local okOff = KCD2MP_SetNpcReadNative("off")
+    check("dd: WO103-READNATIVE off is logged", okOff == true and logCount("WO103-READNATIVE off") == 1)
+    clearLog()
+    NOW = NOW + 0.1
+    KCD2MP_NpcSyncTick()
+    check("dd: mp_npc_read_native_off never emits the native value", logCount("npc_state dd_a 55.000") == 0)
+    check("dd: mp_npc_read_native_off classified path=lua this tick", KCD2MP._npcReadStat.lua.winN >= 1)
+
+    -- known-answer check: agreeing data (0.2m apart, well inside the base
+    -- tolerance) passes; turning the toggle back on re-runs it immediately.
+    KCD2MP_ApplyNativeScan("dd_a:10.2:0:0:0:0")
+    clearLog()
+    local okOn = KCD2MP_SetNpcReadNative("on")
+    check("dd: enabling re-arms a fresh compare", okOn == true and logCount("MP-NPCREAD dir=compare") == 1)
+    check("dd: agreeing data verdicts match", logCount("verdict=match") == 1, lastLog("MP-NPCREAD dir=compare"))
+    check("dd: stays on after a clean compare", KCD2MP.wo1025.readNative == true)
+
+    -- a REAL mismatch (not explainable by movement at this age) fails closed.
+    KCD2MP_ApplyNativeScan("dd_a:9999:0:0:0:0")
+    clearLog()
+    KCD2MP_NpcReadCompare()
+    check("dd: a genuine mismatch fails the toggle closed", KCD2MP.wo1025.readNative == false)
+    check("dd: verdict=fail-closed is logged", logCount("verdict=fail-closed") == 1)
+    check("dd: the mismatching name is reported", logCount("mismatches=dd_a:") == 1)
+
+    -- Phase 0: the periodic tracked/culled + read-duration lines.
+    KCD2MP.wo1025.readNative = true
+    KCD2MP._wo103ReportAt = 0   -- force the interval check to trip on the next tick
+    clearLog()
+    NOW = NOW + 0.1
+    KCD2MP_NpcSyncTick()
+    check("dd: periodic report logs tracked/culled", logCount("MP-NPCTRACK tracked=1 culled=0") == 1, lastLog("MP-NPCTRACK"))
+    check("dd: periodic report logs a read-duration line", logCount("MP-NPCREAD path=") >= 1)
+
+    -- console commands registered argless (WO-94: the console drops arguments).
+    for _, name in ipairs({ "mp_npc_read_native_on", "mp_npc_read_native_off", "mp_npc_read_compare" }) do
+        local c = CCMDS[name]
+        check("dd: " .. name .. " registered argless", c ~= nil and not string.find(c.body, "%LINE", 1, true))
+    end
+
+    KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false; KCD2MP.wo1025.readNative = true
+    check("dd: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary.
