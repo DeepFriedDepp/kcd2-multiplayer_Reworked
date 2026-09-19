@@ -142,6 +142,45 @@ Session 2026-09-18. Findings: `docs/WO-103-findings.md`. Field runbook:
   (a header-only growth, and an agent-local push format change that never
   touches the DLL<->agent wire).
 
+## End gate details (0.26.1)
+
+* **Fresh-clone build.** `git clone` of `origin/main` at `47c646f` into a
+  new scratch directory (never the working tree, never reusing the 0.26.0
+  clone). `native\Build-Native.ps1` then `tools\Build-Installer.ps1`
+  end-to-end. Re-ran all three gates independently afterward: relay 13/13,
+  agent 157/157, Lua synthetic 196/196 (up from 194 -- the 2 staleness-gate
+  regression checks).
+* **Privacy sweep**: 1,024 files under the fresh clone's `release\`, same
+  one already-known benign hit (`KCDMP_launcher.dll`, the generic
+  `myserver.duckdns.org` example string), zero real hits. Native binaries
+  confirmed clean of the build account's name in both encodings --
+  `/PDBALTPATH` still applying.
+* **Pak verification**: extracted `Scripts/Startup/kdcmp.lua` from the
+  fresh clone's `kdcmp/Data/kdcmp.pak` directly; confirmed not just the
+  WO-103 markers but the SPECIFIC live-found fix -- `stale_after_s=%.1f`
+  (the new format string) and the comment text naming the 2026-09-18 field
+  session are both present, proving this pak carries the fix and isn't a
+  stale rebuild of the pre-fix commit.
+* **Native payload confirmed**: `KCDMP.dll` in the payload is 396,800
+  bytes, identical to 0.26.0's (no native source changed between the two --
+  this release is Lua-only).
+* **Artifact**: `KCDMP-Setup-0.26.1.exe`, sha256
+  `e3c5ab6e4b1e2a7881fdbe67f2a47f7789b96351899f9409cdf8e45ea68df5f1`,
+  100,575,644 bytes. Copied into the working tree's `release\` and
+  re-hashed there -- identical. `rollback/0.26.0` (tagged at `b6634f4`)
+  pushed to `origin` ahead of this build.
+* **For verifying the install actually replaces the stale agent this
+  time**: this build's own `KcdMpClient.exe` hashes to
+  `f2190583cf445f1cb544831bfc0b55efa779915f55499bf2ae3e0128aca2017c`. After
+  installing, hash `%LOCALAPPDATA%\KCDMP\KcdMpClient.exe` and compare --
+  a mismatch means the same install-while-running failure happened again
+  (findings §5.2).
+* **Not done**: the installer itself was not run from here (AppData
+  sandbox redirection). Whether the transport-truncation theory for the
+  native scan push (findings §5.2) holds even with a confirmed-fresh agent
+  is still open -- needs a live re-test with the hash above confirmed
+  matching first.
+
 ## Two more costumes for the standing trap
 
 "A plausible result is not a result" (WO-96/97/99.5/100/100.5/101/102.5)
