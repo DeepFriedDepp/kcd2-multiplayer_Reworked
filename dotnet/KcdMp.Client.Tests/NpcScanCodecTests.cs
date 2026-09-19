@@ -13,13 +13,14 @@ namespace KcdMp.Client.Tests;
 /// </summary>
 public class NpcScanCodecTests
 {
-    private static byte[] Header(bool ok, byte refuse, bool truncated, uint totalWalked, uint nameRejects, ushort count)
+    private static byte[] Header(bool ok, byte refuse, bool truncated, uint totalWalked, uint nameRejects, ushort count, uint droppedCount = 0)
     {
         var b = new byte[NpcScanCodec.HeaderLen];
         b[0] = (byte)(ok ? 1 : 0); b[1] = 3; b[2] = refuse; b[3] = (byte)(truncated ? 1 : 0);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(4), totalWalked);
         BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(8), nameRejects);
-        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(12), count);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(12), droppedCount);
+        BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(16), count);
         return b;
     }
 
@@ -51,9 +52,21 @@ public class NpcScanCodecTests
         Assert.False(res.Truncated);
         Assert.Equal(240u, res.TotalWalked);
         Assert.Equal(1u, res.NameRejects);
+        Assert.Equal(0u, res.DroppedCount);
         Assert.Equal(2, res.Entries.Count);
         Assert.Equal(new NpcScanEntry("ttkc_man_2", 100.5f, -20.25f, 3.0f, 1.57f, false), res.Entries[0]);
         Assert.Equal(new NpcScanEntry("ttkc_horse_3", 5.0f, 6.0f, 0.0f, 0.0f, true), res.Entries[1]);
+    }
+
+    [Fact]
+    public void Dropped_count_survives_the_round_trip()
+    {
+        // WO-103 Phase 1: the reply budget was hit; 37 further matches were
+        // found but not included.
+        var body = Header(true, 0, truncated: true, totalWalked: 37079, nameRejects: 2, count: 0, droppedCount: 37);
+        Assert.True(NpcScanCodec.TryParse(body, out var res, out _));
+        Assert.True(res.Truncated);
+        Assert.Equal(37u, res.DroppedCount);
     }
 
     [Fact]

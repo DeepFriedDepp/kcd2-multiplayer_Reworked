@@ -216,7 +216,7 @@ void send_local_state(HANDLE h, bool ok, uint8_t seq, const kcdmp::localstate::L
 // written under the same write lock every other send_* uses.
 void send_npc_scan_result(HANDLE h, bool ok, uint8_t seq, const kcdmp::npcscan::ScanResult& r) {
     std::vector<BYTE> frame;
-    frame.reserve(3 + 14 + (ok ? r.entries.size() * 80 : 0));
+    frame.reserve(3 + 18 + (ok ? r.entries.size() * 80 : 0));
     frame.resize(3);   // header filled in below once the payload length is known
     auto put = [&](const void* p, size_t n) {
         const BYTE* b = static_cast<const BYTE*>(p);
@@ -225,6 +225,7 @@ void send_npc_scan_result(HANDLE h, bool ok, uint8_t seq, const kcdmp::npcscan::
     BYTE okB = ok ? 1 : 0, truncB = r.truncated ? 1 : 0;
     put(&okB, 1); put(&seq, 1); put(&r.refuse, 1); put(&truncB, 1);
     put(&r.totalWalked, 4); put(&r.nameRejects, 4);
+    put(&r.droppedCount, 4);   // WO-103 Phase 1: how many more matched past the truncation point
     const uint16_t count = static_cast<uint16_t>(r.entries.size());
     put(&count, 2);
     for (const auto& e : r.entries) {

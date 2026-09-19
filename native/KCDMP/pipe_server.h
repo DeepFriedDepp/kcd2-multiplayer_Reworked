@@ -94,16 +94,20 @@
 //                        the body block is byte-identical to 0x85's bytes
 //                        2..12. flags bit 0 = riding (Stance reads horse).
 //     0x87 NpcScanResult [ok:1][seq:1][refuse:1][truncated:1]
-//                        [totalWalked:4 LE][nameRejects:4 LE][count:2 LE]
+//                        [totalWalked:4 LE][nameRejects:4 LE][droppedCount:4 LE][count:2 LE]
 //                        { [nameLen:1][name:N][x:4f][y:4f][z:4f][yaw:4f][isHorse:1] }*count
-//                        WO-102.5 Phase 2. Variable length (14-byte header
-//                        + count entries, each nameLen+17 bytes). No
-//                        exclusion policy applied natively (mod bodies,
-//                        mounted horse, name pattern beyond a printable-
-//                        ASCII read gate) -- every matching entity within
-//                        radius of any anchor is returned; Lua applies its
-//                        existing filters against this list exactly as it
-//                        did against System.GetEntitiesInSphere's result.
+//                        WO-102.5 Phase 2, header extended WO-103 Phase 1
+//                        (droppedCount). Variable length (18-byte header +
+//                        count entries, each nameLen+17 bytes). No exclusion
+//                        policy applied natively (mod bodies, mounted horse,
+//                        name pattern beyond a printable-ASCII read gate) --
+//                        every matching entity within radius of any anchor is
+//                        returned; Lua applies its existing filters against
+//                        this list exactly as it did against
+//                        System.GetEntitiesInSphere's result. droppedCount is
+//                        how many further matches were found after the
+//                        kMaxReplyBytes budget was hit (0 when !truncated) --
+//                        this used to be silently discarded (WO-103).
 //     0x85 BodyState    [ok:1][seq:1][pace:1][dir:1][stance:1]
 //                       [animSpeedCenti:2 LE][unknownTags:1]        (8)
 //                        WO-100.5 Phase 2. seq sits at body[1], exactly where

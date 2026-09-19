@@ -30,18 +30,21 @@ public enum NpcScanRefuse : byte
 }
 
 public readonly record struct NpcScanResult(
-    bool Truncated, uint TotalWalked, uint NameRejects, IReadOnlyList<NpcScanEntry> Entries);
+    bool Truncated, uint TotalWalked, uint NameRejects, uint DroppedCount, IReadOnlyList<NpcScanEntry> Entries);
 
 /// <summary>
 /// The 0x87 reply body:
 /// <code>
-/// [ok:1][seq:1][refuse:1][truncated:1][totalWalked:4 LE][nameRejects:4 LE][count:2 LE]
+/// [ok:1][seq:1][refuse:1][truncated:1][totalWalked:4 LE][nameRejects:4 LE][droppedCount:4 LE][count:2 LE]
 /// { [nameLen:1][name:N][x:4f][y:4f][z:4f][yaw:4f][isHorse:1] }*count
 /// </code>
+/// <c>droppedCount</c> (WO-103 Phase 1) is how many further matches were
+/// found natively after the reply's byte budget was already spent; 0 when
+/// <see cref="NpcScanResult.Truncated"/> is false.
 /// </summary>
 public static class NpcScanCodec
 {
-    public const int HeaderLen = 14;
+    public const int HeaderLen = 18;
 
     public static bool TryParse(ReadOnlySpan<byte> body, out NpcScanResult result, out NpcScanRefuse refuse)
     {
@@ -55,7 +58,8 @@ public static class NpcScanCodec
         bool truncated = body[3] != 0;
         uint totalWalked = BinaryPrimitives.ReadUInt32LittleEndian(body[4..]);
         uint nameRejects = BinaryPrimitives.ReadUInt32LittleEndian(body[8..]);
-        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(body[12..]);
+        uint droppedCount = BinaryPrimitives.ReadUInt32LittleEndian(body[12..]);
+        ushort count = BinaryPrimitives.ReadUInt16LittleEndian(body[16..]);
 
         var entries = new List<NpcScanEntry>(count);
         int o = HeaderLen;
@@ -72,7 +76,7 @@ public static class NpcScanCodec
             bool isHorse = body[o] != 0; o += 1;
             entries.Add(new NpcScanEntry(name, x, y, z, yaw, isHorse));
         }
-        result = new NpcScanResult(truncated, totalWalked, nameRejects, entries);
+        result = new NpcScanResult(truncated, totalWalked, nameRejects, droppedCount, entries);
         refuse = NpcScanRefuse.Ok;
         return true;
     }

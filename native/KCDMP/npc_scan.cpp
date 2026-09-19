@@ -119,6 +119,7 @@ void* g_classHorse = nullptr;
 bool  g_classesResolved = false;
 bool  g_announced = false;
 uint8_t g_lastRefuse = 0xFF;
+bool  g_wasTruncated = false;   // WO-103 Phase 1: edge-triggered truncation log
 
 bool resolve_classes(void* entitySystem) {
     if (g_classesResolved) return true;
@@ -182,7 +183,7 @@ bool scan(const Anchor* anchors, int anchorCount, float radius, ScanResult* out)
     { void* dummy = nullptr;
       if (!call_vtbl(kVtblIterMoveFirst, iter, &dummy)) { release_iter(); return fail(kReadFaulted); } }
 
-    uint32_t total = 0, vptrOk = 0, vptrBad = 0, nameRejects = 0;
+    uint32_t total = 0, vptrOk = 0, vptrBad = 0, nameRejects = 0, droppedCount = 0;
     size_t budget = kMaxReplyBytes;
     bool truncated = false;
     bool trustDecided = false;
@@ -220,8 +221,13 @@ bool scan(const Anchor* anchors, int anchorCount, float radius, ScanResult* out)
         char name[60]{};
         if (!read_name_safe(entity, name, sizeof(name))) { ++nameRejects; continue; }
 
+        // WO-103 Phase 1: once the byte budget is spent, keep walking (the
+        // iterator is already walking every entity regardless -- an early
+        // `break` here used to also cut totalWalked/vptrOk/nameRejects short
+        // for a truncated scan, silently under-reporting them) and count
+        // every further match instead of dropping it silently.
         const size_t entryBytes = 1 /*nameLen*/ + std::strlen(name) + 16 /*x,y,z,yaw*/ + 1 /*isHorse*/;
-        if (entryBytes > budget) { truncated = true; break; }
+        if (truncated || entryBytes > budget) { truncated = true; ++droppedCount; continue; }
         budget -= entryBytes;
 
         NpcEntry e{};
@@ -239,12 +245,25 @@ bool scan(const Anchor* anchors, int anchorCount, float radius, ScanResult* out)
     out->truncated = truncated;
     out->totalWalked = total;
     out->nameRejects = nameRejects;
+    out->droppedCount = droppedCount;
     g_lastRefuse = kOk;
 
     if (!g_announced) {
         g_announced = true;
         logf("NPCSCAN: first scan OK total=%u vptrOk=%u vptrBad=%u matched=%zu nameRejects=%u truncated=%d",
              total, vptrOk, vptrBad, out->entries.size(), nameRejects, truncated ? 1 : 0);
+    }
+    // WO-103 Phase 1: loud, edge-triggered -- this used to be a struct field
+    // nobody logged. Only fires on the 0->1 and 1->0 transitions so a
+    // persistently truncated radius doesn't spam every ~2s scan.
+    if (truncated != g_wasTruncated) {
+        g_wasTruncated = truncated;
+        if (truncated) {
+            logf("NPCSCAN: reply truncated -- budget=%zu bytes, matched=%zu returned, dropped=%u more within radius",
+                 kMaxReplyBytes, out->entries.size(), droppedCount);
+        } else {
+            logf("NPCSCAN: reply no longer truncated");
+        }
     }
     return true;
 }

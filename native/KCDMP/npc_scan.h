@@ -83,6 +83,13 @@ struct ScanResult {
     bool     truncated  = false;   // byte budget hit; some in-radius NPCs were not returned
     uint32_t totalWalked = 0;      // entities the iterator produced, for MP-NPCSCAN telemetry
     uint32_t nameRejects = 0;      // entities matched class+radius but failed the name-read gate
+    // WO-103 Phase 1: entities that matched class+radius+name AFTER the byte
+    // budget was already hit -- the count truncation silently dropped before
+    // this WO. The walk keeps going past truncation to count these (it was
+    // already walking every entity regardless; truncation only used to stop
+    // early via `break`, which also cut totalWalked/nameRejects short for a
+    // truncated scan -- fixed alongside this).
+    uint32_t droppedCount = 0;
     std::vector<NpcEntry> entries;
 };
 
