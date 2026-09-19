@@ -83,6 +83,12 @@ if (-not $SkipPublish) {
     Write-Host "WO-102 synthetic authority suite (tools\Test-WO102Synthetic.ps1) ..."
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Test-WO102Synthetic.ps1")
     if ($LASTEXITCODE -ne 0) { throw "WO-102 synthetic suite FAILED. Not shipping." }
+    # WO-104: the time_now formatting guard (a "%g" tostring mimic -- the exact
+    # field failure that killed time sync past 1e6 world-seconds) and the
+    # replica promote/demote/refuse paths. A regression here does not ship.
+    Write-Host "WO-104 synthetic time-format + replica suite (tools\Test-WO104Synthetic.ps1) ..."
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Test-WO104Synthetic.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "WO-104 synthetic suite FAILED. Not shipping." }
 
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Publish-Release.ps1 failed" }
