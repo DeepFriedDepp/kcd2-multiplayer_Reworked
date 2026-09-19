@@ -13,6 +13,7 @@ Session 2026-09-18. Findings: `docs/WO-103-findings.md`. Field runbook:
 | 2 — native position/yaw | **shipped behind `mp_npc_read_native_on` (on)**: the native scan already computed and wired x/y/z/yaw per entity (WO-102.5) — the entire gap was the agent discarding them before the push. Now pushed as `name:x:y:z:yaw:isHorse`; `KCD2MP_NpcSyncTick`'s read loop takes position from the push when fresh, else the SAME `e:GetWorldPos()` it always called (the entity is fetched regardless, for health/dead/KO/drawn/engaged — WO-103.5's job, unmapped). This is the answer to the cadence question: the fallback is free, so nothing stale ever ships and no cadence/second-call fix was needed. `mp_npc_read_compare` known-answer check (age-scaled tolerance) fails the toggle closed on a genuine mismatch; re-enabling re-verifies immediately | (code-verified); (synthetic) scenario `dd`, 18 new checks; NOT live-verified |
 | 3 — find the ceiling | **NOT RUN** — no game this session. Runbook §2 (45/150/300/600/1000/beyond, recording tracked/culled/MP-NPCREAD/truncation) written for the maintainer | none this session |
 | 4 — verification | synthetic 194/194 (was 169, +25, 0 regressed); every other Lua synthetic suite re-run green (48/35/33/72/47/70/101/32/160/50) + WO-99's durable "exits 2" quirk unchanged; agent unit tests 157/157 (was 156, +1); relay 13/13 unchanged (no wire change crosses it); native + full dotnet solution build clean | (observed) this session's own runs |
+| end gate | **built: `KCDMP-Setup-0.26.0.exe`** from a fresh clone of `origin main` at `e6ed0a2`; `rollback/0.25.1` tagged at `64b3f6b` (the last pre-WO-103 commit) before the bump | inside the clone: relay 13/13, agent 157/157, Lua synthetic 194/194; privacy sweep 1,024 files, one benign false positive (the same generic `myserver.duckdns.org` example string WO-102.5 already found and cleared, confirmed by reading its surrounding context again rather than assumed unchanged), zero real hits, `/PDBALTPATH` re-confirmed holding on both native binaries; pak byte-scanned for 8 of this session's own markers, all present incl. `authorityRadius = 300.0`; sha256 `1a92b62da10ae60bc85dabe526484b7ead630a8232b5594040193c6abd34a341`, 100,572,712 bytes |
 
 ## Commits (`WO-103:` on `origin main`)
 
@@ -28,7 +29,58 @@ Session 2026-09-18. Findings: `docs/WO-103-findings.md`. Field runbook:
    — `tools/Test-WO102Synthetic.lua`. Findings §4.1.
 4. Docs — this file, `docs/WO-103-findings.md`,
    `docs/WO-103-field-runbook.md`.
-5. End gate — 0.26.0 build (below).
+5. `WO-103: VERSION 0.26.0, README badge, release notes`.
+6. End gate (built) — this progress doc update; `KCDMP-Setup-0.26.0.exe`.
+
+## End gate details
+
+* **Fresh-clone build.** `git clone` of `origin/main` at `e6ed0a2` into a
+  scratch directory (never the working tree). `native\Build-Native.ps1`
+  (self-locates vcvars/cmake/ninja via `vswhere`) then
+  `tools\Build-Installer.ps1` end-to-end: pak rebuild
+  (`Build-And-Install-Mod.ps1 -NoInstall`), the relay round-trip gate, the
+  agent unit tests, the Lua synthetic suite, `Publish-Release.ps1`, the
+  install manifest, then Inno Setup. Re-ran all three gates independently
+  inside the same clone afterward for a clean, ungarbled pass/fail read
+  (the combined build log's tail was dominated by ISCC's own per-file
+  compression output): relay 13/13, agent 157/157, Lua synthetic 194/194.
+* **Privacy sweep, re-run rather than assumed** (the standing lesson from
+  WO-102.5's own end gate, which found a real regression this way): every
+  file under the fresh clone's `release\` output (1,024 files — same count
+  as 0.25.1's own sweep, consistent payload composition) scanned for three
+  real-identity needles (the build account name, the DDNS provider domain,
+  the associated mailbox name — not printed here, by design) as both raw
+  ASCII/UTF-8 and UTF-16LE. **One hit**: `KCDMP_launcher.dll`, UTF-16LE —
+  read its surrounding bytes directly rather than trusting the file name
+  alone, and it is the exact same generic `"...such as myserver.duckdns.org,
+  or an IP address"` WO-55 input-validation string 0.25.1's own sweep
+  already found and cleared. **Zero real hits.** Separately confirmed
+  neither `KCDMP.dll` nor `KCDMP_LauncherInjector.exe` carries the build
+  account's name in either encoding — `/PDBALTPATH` (`native/CMakeLists.txt`,
+  the WO-102.5 fix) is still applying.
+* **Pak verification**: opened the fresh clone's `kdcmp/Data/kdcmp.pak`
+  (a standard zip) and extracted `Scripts/Startup/kdcmp.lua` directly rather
+  than trusting the repo's own committed copy (WO-94's own caution — the
+  shipped pak is not byte-deterministic and is not what git tracks).
+  Checked for 8 markers unique to this session's own Lua changes
+  (`MP-NPCREAD`, `KCD2MP_NpcReadCompare`, `mp_npc_read_native_on`,
+  `WO103-READNATIVE`, `mp_npc_read_compare`, `NPC_READ_COMPARE_SPEED_MPS`,
+  `MP-NPCTRACK`, `authorityRadius = 300.0`) — **all 8 present**.
+* **Native payload confirmed**: `release\KCDMP\KCDMP.dll` inside the
+  installer payload is 396,800 bytes, matching this session's own
+  `native\Build-Native.ps1` output exactly (same source, same toolchain) —
+  the Setup exe ships the DLL this session actually built, not a stale one.
+* **Artifact**: `KCDMP-Setup-0.26.0.exe`, sha256
+  `1a92b62da10ae60bc85dabe526484b7ead630a8232b5594040193c6abd34a341`,
+  100,572,712 bytes. Copied from the scratch clone into the working tree's
+  `release\` folder and re-hashed there — identical. `rollback/0.25.1`
+  (tagged at `64b3f6b`, the last commit before any WO-103 change) pushed to
+  `origin` ahead of this build.
+* **Not done**: the installer itself was not run (AppData sandbox
+  redirection — the maintainer runs Setup + `Verify-Install.ps1`, per
+  standing session practice). Handed off, not self-verified end to end.
+  Phase 3's radius ladder and Phase 0's A/B baseline (`docs/
+  WO-103-field-runbook.md`) still have not run against a live game.
 
 ## Baseline before any change (observed this session)
 
