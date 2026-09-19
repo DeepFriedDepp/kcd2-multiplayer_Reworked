@@ -4623,6 +4623,19 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>
+    /// The time_now parse. Deliberately STRICT: plain decimal digits only.
+    /// WO-104: the 2026-09-18 session lost time sync when the world clock
+    /// crossed 1e6 and the mod's tostring() switched to scientific notation
+    /// ('1.00255e+06'). The fix is at the sender (kdcmp.lua formats with
+    /// "%.0f" now), not here -- a parser that accepted the exponent form
+    /// would also silently accept a reading that had already lost digits
+    /// (six significant figures at 1e6 is a ~5 s granularity), and the
+    /// clock-jump watcher would then see phantom jumps.
+    /// </summary>
+    public static bool TryParseWorldTime(string arg, out uint worldTime)
+        => uint.TryParse(arg, NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite, CultureInfo.InvariantCulture, out worldTime);
+
+    /// <summary>
     /// Handles a discrete event the player triggered in game, delivered via the
     /// log tail. Fire-and-forget because this runs on the tail loop's thread and
     /// must not block it.
@@ -4634,7 +4647,7 @@ public partial class GameBridge(ClientConfig config)
         // no dependency on sessions being up.
         if (name == "time_now")
         {
-            if (uint.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint worldTime))
+            if (TryParseWorldTime(arg, out uint worldTime))
                 OnWorldTimeReading(worldTime);
             else
                 Console.WriteLine($"[timeskip] malformed time_now '{arg}'");

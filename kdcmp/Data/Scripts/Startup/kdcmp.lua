@@ -897,7 +897,14 @@ local WORLD_DAY_SECONDS = 86400
 function KCD2MP_ReportWorldTime()
     local ok, t = pcall(function() return Calendar.GetWorldTime() end)
     if ok and t then
-        KCD2MP_EmitEvent("time_now", tostring(math.floor(t)))
+        -- WO-104: NEVER tostring() a world time. This build's Lua formats
+        -- numbers with "%g" (observed: 1002550 -> '1.00255e+06' in the
+        -- 2026-09-18 session), so past 1e6 world-seconds (~11.6 days of
+        -- game time) tostring() switched to scientific notation and the
+        -- agent's integer parse rejected every reading -- time sync went
+        -- dead on that save permanently. "%.0f" is exact for any integer
+        -- that fits a double and never uses an exponent.
+        KCD2MP_EmitEvent("time_now", string.format("%.0f", math.floor(t)))
     else
         mp_log("ReportWorldTime: Calendar.GetWorldTime unavailable")
     end
@@ -1052,7 +1059,9 @@ function KCD2MP_InviteNearest(kindStr, wagerAmount)
     end
 
     local payload = tostring(bestId) .. " " .. kindStr
-    if kindStr == "dice" then payload = payload .. " " .. tostring(math.floor(wagerAmount)) end
+    -- WO-104: %.0f not tostring() -- same 1e6 scientific-notation exposure as
+    -- time_now (the agent parses this field with int.TryParse).
+    if kindStr == "dice" then payload = payload .. " " .. string.format("%.0f", math.floor(wagerAmount)) end
 
     mp_log("Inviting ghost " .. tostring(bestId) .. " to " .. kindStr
         .. (kindStr == "dice" and (" wager=" .. tostring(wagerAmount)) or ""))
