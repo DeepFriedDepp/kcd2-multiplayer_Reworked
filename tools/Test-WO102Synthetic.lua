@@ -1040,6 +1040,22 @@ do
     check("dd: verdict=fail-closed is logged", logCount("verdict=fail-closed") == 1)
     check("dd: the mismatching name is reported", logCount("mismatches=dd_a:") == 1)
 
+    -- Live-found bug (2026-09-18 field session): without a staleness gate,
+    -- the allowed-drift formula grows unbounded with age, so an old push
+    -- reports "match" against whatever the live entity has since drifted
+    -- to -- proven live against a real NPC that had moved ~500m of
+    -- accumulated drift over several minutes and still verdicted "match".
+    -- A stale push must be excluded from the check entirely, not passed
+    -- with a wide tolerance.
+    KCD2MP.wo1025.readNative = true
+    KCD2MP_ApplyNativeScan("dd_a:10.2:0:0:0:0")   -- fresh again, agreeing data
+    NOW = NOW + mp_native_scan_stale_after_s() + 1   -- now stale
+    clearLog()
+    KCD2MP_NpcReadCompare()
+    check("dd: a stale push is excluded, not auto-matched", logCount("verdict=no-data reason=stale") == 1,
+        lastLog("MP-NPCREAD dir=compare"))
+    check("dd: a stale compare never touches the toggle", KCD2MP.wo1025.readNative == true)
+
     -- Phase 0: the periodic tracked/culled + read-duration lines.
     KCD2MP.wo1025.readNative = true
     KCD2MP._wo103ReportAt = 0   -- force the interval check to trip on the next tick

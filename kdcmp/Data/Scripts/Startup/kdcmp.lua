@@ -3598,6 +3598,21 @@ local NPC_READ_COMPARE_SPEED_MPS = 3.0
 function KCD2MP_NpcReadCompare()
     local ageS = KCD2MP._nativeScan.at and (os.clock() - KCD2MP._nativeScan.at) or nil
     if not ageS then mp_log("MP-NPCREAD dir=compare verdict=no-data reason=never-received"); return end
+    -- Live-found bug (2026-09-18 field session): without this gate, the
+    -- allowed-drift formula below grows UNBOUNDED with age, so a push that
+    -- went stale minutes ago still reports "match" against whatever the
+    -- live entity has drifted to since -- the exact "disagreement means
+    -- stop, not tune" property this check exists for, defeated by its own
+    -- tolerance formula. The read substitution itself already refuses a
+    -- push this old (mp_native_scan_stale_after_s); the compare must refuse
+    -- it too, for the same reason -- comparing something that would never
+    -- be used for a real read proves nothing.
+    local staleAfterS = mp_native_scan_stale_after_s()
+    if ageS > staleAfterS then
+        mp_log(string.format("MP-NPCREAD dir=compare verdict=no-data reason=stale native_age_s=%.1f stale_after_s=%.1f",
+            ageS, staleAfterS))
+        return
+    end
 
     local n, sumD, maxD, mismatches = 0, 0, 0, {}
     for name in pairs(KCD2MP.npcTracked) do
