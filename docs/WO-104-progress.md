@@ -12,7 +12,7 @@ Session 2026-09-18. Findings: `docs/WO-104-findings.md`. Field runbook:
 | 1 — replicas for contested NPCs | **built behind `mp_npc_replica_on\|off\|status`** (`5ad5b06`), built default off, **flipped ON for 0.26.2 by the maintainer at the end gate**. Body is `NPC`+`NoAI=true` soul-bound to the original's `soul:GetId()` — not `NPC_NAI`, which is unreachable with a soul on this build (findings §3.1). Promote on the first violation, one-call spawn-then-hide; demote on sheathed 10 s / death / release / toggle / host-off / stop / sweep. `npcid` + new `npc_replica` event re-point native swings and outbound damage. No wire change | (code-verified); (synthetic) WO-104 suite (b)–(i), 91/91 total; **nothing live** |
 | 2 — pause lever default | **shipped OFF** (`f9df723`). 155/155 violations `paused=1` recorded next to WO-102.5 §1.1, §6.1 and WO-102 §4.3. Code + toggle kept | (observed) joiner kcd.log; (synthetic) WO-104 (j), WO-102 (f) updated |
 | 3 — verification | **done** (`4ae2e6e`): WO-104 suite added to `Build-Installer.ps1`'s pre-publish gate; WO-101 relay gate unchanged (no packet change); field runbook written | (synthetic) all suites green — see below |
-| end gate | **blocked on the version string** — the maintainer names it (standing rule). Everything up to the build is pushed | — |
+| end gate (0.26.2) | **built: `KCDMP-Setup-0.26.2.exe`** from a fresh clone of `origin main` at `ec49601`; version named by the maintainer; `rollback/0.26.1` tagged at `255f9a0` before the bump. Built TWICE: the first exe (at `dad1988`, replica default off) was superseded the same hour when the maintainer flipped the replica default on; only the second is kept | see "End gate details (0.26.2)" below |
 
 ## Commits (`WO-104:` on `origin main`)
 
@@ -20,7 +20,10 @@ Session 2026-09-18. Findings: `docs/WO-104-findings.md`. Field runbook:
 2. `5ad5b06` WO-104 Phase 1: brainless replicas for contested NPCs (mp_npc_replica_on, default OFF)
 3. `f9df723` WO-104 Phase 2: mp_authority_pause defaults OFF -- 0/155 under a live stream
 4. `4ae2e6e` WO-104 Phase 3: WO-104 suite in the installer gate, two-machine field runbook
-5. docs — this file, `docs/WO-104-findings.md`
+5. `4da8216` docs — this file, `docs/WO-104-findings.md`
+6. `dad1988` WO-104: VERSION 0.26.2, README badge, release notes
+7. `ec49601` WO-104: mp_npc_replica ships ON for 0.26.2 (maintainer's call)
+8. end-gate details — this file
 
 ## Toggles and defaults after this WO
 
@@ -52,12 +55,46 @@ Session 2026-09-18. Findings: `docs/WO-104-findings.md`. Field runbook:
   §1). The fix is one line and the mimic reproduces the exact log
   string, but "the sky moves on the other machine" has not been seen.
 
-## End gate (pending)
+## End gate details (0.26.2)
 
-Not started: needs the version string. When given: tag the previous
-release, bump `VERSION` + README badge, release notes (time-sync fix
-first, every toggle and default, matched-set warning), fresh-clone build
-via `Build-Installer.ps1` (relay gate, agent tests, WO-102 + WO-104
-suites), privacy sweep UTF-8 + UTF-16LE with file count, `/PDBALTPATH`
-check, pak byte-scan for this session's markers (`%.0f` time_now line,
-`MP-NPCREPLICA`, `authorityPause = false`).
+* **Version** `0.26.2`, named by the maintainer. `rollback/0.26.1` tagged
+  at `255f9a0` (the last pre-WO-104 commit) and pushed before the bump.
+* **Fresh-clone build.** `git clone` of `origin main` into a new scratch
+  directory (never the working tree), `tools\Build-Installer.ps1`
+  end-to-end (it rebuilds the pak from the clone's Lua and builds the
+  native plugin itself when `native\build` is absent). Gates inside the
+  build: relay round-trip 13/13, agent 170/170, WO-102 196/196, WO-104
+  92/92. Built twice: first at `dad1988` (replica off), then the maintainer
+  flipped the replica default on; the clone was fast-forwarded to
+  `ec49601`, `release\` wiped, rebuilt. The first exe was deleted; only the
+  second exists.
+* **Privacy sweep, re-run on the second build**: 1,024 files under the
+  clone's `release\` (same count as 0.25.1/0.26.0/0.26.1), three
+  real-identity needles (build account name, DDNS provider domain, mailbox
+  name — not printed, by design) as UTF-8 and UTF-16LE. **Two hits, both
+  the already-known generic `myserver.duckdns.org` example string in
+  `KCDMP_launcher.dll`** (UTF-16LE; the WO-55 validation message and the
+  launcher's placeholder text), read in context. **Zero real hits.**
+  `KCDMP.dll` (396,800 bytes, unchanged from 0.26.1 — no native change this
+  WO) and `KCDMP_LauncherInjector.exe` (158,720 bytes) carry zero `Users\`
+  path fragments — `/PDBALTPATH` still applying.
+* **Pak carries this session's Lua** — read `Scripts/Startup/kdcmp.lua`
+  out of the clone's `kdcmp/Data/kdcmp.pak` directly: the `%.0f` `time_now`
+  line (1), `MP-NPCREPLICA` (5), `authorityPause = false,` (1),
+  `mp_npc_replica_on` (6), `WO-104` (22), the replica default-ON line (1)
+  and the default-OFF line (0). The tracked pak in git is NOT updated
+  (last committed at 0.23.1; every release since ships the installer's
+  own rebuild — unchanged convention).
+* **Artifact**: `KCDMP-Setup-0.26.2.exe`, sha256
+  `94899572aa8e743eec6c3404e06df1f63d010dc707fd462353ca550086f792cf`,
+  100,576,182 bytes. Copied into the working tree's `release\` and
+  re-hashed there — identical. Payload: `KcdMpClient.dll`
+  `e0397f5405f0095fabe48813660ec3b02cdd436b22f23dc1f849f00879627fd6`
+  (858,112 bytes; the code — `KcdMpClient.exe` is only the apphost and
+  hashes the same across both builds), `KCDMP.dll`
+  `c427e1d31d867ec295eb1e03ae6f20d1aa2636ca43b043d94b4547081047ac32`.
+* **Not done**: the installer was not run from here (AppData sandbox
+  redirection — the maintainer runs Setup and verifies from their own
+  terminal). Nothing in Phase 1 has run against a game; the pause-lever
+  flip and the time-sync fix are (synthetic) until the next two-machine
+  session (`docs/WO-104-field-runbook.md`).
