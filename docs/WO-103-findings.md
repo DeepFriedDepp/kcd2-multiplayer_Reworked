@@ -377,50 +377,68 @@ reply-truncation ceiling) -- blocked by §5.2. Not run: village vs. dense-
 town comparison (one town, the same one WO-102.5 tested in, per matching
 NPC names in the log).
 
-### 5.2 The native scan never reached Lua this session -- a real bug, but not in this WO's code
+### 5.2 The native scan never reached Lua this session -- a real bug, root cause corrected same day
 
-**Root cause, confirmed**: the running agent (`KcdMpClient.exe`,
-`C:\...\AppData\Local\KCDMP\KcdMpClient.exe`) hashed to a build dated 8/15 --
-sha256 `37e91de7...`, nothing this session or WO-103 ever produced (this
-session's own fresh-clone build hashes to `a8a27739...`). **The mod pak WAS
-confirmed fresh**: `KCD2MP._nativeScan`/`KCD2MP_ApplyNativeScan`/
-`KCD2MP_NpcReadCompare` all exist and behave exactly as WO-103 shipped them
--- proven by manually invoking `KCD2MP_ApplyNativeScan("name:x:y:z:yaw:h")`
-via the console and watching `KCD2MP_NpcSyncTick`'s very next emit carry
-the injected coordinates instead of the entity's real (unmoved) position,
-then correctly fall back once the injected sample aged past
-`mp_native_scan_stale_after_s()`. **This is the read substitution's first
-live proof, and it is unambiguous**: the fallback-is-free design (§2.3)
-behaves exactly as designed against a real, running game.
+**CORRECTED, same day, after this section first shipped**: the original
+version of this section concluded the running agent was a stale, months-old
+build (hashed `37e91de7...`, dated 8/15) and treated that as the likely
+explanation. **That conclusion was wrong, and it was wrong for a known,
+documented reason**: it was based on hashing `KcdMpClient.exe` under
+`%LocalAppData%\KCDMP` from the coding shell -- a path this project's own
+standing memory (`appdata-sandbox-redirection.md`, WO-32/43/74) already
+established is sandbox-redirected and merges in a shadow copy dated
+exactly 2026-08-15, making "any conclusion drawn about that path from this
+shell ... worthless." That memory was not consulted before this session
+drew the conclusion. Checked afterward: `%TEMP%\Setup Log 2026-09-18
+#005.txt` (Setup's own install log, NOT sandboxed, always trustworthy)
+shows `Installation process succeeded` / `verify: PASS (1024 components, 0
+stale removed)` at 19:31:58 -- **about two minutes before the game session
+that this whole finding was drawn from ever connected**. The agent running
+the entire live session was the correct, freshly-installed 0.26.0 build.
+Confirmed independently: the maintainer ran `certutil -hashfile` themselves
+from their own terminal (not this shell) and got the expected hash both
+times a re-verification was needed.
 
-**What the stale agent produced instead**: `kcd.log` showed a Lua syntax
-error, `[Lua Error] ... unfinished string near '<eof>'`, firing every ~2
-real seconds from shortly after connect onward -- the EXACT cadence of
-`NpcScanInterval`. An "unfinished string" error means a quoted Lua string
-argument was cut off before its closing quote, i.e. **the console received
-a truncated request**, not a malformed-but-complete one (a bare-name CSV
-with no colons, which an old pre-WO-103 agent would send, is syntactically
-complete Lua and would not produce this error). The most consistent
-explanation: the debug console's own HTTP request-line handling has a
-length limit well under what a ~40-200-name push can reach, and has had
-this problem since WO-102.5's own native scan shipped -- this session's own
-`KCD2MP._nativeScan.at` staying `nil` for the ENTIRE session (never once
-set by anything other than a manual injection) is consistent with every
-automatic push failing this same way, not merely being absent. **This is
-NOT proven** -- the agent's own console/stdout was unreachable (`agent.log`
-existed but stayed 0 bytes all session, the same AppData-sandbox-
-redirection constraint WO-102.5 hit) -- but it is the best-supported
-explanation available from `kcd.log` alone, and it predates anything this
-session did (the error's first occurrence in the log is well before this
-session's own console probes began).
+**What this means**: the native scan genuinely never reached Lua while
+running CORRECT, matched, fresh code. This is a real, still-open bug in
+this WO's own shipped design, not a deployment artifact. The evidence for
+WHAT is going wrong, gathered before the (wrong) root-cause conclusion was
+drawn, still stands and is now the leading explanation:
 
-**Practical consequence, stated for the maintainer**: reinstalling with a
-genuinely matched set (confirmed by hash, not by trusting the installer
-finished) is necessary but may not be SUFFICIENT -- if the debug-console
-truncation theory is right, a fresh, correctly-matched agent could still
-fail to push native scan data past a certain payload size. This needs a
-follow-up live test with a confirmed-fresh agent hash before it can be
-called fixed either way.
+`kcd.log` showed a Lua syntax error, `[Lua Error] ... unfinished string
+near '<eof>'`, firing every ~2 real seconds from shortly after connect
+onward -- the EXACT cadence of `NpcScanInterval`. An "unfinished string"
+error means a quoted Lua string argument was cut off before its closing
+quote, i.e. **the console received a truncated request**, not a
+malformed-but-complete one. **This now points squarely at Phase 2's own
+richer push format** (`name:x:y:z:yaw:isHorse`, ~37 more characters per
+entry than WO-102.5's bare-name CSV) exceeding some length limit in the
+debug console's HTTP request-line handling -- exactly the risk named in
+§1.4's own agent-push-ceiling discussion, but for the ACTUAL native scan
+path this time, not a hypothetical. `KCD2MP._nativeScan.at` stayed `nil`
+for the entire session (never set by anything other than a manual
+injection), consistent with every automatic push failing this same way on
+every attempt, not merely being absent or occasional.
+
+**Still NOT proven**: the agent's own console/stdout was unreachable
+(`agent.log` existed but stayed 0 bytes all session -- itself possibly the
+SAME sandboxed-path problem applying to `%LocalAppData%\KCDMP\agent.log`,
+not re-examined). The exact length threshold that trips the truncation is
+unmeasured. Whether the OLD name-only format (WO-102.5) was ALSO silently
+hitting this same limit in ITS OWN "live-verified clean" session, and simply
+happened to have short enough names/counts not to notice, is an open and
+slightly uncomfortable question -- WO-102.5's own live numbers (37,079
+walked, 78 matched, mostly short names like `ttkc_man_2`) would have
+produced a much smaller payload than this session's 40-entry richer format,
+consistent with "it worked before by margin, not by design."
+
+**Practical consequence, stated for the maintainer**: the fix, if this
+theory holds, is almost certainly to shrink and/or chunk the push (findings
+§1.4 already names chunking as a follow-up) -- NOT a reinstall. A
+follow-up live session should test with a deliberately tiny push (1-2
+names) to see if `KCD2MP._nativeScan.at` ever sets at all under a matched,
+confirmed-correct agent -- that would confirm or refute the length-limit
+theory directly, without guessing at the exact threshold.
 
 ### 5.3 The known-answer check bug, live-found and fixed same day
 

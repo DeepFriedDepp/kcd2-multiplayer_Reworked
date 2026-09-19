@@ -8,6 +8,32 @@ steps back.
 
 ---
 
+## ⚠ Corrected the same day, after this build was packaged
+
+This exe was already built and handed off when the root-cause paragraph
+below (native scan / stale agent) turned out to be wrong. **No code
+changed** — this build is still correct and current — only the diagnosis
+was wrong, and it is corrected here so this document doesn't keep pointing
+at a deployment problem that never existed:
+
+* **There was no stale-agent deployment failure.** The maintainer's own
+  `certutil -hashfile` check (run from their own terminal) and Setup's own
+  install log (`Installation process succeeded` / `verify: PASS`, two
+  minutes before the game session in question ever connected) both confirm
+  the agent was the correct, freshly-installed 0.26.0 build the entire
+  time. The "stale agent, dated 8/15" conclusion below came from hashing
+  the same file from the coding assistant's own shell — a path this
+  project's own standing notes already document as sandbox-redirected and
+  unreliable in either direction (see `docs/WO-103-findings.md` §5.2's
+  correction).
+* **This means the native scan bug is real and still open** — it happened
+  against correct, matched code, not mismatched code. The leading theory
+  is now a length limit in the debug console's own HTTP request handling,
+  tripped by this WO's own richer per-entry push format. Not yet confirmed
+  or fixed.
+
+---
+
 ## Why 0.26.1 and not a re-tag of 0.26.0
 
 `KCDMP-Setup-0.26.0.exe` was built and handed off, then the maintainer ran
@@ -56,11 +82,10 @@ fix, so 0.26.1 is that same build re-cut from current `main`.
 
 Unchanged from 0.26.0's own notes — agent, pak, `KCDMP.dll` all from the
 same build, on both machines. No wire/protocol change this release (a pure
-Lua fix). Verify after installing: `KcdMpClient.exe`'s file hash should
-match what this build actually produced (this project has hit the
-"install ran while old processes were alive, left a stale binary in place"
-failure mode before — WO-32, WO-74 — and it happened again this same day,
-which is the whole reason this release exists).
+Lua fix). If you want to verify the hash yourself, run `certutil -hashfile`
+from your OWN terminal — not through the coding assistant, whose shell
+reads a stale, sandboxed shadow copy of this exact install directory (this
+is what produced the incorrect "stale agent" diagnosis corrected above).
 
 ---
 
@@ -71,7 +96,7 @@ which is the whole reason this release exists).
 | known-answer staleness fix | (synthetic) 2 new checks, 196/196 total; **(observed)** the exact live failure that motivated it, reproduced and then fixed |
 | Phase 0 baseline | **(observed)**, live, for the first time — see numbers above |
 | Phase 3 radius ceiling | **(observed)**, live, 300-5000m, zero crashes; the ceiling is the engine's NPC-streaming distance, not this mod |
-| native position substitution itself | **(observed)** working correctly when manually driven (fresh vs stale fallback both proven live); **never observed end-to-end through the agent's own automatic push** — blocked by the stale-agent deployment issue, not a code defect |
+| native position substitution itself | **(observed)** working correctly when manually driven (fresh vs stale fallback both proven live); **never observed end-to-end through the agent's own automatic push, even against a confirmed-fresh, correctly-matched agent** — a real, still-open bug (see the correction banner above), leading theory a debug-console request-length limit |
 | everything from 0.26.0 | unchanged | untouched by this release except the one Lua fix above |
 
 `docs/WO-103-findings.md` §5 and `docs/WO-103-progress.md` have the full
