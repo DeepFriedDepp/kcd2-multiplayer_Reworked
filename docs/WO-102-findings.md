@@ -446,6 +446,10 @@ hidden). With the pause lever on and working, the violation count must go
 to zero; a non-zero count with `paused=1` in the line means the pause does
 not stop the writer — the loud log the prompt asked for.
 
+> WO-104 (2026-09-18, first two-machine run with the lever on): the count
+> was **155, all `paused=1`**. The lever does not stop the writer. Default
+> now off; `docs/WO-104-findings.md` §2.
+
 ### 4.4 What this costs, and which NPCs it covers
 
 * **Nothing is replaced.** The pause approach keeps every NPC's soul, home,

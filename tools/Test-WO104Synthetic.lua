@@ -24,6 +24,10 @@
 --       original unhidden; a vanished replica demotes; runs toggle or not
 --   (i) argless console commands, status line, MP-SUMMARY-MOD counters
 --
+-- Phase 2 -- pause lever default:
+--   (j) KCD2MP.wo102.authorityPause ships OFF; a puppet start under host
+--       authority issues no wh_ai_PauseNPC.
+--
 -- Driven by Test-WO104Synthetic.ps1 through the WO-77 MoonSharp driver.
 -- What this proves: the Lua half behaves as documented. What it does NOT
 -- prove: anything about a live game -- see docs/WO-104-findings.md.
@@ -115,6 +119,9 @@ end
 -- @@KDCMP@@
 
 -- Part 2: scenarios.
+
+-- Captured at load, before any scenario resets it: the SHIPPED default.
+KCD2MP_WO104_PAUSE_DEFAULT = KCD2MP.wo102.authorityPause
 
 local RESULTS = {}
 local function check(name, ok, detail)
@@ -432,6 +439,27 @@ do -- (i) console surface and the summary line
     local sum = lastLog("MP-SUMMARY-MOD")
     check("i: MP-SUMMARY-MOD carries the replica counters", sum ~= nil and string.find(sum, "replica_promotes=0 replica_demotes=0 replica_refused=0 replica_active=0 replica_orphans=0 replica_violations=0", 1, true) ~= nil, sum)
     check("i: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- Phase 2
+do -- (j) the pause lever ships OFF
+    check("j: authorityPause default is OFF (155/155 violations paused=1, 2026-09-18)", KCD2MP_WO104_PAUSE_DEFAULT == false, tostring(KCD2MP_WO104_PAUSE_DEFAULT))
+    resetReplica()   -- authorityHost on, pause as shipped
+    KCD2MP.wo102.authorityPause = KCD2MP_WO104_PAUSE_DEFAULT
+    local e = mkEntity("j2_npc", 10, 0, 0); ENTS["j2_npc"] = e
+    NOW = 900
+    drive("j2_npc", e, 0, 3, 0)
+    local paused = false
+    for _, c in ipairs(CMDS) do if string.find(c, "wh_ai_PauseNPC", 1, true) then paused = true end end
+    check("j: a puppet start under host authority issues no wh_ai_PauseNPC by default", paused == false)
+    check("j: the toggle still exists and still pauses when switched on", (function()
+        KCD2MP.wo102.authorityPause = true
+        local e2 = mkEntity("j3_npc", 10, 0, 0); ENTS["j3_npc"] = e2
+        drive("j3_npc", e2, 0, 1, 0)
+        for _, c in ipairs(CMDS) do if c == "wh_ai_PauseNPC j3_npc" then return true end end
+        return false
+    end)())
+    check("j: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary.

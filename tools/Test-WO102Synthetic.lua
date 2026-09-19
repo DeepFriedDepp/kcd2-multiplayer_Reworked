@@ -94,9 +94,9 @@ local function clearLog() LOG = {} end
 --     on deliberately so real usage keeps surfacing what still needs
 --     fixing, rather than defaulting back to the already-known-broken
 --     pre-WO-102.5 path. The 0.23.2 knobs are untouched.
-check("f: shipped defaults: authority_host on, pos_native on, authority_pause on, npc_scan_native on",
+check("f: shipped defaults: authority_host on, pos_native on, authority_pause OFF (WO-104), npc_scan_native on",
       KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == true
-      and KCD2MP.wo102.authorityPause == true and KCD2MP.wo102.npcScanNative == true)
+      and KCD2MP.wo102.authorityPause == false and KCD2MP.wo102.npcScanNative == true)
 check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
       and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == true)
 -- Every scenario below starts from the OFF baseline (the 0.23.2 model) and

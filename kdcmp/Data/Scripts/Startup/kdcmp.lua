@@ -2910,11 +2910,15 @@ KCD2MP.npcProx = {
 --                  released ("the pausing system", shipped console commands,
 --                  docs/WO-102-findings.md S3). Does nothing unless
 --                  authorityHost.
---                  WO-102.5 Phase 1: ships ON. The solo probe passed 8/8
---                  (HELD + animation continues + hit registers + clean
---                  resume, findings S3.3's runbook) -- tested solo, on
---                  single NPCs, NEVER under a live puppet stream with two
---                  machines. Resume is guaranteed on release/silence,
+--                  WO-102.5 Phase 1 shipped it ON on the solo probe's 8/8
+--                  (later 5/8). WO-104: ships OFF. The first two-machine
+--                  session with it on (2026-09-18, 0.26.1) logged 155
+--                  MP-AUTHORITY-VIOLATION lines on the joiner, every one
+--                  paused=1: under a live 50 ms stream the local brain
+--                  kept writing the body. The solo probe measured a
+--                  different situation (nothing else writing). The
+--                  brainless-replica path (mp_npc_replica_on, below) is
+--                  the replacement. Resume is guaranteed on release/silence,
 --                  toggle-off, host-authority-off, `mp_stop`
 --                  (KCD2MP_Stop), the AGENT going away
 --                  (KCD2MP_Wo102ResumeAll, called from GameBridge.cs's own
@@ -2945,19 +2949,19 @@ KCD2MP.npcProx = {
 --                  own call: exercise what is new rather than default back
 --                  to the already-known-broken path.
 -- Shipped defaults: host authority ON (replaces a known-broken model);
--- native position, the pause lever and the native NPC scan ALL ON --
--- position is the one of the four never yet run live, kept on anyway
--- (fail-closed, matched-build sessions expected, unmeasured is not a
--- reason to park it); the other two live-tested this session (mixed but
--- non-fatal for the pause lever, clean for the scan) -- all four kept on
--- deliberately so real usage keeps surfacing what still needs fixing, not
--- reverting to the pre-WO-102.5 code path. The agent pushes ClientConfig's
--- values at connect; these are what an agent that pushes nothing leaves in
--- place, so they agree with ClientConfig by construction.
+-- native position and the native NPC scan ON; the pause lever OFF since
+-- WO-104 (live-disproven under a real stream, see authorityPause below --
+-- the agent does not push this one, so the Lua default IS the shipped
+-- default). The agent pushes ClientConfig's values for the other three at
+-- connect; these are what an agent that pushes nothing leaves in place, so
+-- they agree with ClientConfig by construction.
 KCD2MP.wo102 = {
     authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
     posNative      = true,    -- never run live; fail-closed, kept on per the maintainer's call (same principle as npcScanNative)
-    authorityPause = true,    -- solo probe 5/8 HELD + 1/1 combat HELD (findings S6.1); kept on per the maintainer's call
+    authorityPause = false,   -- WO-104: OFF. 2026-09-18 two-machine session: 155/155 MP-AUTHORITY-VIOLATION with paused=1
+                              -- (148 contention, 7 diverge) -- wh_ai_PauseNPC does not hold a body a live stream is
+                              -- also writing. The solo 8/8 and 5/8 measured a body nothing else was touching.
+                              -- Kept as a toggle: it may still hold for idle NPCs; the violation counter shows it.
     npcScanNative  = true,    -- live-verified clean 2026-09-18 (findings S6.2); kept on per the maintainer's call
 }
 KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause", npc_scan_native = "npcScanNative" }
@@ -11084,7 +11088,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_pos_native_on",      'KCD2MP_Wo102Set("pos_native", true)',      "WO-102: the agent reads position/rotation/riding over the DLL pipe instead of the kcd.log line")
     System.AddCCommand("mp_pos_native_off",     'KCD2MP_Wo102Set("pos_native", false)',     "WO-102: position back on the [KCD2-MP-DATA] log tail (0.23.2 path)")
     System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
-    System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). UNVERIFIED live -- run mp_probe_npc_pause first")
+    System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). OFF since WO-104: 155/155 violations with paused=1 under a live stream (2026-09-18); use mp_npc_replica_on instead")
     System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
     System.AddCCommand("mp_npc_replica_on",      "KCD2MP_SetNpcReplica(true)",  "WO-104: under host authority, replace a CONTESTED puppet (MP-AUTHORITY-VIOLATION) with a brainless soul-bound replica driven by the owner's stream; the NPC is hidden in place and returns when the fight ends. Default OFF until two machines prove it -- pass condition: zero violations with body=replica")
     System.AddCCommand("mp_npc_replica_off",     "KCD2MP_SetNpcReplica(false)", "WO-104: demote every replica (NPCs return where their replica stood) and stop promoting")
