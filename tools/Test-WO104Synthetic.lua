@@ -8,7 +8,8 @@
 --       same tostring so the mimic is proven to bite.
 --
 -- Phase 1 -- brainless replicas for contested NPCs (mp_npc_replica_on|off):
---   (b) toggle OFF: a contention violation changes nothing (today's path)
+--   (b) shipped default is ON; with the toggle OFF a contention violation
+--       changes nothing (the 0.26.1 path)
 --   (c) toggle ON: the first violation promotes -- one NPC+NoAI spawn bound
 --       to the original's soul id, original hidden in the same call, npcid
 --       and npc_replica re-pointed, the stream writes the replica from then
@@ -122,6 +123,7 @@ end
 
 -- Captured at load, before any scenario resets it: the SHIPPED default.
 KCD2MP_WO104_PAUSE_DEFAULT = KCD2MP.wo102.authorityPause
+KCD2MP_WO104_REPLICA_DEFAULT = KCD2MP.npcReplica.enabled
 
 local RESULTS = {}
 local function check(name, ok, detail)
@@ -215,7 +217,8 @@ local CONTEND = KCD2MP.npcYield.ticks + 3
 
 do -- (b) toggle OFF: today's behaviour, byte for byte
     resetReplica()
-    check("b: replica toggle ships OFF", KCD2MP.npcReplica.enabled == false)
+    check("b: replica toggle ships ON (maintainer's call, 0.26.2)", KCD2MP_WO104_REPLICA_DEFAULT == true)
+    check("b: scenario runs the OFF path explicitly", KCD2MP.npcReplica.enabled == false)
     local e = mkEntity("b_npc", 10, 0, 0); ENTS["b_npc"] = e
     NOW = 100
     drive("b_npc", e, 0.6, CONTEND, 4)

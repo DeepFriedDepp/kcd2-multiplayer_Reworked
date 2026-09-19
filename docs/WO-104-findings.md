@@ -18,7 +18,10 @@ Evidence marks: (observed) / (code-verified) / (synthetic) / (inconclusive).
   `MP-AUTHORITY-VIOLATION` with `paused=1` on the joiner (observed). Solo
   5/8 measured a body nothing else was writing. Default flipped OFF (§2).
 * **The replacement is built: brainless replicas for contested NPCs,
-  behind `mp_npc_replica_on`, default OFF** (§3). The body is `NPC` +
+  behind `mp_npc_replica_on|off`, shipped ON** (§3) -- the maintainer's
+  call at the end gate (it fires only on real contention and demotes
+  itself, so off means never tested; ghost appearance is already
+  imperfect; the toggle stays live). The session's own default was off. The body is `NPC` +
   `NoAI=true` soul-bound to the original's own soul id, not `NPC_NAI` —
   the prompt's class is unreachable with a soul on this build (observed,
   WO-100.5 §1.3) and the prompt's brief said to say so plainly. Nothing in
@@ -177,10 +180,12 @@ binds, `SituationController` 0, behaviour tree 0, self-initiated dialogue
   body (`kcd2mp_` prefix). `_npcReplicaOrig` remaps it to the NPC's name
   before the guard and the send. **No wire change.**
 * **Toggle**: `mp_npc_replica_on|off|status`, argless (WO-94's console
-  rule). Default **OFF** — the one exception to shipping new mechanisms
-  on, because a wrong replica is visible and disruptive in a way a quiet
-  toggle is not. `MP-AUTHORITY-VIOLATION` gained `body=npc|replica`;
-  MP-SUMMARY-MOD gained `replica_*` counters.
+  rule). Built default **OFF** (a wrong replica is visible in a way a
+  quiet toggle is not); **flipped ON for 0.26.2 by the maintainer** at the
+  end gate, on the standing ship-on rule: it only fires on real
+  contention and demotes itself, so off means it never gets tested, and
+  the toggle stays live if it is bad. `MP-AUTHORITY-VIOLATION` gained
+  `body=npc|replica`; MP-SUMMARY-MOD gained `replica_*` counters.
 
 ### 3.3 Appearance — answered, with the boundary stated
 
@@ -279,7 +284,9 @@ The probe was measuring a different situation than the one the lever
 shipped into. Corollary for §3: 91/91 synthetic proves the Lua half does
 what it says against stubs; it proves nothing about `XGenAI` binding a
 world NPC's `soul:GetId()`, about `Hide`, or about the swap being
-invisible. That is why the toggle is off.
+invisible. It ships on regardless (the maintainer's call); the first
+two-machine session is the measurement, and `mp_npc_replica_off` is one
+console command away.
 
 ## 5. Open, not this WO
 

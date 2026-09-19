@@ -4400,14 +4400,17 @@ end
 -- (KCD2MP_NpcReplicaSweep) removes any unregistered kcd2mp_r_ body near the
 -- player and unhides its original the next time the NPC-sync tick runs.
 --
--- Default OFF (mp_npc_replica_on|off). The one exception to shipping new
--- mechanisms on: a wrong replica is visible and disruptive in a way a
--- quiet toggle is not. The two-machine pass condition is zero
--- MP-AUTHORITY-VIOLATION with body=replica on a fought NPC.
+-- Default ON (mp_npc_replica_on|off) -- the maintainer's call for 0.26.2:
+-- it fires only on real contention and demotes itself, so shipping it off
+-- means it never gets tested; ghost appearance is already imperfect, so a
+-- wrong face is not a new class of problem; and the toggle stays live if it
+-- is bad. Nothing here has run against a real game yet (synthetic only).
+-- The two-machine pass condition is zero MP-AUTHORITY-VIOLATION with
+-- body=replica on a fought NPC.
 --
 --   MP-NPCREPLICA npc=<name> event=promote|demote|refuse|orphan why=<w> body=<replica name>|- held_s=<F1> n=<int>
 KCD2MP.npcReplica = {
-    enabled         = false,   -- mp_npc_replica_on|off
+    enabled         = true,    -- mp_npc_replica_on|off. ON per the maintainer's call for 0.26.2 (see header)
     sheathedDemoteS = 10.0,    -- stream says weapon away for this long -> the fight is over -> demote
     orphanSweepM    = 60.0,    -- radius of the 5 s orphan sweep around the player
 }
@@ -11090,7 +11093,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
     System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). OFF since WO-104: 155/155 violations with paused=1 under a live stream (2026-09-18); use mp_npc_replica_on instead")
     System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
-    System.AddCCommand("mp_npc_replica_on",      "KCD2MP_SetNpcReplica(true)",  "WO-104: under host authority, replace a CONTESTED puppet (MP-AUTHORITY-VIOLATION) with a brainless soul-bound replica driven by the owner's stream; the NPC is hidden in place and returns when the fight ends. Default OFF until two machines prove it -- pass condition: zero violations with body=replica")
+    System.AddCCommand("mp_npc_replica_on",      "KCD2MP_SetNpcReplica(true)",  "WO-104: under host authority, replace a CONTESTED puppet (MP-AUTHORITY-VIOLATION) with a brainless soul-bound replica driven by the owner's stream; the NPC is hidden in place and returns when the fight ends. ON by default since 0.26.2 (unverified live) -- pass condition: zero violations with body=replica")
     System.AddCCommand("mp_npc_replica_off",     "KCD2MP_SetNpcReplica(false)", "WO-104: demote every replica (NPCs return where their replica stood) and stop promoting")
     System.AddCCommand("mp_npc_replica_status",  "KCD2MP_NpcReplicaStatus()",   "WO-104: log the replica toggle, active replicas and the promote/demote/refuse/orphan counters")
     System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")

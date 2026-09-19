@@ -1,4 +1,4 @@
-# KCD2-MP 0.26.2 — time sync fixed past 1e6; pause lever off; replicas (dark)
+# KCD2-MP 0.26.2 — time sync fixed past 1e6; pause lever off; replicas on
 
 The label for everything on `main` as of WO-104 (2026-09-18), packaged as
 `KCDMP-Setup-0.26.2.exe`. Setup exe only — there is no DirectInstall ZIP
@@ -49,7 +49,7 @@ sky moves". The maintainer's own save is the test case (runbook §1).
 | `mp_pos_native_on\|off` — native position read | on | no |
 | `mp_npc_scan_native_on\|off` — native NPC scan | on | no |
 | `mp_authority_pause_on\|off` — pause a puppet's local brain (`wh_ai_PauseNPC`) | **off** | **yes — was on** |
-| `mp_npc_replica_on\|off` — brainless replica for a contested NPC | **off** | **new** |
+| `mp_npc_replica_on\|off` — brainless replica for a contested NPC | **on** | **new** |
 
 ### `mp_authority_pause` is now off
 
@@ -62,7 +62,7 @@ writing. The solo probe measured a body nothing else was touching — a
 different situation, not a wrong measurement. The toggle stays; the
 default is off. (observed)
 
-### `mp_npc_replica` — new, off, unverified live
+### `mp_npc_replica` — new, ON, unverified live
 
 The replacement for the pause lever. When an NPC the host owns is being
 fought on the joiner's machine and the joiner's own AI starts moving it
@@ -73,12 +73,18 @@ soul's face and outfit, driven purely by the host's stream. When the
 fight ends the real NPC returns where the replica stood. Both edges
 happen inside one frame: no flicker, no second body, no body dropped.
 
-Off by default because **none of it has run against a real game yet**
-(the one deliberate exception to shipping new mechanisms on — a wrong
-replica is visible and disruptive in a way a quiet toggle is not). The
-two-machine test is `docs/WO-104-field-runbook.md` §3: `mp_npc_replica_on`
-on the joiner, fight the same NPC together, and the pass condition is
-zero `MP-AUTHORITY-VIOLATION ... body=replica` for that NPC. It cannot
+**None of it has run against a real game yet.** It ships on anyway, by
+the maintainer's call: it only fires on real contention and demotes
+itself, so leaving it off means it never gets tested; ghost appearance is
+already imperfect, so a wrong face is not a new class of problem; and
+**`mp_npc_replica_off` switches it off at once** (every replica demotes,
+every NPC returns) if it misbehaves. The two-machine test is
+`docs/WO-104-field-runbook.md` §3: fight the same NPC together and the
+pass condition is zero `MP-AUTHORITY-VIOLATION ... body=replica` for that
+NPC. What to expect on screen if it works: the moment the joiner's own AI
+starts fighting the host's stream over an NPC, the NPC is swapped for a
+look-alike with no brain of its own; when the fight ends it swaps back.
+Both swaps should be invisible. It cannot
 serve women NPCs, horses, animals, downed or carried bodies, or an NPC in
 a conversation (all refused and logged); while promoted an NPC cannot be
 talked to. Everything else about it — the appearance guarantee and its
@@ -105,7 +111,7 @@ it reads a stale sandboxed shadow of the install directory).
 |---|---|
 | time-sync formatting fix | (code-verified); (synthetic) 7/7 with an engine-faithful `tostring` mimic + 13 agent unit tests incl. a source guard; **not yet observed live** |
 | pause lever default off | (observed) the 155/155 that motivated it; (synthetic) default pinned, no pause issued on a puppet start |
-| replica path | (code-verified); (synthetic) 84 checks: promote/demote on every path, refusals, sweep, toggle-off byte-identical to 0.26.1; **nothing live**; default off |
+| replica path | (code-verified); (synthetic) 84 checks: promote/demote on every path, refusals, sweep, toggle-off byte-identical to 0.26.1; **nothing live**; ships ON by the maintainer's call, `mp_npc_replica_off` reverts |
 | everything from 0.26.1 | unchanged | authority, damage path, native position, native scan all untouched |
 
 Test counts in this build: WO-104 suite 91/91, WO-102 suite 196/196,

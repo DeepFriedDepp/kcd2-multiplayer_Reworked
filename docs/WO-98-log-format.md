@@ -180,7 +180,7 @@ of the `replica` kind.
 `MP-NPCREPLICA toggle state=on|off was=on|off demoted=<int>`
 `MP-NPCREPLICA status enabled= active= promotes= demotes= refused= orphans= violations_on_replica= [<name>(<held>s), ...]`
 
-Only under `mp_npc_replica_on` (default OFF) and `mp_authority_host_on`,
+Only under `mp_npc_replica_on` (default ON since 0.26.2) and `mp_authority_host_on`,
 on a non-owner. `promote why=violation-contention|violation-diverge`: the
 first `MP-AUTHORITY-VIOLATION` for an owned puppet hid the world NPC in
 place and spawned `kcd2mp_r_<name>` (class `NPC`, `NoAI=true`, soul-bound

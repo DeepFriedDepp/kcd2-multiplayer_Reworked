@@ -9,7 +9,7 @@ Session 2026-09-18. Findings: `docs/WO-104-findings.md`. Field runbook:
 | phase | state | evidence |
 |---|---|---|
 | 0 — time sync formatting | **shipped, alone, first** (`6637e5e`, pushed): `time_now` formatted `%.0f`, never `tostring()`; dice wager hardened the same way; parser left strict. Audit of every other numeric field on the Lua→agent channel: two exposed, both fixed; rest named in findings §1.3 | (observed) the failure in agent.log; (code-verified) fix + audit; (synthetic) WO-104 suite (a) 7/7 with a `%g` tostring mimic that reproduces `1.00255e+06`; agent `WorldTimeFormatTests` +13 → 170/170 |
-| 1 — replicas for contested NPCs | **built behind `mp_npc_replica_on\|off\|status`, default OFF** (`5ad5b06`). Body is `NPC`+`NoAI=true` soul-bound to the original's `soul:GetId()` — not `NPC_NAI`, which is unreachable with a soul on this build (findings §3.1). Promote on the first violation, one-call spawn-then-hide; demote on sheathed 10 s / death / release / toggle / host-off / stop / sweep. `npcid` + new `npc_replica` event re-point native swings and outbound damage. No wire change | (code-verified); (synthetic) WO-104 suite (b)–(i), 91/91 total; **nothing live** |
+| 1 — replicas for contested NPCs | **built behind `mp_npc_replica_on\|off\|status`** (`5ad5b06`), built default off, **flipped ON for 0.26.2 by the maintainer at the end gate**. Body is `NPC`+`NoAI=true` soul-bound to the original's `soul:GetId()` — not `NPC_NAI`, which is unreachable with a soul on this build (findings §3.1). Promote on the first violation, one-call spawn-then-hide; demote on sheathed 10 s / death / release / toggle / host-off / stop / sweep. `npcid` + new `npc_replica` event re-point native swings and outbound damage. No wire change | (code-verified); (synthetic) WO-104 suite (b)–(i), 91/91 total; **nothing live** |
 | 2 — pause lever default | **shipped OFF** (`f9df723`). 155/155 violations `paused=1` recorded next to WO-102.5 §1.1, §6.1 and WO-102 §4.3. Code + toggle kept | (observed) joiner kcd.log; (synthetic) WO-104 (j), WO-102 (f) updated |
 | 3 — verification | **done** (`4ae2e6e`): WO-104 suite added to `Build-Installer.ps1`'s pre-publish gate; WO-101 relay gate unchanged (no packet change); field runbook written | (synthetic) all suites green — see below |
 | end gate | **blocked on the version string** — the maintainer names it (standing rule). Everything up to the build is pushed | — |
@@ -30,7 +30,7 @@ Session 2026-09-18. Findings: `docs/WO-104-findings.md`. Field runbook:
 | `mp_pos_native_on\|off` | on | no |
 | `mp_npc_scan_native_on\|off` | on | no |
 | `mp_authority_pause_on\|off` | **off** | **yes** (was on) |
-| `mp_npc_replica_on\|off` | **off** | **new** |
+| `mp_npc_replica_on\|off` | **on** | **new** (built off; ON by the maintainer's call at the end gate) |
 
 ## Test counts (this session's own runs, all (synthetic))
 

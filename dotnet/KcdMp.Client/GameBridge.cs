@@ -4848,7 +4848,7 @@ public partial class GameBridge(ClientConfig config)
         {
             // WO-104: console flip of mp_npc_replica_on|off. Log only -- the
             // mechanism is entirely mod-side; the agent has no gate to mirror.
-            Console.WriteLine($"[npcsync] mp_npc_replica {arg} (mod-side toggle; default off until the two-machine test)");
+            Console.WriteLine($"[npcsync] mp_npc_replica {arg} (mod-side toggle; ships on since 0.26.2, unverified live)");
             return;
         }
 

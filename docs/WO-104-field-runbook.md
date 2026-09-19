@@ -24,12 +24,13 @@ machines (`mp_wo102_status`). Nothing else to do; if a session still shows
 
 ## 3. Replicas (Phase 1) — the actual test
 
-Default OFF. Run it ON deliberately, on the JOINER (the non-owner under
-host authority is the only machine that promotes).
+Ships ON in 0.26.2 (maintainer's call). It only acts on the JOINER (the
+non-owner under host authority is the only machine that promotes).
 
 1. Both connected, `mp_authority_host_on` (default). Joiner:
-   `mp_npc_replica_on`. Expect the toast "NPC replicas for contested NPCs:
-   ON" and `MP-NPCREPLICA toggle state=on` in kcd.log.
+   `mp_npc_replica_status` should read `enabled=on active=0`. If anything
+   goes visibly wrong at any point: `mp_npc_replica_off` (demotes every
+   replica at once) and report.
 2. Stand together. Host attacks one ambient male townsman (class `NPC`,
    not a guard: crime-authority souls enforce drawn weapons, WO-83). Joiner
    watches, then joins the fight.
@@ -69,8 +70,8 @@ host authority is the only machine that promotes).
   does not: `mp_npc_replica_off` (demotes everything), then
   `mp_npc_replica_status` should read `active=0`.
 * Anything visibly wrong in the swap: `mp_npc_replica_off` and report the
-  exact kcd.log lines around the promote. The lever stays off by default
-  precisely so this can be switched off without a rebuild.
+  exact kcd.log lines around the promote. It ships on, but the toggle is
+  live: off demotes everything at once, no rebuild needed.
 
 ## 5. What to bring back
 
