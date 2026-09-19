@@ -267,14 +267,20 @@ re-run, not touched).
 
 ---
 
-## 3. Phase 3 -- find the ceiling: NOT RUN
+## 3. Phase 3 -- find the ceiling: PARTIALLY RUN, live, same day
 
-No game ran this session. `docs/WO-103-field-runbook.md` §2 is the radius
-ladder (45/150/300/600/1000/beyond) with the exact log lines to record at
-each step -- prepared, not executed. The expected failure order (reply
-truncation before read-loop cost, since the native walk is radius-
-independent per WO-102.5 §6.2 and only the tracked count scales) is stated
-in the runbook as a prediction to confirm or refute, not a result.
+Written not-run when this WO's own code first shipped (0.26.0); the
+maintainer then ran a live session the same day (§5 below has the full
+account). The radius ladder itself (45 through 5000m) DID run live --
+`docs/WO-103-field-runbook.md` §2's procedure, executed via the console API
+exactly as WO-102.5's own field sessions were. What did NOT run: the
+native-scan-specific half of the ladder (truncation ceiling, native vs Lua
+`dur_ms`), because the native push never reached Lua at all this session
+(§5.2 -- an environmental/deployment problem, not this WO's code). The
+expected failure order (reply truncation before read-loop cost) is
+therefore still unconfirmed for the NATIVE path specifically; what ran was
+the Lua fallback path's own ceiling, which is a different, real result
+(§5.1) -- not what §2 originally set out to measure, but not nothing.
 
 ---
 
@@ -313,7 +319,122 @@ construction: nothing this WO built crosses the relay (§1.2, §2.6).
 
 ### 4.3 Field runbook
 
-`docs/WO-103-field-runbook.md`: written, not run (§3 above).
+`docs/WO-103-field-runbook.md`: written; §2 (the radius ladder) run live
+the same day (§5). §1 (the Phase 0 A/B baseline) also run live (§5.1).
+
+---
+
+## 5. Live field session (2026-09-18, observed) -- first time ANY of this
+WO's own code ran against a live game
+
+Driven the same way WO-102.5 §6 was: the maintainer had the game loaded,
+saved, and connected via the Launcher on 0.26.0; this session drove it from
+the coding shell via the debug console API (`127.0.0.1:1403/api/System/
+Console/ExecuteString`) and `kcd.log`/`kcdmp-native.mirror.log` directly.
+**Every command needs the `#` prefix to evaluate as Lua** (`#<code>`) --
+without it the console tries to resolve the whole string as a single
+registered command name and refuses it as unknown; this cost several failed
+probes before landing on the right syntax, consistent with WO-94's own
+"console drops arguments" caution but a NEW wrinkle: the `#` requirement
+applies even through the HTTP `ExecuteString` endpoint, not just the
+in-game console UI.
+
+### 5.1 Phase 0's real baseline, and the Phase 3 radius ladder -- both live, for the first time
+
+`MP-NPCTRACK`/`MP-NPCREAD` fired on their own, unprompted, exactly as
+designed. At the shipped 300m default: **tracked=78-80, culled=52-62,
+`MP-NPCREAD path=lua mean_ms=1.5 p50_ms=1 p95_ms=2 max_ms=3-4`**. Radius
+walked up via `#KCD2MP_SetAuthorityRadius("<m>")` and forced rescans
+(`KCD2MP._npcScanAt = 0`): 600m -> tracked=161 culled=142; 1000m ->
+tracked=324 culled=305, `mean_ms=3.5-5.4 p95_ms=7-11 max_ms=13-16`; 2000m ->
+tracked=447 culled=427, `mean_ms=6.2-6.7 p95_ms=12-14`; 5000m -> tracked
+plateaus at 457 culled=434-436, `mean_ms=7.0 p95_ms=15 max_ms=18`.
+
+**Read-loop cost scales with tracked count, confirmed live** (the design
+claim §0.1/§2.4 could only predict): roughly linear, ~1.5ms at 78 tracked to
+~7ms at 450 tracked. **Zero crashes at any radius up to 5000m** (16x the
+shipped default). **The tracked-count ceiling is the ENGINE's own NPC-
+streaming distance, not this mod's radius** -- growth from 1000m to 5000m
+(5x the radius, 25x the area) only moved tracked count from 324 to 457
+(1.4x), because past a certain distance there simply are no more NPCs
+loaded into memory to find, native scan or not. This narrows the runbook's
+own prediction: the reply-truncation ceiling this project worried about may
+never be reachable in a normal single-settlement session, because the
+engine's own streaming radius caps the count first -- untested for the
+NATIVE path specifically (§5.2), but the Lua-fallback numbers above make it
+a live possibility, not a certainty.
+
+**One real, mild degradation signal**: mod-tick `max` rose from ~40ms
+(300-1000m) to ~62-63ms (2000-5000m) while `avg` stayed ~25ms throughout --
+an occasional hitch, not a crash, and not visible in the tracked/culled or
+read-duration numbers alone. Likely the Lua fallback's own
+`System.GetEntitiesInSphere`-per-anchor walk (WO-102.5 §2.1: this walks the
+FULL entity list every call) scaling with anchor radius, since it -- unlike
+the native walk -- has never been shown to be radius-independent.
+
+Not run: the native-specific half (native vs Lua `dur_ms` comparison, the
+reply-truncation ceiling) -- blocked by §5.2. Not run: village vs. dense-
+town comparison (one town, the same one WO-102.5 tested in, per matching
+NPC names in the log).
+
+### 5.2 The native scan never reached Lua this session -- a real bug, but not in this WO's code
+
+**Root cause, confirmed**: the running agent (`KcdMpClient.exe`,
+`C:\...\AppData\Local\KCDMP\KcdMpClient.exe`) hashed to a build dated 8/15 --
+sha256 `37e91de7...`, nothing this session or WO-103 ever produced (this
+session's own fresh-clone build hashes to `a8a27739...`). **The mod pak WAS
+confirmed fresh**: `KCD2MP._nativeScan`/`KCD2MP_ApplyNativeScan`/
+`KCD2MP_NpcReadCompare` all exist and behave exactly as WO-103 shipped them
+-- proven by manually invoking `KCD2MP_ApplyNativeScan("name:x:y:z:yaw:h")`
+via the console and watching `KCD2MP_NpcSyncTick`'s very next emit carry
+the injected coordinates instead of the entity's real (unmoved) position,
+then correctly fall back once the injected sample aged past
+`mp_native_scan_stale_after_s()`. **This is the read substitution's first
+live proof, and it is unambiguous**: the fallback-is-free design (§2.3)
+behaves exactly as designed against a real, running game.
+
+**What the stale agent produced instead**: `kcd.log` showed a Lua syntax
+error, `[Lua Error] ... unfinished string near '<eof>'`, firing every ~2
+real seconds from shortly after connect onward -- the EXACT cadence of
+`NpcScanInterval`. An "unfinished string" error means a quoted Lua string
+argument was cut off before its closing quote, i.e. **the console received
+a truncated request**, not a malformed-but-complete one (a bare-name CSV
+with no colons, which an old pre-WO-103 agent would send, is syntactically
+complete Lua and would not produce this error). The most consistent
+explanation: the debug console's own HTTP request-line handling has a
+length limit well under what a ~40-200-name push can reach, and has had
+this problem since WO-102.5's own native scan shipped -- this session's own
+`KCD2MP._nativeScan.at` staying `nil` for the ENTIRE session (never once
+set by anything other than a manual injection) is consistent with every
+automatic push failing this same way, not merely being absent. **This is
+NOT proven** -- the agent's own console/stdout was unreachable (`agent.log`
+existed but stayed 0 bytes all session, the same AppData-sandbox-
+redirection constraint WO-102.5 hit) -- but it is the best-supported
+explanation available from `kcd.log` alone, and it predates anything this
+session did (the error's first occurrence in the log is well before this
+session's own console probes began).
+
+**Practical consequence, stated for the maintainer**: reinstalling with a
+genuinely matched set (confirmed by hash, not by trusting the installer
+finished) is necessary but may not be SUFFICIENT -- if the debug-console
+truncation theory is right, a fresh, correctly-matched agent could still
+fail to push native scan data past a certain payload size. This needs a
+follow-up live test with a confirmed-fresh agent hash before it can be
+called fixed either way.
+
+### 5.3 The known-answer check bug, live-found and fixed same day
+
+See the commit `b6634f4` and `docs/releases/RELEASE-NOTES-0.26.1.md`. The
+manually-injected stale entry from §5.2's own substitution proof (~500s
+old by the time the periodic `KCD2MP_NpcReadCompare` re-ran) reported
+`verdict=match` with `delta_mean_m` in the 50-130m range every single
+compare cycle -- the tolerance formula's `age`-scaled term had no ceiling,
+so an arbitrarily old, arbitrarily wrong push could never fail the check.
+Fixed by gating the whole comparison on the same freshness window the read
+substitution already trusts. This was NOT caught by the synthetic suite
+before this session, because every synthetic scenario's ages were small
+(seconds, not minutes) -- a real gap in test design the live session
+exposed, now closed with a dedicated stale-age regression check.
 
 ---
 
@@ -341,3 +462,10 @@ found only because fixing the NAMED gap (the dropped-count itself) required
 reading the surrounding loop closely enough to notice the early exit. Filed
 alongside WO-96/97/99.5/100/100.5/101/102.5's own instances in
 `docs/WO-103-progress.md`'s closing note.
+
+A ninth, live-found the same day (§5.3): `KCD2MP_NpcReadCompare` reporting
+`verdict=match` was itself a plausible-looking result that was quietly
+wrong -- an unbounded age-scaled tolerance meant "match" proved nothing
+once the compared entry was old enough, and nothing in the log line itself
+signalled that the check had become meaningless rather than genuinely
+passing.
