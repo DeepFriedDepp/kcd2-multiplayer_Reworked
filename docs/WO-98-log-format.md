@@ -157,7 +157,7 @@ any `via=claim`, `via=drag` or `owner-change` under `model=host` is a
 violation, not traffic.
 
 ### MP-AUTHORITY-VIOLATION — a second writer under host authority (kcd.log, WO-102 Phase 4)
-`MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention dist_m=<F2> owner=<ghostId|?> paused=0|1 n=<int>`
+`MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention dist_m=<F2> owner=<ghostId|?> paused=0|1 n=<int> body=npc|replica`
 
 Only under `mp_authority_host_on`. `diverge` = the WO-90 rule fired (≥ 8 m
 in one tick) and was refused instead of releasing; `contention` = the WO-99
@@ -168,7 +168,37 @@ per 10 s; `n` is the exact per-NPC count; `auth_violations=` in
 `MP-SUMMARY-MOD` is the session total. `event=pause|resume` on
 `MP-AUTHORITY` records the lever (`via=wh_ai_PauseNPC` / the release
 reason). `WO102-AUTHORITY scan anchors= cap=` records the authority's
-anchor count when it changes.
+anchor count when it changes. `body=` (WO-104) names which body moved:
+`npc` = the world NPC (its local brain is the writer), `replica` = a
+brainless WO-104 replica (nothing should be able to move one -- the
+two-machine pass condition for `mp_npc_replica_on` is zero of these on a
+fought NPC). `replica_violations=` in `MP-SUMMARY-MOD` is the session total
+of the `replica` kind.
+
+### MP-NPCREPLICA — brainless replicas for contested NPCs (kcd.log, WO-104 Phase 1)
+`MP-NPCREPLICA npc=<name> event=promote|demote|refuse|orphan why=<reason> body=<kcd2mp_r_name>|- held_s=<F1> n=<int>`
+`MP-NPCREPLICA toggle state=on|off was=on|off demoted=<int>`
+`MP-NPCREPLICA status enabled= active= promotes= demotes= refused= orphans= violations_on_replica= [<name>(<held>s), ...]`
+
+Only under `mp_npc_replica_on` (default OFF) and `mp_authority_host_on`,
+on a non-owner. `promote why=violation-contention|violation-diverge`: the
+first `MP-AUTHORITY-VIOLATION` for an owned puppet hid the world NPC in
+place and spawned `kcd2mp_r_<name>` (class `NPC`, `NoAI=true`, soul-bound
+to the NPC's own `soul:GetId()`) at its exact pose, in one call. `demote
+why=sheathed` (the owner's stream had the weapon away for 10 s) |
+`dead|unconscious` (stream bit or the world NPC's own state -- the real
+corpse is the one on the ground) | `silence|diverge` (the puppet released)
+| `toggle-off|host-authority-off|mod-stop` | `replica-gone|original-gone|
+no-puppet` (the 5 s sweep). `refuse why=class=<cls>|down-or-carried|dead|
+unconscious|in-dialog|soul-id-unreadable|spawn-failed|replica-soulless`,
+once per name+reason. `orphan why=removed-and-unhid|removed`: an
+unregistered `kcd2mp_r_` body within 60 m (a savegame-restored replica)
+was removed and its original unhidden. `n` is the running count of that
+event kind. `MP-SUMMARY-MOD` carries `replica_promotes= replica_demotes=
+replica_refused= replica_active= replica_orphans= replica_violations=`.
+agent.log: `[npcsync] replica <r> now stands in for <npc>` / `released`,
+and `[combat] hit on replica '<r>' attributed to '<npc>'` when this
+player's blow on the replica is sent to the owner under the NPC's name.
 
 ### MP-REQUEST — the request channel (agent.log, WO-102 Phase 5)
 requester: `MP-REQUEST dir=out kind=attack target=<name> <attack payload> gen=<gen> resolve=damage-path`

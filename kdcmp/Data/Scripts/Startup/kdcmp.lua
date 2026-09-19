@@ -345,13 +345,16 @@ function KCD2MP_LogSummary(reason)
     -- pause was lost track of without a matching resume log line.
     local pausedNow = 0
     for _ in pairs(KCD2MP._npcPaused or {}) do pausedNow = pausedNow + 1 end
+    local replicasActive = 0   -- WO-104
+    for _ in pairs(KCD2MP._npcReplicas or {}) do replicasActive = replicasActive + 1 end
     local q = KCD2MP.quest
     mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
         .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d"
         .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s"
         .. " auth_pauses=%d auth_resumes=%d auth_paused_now=%d auth_violations=%d"
-        .. " resync_bursts=%d resync_emitted=%d resync_applied=%d resync_moved=%d resync_skipped=%d",
+        .. " resync_bursts=%d resync_emitted=%d resync_applied=%d resync_moved=%d resync_skipped=%d"
+        .. " replica_promotes=%d replica_demotes=%d replica_refused=%d replica_active=%d replica_orphans=%d replica_violations=%d",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
         (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
@@ -364,7 +367,10 @@ function KCD2MP_LogSummary(reason)
         (KCD2MP._authStats or {}).violation or 0,
         (KCD2MP._resyncStats or {}).bursts or 0, (KCD2MP._resyncStats or {}).emitted or 0,
         (KCD2MP._resyncStats or {}).applied or 0, (KCD2MP._resyncStats or {}).moved or 0,
-        (KCD2MP._resyncStats or {}).skipped or 0))
+        (KCD2MP._resyncStats or {}).skipped or 0,
+        (KCD2MP._npcReplicaStats or {}).promote or 0, (KCD2MP._npcReplicaStats or {}).demote or 0,
+        (KCD2MP._npcReplicaStats or {}).refused or 0, replicasActive,
+        (KCD2MP._npcReplicaStats or {}).orphan or 0, (KCD2MP._npcReplicaStats or {}).violationsOnReplica or 0))
 end
 
 -- ===== Player Position =====
@@ -3124,10 +3130,14 @@ local function mp_wo102_violation(name, p, kind, distM)
     local now = os.clock()
     if (now - (KCD2MP._authViolationAt[name] or -1e9)) >= 10.0 then
         KCD2MP._authViolationAt[name] = now
-        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s paused=%d n=%d",
+        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s paused=%d n=%d body=%s",
             tostring(name), kind, distM or 0, tostring(p and p.owner or "?"),
-            KCD2MP._npcPaused[name] and 1 or 0, KCD2MP._authViolationN[name]))
+            KCD2MP._npcPaused[name] and 1 or 0, KCD2MP._authViolationN[name],
+            (KCD2MP._npcReplicas or {})[name] and "replica" or "npc"))   -- WO-104: which body moved
     end
+    -- WO-104 Phase 1: a violation IS the contention signal. Promote (no-op
+    -- unless mp_npc_replica_on) -- every event, not only the rate-limited log.
+    if KCD2MP_NpcReplicaConsider then KCD2MP_NpcReplicaConsider(name, p, kind) end
     if (now - (KCD2MP._authViolationToastAt or -1e9)) >= 300.0 then
         KCD2MP._authViolationToastAt = now
         pcall(function() KCD2MP_ShowNativeToast("KCD2-MP: an NPC is being moved by this machine's own AI under host authority -- see kcd.log (MP-AUTHORITY-VIOLATION)") end)
@@ -3149,7 +3159,10 @@ function KCD2MP_Wo102OnChange(field, want, was)
         elseif want then
             mp_log("WO102-AUTHORITY host authority ON on the authority: scanning around every peer ghost as well as this player")
         end
-        if not want then mp_wo102_resume_all("host-authority-off") end
+        if not want then
+            mp_wo102_resume_all("host-authority-off")
+            if KCD2MP_NpcReplicaDemoteAll then KCD2MP_NpcReplicaDemoteAll("host-authority-off") end   -- WO-104
+        end
     elseif field == "authorityPause" then
         if not want then mp_wo102_resume_all("pause-lever-off") end
     end
@@ -4089,6 +4102,7 @@ function KCD2MP_NpcSyncTick()
     if (nowRec - (KCD2MP._npcReconcileAt or 0)) >= NPC_RECONCILE_INTERVAL_S then
         KCD2MP._npcReconcileAt = nowRec
         pcall(mp_wo102_reconcile_pauses)
+        if KCD2MP_NpcReplicaSweep then pcall(KCD2MP_NpcReplicaSweep) end   -- WO-104
     end
 
     -- Gate at tick time, not start time: mp_npc_sync can flip and authority
@@ -4317,6 +4331,363 @@ function KCD2MP_StartNpcSync()
     Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)
 end
 
+-- ===== WO-104 Phase 1: brainless replicas for contested NPCs =====
+--
+-- The pause lever (WO-102 Phase 4, wh_ai_PauseNPC) does not suppress a
+-- local brain that is fighting a live puppet stream: 2026-09-18, joiner,
+-- 155 MP-AUTHORITY-VIOLATION lines, every one paused=1 (observed). The
+-- solo probe's 5/8 HELD measured a body nothing else was writing.
+--
+-- This is the other answer: do not suppress the brain, drive a body that
+-- has none. When an owned puppet is CONTESTED here (a violation fires for
+-- it -- the local brain moved it off our write), the local world NPC is
+-- hidden in place and a replica spawned at its exact pose takes the
+-- stream. On resolution the NPC is unhidden where the replica stood and the
+-- replica is removed. Both edges happen inside one Lua call, i.e. one
+-- frame, so nothing flickers and no body drops.
+--
+-- The replica body. NOT the NPC_NAI class: XGenAIModule.SpawnEntity
+-- substitutes ClassName=NPC_NAI with NPC (observed 3/3, WO-100.5 s1.3) and
+-- System.SpawnEntity, which honours the class, does not bind SharedSoulGuid
+-- -- so NPC_NAI can be had only soulless, which is the WO-56 bare-spawn
+-- family (faction spam, A1 knockdown). The reachable brainless body is
+-- class NPC with the shipped NoAI=true spawn parameter (WO-100.5 s1.4,
+-- observed): soul binds, no SituationController, no behaviour tree, no
+-- self-initiated dialogue, still perceptible, still a crime victim.
+--
+-- Appearance. The replica is spawned with SharedSoulGuid = the ORIGINAL's
+-- own soul WUID (soul:GetId(), "unique and persistent id of this soul",
+-- Warhorse scriptbind doc). A soul-bound body wears that soul's authored
+-- head, hair, beard and default outfit (WO-20 / WO-69, observed on the
+-- roster souls). What it does NOT copy is live inventory state: an NPC the
+-- player stripped, or that the game re-dressed, comes back in its authored
+-- outfit. If the soul id cannot be read as a WUID the NPC is NOT promoted
+-- -- a visibly wrong body is worse than a jittering correct one.
+--
+-- Naming. The replica is "kcd2mp_r_<name>": the kcd2mp_ prefix puts it in
+-- MP_NPC_NAME_EXCLUDE, so this world's own emitter never streams it and
+-- an inbound stream can never target it. The ORIGINAL keeps its name:
+-- every by-name path (inbound damage 0x31, remote death, resync, the RPG
+-- SoulList) keeps resolving to the real NPC, which stays the canonical
+-- local copy -- the replica is only what the eye and the stream see. The
+-- two places that address the BODY are re-pointed explicitly: the native
+-- swing entity id (npcid event) and the agent's outbound damage name
+-- (npc_replica event -> GameBridge remaps the struck replica's name back
+-- to the NPC's).
+--
+-- What this cannot serve, stated plainly (never promoted, logged once):
+--   * any class but NPC -- NPC_Female (NoAI unprobed on it), Horse, animals
+--   * a body already dead, unconscious or carried
+--   * an NPC in a conversation with this player (human:IsInDialog, a
+--     documented bind never live-verified -- WO-88 s2.1; treated as
+--     not-in-dialog when it errors)
+--   * a soul whose id does not read back as a WUID (appearance not
+--     guaranteed)
+--   * DialogTwin_*, kcd2mp_* and the local player (excluded upstream)
+--   and, by consequence rather than by check: while promoted the NPC
+--   cannot be talked to (its body is hidden) and hits the player lands on
+--   the replica stay on the replica -- the original returns with the
+--   health it had, unless the stream or the local copy says dead, which
+--   demotes at once so the real corpse is the one on the ground.
+--
+-- Save hazard, same class as the pause lever's (WO-102.5 s1.3): a save
+-- written while an NPC is promoted persists a hidden original and a
+-- brainless kcd2mp_r_ body. There is no pre-save hook. The 5 s sweep
+-- (KCD2MP_NpcReplicaSweep) removes any unregistered kcd2mp_r_ body near the
+-- player and unhides its original the next time the NPC-sync tick runs.
+--
+-- Default OFF (mp_npc_replica_on|off). The one exception to shipping new
+-- mechanisms on: a wrong replica is visible and disruptive in a way a
+-- quiet toggle is not. The two-machine pass condition is zero
+-- MP-AUTHORITY-VIOLATION with body=replica on a fought NPC.
+--
+--   MP-NPCREPLICA npc=<name> event=promote|demote|refuse|orphan why=<w> body=<replica name>|- held_s=<F1> n=<int>
+KCD2MP.npcReplica = {
+    enabled         = false,   -- mp_npc_replica_on|off
+    sheathedDemoteS = 10.0,    -- stream says weapon away for this long -> the fight is over -> demote
+    orphanSweepM    = 60.0,    -- radius of the 5 s orphan sweep around the player
+}
+KCD2MP._npcReplicas = {}       -- name -> { entName=, since=, guid=, sheathedSince= }
+KCD2MP._npcReplicaStats = { promote = 0, demote = 0, refused = 0, orphan = 0, violationsOnReplica = 0 }
+KCD2MP._npcReplicaRefused = {} -- name|reason -> true (logged once per pair)
+
+local NPC_REPLICA_PREFIX = "kcd2mp_r_"
+
+local function mp_replica_log(name, event, why, body, heldS)
+    local st = KCD2MP._npcReplicaStats
+    local n = (event == "promote" and st.promote) or (event == "demote" and st.demote)
+        or (event == "refuse" and st.refused) or (event == "orphan" and st.orphan) or 0
+    mp_log(string.format("MP-NPCREPLICA npc=%s event=%s why=%s body=%s held_s=%.1f n=%d",
+        tostring(name), event, tostring(why), tostring(body or "-"), heldS or 0, n))
+end
+
+local function mp_replica_hexid(e)
+    local h = nil
+    pcall(function() h = string.match(tostring(e.id), "(%x+)%s*$") end)
+    return h
+end
+
+-- Same 4-pass remove-and-verify idiom as mp_remove_entity_verified (which
+-- is a local defined further down this file, so not visible here).
+local function mp_replica_remove(entName)
+    for pass = 1, 4 do
+        local e = nil
+        pcall(function() e = System.GetEntityByName(entName) end)
+        if not e then return true end
+        pcall(function() System.RemoveEntity(e.id) end)
+    end
+    local e = nil
+    pcall(function() e = System.GetEntityByName(entName) end)
+    if e then mp_log("MP-NPCREPLICA remove: " .. tostring(entName) .. " STILL ALIVE after 4 passes") end
+    return e == nil
+end
+
+-- The body the puppet tick should drive for `name`: the replica while one
+-- is registered and alive, else the world NPC. Second return: isReplica.
+function KCD2MP_NpcBody(name)
+    local r = KCD2MP._npcReplicas[name]
+    if r then
+        local e = nil
+        pcall(function() e = System.GetEntityByName(r.entName) end)
+        if e then return e, true end
+        KCD2MP_NpcReplicaDemote(name, "replica-gone")
+    end
+    local e = nil
+    pcall(function() e = System.GetEntityByName(name) end)
+    return e, false
+end
+
+local function mp_replica_refuse(name, why)
+    local key = tostring(name) .. "|" .. tostring(why)
+    if KCD2MP._npcReplicaRefused[key] then return false end
+    KCD2MP._npcReplicaRefused[key] = true
+    KCD2MP._npcReplicaStats.refused = KCD2MP._npcReplicaStats.refused + 1
+    mp_replica_log(name, "refuse", why, "-", 0)
+    return false
+end
+
+-- Promote `name` (an owned puppet, table p) to a replica. Returns true when
+-- a replica now drives it (including "already promoted").
+function KCD2MP_NpcReplicaPromote(name, p, why)
+    if not KCD2MP.npcReplica.enabled then return false end
+    if not KCD2MP.wo102.authorityHost then return false end
+    if KCD2MP._npcReplicas[name] then return true end
+    if not p or mp_is_excluded_npc_name(name) then return false end
+    if p.dead or p.ko or p.carried then return mp_replica_refuse(name, "down-or-carried") end
+
+    local e = nil
+    pcall(function() e = System.GetEntityByName(name) end)
+    if not e then return false end
+
+    local cls = nil
+    pcall(function() cls = tostring(e.class or "") end)
+    if cls ~= "NPC" then return mp_replica_refuse(name, "class=" .. tostring(cls)) end
+
+    local dead, ko = false, false
+    if e.actor then
+        pcall(function() dead = e.actor:IsDead() == true end)
+        pcall(function() ko = e.actor:IsUnconscious() == true end)
+    end
+    if dead or ko then return mp_replica_refuse(name, dead and "dead" or "unconscious") end
+
+    local inDialog = false
+    if e.human and type(e.human.IsInDialog) == "function" then
+        pcall(function() inDialog = e.human:IsInDialog() == true end)
+    end
+    if inDialog then return mp_replica_refuse(name, "in-dialog") end
+
+    local guid = nil
+    if e.soul then pcall(function() guid = tostring(e.soul:GetId()) end) end
+    if not (guid and string.match(guid, "^%x+%-%x+%-%x+%-%x+%-%x+$")) then
+        return mp_replica_refuse(name, "soul-id-unreadable")
+    end
+
+    local pos, ang = nil, nil
+    pcall(function() pos = e:GetWorldPos() end)
+    pcall(function() ang = e:GetWorldAngles() end)
+    if not pos then return false end
+
+    -- 1. The replica first, at the NPC's ACTUAL pose (the body the eye is
+    --    on right now), soul-bound to the same soul, no brain.
+    local rname = NPC_REPLICA_PREFIX .. name
+    mp_replica_remove(rname)   -- a stale one from an earlier session/save must not double up
+    local r = nil
+    pcall(function()
+        XGenAIModule.SpawnEntity({
+            Name           = rname,
+            ClassName      = "NPC",
+            Pos            = { pos.x, pos.y, pos.z },
+            SharedSoulGuid = guid,
+            NoAI           = true,
+        })
+        r = System.GetEntityByName(rname)
+    end)
+    if not r then return mp_replica_refuse(name, "spawn-failed") end
+    local rSoul = false
+    pcall(function() rSoul = r.soul ~= nil end)
+    if not rSoul then
+        -- WO-56 bare-spawn family: a soulless body logs every frame and
+        -- falls over. Never leave one standing.
+        mp_replica_remove(rname)
+        return mp_replica_refuse(name, "replica-soulless")
+    end
+    if ang then pcall(function() r:SetWorldAngles({ x = 0, y = 0, z = ang.z }) end) end
+
+    -- 2. Hide the NPC in the same call -- same frame as the spawn.
+    pcall(function() e:Hide(1) end)
+
+    KCD2MP._npcReplicas[name] = { entName = rname, since = os.clock(), guid = guid, sheathedSince = nil }
+    KCD2MP._npcReplicaStats.promote = KCD2MP._npcReplicaStats.promote + 1
+
+    -- The puppet's render state restarts on the new body: no phantom
+    -- displacement against the original's last write, the animation and the
+    -- weapon state re-assert on the replica on its first tick.
+    p.cx, p.cy, p.cz = pos.x, pos.y, pos.z
+    if ang then p.cr = ang.z end
+    p.lastWroteX, p.lastWroteY = nil, nil
+    p.animTag, p.animRefreshAt, p.appliedDrawn, p.drawnCheckAt = "idle", 0, nil, 0
+    p.yieldStreak = 0
+
+    -- Re-point the two by-BODY paths (see the header): native swings by
+    -- entity id, and the agent's struck-name remap for outbound damage.
+    local hexid = mp_replica_hexid(r)
+    if hexid then KCD2MP_EmitEvent("npcid", name .. " " .. hexid) end
+    KCD2MP_EmitEvent("npc_replica", name .. " " .. rname)
+    mp_replica_log(name, "promote", why, rname, 0)
+    if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-replica", string.format("%s hidden and replaced by a brainless replica (%s)", name, tostring(why))) end
+    return true
+end
+
+-- Demote: the NPC returns where the replica stands, the replica goes. One
+-- call, one frame. Safe to call for a name that is not promoted.
+function KCD2MP_NpcReplicaDemote(name, why)
+    local r = KCD2MP._npcReplicas[name]
+    if not r then return false end
+    KCD2MP._npcReplicas[name] = nil
+    local re, orig = nil, nil
+    pcall(function() re = System.GetEntityByName(r.entName) end)
+    pcall(function() orig = System.GetEntityByName(name) end)
+    local pos, ang = nil, nil
+    if re then
+        pcall(function() pos = re:GetWorldPos() end)
+        pcall(function() ang = re:GetWorldAngles() end)
+    end
+    local p = KCD2MP.npcPuppets[name]
+    if not pos and p and p.cx then pos = { x = p.cx, y = p.cy, z = p.cz } end
+    if orig then
+        if pos then pcall(function() orig:SetWorldPos({ x = pos.x, y = pos.y, z = pos.z }) end) end
+        if ang then pcall(function() orig:SetWorldAngles({ x = 0, y = 0, z = ang.z }) end) end
+        pcall(function() orig:Hide(0) end)
+    end
+    if re then mp_replica_remove(r.entName) end
+    if p then
+        if pos then p.cx, p.cy, p.cz = pos.x, pos.y, pos.z end
+        p.lastWroteX, p.lastWroteY = nil, nil
+        p.animTag, p.animRefreshAt, p.appliedDrawn, p.drawnCheckAt = "idle", 0, nil, 0
+        p.yieldStreak = 0
+    end
+    if orig then
+        local hexid = mp_replica_hexid(orig)
+        if hexid then KCD2MP_EmitEvent("npcid", name .. " " .. hexid) end
+    end
+    KCD2MP_EmitEvent("npc_replica", name .. " -")
+    KCD2MP._npcReplicaStats.demote = KCD2MP._npcReplicaStats.demote + 1
+    mp_replica_log(name, "demote", why, r.entName, os.clock() - (r.since or os.clock()))
+    return true
+end
+
+function KCD2MP_NpcReplicaDemoteAll(why)
+    local names = {}
+    for name in pairs(KCD2MP._npcReplicas) do names[#names + 1] = name end
+    for _, name in ipairs(names) do KCD2MP_NpcReplicaDemote(name, why) end
+    return #names
+end
+
+-- Called from mp_wo102_violation: the contention trigger. One violation is
+-- already a sustained signal (10 consecutive ticks displaced, or a >8 m
+-- yank), so the first one promotes. A violation on a body that IS the
+-- replica is counted separately -- that is the field number the two-machine
+-- test reads (a brainless body should produce none).
+function KCD2MP_NpcReplicaConsider(name, p, kind)
+    if KCD2MP._npcReplicas[name] then
+        KCD2MP._npcReplicaStats.violationsOnReplica = KCD2MP._npcReplicaStats.violationsOnReplica + 1
+        return
+    end
+    if not KCD2MP.npcReplica.enabled then return end
+    KCD2MP_NpcReplicaPromote(name, p, "violation-" .. tostring(kind))
+end
+
+-- 5 s sweep from KCD2MP_NpcSyncTick: (1) a registered replica whose body or
+-- original is gone (save reload minted new entities) is demoted/forgotten;
+-- (2) an UNREGISTERED kcd2mp_r_ body near the player -- a savegame-restored
+-- replica, or one from a previous Lua state -- is removed and its original
+-- unhidden. Runs regardless of the toggle: cleanup must not depend on the
+-- switch that created the mess.
+function KCD2MP_NpcReplicaSweep()
+    local names = {}
+    for name in pairs(KCD2MP._npcReplicas) do names[#names + 1] = name end
+    for _, name in ipairs(names) do
+        local r = KCD2MP._npcReplicas[name]
+        local re, orig = nil, nil
+        pcall(function() re = System.GetEntityByName(r.entName) end)
+        pcall(function() orig = System.GetEntityByName(name) end)
+        if not re then KCD2MP_NpcReplicaDemote(name, "replica-gone")
+        elseif not orig then
+            KCD2MP._npcReplicas[name] = nil
+            mp_replica_remove(r.entName)
+            KCD2MP_EmitEvent("npc_replica", name .. " -")
+            KCD2MP._npcReplicaStats.demote = KCD2MP._npcReplicaStats.demote + 1
+            mp_replica_log(name, "demote", "original-gone", r.entName, os.clock() - (r.since or os.clock()))
+        elseif not KCD2MP.npcPuppets[name] then
+            KCD2MP_NpcReplicaDemote(name, "no-puppet")
+        end
+    end
+    if not player then return end
+    local ppos = nil
+    pcall(function() ppos = player:GetWorldPos() end)
+    if not ppos then return end
+    local ents = nil
+    pcall(function() ents = System.GetEntitiesInSphere(ppos, KCD2MP.npcReplica.orphanSweepM) end)
+    for _, e in ipairs(ents or {}) do
+        local nm = nil
+        pcall(function() nm = e:GetName() end)
+        if nm and string.sub(nm, 1, #NPC_REPLICA_PREFIX) == NPC_REPLICA_PREFIX then
+            local orig = string.sub(nm, #NPC_REPLICA_PREFIX + 1)
+            local r = KCD2MP._npcReplicas[orig]
+            if not (r and r.entName == nm) then
+                local o = nil
+                pcall(function() o = System.GetEntityByName(orig) end)
+                if o then pcall(function() o:Hide(0) end) end
+                mp_replica_remove(nm)
+                KCD2MP._npcReplicaStats.orphan = KCD2MP._npcReplicaStats.orphan + 1
+                mp_replica_log(orig, "orphan", o and "removed-and-unhid" or "removed", nm, 0)
+            end
+        end
+    end
+end
+
+function KCD2MP_SetNpcReplica(on)
+    local want = (on == true or on == 1 or on == "on" or on == "true")
+    local was = KCD2MP.npcReplica.enabled
+    KCD2MP.npcReplica.enabled = want
+    local demoted = 0
+    if not want then demoted = KCD2MP_NpcReplicaDemoteAll("toggle-off") end
+    mp_log(string.format("MP-NPCREPLICA toggle state=%s was=%s demoted=%d", want and "on" or "off", was and "on" or "off", demoted))
+    KCD2MP_ShowInteractionMsg("NPC replicas for contested NPCs: " .. (want and "ON" or "OFF"))
+    KCD2MP_EmitEvent("npc_replica_toggle", want and "on" or "off")
+end
+
+function KCD2MP_NpcReplicaStatus()
+    local st, active, names = KCD2MP._npcReplicaStats, 0, {}
+    for name, r in pairs(KCD2MP._npcReplicas) do
+        active = active + 1
+        names[#names + 1] = string.format("%s(%.0fs)", name, os.clock() - (r.since or os.clock()))
+    end
+    mp_log(string.format("MP-NPCREPLICA status enabled=%s active=%d promotes=%d demotes=%d refused=%d orphans=%d violations_on_replica=%d [%s]",
+        KCD2MP.npcReplica.enabled and "on" or "off", active, st.promote, st.demote, st.refused, st.orphan,
+        st.violationsOnReplica, table.concat(names, ", ")))
+end
+
 -- Receiving side. Called by the agent for each NpcStateDown (0x27). Never
 -- spawns anything: an NPC not loaded in this world is simply not ours to move.
 -- WO-102 Phase 2: `src` is the sending ghost id (the stream's owner), an
@@ -4339,7 +4710,7 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
         return
     end
 
-    local e = System.GetEntityByName(name)
+    local e = KCD2MP_NpcBody(name)   -- WO-104: the replica while one drives this NPC, else the world NPC
     if not e then return end
 
     -- WO-38 Phase 5: a horse currently adopted as some ghost's mount is owned
@@ -4686,6 +5057,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- Release on silence: the engine restores the NPC to its own
             -- schedule the moment we stop writing (observed live, WO-32).
             if (now - (p.lastPacketAt or 0)) > KCD2MP.npcSync.releaseS then
+                KCD2MP_NpcReplicaDemote(name, "silence")   -- WO-104: the NPC returns before the puppet is dropped
                 KCD2MP.npcPuppets[name] = nil
                 mp_log("NPC-SYNC release " .. name .. " (stream silent)")
                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "silence", now - (p.ownerSince or now))   -- WO-102
@@ -4694,8 +5066,17 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             end
             any = true
 
-            local e = System.GetEntityByName(name)
+            local e, isReplica = KCD2MP_NpcBody(name)
             if not e then return end
+            -- WO-104: life state (dead/KO/hp) is read from the WORLD NPC -- the
+            -- canonical local copy every by-name path still targets -- never
+            -- from the replica body.
+            local lifeE = e
+            if isReplica then
+                local o = nil
+                pcall(function() o = System.GetEntityByName(name) end)
+                if o then lifeE = o end
+            end
             -- WO-102 Phase 4: a puppet that existed before the pause lever was switched on.
             if KCD2MP.wo102.authorityHost and KCD2MP.wo102.authorityPause and not KCD2MP._npcPaused[name] then
                 mp_wo102_pause(name, p)
@@ -4707,9 +5088,9 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- extends the same rule to unconsciousness on both sources: a
             -- knocked-out NPC kept walking under the stream (Section G).
             local locallyDead, locallyKo = false, false
-            if e.actor then
-                pcall(function() locallyDead = e.actor:IsDead() == true end)
-                pcall(function() locallyKo = e.actor:IsUnconscious() == true end)
+            if lifeE.actor then
+                pcall(function() locallyDead = lifeE.actor:IsDead() == true end)
+                pcall(function() locallyKo = lifeE.actor:IsUnconscious() == true end)
             end
             -- WO-86: the third death reader. This is the one that covers the
             -- field report's killer: the NPC was a PUPPET on their machine
@@ -4717,8 +5098,26 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- drag sensor only sees bodies within 6 m. The local hp is read
             -- only for a dead body (one extra call per death, not per tick).
             local localHp = -1
-            if locallyDead and e.actor then pcall(function() localHp = e.actor:GetHealth() or -1 end) end
+            if locallyDead and lifeE.actor then pcall(function() localHp = lifeE.actor:GetHealth() or -1 end) end
             mp_npc_death_observe(name, locallyDead, localHp, "puppet")
+            -- WO-104 Phase 1: resolution. A dead/KO NPC demotes at once so the
+            -- real corpse is the one on the ground; a fight is over when the
+            -- owner's stream has had the weapon away for sheathedDemoteS.
+            if isReplica then
+                local r = KCD2MP._npcReplicas[name]
+                if p.dead or p.ko or locallyDead or locallyKo then
+                    KCD2MP_NpcReplicaDemote(name, (p.dead or locallyDead) and "dead" or "unconscious")
+                    return
+                end
+                if p.drawn then r.sheathedSince = nil
+                else
+                    r.sheathedSince = r.sheathedSince or now
+                    if (now - r.sheathedSince) >= KCD2MP.npcReplica.sheathedDemoteS then
+                        KCD2MP_NpcReplicaDemote(name, "sheathed")
+                        return
+                    end
+                end
+            end
             -- A peer has declared this body dead (KCD2MP_NpcRemoteDeath) and
             -- the DLL apply is in flight or failed: hold it still for a few
             -- seconds rather than lerp a body that is about to be a corpse.
@@ -4980,6 +5379,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                     MP_NPC_DIVERGE_COOLDOWN_S))
                                 -- WO-94: a release inside a catch-up window is the "dragged NPC state" hazard (WO-92 s6.4 hazard 3).
                                 if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-dragged", string.format("%s released by the divergence rule (%.1fm from our write)", name, math.sqrt(fx*fx + fy*fy))) end
+                                KCD2MP_NpcReplicaDemote(name, "diverge")   -- WO-104
                                 KCD2MP.npcPuppets[name] = nil
                                 KCD2MP._npcDivergeUntil[name] = now + MP_NPC_DIVERGE_COOLDOWN_S
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
@@ -5028,6 +5428,10 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- writes -- the local brain owns the body until the stream moves
             -- (re-pin in KCD2MP_ApplyNpcState). lastWrote is cleared so the
             -- tug-of-war counter does not measure a write we did not make.
+            -- WO-104: the body changed inside this tick (a violation above just
+            -- promoted it) -- the first write goes to the new body next tick.
+            if ((KCD2MP._npcReplicas or {})[name] ~= nil) ~= isReplica then return end
+
             if p.yielded then
                 p.lastWroteX, p.lastWroteY = nil, nil
                 return
@@ -8334,6 +8738,7 @@ function KCD2MP_Stop()
         for _ in pairs(KCD2MP._npcPaused) do n = n + 1 end
         if n > 0 then mp_wo102_resume_all("mod-stop") end
     end
+    if KCD2MP_NpcReplicaDemoteAll then KCD2MP_NpcReplicaDemoteAll("mod-stop") end   -- WO-104
     KCD2MP_RemoveAllGhosts()
     System.LogAlways("[KCD2-MP] Stopped")
 end
@@ -10681,6 +11086,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
     System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). UNVERIFIED live -- run mp_probe_npc_pause first")
     System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
+    System.AddCCommand("mp_npc_replica_on",      "KCD2MP_SetNpcReplica(true)",  "WO-104: under host authority, replace a CONTESTED puppet (MP-AUTHORITY-VIOLATION) with a brainless soul-bound replica driven by the owner's stream; the NPC is hidden in place and returns when the fight ends. Default OFF until two machines prove it -- pass condition: zero violations with body=replica")
+    System.AddCCommand("mp_npc_replica_off",     "KCD2MP_SetNpcReplica(false)", "WO-104: demote every replica (NPCs return where their replica stood) and stop promoting")
+    System.AddCCommand("mp_npc_replica_status",  "KCD2MP_NpcReplicaStatus()",   "WO-104: log the replica toggle, active replicas and the promote/demote/refuse/orphan counters")
     System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")

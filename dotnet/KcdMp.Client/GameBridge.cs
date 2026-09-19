@@ -231,6 +231,18 @@ public partial class GameBridge(ClientConfig config)
     // window between fails cleanly in the DLL (falls back to the Lua cue).
     private readonly ConcurrentDictionary<string, uint> _npcEntityIds = new();
 
+    // WO-104 Phase 1: replica body name -> the world NPC it stands in for,
+    // from the mod's "npc_replica <npc> <replica|->" event. A contested
+    // puppet under mp_npc_replica_on is driven through a brainless
+    // soul-bound body named kcd2mp_r_<npc> while the real NPC is hidden in
+    // place. The DLL's hit sensor reports the struck body's own soul, which
+    // REST resolves to the replica's name -- a name the owner cannot
+    // resolve and one this agent would otherwise drop as a ghost body
+    // (kcd2mp_ prefix). This map turns it back into the NPC's name before
+    // the outbound-damage guard and the send. Inbound damage needs nothing:
+    // the NPC keeps its name, so 0x31 still lands on the canonical copy.
+    private readonly ConcurrentDictionary<string, string> _npcReplicaOrig = new();
+
     // WO-49: npcName → the LOCAL copy's own equipped item classes, read over
     // the same SoulsByName REST surface the ghost appearance layer uses
     // (proven for spawned souls in WO-10/47; whether world NPCs resolve by
@@ -1417,6 +1429,12 @@ public partial class GameBridge(ClientConfig config)
                 // has its own authoritative flow (0x21) and a name like
                 // "kcd2mp_6" means a different entity on every machine.
                 string? npcName = await ResolveSoulNameAsync(soul, cts.Token);
+                if (npcName is not null && _npcReplicaOrig.TryGetValue(npcName, out var replicaOf))
+                {
+                    // WO-104: a hit on a replica body is a hit on the NPC it stands in for.
+                    Console.WriteLine($"[combat] hit on replica '{npcName}' attributed to '{replicaOf}'");
+                    npcName = replicaOf;
+                }
 
                 // WO-99 Phase 0: never put the LOCAL PLAYER's own health drop
                 // on the NPC path, and never re-send a value a peer just made
@@ -4800,6 +4818,37 @@ public partial class GameBridge(ClientConfig config)
             {
                 Console.WriteLine($"[npcsync] malformed npcid '{arg}'");
             }
+            return;
+        }
+
+        if (name == "npc_replica")
+        {
+            // WO-104 Phase 1: "<npc> <replicaName|->" from KCD2MP_NpcReplicaPromote/Demote.
+            var rp = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (rp.Length == 2 && NpcNamePattern.IsMatch(rp[0]))
+            {
+                if (rp[1] == "-")
+                {
+                    foreach (var kv in _npcReplicaOrig)
+                        if (kv.Value == rp[0]) _npcReplicaOrig.TryRemove(kv.Key, out _);
+                    Console.WriteLine($"[npcsync] replica for {rp[0]} released");
+                }
+                else if (NpcNamePattern.IsMatch(rp[1]))
+                {
+                    _npcReplicaOrig[rp[1]] = rp[0];
+                    Console.WriteLine($"[npcsync] replica {rp[1]} now stands in for {rp[0]} (hits on it are attributed to {rp[0]})");
+                }
+                else Console.WriteLine($"[npcsync] malformed npc_replica '{arg}'");
+            }
+            else Console.WriteLine($"[npcsync] malformed npc_replica '{arg}'");
+            return;
+        }
+
+        if (name == "npc_replica_toggle")
+        {
+            // WO-104: console flip of mp_npc_replica_on|off. Log only -- the
+            // mechanism is entirely mod-side; the agent has no gate to mirror.
+            Console.WriteLine($"[npcsync] mp_npc_replica {arg} (mod-side toggle; default off until the two-machine test)");
             return;
         }
 
