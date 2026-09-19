@@ -2199,17 +2199,22 @@ KCD2MP.wo1025 = {
     -- Ownership radius: under host authority, EVERY NPC within this of any
     -- anchor is owned -- no per-anchor cap (mp_npc_rescan). Runtime-
     -- adjustable, not baked: #KCD2MP_SetAuthorityRadius("<metres>") from the
-    -- console. Default = 150 m, the maintainer's original target, shipped
-    -- 2026-09-18: the live radius runbook (findings S6.3) held 45/90/150m
-    -- with zero MP-AUTHORITY-VIOLATION/crashes in a busy town, native-scan
-    -- cost is radius-independent (S6.2, 37,079 entities walked regardless),
-    -- and culling kept 150m's actual streaming cost to 22-of-78 tracked.
-    -- The FPS-floor reading that had kept this at 45m was RETRACTED the
-    -- same session (S6.3) -- it measured the game window being unfocused,
-    -- not the radius -- so "unmeasured" is the honest status of the cost,
-    -- not "measured and expensive". #KCD2MP_SetAuthorityRadius("45") is one
-    -- line if a focused-window measurement finds a real cost.
-    authorityRadius = 150.0,
+    -- console. The live radius runbook (WO-102.5 findings S6.3) held
+    -- 45/90/150m with zero MP-AUTHORITY-VIOLATION/crashes in a busy town,
+    -- native-scan cost is radius-independent (S6.2, 37,079 entities walked
+    -- regardless), and culling kept 150m's actual streaming cost to
+    -- 22-of-78 tracked. The FPS-floor reading that had kept this at 45m was
+    -- RETRACTED the same session (S6.3) -- it measured the game window
+    -- being unfocused, not the radius.
+    -- WO-103 Phase 1: the upper clamp (was 300) is removed -- the point of
+    -- this WO is to find the real ceiling by testing to failure, not stop at
+    -- a guessed one (docs/WO-103-field-runbook.md). Default raised to
+    -- 300 m, the maintainer's original target: it covers a peer wandering
+    -- off on their own quest without dropping co-location, and nothing
+    -- measured argues against it (WO-102.5 S6.3's own 150m result was
+    -- comfortably clean). #KCD2MP_SetAuthorityRadius("45") is one line back
+    -- down if a focused-window measurement ever finds a real cost.
+    authorityRadius = 300.0,
     -- Cull radius: within authorityRadius but beyond THIS, an owned NPC is
     -- not actively streamed (mp_npc_cull_on, default on) -- it is still
     -- tracked (nobody else can claim it) but KCD2MP_NpcSyncTick skips its
@@ -2232,6 +2237,18 @@ KCD2MP.wo1025 = {
     togetherEnterM  = 60.0,
     togetherExitM   = 90.0,
     togetherDwellS  = 10.0,
+    -- WO-103 Phase 2: mp_npc_read_native_on|off. When on, KCD2MP_NpcSyncTick
+    -- takes a tracked NPC's position/yaw from the agent's native push
+    -- (KCD2MP._nativeScan.pos) when fresh, instead of e:GetWorldPos()/
+    -- GetWorldAngles() -- health/dead/KO/drawn/engaged are unaffected, still
+    -- read off `e` every tick (WO-103.5's job, unmapped offsets). The
+    -- fallback is never a second GetEntityByName -- `e` is already in hand
+    -- for those state-bit reads regardless of this toggle, so an absent or
+    -- stale native sample just costs what today's code already costs.
+    -- Ships on per the standing rule (new mechanisms default on); auto-fails
+    -- closed (this flag flips back to false) if KCD2MP_NpcReadCompare finds
+    -- a real mismatch, not merely a stale one -- see that function.
+    readNative      = true,
 }
 
 -- name:string metres, from the console via #KCD2MP_SetAuthorityRadius("90").
@@ -2239,17 +2256,20 @@ KCD2MP.wo1025 = {
 -- from Lua-registered commands, and a bare mp_x_on/_off pair cannot carry a
 -- number. The '#<lua>' console syntax bypasses that (it evaluates the line
 -- as Lua directly), which is the intended and only supported way to call
--- this. Clamped, not merely validated: a runaway radius is a runaway scan
--- cost, and the wrong side of that mistake is silent, not a crash.
-local AUTHORITY_RADIUS_MIN, AUTHORITY_RADIUS_MAX = 10.0, 300.0
+-- this. Floor-clamped, not merely validated: a runaway small radius (or
+-- garbage input) is still rejected outright. WO-103 Phase 1: the UPPER bound
+-- is deliberately gone -- finding the real ceiling by testing to failure is
+-- this WO's whole point (docs/WO-103-field-runbook.md); stopping at a
+-- guessed number would defeat it.
+local AUTHORITY_RADIUS_MIN = 10.0
 function KCD2MP_SetAuthorityRadius(arg)
     local m = tonumber(arg)
     if not m or m ~= m then   -- m ~= m catches NaN
         mp_log("WO1025-RADIUS rejected '" .. tostring(arg) .. "' -- expected a number of metres")
         return false
     end
-    if m < AUTHORITY_RADIUS_MIN or m > AUTHORITY_RADIUS_MAX then
-        mp_log(string.format("WO1025-RADIUS rejected %.1f -- must be %.0f..%.0f", m, AUTHORITY_RADIUS_MIN, AUTHORITY_RADIUS_MAX))
+    if m < AUTHORITY_RADIUS_MIN then
+        mp_log(string.format("WO1025-RADIUS rejected %.1f -- must be >= %.0f", m, AUTHORITY_RADIUS_MIN))
         return false
     end
     local was = KCD2MP.wo1025.authorityRadius
@@ -2275,6 +2295,25 @@ function KCD2MP_SetNpcCull(arg)
         return false
     end
     mp_log("WO1025-CULL " .. (KCD2MP.wo1025.npcCull and "on" or "off"))
+    return true
+end
+
+-- WO-103 Phase 2: mp_npc_read_native_on|off. Turning it back on re-arms a
+-- fresh known-answer check immediately (KCD2MP_NpcReadCompare, defined
+-- further down next to mp_npc_read_compare) rather than waiting for the next
+-- periodic one -- the same "prove it's healthy before relying on it" shape
+-- mp_npc_scan_native_on's own toggle doesn't have (that one only disarms
+-- itself on repeated agent-side refusals, never re-verifies its answers).
+function KCD2MP_SetNpcReadNative(arg)
+    local s = tostring(arg or ""):lower()
+    if s:find("on") then KCD2MP.wo1025.readNative = true
+    elseif s:find("off") then KCD2MP.wo1025.readNative = false
+    else
+        mp_log("mp_npc_read_native: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
+        return false
+    end
+    mp_log("WO103-READNATIVE " .. (KCD2MP.wo1025.readNative and "on" or "off"))
+    if KCD2MP.wo1025.readNative and KCD2MP_NpcReadCompare then pcall(KCD2MP_NpcReadCompare) end
     return true
 end
 
@@ -3420,24 +3459,176 @@ function KCD2MP_NpcResyncRequest()
     KCD2MP_EmitEvent("npc_resync_request", "manual")
 end
 
+-- WO-103 Phase 0: reusable duration-histogram stats for MP-NPCREAD, mirroring
+-- CadenceStats.cs's bucketed-percentile scheme (dotnet/KcdMp.Client/
+-- CadenceStats.cs) -- Lua cannot call that C# class, so the SCHEME is
+-- mirrored (same line shape, same 1ms-bucket/percentile algorithm), not the
+-- code. Unlike CadenceStats (which measures the GAP between samples --
+-- cadence), this measures the DURATION of one bracketed span -- the
+-- per-tracked-NPC read loop in KCD2MP_NpcSyncTick -- so `Add` takes an
+-- already-computed elapsed-ms value, not a clock reading.
+local NPCREAD_MAX_MS = 500
+local function mp_durstat_new()
+    return { win = {}, life = {}, winN = 0, lifeN = 0, winSum = 0, lifeSum = 0,
+             winMax = 0, lifeMax = 0, winStartClock = os.clock() }
+end
+local function mp_durstat_add(st, ms)
+    local b = math.max(0, math.min(NPCREAD_MAX_MS, math.floor(ms + 0.5)))
+    st.win[b] = (st.win[b] or 0) + 1
+    st.life[b] = (st.life[b] or 0) + 1
+    st.winN = st.winN + 1; st.lifeN = st.lifeN + 1
+    st.winSum = st.winSum + ms; st.lifeSum = st.lifeSum + ms
+    if ms > st.winMax then st.winMax = ms end
+    if ms > st.lifeMax then st.lifeMax = ms end
+end
+local function mp_durstat_percentile(hist, n, q)
+    if n <= 0 then return -1 end
+    local target = math.ceil(q * n)
+    if target < 1 then target = 1 end
+    local seen = 0
+    for b = 0, NPCREAD_MAX_MS do
+        seen = seen + (hist[b] or 0)
+        if seen >= target then return b end
+    end
+    return NPCREAD_MAX_MS
+end
+-- Formats+resets the WINDOW (matching CadenceStats.Report); returns nil when
+-- the window holds nothing, exactly like CadenceStats.Report does, so a
+-- caller only logs a line when there is one.
+local function mp_durstat_report(st, path)
+    if st.winN == 0 then st.winStartClock = os.clock(); return nil end
+    local windowS = os.clock() - st.winStartClock
+    local p50 = mp_durstat_percentile(st.win, st.winN, 0.50)
+    local p95 = mp_durstat_percentile(st.win, st.winN, 0.95)
+    local line = string.format("MP-NPCREAD path=%s n=%d mean_ms=%.1f p50_ms=%s p95_ms=%s max_ms=%.0f window_s=%.0f",
+        path, st.winN, st.winSum / st.winN,
+        p50 >= NPCREAD_MAX_MS and (">=" .. NPCREAD_MAX_MS) or tostring(p50),
+        p95 >= NPCREAD_MAX_MS and (">=" .. NPCREAD_MAX_MS) or tostring(p95),
+        st.winMax, windowS)
+    st.win = {}; st.winN = 0; st.winSum = 0; st.winMax = 0; st.winStartClock = os.clock()
+    return line
+end
+
+-- WO-103 Phase 0: n=1 sample every KCD2MP_NpcSyncTick tick where the
+-- per-tracked-NPC loop actually ran (0 tracked ticks add nothing). `mixed`
+-- covers a tick where some tracked NPCs read from the native push and
+-- others fell back live -- classified per-tick, not per-NPC, since the
+-- native push's freshness window (below) makes most ticks uniformly one or
+-- the other in practice; a genuinely mixed tick is reported as such rather
+-- than folded into either pure bucket.
+KCD2MP._npcReadStat = { lua = mp_durstat_new(), native = mp_durstat_new(), mixed = mp_durstat_new() }
+KCD2MP._wo103ReportAt = 0
+local WO103_REPORT_INTERVAL_S = 15.0
+
+-- How long a native push stays trustworthy before KCD2MP_NpcSyncTick's own
+-- position read falls back to the live e:GetWorldPos() call it always used
+-- to make -- the SAME gate mp_npc_rescan already established for trusting
+-- the pushed NAME list at all (staleAfterS there), reused here rather than
+-- inventing a second clock: one freshness gate for the whole native push.
+local function mp_native_scan_stale_after_s()
+    return (KCD2MP.npcSync.scanMs / 1000) * 3
+end
+
+-- WO-103 Phase 0/2: periodic, readable-directly counters -- previously a
+-- bundle audit had to count "NPC-SYNC tracking"/"untracking" log lines by
+-- hand (WO-102.5's own runbook friction). Also runs the read-native
+-- known-answer check (KCD2MP_NpcReadCompare) while that path is on, so a
+-- regression is caught within one interval, not only when the console
+-- happens to be asked.
+local function mp_wo103_periodic_report()
+    local nowR = os.clock()
+    if (nowR - (KCD2MP._wo103ReportAt or 0)) < WO103_REPORT_INTERVAL_S then return end
+    KCD2MP._wo103ReportAt = nowR
+    for _, path in ipairs({ "lua", "native", "mixed" }) do
+        local line = mp_durstat_report(KCD2MP._npcReadStat[path], path)
+        if line then mp_log(line) end
+    end
+    local tracked, culled = 0, 0
+    for _, t in pairs(KCD2MP.npcTracked) do
+        tracked = tracked + 1
+        if t.culled then culled = culled + 1 end
+    end
+    mp_log(string.format("MP-NPCTRACK tracked=%d culled=%d", tracked, culled))
+    if KCD2MP.wo1025.readNative and KCD2MP_NpcReadCompare then pcall(KCD2MP_NpcReadCompare) end
+end
+
 -- WO-102.5 Phase 2: the agent's push target (GameBridge.cs's NpcScanTickAsync).
--- csv is a comma-separated authored-name list, already gated to [A-Za-z0-9_]+
--- agent-side -- re-gated here too, never trusted blind. Empty/nil clears it
+-- csv is a comma-separated list of "name:x:y:z:yaw:isHorse" entries (WO-103
+-- Phase 2 added the position/yaw fields -- the name-only format WO-102.5
+-- shipped had nowhere to put them). The whole entry is matched by one
+-- pattern, so a malformed or non-conforming name (agent-side gate is
+-- [A-Za-z0-9_]+, re-checked here, never trusted blind) drops the WHOLE entry
+-- rather than parsing a name next to garbage numbers. Empty/nil clears it
 -- rather than erroring, since "the scan found nothing near you" is a normal
 -- reply, not a malformed one.
-KCD2MP._nativeScan = { at = nil, names = {} }
+KCD2MP._nativeScan = { at = nil, names = {}, pos = {} }
 
 function KCD2MP_ApplyNativeScan(csv)
-    local names = {}
+    local names, pos = {}, {}
     if csv and #csv > 0 then
-        for name in string.gmatch(csv, "[^,]+") do
-            if string.find(name, "^[%w_]+$") then
+        for entry in string.gmatch(csv, "[^,]+") do
+            local name, x, y, z, yaw, horse =
+                string.match(entry, "^([%w_]+):(%-?[%d%.]+):(%-?[%d%.]+):(%-?[%d%.]+):(%-?[%d%.]+):([01])$")
+            if name then
                 names[#names + 1] = name
+                pos[name] = { x = tonumber(x), y = tonumber(y), z = tonumber(z),
+                              yaw = tonumber(yaw), isHorse = (horse == "1") }
             end
         end
     end
     KCD2MP._nativeScan.names = names
+    KCD2MP._nativeScan.pos = pos
     KCD2MP._nativeScan.at = os.clock()
+end
+
+-- WO-103 Phase 2 known-answer check, on the model of KCD2MP_NpcScanCompare
+-- below: native position/yaw (the agent's last push) against a fresh LIVE
+-- Lua read (e:GetWorldPos()/GetWorldAngles()) for the SAME entity, same
+-- tick -- only over currently-tracked names, since those are the ones the
+-- substitution actually touches. A moving NPC genuinely drifts during the
+-- push's own staleness window, so the tolerance scales with the push's age
+-- at a generous walking/jogging bound (NPC_READ_COMPARE_SPEED_MPS) plus a
+-- flat base for read/measurement noise -- a mismatch beyond that is not
+-- explainable by movement, so it means the offset math itself disagrees.
+-- Disagreement means stop, not tune: any mismatch fails the whole check
+-- closed (KCD2MP.wo1025.readNative = false), not just for the mismatched
+-- name, since a wrong offset is wrong for every entity, not one.
+local NPC_READ_COMPARE_BASE_M = 1.0
+local NPC_READ_COMPARE_SPEED_MPS = 3.0
+function KCD2MP_NpcReadCompare()
+    local ageS = KCD2MP._nativeScan.at and (os.clock() - KCD2MP._nativeScan.at) or nil
+    if not ageS then mp_log("MP-NPCREAD dir=compare verdict=no-data reason=never-received"); return end
+
+    local n, sumD, maxD, mismatches = 0, 0, 0, {}
+    for name in pairs(KCD2MP.npcTracked) do
+        local nat = KCD2MP._nativeScan.pos and KCD2MP._nativeScan.pos[name]
+        if nat then
+            local e = System.GetEntityByName(name)
+            if e then
+                local ok, p = pcall(function() return e:GetWorldPos() end)
+                if ok and p then
+                    local dx, dy, dz = p.x - nat.x, p.y - nat.y, p.z - nat.z
+                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    n = n + 1
+                    sumD = sumD + d
+                    if d > maxD then maxD = d end
+                    local allowed = NPC_READ_COMPARE_BASE_M + NPC_READ_COMPARE_SPEED_MPS * ageS
+                    if d > allowed then
+                        mismatches[#mismatches + 1] = string.format("%s:%.2f", name, d)
+                    end
+                end
+            end
+        end
+    end
+
+    local verdict = n == 0 and "no-data" or (#mismatches == 0 and "match" or "fail-closed")
+    mp_log(string.format("MP-NPCREAD dir=compare n=%d delta_mean_m=%.2f delta_max_m=%.2f mismatches=%d native_age_s=%.1f verdict=%s",
+        n, n > 0 and sumD / n or 0, maxD, #mismatches, ageS, verdict))
+    if #mismatches > 0 then
+        mp_log("MP-NPCREAD dir=compare mismatches=" .. table.concat(mismatches, ","))
+        KCD2MP.wo1025.readNative = false
+        mp_log("WO103-READNATIVE off -- known-answer check failed closed")
+    end
 end
 
 -- WO-102.5 Phase 2 known-answer check: the native scan's last pushed name set
@@ -3621,9 +3812,10 @@ local function mp_npc_rescan()
 
     local found = {}
     -- WO-102.5 Phase 3: under host authority, ownership uses the runtime-
-    -- adjustable authority radius (KCD2MP.wo1025.authorityRadius, default 45m
-    -- = today's value) instead of npcSync.radius -- the claim model
-    -- (authorityHost off) is untouched, npcSync.radius/30m exactly as before.
+    -- adjustable authority radius (KCD2MP.wo1025.authorityRadius, see that
+    -- table for the current default and WO-103 Phase 1's uncap) instead of
+    -- npcSync.radius -- the claim model (authorityHost off) is untouched,
+    -- npcSync.radius/30m exactly as before.
     local underHostAuthority = KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn
     local enterRadius = underHostAuthority and KCD2MP.wo1025.authorityRadius or KCD2MP.npcSync.radius
     local exitRadius  = enterRadius * NPC_TRACK_EXIT_FACTOR
@@ -3666,7 +3858,7 @@ local function mp_npc_rescan()
     -- tracked-set diff) is unchanged and runs over `ents` exactly as before,
     -- so a native candidate list is a speed change, not a behaviour change.
     local ents, seenEnt = {}, {}
-    local staleAfterS = (KCD2MP.npcSync.scanMs / 1000) * 3
+    local staleAfterS = mp_native_scan_stale_after_s()   -- WO-103: one shared freshness gate for the whole native push
     if KCD2MP.wo102.npcScanNative and KCD2MP._nativeScan.at
        and (os.clock() - KCD2MP._nativeScan.at) <= staleAfterS then
         for _, name in ipairs(KCD2MP._nativeScan.names) do
@@ -3930,6 +4122,13 @@ function KCD2MP_NpcSyncTick()
         end
     end
 
+    -- WO-103 Phase 0: brackets the WHOLE loop below (one sample per tick it
+    -- runs), not per-NPC -- MP-NPCREAD's "n" is tick count, and its
+    -- mean/p95/max describe how long the tracked set as a whole costs this
+    -- tick, which is what scales with tracked count (Phase 1's point: cost
+    -- scales with tracked, not streamed).
+    local readT0 = os.clock()
+    local readNativeHits, readLuaHits = 0, 0
     for name, t in pairs(KCD2MP.npcTracked) do
         pcall(function()
             -- WO-60: the drag sensor already emits (and claims) this body on
@@ -3937,9 +4136,30 @@ function KCD2MP_NpcSyncTick()
             if not isAuthority and KCD2MP.dragging[name] then return end
             local e = System.GetEntityByName(name)
             if not e then KCD2MP.npcTracked[name] = nil; return end
-            local p = e:GetWorldPos()
-            local rot = 0
-            pcall(function() rot = e:GetWorldAngles().z or 0 end)
+
+            -- WO-103 Phase 2: the one substitution point. `e` is fetched
+            -- above regardless (health/dead/ko/drawn below all need it --
+            -- WO-103.5's job to move those natively, not this WO's), so the
+            -- fallback is never a second GetEntityByName -- it is exactly
+            -- the e:GetWorldPos()/GetWorldAngles() call this loop always
+            -- made. Nothing here can ship a stale position: outside the
+            -- freshness window (mp_native_scan_stale_after_s, the SAME gate
+            -- mp_npc_rescan trusts the pushed name list under) it is simply
+            -- today's live read.
+            local p, rot
+            local nat = KCD2MP.wo1025.readNative and KCD2MP._nativeScan.pos and KCD2MP._nativeScan.pos[name]
+            local natFresh = nat and KCD2MP._nativeScan.at
+                and (os.clock() - KCD2MP._nativeScan.at) <= mp_native_scan_stale_after_s()
+            if natFresh then
+                p = { x = nat.x, y = nat.y, z = nat.z }
+                rot = nat.yaw
+                readNativeHits = readNativeHits + 1
+            else
+                p = e:GetWorldPos()
+                rot = 0
+                pcall(function() rot = e:GetWorldAngles().z or 0 end)
+                readLuaHits = readLuaHits + 1
+            end
             local hp, dead, ko = -1, false, false
             if e.actor then
                 pcall(function() hp = e.actor:GetHealth() or -1 end)
@@ -4055,6 +4275,14 @@ function KCD2MP_NpcSyncTick()
             end
         end)
     end
+
+    if readNativeHits + readLuaHits > 0 then
+        local readDurMs = (os.clock() - readT0) * 1000
+        local path = (readNativeHits > 0 and readLuaHits == 0) and "native"
+            or (readLuaHits > 0 and readNativeHits == 0) and "lua" or "mixed"
+        mp_durstat_add(KCD2MP._npcReadStat[path], readDurMs)
+    end
+    pcall(mp_wo103_periodic_report)
 end
 
 function KCD2MP_StartNpcSync()
@@ -10436,6 +10664,9 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_scan_compare",    "KCD2MP_NpcScanCompare()",                   "WO-102.5 Phase 2 known-answer check: diff the native scan's last pushed name set against a fresh Lua GetEntitiesInSphere enumerate over the same anchors/radius")
     System.AddCCommand("mp_npc_cull_on",         'KCD2MP_SetNpcCull("on")',                   "WO-102.5 Phase 3: under host authority, an owned NPC beyond cullRadius is tracked but not streamed (default on). Radius: #KCD2MP_SetAuthorityRadius(\"<metres>\")")
     System.AddCCommand("mp_npc_cull_off",        'KCD2MP_SetNpcCull("off")',                  "WO-102.5 Phase 3: stream every owned NPC regardless of distance")
+    System.AddCCommand("mp_npc_read_native_on",  'KCD2MP_SetNpcReadNative("on")',              "WO-103 Phase 2: a tracked NPC's position/yaw comes from the agent's native scan push when fresh, falling back to the live e:GetWorldPos() read otherwise (default on)")
+    System.AddCCommand("mp_npc_read_native_off", 'KCD2MP_SetNpcReadNative("off")',             "WO-103 Phase 2: always read position/yaw live off the entity, as before this WO")
+    System.AddCCommand("mp_npc_read_compare",    "KCD2MP_NpcReadCompare()",                    "WO-103 Phase 2 known-answer check: diff the native push's position/yaw against a fresh live read for every currently-tracked name; a real mismatch fails mp_npc_read_native closed")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

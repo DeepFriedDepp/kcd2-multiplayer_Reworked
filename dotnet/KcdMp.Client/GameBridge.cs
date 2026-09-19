@@ -296,13 +296,32 @@ public partial class GameBridge(ClientConfig config)
     // change on the event channel ("authority_radius") because this agent
     // cannot read KCD2MP.wo1025 back, mirrored the same way _hostAuthority
     // etc. mirror the wo102_toggle events. Starts at the mod's own default
-    // (150 m, the maintainer's target -- shipped 2026-09-18 after the live
-    // runbook held 45/90/150m with zero violations and culling kept 150m's
-    // streaming cost to 22-of-78; findings S6.3's FPS-cost reading was
-    // retracted, see the same section) so the two agree before any change.
-    private volatile float _npcScanRadiusM = 150.0f;
-    private const int    NpcScanMaxNamesPushed = 200;   // ExecuteString batching chunks safely past this; a bound anyway
+    // -- WO-103 Phase 1 raised this to 300 m (the maintainer's original
+    // target) and removed the upper clamp; the live runbook at 45/90/150m
+    // (WO-102.5 findings S6.3) held zero violations and culling kept 150m's
+    // streaming cost to 22-of-78, so the two agree before any change.
+    private volatile float _npcScanRadiusM = 300.0f;
+    // WO-102.5 picked 200 for a NAMES-ONLY push (~20 chars/name average,
+    // ~4000 chars total -- exactly HttpGameTransport.MaxBatchChars). WO-103
+    // Phase 2 adds "x:y:z:yaw:isHorse" to every entry (~37 more chars even at
+    // the worst-case 59-char name, per npc_scan.h's kMaxNameLen): unchanged,
+    // 200 entries could run past 10,000 chars over an ExecuteString GET --
+    // the transport does not split a single statement across requests (only
+    // batches separate ones), so an oversized one either fails outright or
+    // silently never lands, and Lua's own staleness gate then just falls
+    // back to the live read for every name it never received (safe, just
+    // wasted native work). Recomputed for the richer entry, worst case:
+    // (59-char name + 37) * 40 + ~60 chars of KCD2MP_ApplyNativeScan(...)
+    // wrapper stays under 4000. At high tracked counts (Phase 3's ceiling
+    // search) this becomes the tighter bottleneck vs the native wire's own
+    // ~200-400 entry ceiling (kMaxReplyBytes=8000) -- most tracked NPCs
+    // beyond the first 40 simply keep falling back to the live Lua read,
+    // which is correct, just not the win Phase 2 intended for them. Chunking
+    // the push across multiple ExecuteString calls would fix this; not built
+    // this session (docs/WO-103-findings.md).
+    private const int    NpcScanMaxNamesPushed = 40;
     private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
+    private bool _npcScanWasReplyTruncated;   // WO-103 Phase 1: edge-triggered loud log, mirrors npc_scan.cpp's g_wasTruncated
 
     // WO-102 Phase 5: the request channel. _npcTarget is the nearest owned
     // puppet the mod reports us facing (npc_target event); a COMMIT edge at it
@@ -5609,10 +5628,15 @@ public partial class GameBridge(ClientConfig config)
     /// current position plus every peer ghost whose last-known position is
     /// fresher than <see cref="NpcScanGhostStaleAfter"/> (a stale anchor would
     /// scan around a body that has since moved, which is worse than not
-    /// scanning around it). Only the candidate NAME list is pushed to Lua --
-    /// position/hp/etc are re-read fresh per name in the mod's existing
-    /// KCD2MP_NpcSyncTick, exactly as they are today, so the push stays small
-    /// regardless of how many NPCs are in radius.
+    /// scanning around it).
+    ///
+    /// WO-103 Phase 2: position and yaw now ride along with each name (the
+    /// native scan has always read them, per-entity, in npc_scan.cpp -- only
+    /// the agent-to-Lua push used to drop them). Health/dead/KO/drawn/engaged
+    /// stay read fresh per name in the mod's existing KCD2MP_NpcSyncTick
+    /// (unmapped offsets, WO-103.5's job), so the push still stays small
+    /// regardless of how many NPCs are in radius: a handful of floats per
+    /// name, not a script-table construction.
     /// </summary>
     private async Task NpcScanTickAsync(float px, float py, float pz, CancellationToken ct)
     {
@@ -5651,22 +5675,39 @@ public partial class GameBridge(ClientConfig config)
         // CryString caution -- npc_scan.cpp's own printable-ASCII gate is
         // looser than this) cannot reach the Lua string literal below, and so
         // the pushed list only ever contains names Lua would have kept anyway.
-        var names = new List<string>(res.Entries.Count);
+        // Each entry now carries name:x:y:z:yaw:isHorse -- colon-separated,
+        // comma-joined; safe with no escaping since the name gate already
+        // forbids ':' and ',' and the floats never produce either.
+        var entries = new List<string>(res.Entries.Count);
         int filtered = 0;
         foreach (var e in res.Entries)
         {
             if (!NpcNamePattern.IsMatch(e.Name)) { filtered++; continue; }
-            if (names.Count >= NpcScanMaxNamesPushed) { _npcScanNamesTruncated++; break; }
-            names.Add(e.Name);
+            if (entries.Count >= NpcScanMaxNamesPushed) { _npcScanNamesTruncated++; break; }
+            entries.Add(FormattableString.Invariant(
+                $"{e.Name}:{e.X:F3}:{e.Y:F3}:{e.Z:F3}:{e.Yaw:F4}:{(e.IsHorse ? 1 : 0)}"));
         }
 
         Console.WriteLine(FormattableString.Invariant(
-            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={_npcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={names.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
+            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={_npcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={entries.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
         if (res.Truncated) _npcScanTruncatedWire++;
 
+        // WO-103 Phase 1: this used to be silent past the wire_truncated=
+        // flag folded into the routine line above. Edge-triggered so a
+        // persistently-truncated radius doesn't spam every ~2s scan.
+        if (res.Truncated != _npcScanWasReplyTruncated)
+        {
+            _npcScanWasReplyTruncated = res.Truncated;
+            if (res.Truncated)
+                Console.WriteLine(FormattableString.Invariant(
+                    $"MP-NPCSCAN-TRUNCATED dropped={res.DroppedCount} returned={res.Entries.Count} radius_m={_npcScanRadiusM:F0} -- the native reply hit its byte budget; raise the ceiling is not an option here (WO-103), shrink the radius or accept the drop"));
+            else
+                Console.WriteLine("MP-NPCSCAN-TRUNCATED cleared -- reply fits the budget again");
+        }
+
         _npcScanPushes++;
-        string csv = EscapeLua(string.Join(',', names));
-        _ = ExecLuaAsync($"if KCD2MP_ApplyNativeScan then KCD2MP_ApplyNativeScan(\"{csv}\") end");
+        string payload = EscapeLua(string.Join(',', entries));
+        _ = ExecLuaAsync($"if KCD2MP_ApplyNativeScan then KCD2MP_ApplyNativeScan(\"{payload}\") end");
     }
 
     /// <summary>
