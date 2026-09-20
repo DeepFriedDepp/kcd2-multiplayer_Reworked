@@ -2266,12 +2266,10 @@ KCD2MP.wo1025 = {
     readNative      = true,
 }
 
--- name:string metres, from the console via #KCD2MP_SetAuthorityRadius("90").
--- NOT a registered console command -- WO-94: the console drops arguments
--- from Lua-registered commands, and a bare mp_x_on/_off pair cannot carry a
--- number. The '#<lua>' console syntax bypasses that (it evaluates the line
--- as Lua directly), which is the intended and only supported way to call
--- this. Floor-clamped, not merely validated: a runaway small radius (or
+-- name:string metres. Registered as mp_authority_radius (WO-106; was
+-- Lua-only via #KCD2MP_SetAuthorityRadius("90") because of the %LINE/%line
+-- case bug -- see docs/WO-105-contradictions.md entry 1). The '#<lua>' form
+-- still works. Floor-clamped, not merely validated: a runaway small radius (or
 -- garbage input) is still rejected outright. WO-103 Phase 1: the UPPER bound
 -- is deliberately gone -- finding the real ceiling by testing to failure is
 -- this WO's whole point (docs/WO-103-field-runbook.md); stopping at a
@@ -2298,6 +2296,42 @@ function KCD2MP_SetAuthorityRadius(arg)
     -- pushed by the agent at connect like the wo102 booleans), so the mod is
     -- the one side that must announce a change.
     KCD2MP_EmitEvent("authority_radius", string.format("%.1f", m))
+    return true
+end
+
+-- WO-106: runtime setter for the together/apart hysteresis band (WO-102.5
+-- Phase 4, see the comment above KCD2MP.wo1025.together). Previously baked
+-- constants with no console command at all -- flagged as a gap, not built,
+-- because of the same %LINE/%line case bug (docs/WO-105-contradictions.md
+-- entry 1). "on" with no further arguments restores the shipped defaults.
+-- enterM must be strictly less than exitM or the hysteresis band inverts and
+-- the together/apart state would oscillate every tick instead of debouncing.
+function KCD2MP_SetTogetherParams(arg)
+    local s = tostring(arg or ""):lower()
+    local w = KCD2MP.wo1025
+    if s == "" or s == "on" then
+        w.togetherEnterM, w.togetherExitM, w.togetherDwellS = 60.0, 90.0, 10.0
+    else
+        local enterM, exitM, dwellS = string.match(s, "^%s*([%d%.]+)%s+([%d%.]+)%s+([%d%.]+)%s*$")
+        enterM, exitM, dwellS = tonumber(enterM), tonumber(exitM), tonumber(dwellS)
+        if not (enterM and exitM and dwellS) then
+            mp_log("mp_together_params: expected 'on' (defaults) or '<enterM> <exitM> <dwellS>', got '" .. tostring(arg) .. "'")
+            return false
+        end
+        if enterM <= 0 or exitM <= 0 or dwellS <= 0 then
+            mp_log("mp_together_params rejected: all three values must be > 0")
+            return false
+        end
+        if enterM >= exitM then
+            mp_log(string.format("mp_together_params rejected: enterM (%.1f) must be < exitM (%.1f) or the hysteresis band inverts", enterM, exitM))
+            return false
+        end
+        w.togetherEnterM, w.togetherExitM, w.togetherDwellS = enterM, exitM, dwellS
+    end
+    mp_log(string.format("WO1025-TOGETHER-PARAMS enterM=%.1f exitM=%.1f dwellS=%.1f",
+        w.togetherEnterM, w.togetherExitM, w.togetherDwellS))
+    KCD2MP_ShowInteractionMsg(string.format("Together/apart: enter<=%.0fm exit>%.0fm dwell=%.0fs",
+        w.togetherEnterM, w.togetherExitM, w.togetherDwellS))
     return true
 end
 
@@ -11035,8 +11069,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_remove_all",  "KCD2MP_RemoveAllGhosts()","Remove all ghosts")
     System.AddCCommand("mp_inspect",     "KCD2MP_InspectGhost()",   "Inspect ghost interp state")
     System.AddCCommand("mp_find_npcs",   "KCD2MP_FindNPCs()",       "Find nearby human NPCs")
-    System.AddCCommand("mp_map_marker",  'KCD2MP_ProbeMapMarker("%LINE")', "WO-38: probe GameRules.AddMinimapEntity on ghosts (arg: type int, or 'sweep')")
-    System.AddCCommand("mp_ghost_ignorant", 'KCD2MP_SetGhostsIgnorant("%LINE")', "WO-38/40: AI.SetIgnorant on all ghosts -- DEFAULT ON since WO-40 (pickpocket aggro): on|off")
+    System.AddCCommand("mp_map_marker",  'KCD2MP_ProbeMapMarker("%line")', "WO-38: probe GameRules.AddMinimapEntity on ghosts (arg: type int, or 'sweep')")
+    System.AddCCommand("mp_ghost_ignorant", 'KCD2MP_SetGhostsIgnorant("%line")', "WO-38/40: AI.SetIgnorant on all ghosts -- DEFAULT ON since WO-40 (pickpocket aggro): on|off")
     System.AddCCommand("mp_ghost_calm",  "KCD2MP_GhostCalm()", "WO-40: probe faction/hostility binds and clear per-pair hostility on every ghost")
     System.AddCCommand("mp_probe_anims",   "KCD2MP_ProbeAnims()",    "Probe anim names on ghost (GetAnimationLength)")
     System.AddCCommand("mp_copy_npc",     "KCD2MP_CopyNPCModel()",  "Find human NPC, copy CDF to ghost, probe anims")
@@ -11049,7 +11083,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_probe_stance", "KCD2MP_ProbeStance()",   "Log player stance value (for crouch detection calibration)")
     System.AddCCommand("mp_probe_dialog", "KCD2MP_ProbeDialog()",   "WO-88: log whether human:IsInDialog / Dialog.IsSoulInDialog exist and what they read right now -- run inside and outside a conversation; read-only")
     System.AddCCommand("mp_probe_contexts", "KCD2MP_ProbeContexts()", "WO-65: dump script-context isolation surface (Contexts global, soul/human methods, per-context HasScriptContext on ghost + player) -- read-only")
-    System.AddCCommand("mp_ghost_isolate", 'KCD2MP_SetGhostIsolate("%LINE")', "WO-65: ghost civic isolation (default on). On this build: RestrictDialog+InterruptDialogs only -- the script-context crime fix has no Lua setter here: mp_ghost_isolate on|off")
+    System.AddCCommand("mp_ghost_isolate", 'KCD2MP_SetGhostIsolate("%line")', "WO-65: ghost civic isolation (default on). On this build: RestrictDialog+InterruptDialogs only -- the script-context crime fix has no Lua setter here: mp_ghost_isolate on|off")
     System.AddCCommand("mp_ghost_nai_on",  "KCD2MP_SetGhostNai(true)",  "WO-100.5: spawn ghosts as NPC_NAI (no local brain, no contention with the position stream). Applies to the NEXT spawn")
     System.AddCCommand("mp_ghost_nai_off", "KCD2MP_SetGhostNai(false)", "WO-100.5: spawn ghosts as the ordinary NPC class (brain and perception, WO-26 reactive combat)")
     System.AddCCommand("mp_nai_ab",        "KCD2MP_Wo1005NaiAB()",      "WO-100.5: spawn one NPC_NAI ghost and one NPC ghost side by side, for the perception comparison")
@@ -11061,7 +11095,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_sneak_on",     "KCD2MP.playerSneaking=true;System.LogAlways('[KCD2-MP] SNEAK ON (manual)')",  "Force ghost into sneak mode")
     System.AddCCommand("mp_sneak_off",    "KCD2MP.playerSneaking=false;System.LogAlways('[KCD2-MP] SNEAK OFF (manual)')", "Force ghost out of sneak mode")
     -- mp_spawn_armor <guid1,guid2,...>  -- inventory only (no visual unless preset given as 2nd arg)
-    System.AddCCommand("mp_spawn_armor",  'KCD2MP_SpawnArmoredNPC("%LINE")',  "Spawn NPC with items: mp_spawn_armor guid1,guid2,...")
+    System.AddCCommand("mp_spawn_armor",  'KCD2MP_SpawnArmoredNPC("%line")',  "Spawn NPC with items: mp_spawn_armor guid1,guid2,...")
     System.AddCCommand("mp_spawn_knight",    "KCD2MP_SpawnKnight()",    "Spawn fully armored knight (BascinetVisor04+Cuirass07+Gauntlets08+LegsPlate03+MailLong01)")
     System.AddCCommand("mp_spawn_white_red", "KCD2MP_SpawnWhiteRed()", "Spawn white/red armored NPC (Brigandine10+BascinetVisor05+sword)")
     System.AddCCommand("mp_scan_horse",      "KCD2MP_ScanNearbyHorse()", "Scan real horse NPC within 20m: anims, AI fns, horse.horse API")
@@ -11075,16 +11109,16 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_decline",         "KCD2MP_DeclineInvite()",  "Decline a pending interaction invite")
     System.AddCCommand("mp_sync_appearance", "KCD2MP_SyncAppearance()", "Force an immediate appearance resync to peers (WO-9)")
     System.AddCCommand("mp_slow_time",       "KCD2MP_SlowTime()",       "Toggle manually broadcasting a paused/unavailable state to peers (WO-11 fallback)")
-    System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%LINE")', "Invite the nearest player: mp_invite dice|duel")
+    System.AddCCommand("mp_invite",          'KCD2MP_InviteNearest("%line")', "Invite the nearest player: mp_invite dice|duel")
     System.AddCCommand("mp_ghost_state",     "KCD2MP_GhostState()",     "Dump all ghost riding/mount state")
-    System.AddCCommand("mp_horse_adopt",     'KCD2MP_SetHorseAdopt("%LINE")', "WO-40: adopt real world horses for ghosts (default on). off = proxy horses only -- use if the game crashes when a peer mounts")
-    System.AddCCommand("mp_weather",         'KCD2MP_WeatherCmd("%LINE")', "WO-40: bare = report rain intensity; mp_weather <profile> = blend to a time_of_day profile locally (probe, not broadcast)")
-    System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%LINE")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
-    System.AddCCommand("mp_debug_hud",       'KCD2MP_DebugHud("%LINE")', "WO-50: toggle the CryEngine debug HUD (r_DisplayInfo), off by default in release: mp_debug_hud on|off")
+    System.AddCCommand("mp_horse_adopt",     'KCD2MP_SetHorseAdopt("%line")', "WO-40: adopt real world horses for ghosts (default on). off = proxy horses only -- use if the game crashes when a peer mounts")
+    System.AddCCommand("mp_weather",         'KCD2MP_WeatherCmd("%line")', "WO-40: bare = report rain intensity; mp_weather <profile> = blend to a time_of_day profile locally (probe, not broadcast)")
+    System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro("%line")', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
+    System.AddCCommand("mp_debug_hud",       'KCD2MP_DebugHud("%line")', "WO-50: toggle the CryEngine debug HUD (r_DisplayInfo), off by default in release: mp_debug_hud on|off")
 
     -- NPC sync (WO-32)
-    System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%LINE")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")
-    System.AddCCommand("mp_npc_proximity", 'KCD2MP_EnableNpcProximity("%LINE")', "WO-60: non-authority claims NPCs near its own player (default on). off = pre-WO-60 host-only tracking: mp_npc_proximity on|off")
+    System.AddCCommand("mp_npc_sync",    'KCD2MP_EnableNpcSync("%line")', "WO-32: stream nearby NPCs to peers (world authority only): mp_npc_sync on|off")
+    System.AddCCommand("mp_npc_proximity", 'KCD2MP_EnableNpcProximity("%line")', "WO-60: non-authority claims NPCs near its own player (default on). off = pre-WO-60 host-only tracking: mp_npc_proximity on|off")
     -- WO-102: argless toggle pairs (the console drops arguments) + status.
     System.AddCCommand("mp_authority_host_on",  'KCD2MP_Wo102Set("authority_host", true)',  "WO-102: the damage-authority holder owns EVERY NPC permanently; no claims, no proximity, no expiry. Off = the 0.23.2 claim model")
     System.AddCCommand("mp_authority_host_off", 'KCD2MP_Wo102Set("authority_host", false)', "WO-102: back to the 0.23.2 per-NPC claim model (WO-39/WO-60), exactly")
@@ -11101,58 +11135,63 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
     System.AddCCommand("mp_npc_scan_compare",    "KCD2MP_NpcScanCompare()",                   "WO-102.5 Phase 2 known-answer check: diff the native scan's last pushed name set against a fresh Lua GetEntitiesInSphere enumerate over the same anchors/radius")
-    System.AddCCommand("mp_npc_cull_on",         'KCD2MP_SetNpcCull("on")',                   "WO-102.5 Phase 3: under host authority, an owned NPC beyond cullRadius is tracked but not streamed (default on). Radius: #KCD2MP_SetAuthorityRadius(\"<metres>\")")
+    System.AddCCommand("mp_npc_cull_on",         'KCD2MP_SetNpcCull("on")',                   "WO-102.5 Phase 3: under host authority, an owned NPC beyond cullRadius is tracked but not streamed (default on). Radius: mp_authority_radius <metres>")
     System.AddCCommand("mp_npc_cull_off",        'KCD2MP_SetNpcCull("off")',                  "WO-102.5 Phase 3: stream every owned NPC regardless of distance")
+    System.AddCCommand("mp_authority_radius",    'KCD2MP_SetAuthorityRadius("%line")',        "WO-102.5/WO-106: set the host-authority NPC ownership radius: mp_authority_radius <metres> (default 300, floor 10)")
+    System.AddCCommand("mp_together_params",     'KCD2MP_SetTogetherParams("%line")',         "WO-102.5/WO-106: set the together/apart hysteresis band: mp_together_params <enterM> <exitM> <dwellS>, or 'on' for defaults (60 90 10)")
     System.AddCCommand("mp_npc_read_native_on",  'KCD2MP_SetNpcReadNative("on")',              "WO-103 Phase 2: a tracked NPC's position/yaw comes from the agent's native scan push when fresh, falling back to the live e:GetWorldPos() read otherwise (default on)")
     System.AddCCommand("mp_npc_read_native_off", 'KCD2MP_SetNpcReadNative("off")',             "WO-103 Phase 2: always read position/yaw live off the entity, as before this WO")
     System.AddCCommand("mp_npc_read_compare",    "KCD2MP_NpcReadCompare()",                    "WO-103 Phase 2 known-answer check: diff the native push's position/yaw against a fresh live read for every currently-tracked name; a real mismatch fails mp_npc_read_native closed")
 
     -- Dropped-item sync (WO-48)
-    System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%LINE")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
+    System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%line")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
-    System.AddCCommand("mp_npc_yield",     'KCD2MP_SetNpcYield("%LINE")', "WO-99: report the sub-8 m puppet yield arbitration state; thresholds via #KCD2MP_SetNpcYield(\"dispM ticks repinM\")")
+    System.AddCCommand("mp_npc_yield",     'KCD2MP_SetNpcYield("%line")', "WO-99: report the sub-8 m puppet yield arbitration state; thresholds via #KCD2MP_SetNpcYield(\"dispM ticks repinM\")")
     System.AddCCommand("mp_npc_yield_on",  'KCD2MP_SetNpcYield("on")',  "WO-99: yield a puppet to the local brain after sustained sub-8 m contention (default on)")
     System.AddCCommand("mp_npc_yield_off", 'KCD2MP_SetNpcYield("off")', "WO-99: pre-WO-99 behaviour -- write every puppet every tick below 8 m (live A/B)")
-    System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%LINE")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
+    System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%line")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
     -- WO-94: Shared Quests (main-story readiness prompt).
-    -- LIVE-VERIFIED TRAP (2026-09-13): on this build the console REFUSES an
-    -- argument to any Lua-registered command -- "[Warning] Too many arguments
-    -- for: mp_quest_radius" -- and passes the literal text "%LINE" when
-    -- there is none (mp_enable_aggro answered "got '%LINE'"). That is true of
-    -- every %LINE command in this file, WO-17's included. So: status/toggle
-    -- commands here take NO argument, and anything that needs a value is
-    -- typed as Lua with the console's # prefix, e.g. #KCD2MP_QuestSetRadius(50)
+    -- WO-106 CORRECTION of the 2026-09-13 "console drops arguments" finding:
+    -- the console never refused arguments. AddCCommand's placeholder lookup
+    -- is case-sensitive and this file registered "%LINE" (uppercase) against
+    -- the engine's lowercase "%line" -- which produced BOTH symptoms from one
+    -- typo ("Too many arguments for: ..." when an arg was given, the literal
+    -- placeholder text when none was). Fixed throughout this file by using
+    -- the real, lowercase form. Every mp_* command below now takes its
+    -- argument directly from the console; the `#KCD2MP_...(...)` Lua form
+    -- still works too and is left in place for anyone with it in muscle
+    -- memory (docs/WO-105-contradictions.md entry 1).
     System.AddCCommand("mp_quest_sync",   'KCD2MP_QuestSetSync("")',        "WO-94: status line for the main-quest readiness prompt (toggle with mp_quest_on / mp_quest_off)")
     System.AddCCommand("mp_quest_on",     'KCD2MP_QuestSetSync("on")',      "WO-94: enable the main-quest readiness prompt (default)")
     System.AddCCommand("mp_quest_off",    'KCD2MP_QuestSetSync("off")',     "WO-94: disable the main-quest readiness prompt (rollback: no detection, no prompt)")
-    System.AddCCommand("mp_quest_radius", 'KCD2MP_QuestSetRadius("%LINE")', "WO-94: the console drops arguments on this build -- type #KCD2MP_QuestSetRadius(50) instead (metres, default 35)")
-    System.AddCCommand("mp_quest_window", 'KCD2MP_QuestSetWindow("%LINE")', "WO-94: the console drops arguments on this build -- type #KCD2MP_QuestSetWindow(180) instead (seconds, default 120)")
+    System.AddCCommand("mp_quest_radius", 'KCD2MP_QuestSetRadius("%line")', "WO-94: set the main-quest co-location detection radius: mp_quest_radius <metres> (default 35)")
+    System.AddCCommand("mp_quest_window", 'KCD2MP_QuestSetWindow("%line")', "WO-94: set the main-quest readiness prompt window: mp_quest_window <seconds> (default 120)")
     System.AddCCommand("mp_quest_status", "KCD2MP_QuestStatus()",           "WO-94: log quest sync state and the current quest's beats with distances")
     System.AddCCommand("mp_quest_yes",    "KCD2MP_QuestAnswer(true)",       "WO-94: answer the readiness prompt YES (same as F11) -- fires wh_concept_HasteTrigger for the peer's beat")
     System.AddCCommand("mp_quest_no",     "KCD2MP_QuestAnswer(false)",      "WO-94: answer the readiness prompt NO (same as F12)")
-    System.AddCCommand("mp_quest_fire",   'KCD2MP_QuestFire("%LINE", "console")', "WO-94 live probe: the console drops arguments on this build -- type #KCD2MP_QuestFire(\"quest.trigger\") (disposable save!)")
+    System.AddCCommand("mp_quest_fire",   'KCD2MP_QuestFire("%line", "console")', "WO-94 live probe: mp_quest_fire <quest.trigger> (disposable save!)")
     System.AddCCommand("mp_quest_test_prompt", 'KCD2MP_QuestTestPrompt("")', "WO-94 live probe: show the readiness prompt for the first registered beat with no peer (F11/F12 + overlay test); a specific beat: #KCD2MP_QuestTestPrompt(\"quest.trigger\")")
-    System.AddCCommand("mp_quest_gap",    'KCD2MP_QuestSetGap("%LINE")',    "WO-96: the console drops arguments on this build -- type #KCD2MP_QuestSetGap(60) instead (minimum seconds between prompts per peer, default 60)")
+    System.AddCCommand("mp_quest_gap",    'KCD2MP_QuestSetGap("%line")',    "WO-96: set the minimum seconds between prompts per peer: mp_quest_gap <seconds> (default 60)")
     System.AddCCommand("mp_quest_hide",   "KCD2MP_QuestWaitingDismiss()",    "WO-96: hide the WAITING FOR PEER line until the story positions change (same as F12 with no prompt up)")
-    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%LINE")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
-    System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%LINE")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
-    System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%LINE")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
+    System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix("%line")', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
+    System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix("%line")', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
+    System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth("%line")', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
 
     -- Shared player combat (WO-28)
     System.AddCCommand("mp_vitals",      "KCD2MP_ReportVitals()",   "WO-28: report this player's health/stamina/death and every ghost's known health")
-    System.AddCCommand("mp_fake_death",  'KCD2MP_FakeDeath("%LINE")', "WO-28: report yourself dead for N seconds (default 20) so peers can be observed reacting -- test only")
+    System.AddCCommand("mp_fake_death",  'KCD2MP_FakeDeath("%line")', "WO-28: report yourself dead for N seconds (default 20) so peers can be observed reacting -- test only")
     System.AddCCommand("mp_reconcile",   "KCD2MP_ReconcileGhosts()", "WO-28: respawn any ghost whose entity was destroyed by a save load")
-    System.AddCCommand("mp_ghost_sweep", 'KCD2MP_SetOrphanSweep("%LINE")', "WO-84: remove kcd2mp_ bodies a savegame restored with no ghost behind them: mp_ghost_sweep on|off|now")
-    System.AddCCommand("mp_npc_deathsync", 'KCD2MP_SetNpcDeathSync("%LINE")', "WO-86: NPC deaths cross to peers and a locally-dead body never follows a living stream; off = pre-WO-86 behaviour: mp_npc_deathsync on|off")
-    System.AddCCommand("mp_ghost_anim_refresh", 'KCD2MP_SetGhostAnimRefresh("%LINE")', "WO-84: seconds a ghost's looped clip plays before a keep-alive restart; 0 = restart every tick (pre-WO-84 rollback)")
+    System.AddCCommand("mp_ghost_sweep", 'KCD2MP_SetOrphanSweep("%line")', "WO-84: remove kcd2mp_ bodies a savegame restored with no ghost behind them: mp_ghost_sweep on|off|now")
+    System.AddCCommand("mp_npc_deathsync", 'KCD2MP_SetNpcDeathSync("%line")', "WO-86: NPC deaths cross to peers and a locally-dead body never follows a living stream; off = pre-WO-86 behaviour: mp_npc_deathsync on|off")
+    System.AddCCommand("mp_ghost_anim_refresh", 'KCD2MP_SetGhostAnimRefresh("%line")', "WO-84: seconds a ghost's looped clip plays before a keep-alive restart; 0 = restart every tick (pre-WO-84 rollback)")
 
     -- Dice overlay (WO-6). These console commands are the SUPPORTED path: the
     -- keybinds below them are unverified action-name guesses, exactly as WO-2's
     -- accept/decline were. Everything here is reachable without a working key.
     System.AddCCommand("mp_dice",        "KCD2MP_InviteDiceAtTable()", "Challenge the nearest player to dice -- only at a real dice table")
-    System.AddCCommand("mp_dice_wager",  'KCD2MP_SetDiceWager("%LINE")', "WO-33: set groschen staked on the next dice invite this client sends (0 = none)")
+    System.AddCCommand("mp_dice_wager",  'KCD2MP_SetDiceWager("%line")', "WO-33: set groschen staked on the next dice invite this client sends (0 = none)")
     System.AddCCommand("mp_dice_cast",   "KCD2MP_DiceConfirm()",       "Cast, or set aside the marked dice (depends on phase)")
-    System.AddCCommand("mp_dice_mark",   'KCD2MP_DiceMark("%LINE")',   "Mark/unmark a die on the board: mp_dice_mark 1..6")
+    System.AddCCommand("mp_dice_mark",   'KCD2MP_DiceMark("%line")',   "Mark/unmark a die on the board: mp_dice_mark 1..6")
     System.AddCCommand("mp_dice_unmark_all", "KCD2MP_DiceUnmarkAll()", "Clear every pending mark without rerolling")
     System.AddCCommand("mp_dice_bank",   "KCD2MP_DiceBank()",          "Bank this hand and end thy turn")
     System.AddCCommand("mp_dice_yield",  "KCD2MP_DiceForfeit()",       "Yield the match")
@@ -11160,17 +11199,17 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_dice_table",  "KCD2MP_ReportDiceTable()",   "Report the nearest dice table, for verifying table detection")
     System.AddCCommand("mp_dice_redraw", "KCD2MP_DiceRender()",        "Force the board to re-push (use if it ever goes stale)")
     System.AddCCommand("mp_dice_flush",  "KCD2MP_DiceFlush()",         "Clear every queued/shown tutorial panel -- fixes a stuck or flickering board")
-    System.AddCCommand("mp_dice_scan",   'KCD2MP_ScanTables("%LINE")', "List nearby entity classes, to find a table's real class: mp_dice_scan 6")
+    System.AddCCommand("mp_dice_scan",   'KCD2MP_ScanTables("%line")', "List nearby entity classes, to find a table's real class: mp_dice_scan 6")
     System.AddCCommand("mp_dice_seat",   "KCD2MP_ReportSeat()",        "Report the seat under you: distance, table id, teleport anchor")
-    System.AddCCommand("mp_dice_gate",   'KCD2MP_DiceGate("%LINE")',   "Require a real table for mp_dice: mp_dice_gate on|off (default off for testing)")
+    System.AddCCommand("mp_dice_gate",   'KCD2MP_DiceGate("%line")',   "Require a real table for mp_dice: mp_dice_gate on|off (default off for testing)")
     System.AddCCommand("mp_dice_demo",   "KCD2MP_DiceDemo()",          "Open the board with fake state, to review the visuals without a second player")
     System.AddCCommand("mp_combat_probe", "KCD2MP_CombatProbe()", "WO-39: registration + anim-candidate probe for combat visibility (needs a ghost for the anim half)")
-    System.AddCCommand("mp_ghost_combat", 'KCD2MP_GhostCombatAll("%LINE")', "WO-39: play a combat event on every local ghost, no wire: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
-    System.AddCCommand("mp_log_actions", 'KCD2MP_LogActions("%LINE")', "Log every OnAction name (floods log -- for discovering action names): mp_log_actions on|off")
+    System.AddCCommand("mp_ghost_combat", 'KCD2MP_GhostCombatAll("%line")', "WO-39: play a combat event on every local ghost, no wire: mp_ghost_combat 0=draw 1=sheathe 2=swing 3=block")
+    System.AddCCommand("mp_log_actions", 'KCD2MP_LogActions("%line")', "Log every OnAction name (floods log -- for discovering action names): mp_log_actions on|off")
     System.AddCCommand("mp_summary", 'KCD2MP_LogSummary("console")', "WO-98: write the MP-SUMMARY-MOD counters line to kcd.log now")
-    System.AddCCommand("mp_combat_frag", 'KCD2MP_SetCombatFragment("%LINE")', "WO-39: set the Mannequin fragment tried for swings (empty to clear): mp_combat_frag <name> [tags]")
-    System.AddCCommand("mp_entity_id", 'KCD2MP_ReportEntityId("%LINE")', "WO-43: print an entity's raw id by name, or every ghost's id with no argument")
-    System.AddCCommand("mp_anim_tag",    'KCD2MP_AnimTagCmd("%LINE")', "WO-40: probe AI.Set/ClearAnimationTag on every ghost: mp_anim_tag set|clear <tag>")
+    System.AddCCommand("mp_combat_frag", 'KCD2MP_SetCombatFragment("%line")', "WO-39: set the Mannequin fragment tried for swings (empty to clear): mp_combat_frag <name> [tags]")
+    System.AddCCommand("mp_entity_id", 'KCD2MP_ReportEntityId("%line")', "WO-43: print an entity's raw id by name, or every ghost's id with no argument")
+    System.AddCCommand("mp_anim_tag",    'KCD2MP_AnimTagCmd("%line")', "WO-40: probe AI.Set/ClearAnimationTag on every ghost: mp_anim_tag set|clear <tag>")
     System.AddCCommand("mp_test_xgen_nullai", 'KCD2MP_TestXGenSpawn("NullAI")', "Test XGenAIModule.SpawnEntity ClassName=NullAI")
     System.AddCCommand("mp_test_xgen_npc",    'KCD2MP_TestXGenSpawn("NPC")',    "Test XGenAIModule.SpawnEntity ClassName=NPC")
     System.AddCCommand("mp_test_xgen_horse",  'KCD2MP_TestXGenSpawn("Horse")',  "Test XGenAIModule.SpawnEntity ClassName=Horse")
