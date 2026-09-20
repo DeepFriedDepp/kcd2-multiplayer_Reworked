@@ -22,16 +22,27 @@ is blocked for this reason and is explicitly NOT attempted.
       5/5). **Not rebuilt into the pak, not deployed, not live-tested in
       game this session** — game was mid-session for the Phase 0 probes.
       See findings §3.6 for the exact post-deploy test list.
-- [ ] Phase 2 — vector-getter table churn (unconditional, in progress /
-      not yet started as of this checkpoint).
+- [x] Phase 2 — vector-getter table churn. 9 hot call sites converted
+      across `KCD2MP_EmitState`, `KCD2MP_NpcSyncTick`,
+      `KCD2MP_NpcPuppetTick`, `KCD2MP_InterpTick`; one reusable scratch
+      table per call site, none shared. Left ~88 one-off sites untouched
+      (scope discipline). **No before/after measurement taken** — needs
+      the rebuilt pak deployed; recorded as a gap, not silently skipped.
 - [ ] Phase 3 — ground-collider mechanism. **Blocked: no peer tonight.**
-      Not attempted. The mitigation half (runtime-settable puppet emit
-      rate) is a candidate to still ship per the brief's §3.4 — decision
-      not yet made as of this checkpoint.
-- [ ] Phase 4 — replica soul-id. Cleared by 0.4 (Branch B, 64-bit
-      `ScriptHandle` hex). Attempt not yet made as of this checkpoint.
-- [ ] Phase 5 — `ENTITY_FLAG_NO_SAVE`. Cleared by 0.2. Not yet started as
-      of this checkpoint.
+      Not attempted, not faked. The mitigation half (runtime-settable
+      puppet emit rate) was NOT shipped this session either — no decision
+      was made to build it without the confirming test in hand.
+- [x] Phase 4 — replica soul-id. Cleared by 0.4 (Branch B). **Attempted
+      and concluded: dead end.** Bare hex and correctly-padded dashed
+      WUID both fail live (`is not in the database`); a known roster GUID
+      succeeds as a control. No code changed in the promote path — the
+      existing fail-closed gate was already correct. See findings §5.
+- [x] Phase 5 — `ENTITY_FLAG_NO_SAVE`. Cleared by 0.2. Applied at all 8
+      real spawn sites (replica, ghost x3, horse proxy, armored-NPC test,
+      horse-class-probe test, XGen test, item-drop anchor). Mechanism
+      live-verified on a disposable entity, not just compiled. Hidden-
+      original half of the save hazard deliberately deferred to the
+      existing WO-84 sweep (recorded decision, findings §6.4).
 - [ ] Phase 6 — audit. Not started.
 - [ ] End gate build. Not started. **No VERSION bump without the
       maintainer naming the exact string first** (standing rule).
@@ -54,14 +65,15 @@ is blocked for this reason and is explicitly NOT attempted.
 
 ## Next steps (in order)
 
-1. Phase 2 (unconditional) — no gate, can run without a rebuild decision.
-2. Decide and record: does Phase 3's rate-mitigation tunable ship this
-   session despite the mechanism itself being untested tonight? (Brief
-   §3.4 says the tunable is worth shipping regardless; the *mechanism* is
-   not being marked confirmed either way without the live A/B.)
-3. Phase 4 attempt (soul-id Branch B: try the bare 16-hex-digit string as
-   `SharedSoulGuid`).
-4. Phase 5 (`ENTITY_FLAG_NO_SAVE` on every mod-spawned entity).
-5. Phase 6 audit doc.
-6. Ask the maintainer for rebuild/deploy/live-test timing and the exact
-   VERSION string before any end-gate build.
+1. Phase 6 audit doc (`docs/WO-106-native-migration.md`) — the only phase
+   left besides Phase 3.
+2. Phase 3 stays blocked until a two-player session exists. Decide then
+   (not now) whether to ship the rate-mitigation tunable ahead of the
+   mechanism test, per the brief's §3.4 — deliberately not decided this
+   session since the point of §3.2's test is to run it BEFORE building
+   anything.
+3. Rebuild the pak (`tools\Build-And-Install-Mod.ps1`, game closed first)
+   and run every post-deploy test listed in findings §3.6 (Phase 1) and
+   §6.5 (Phase 5) before trusting any of this in a real session.
+4. Ask the maintainer for the exact VERSION string before any end-gate
+   build — do not guess or auto-increment.

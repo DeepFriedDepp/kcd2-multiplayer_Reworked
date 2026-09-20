@@ -22,15 +22,34 @@ findings that follow substitute for that test.
   §3.6 for exactly what to test once it is deployed.
 * Phase 0.3 surfaced `Script.SetTimerForFunction` as a real function on
   this build — **not acted on this WO**, flagged for later (§1.4).
+* **Phase 2 (vector-getter table churn) done, unconditional, source only.**
+  9 hot per-tick call sites converted to reusable scratch tables. No
+  before/after measurement was possible without a rebuild — recorded as an
+  honest gap, not a skipped step (§4.4).
+* **Phase 4 (replica soul-id) is a clean DEAD END, not a width problem.**
+  Tried the bare hex WUID and the correctly-padded 128-bit dashed form as
+  `SharedSoulGuid` against a real world NPC's own WUID — both failed with
+  `soul guid ... is not in the database`, while a known roster GUID bound
+  immediately (control). **`SharedSoulGuid` indexes an authored content
+  database; a live NPC's runtime WUID was never a member of it, at any
+  width or encoding.** The replica stays blocked exactly as WO-104 left
+  it — correctly, not from a bug. Full detail and the exact failing/
+  succeeding calls in §5.
+* **Phase 5 (`ENTITY_FLAG_NO_SAVE`) done and live-verified.** Applied at
+  all 8 real spawn call sites in the file; the flag-setting mechanism
+  itself was tested against a live disposable entity (not just compiled).
+  The hidden-original half of the save hazard was deliberately left to the
+  existing WO-84 sweep this session — a recorded decision, not an
+  oversight (§6.4).
 * An unprompted finding from the Phase 0.5 test cleanup: `mp_remove_all`
   logged `test_ghost STILL ALIVE after 4 passes` before eventually
   reporting removed — a live instance of WO-105 contradictions entry 9 (a
-  refused removal becomes a hide). Not chased this session; noted in §5.
+  refused removal becomes a hide). Not chased this session; noted in §7.
 
 ## 1. Phase 0 — the probes (all observed, live, solo)
 
 Run via the debug console API (`http://127.0.0.1:1403/api/System/Console/
-ExecuteString`, GET with a `command` query parameter — see §6 for the exact
+ExecuteString`, GET with a `command` query parameter — see §2 for the exact
 transport wrinkle found this session) against a running 0.26.2 Modding
 Tools session, reading `kcd.log` directly at
 `D:\SteamLibrary\steamapps\common\KCD2Mod\kcd.log`. Every `#`-prefixed
@@ -111,7 +130,7 @@ above is 64 bits. **They are confirmed different widths on this build, not
 just in engine theory.** WO-104 §3.3's "same form (code-verified)" claim
 is wrong; corrected per WO-105 contradictions entry 3.
 
-This clears **Phase 4** to run — see §4 for what was tried.
+This clears **Phase 4** to run — see §5 for what was tried.
 
 ### 1.5 The float bridge (0.5) — CONFIRMED
 
@@ -134,7 +153,7 @@ set16777219->16777220.0000`
 
 This is **exact IEEE-754 float32 round-to-nearest-even** at precisely the
 predicted ceiling. Confirmed, not inferred, on this build. Test entity
-removed immediately after with `mp_remove_all` (see §5's unprompted
+removed immediately after with `mp_remove_all` (see §7's unprompted
 finding — the removal took 4 passes before reporting success).
 
 ### 1.6 Gate table (0.6)
@@ -144,7 +163,7 @@ finding — the removal took 4 passes before reporting success).
 | 1 (console placeholder) | 0.1 | **cleared, done this session (source only, not deployed)** |
 | 2 (vector-getter churn) | none (unconditional) | done this session |
 | 3 (ground-collider) | live two-player test | **not run — no peer tonight** |
-| 4 (replica soul-id) | 0.4 | **cleared, Branch B — attempted this session, see §4** |
+| 4 (replica soul-id) | 0.4 | **cleared, Branch B — attempted this session, see §5** |
 | 5 (`ENTITY_FLAG_NO_SAVE`) | 0.2 | **cleared, done this session** |
 
 ## 2. Transport note: the exact `ExecuteString` call that worked this session
@@ -316,12 +335,300 @@ any of this in a real session:
    specific command names or help text, only on the underlying case fix
    (which Phases 2/4/5 do not use at all — they are not console-driven).
 
-## 4. Phase 4 — replica soul-id (attempted; result below)
+## 3.7 Live syntax check (both Phase 1 and Phase 2 changes)
 
-*(filled in once attempted this session — see progress doc for live status
-if this section is not yet updated)*
+No `lua`/`luac` on this machine, same gap WO-69 hit. Reused its exact
+idiom: the game's own `loadfile`, compile-only, no execution, against the
+live edited source file directly (not pasted through the console — the
+whole file is ~500 KB, far past the transport's per-call budget).
 
-## 5. Unprompted finding: a refused removal became a hide (observed)
+First attempt used Windows backslash paths and failed with every
+backslash silently stripped by the transport (`C:UsersJonastyDocuments...`,
+no separators at all) — **not a syntax problem**, a path-escaping
+artifact of this transport, worth remembering for any future live probe
+that needs a Windows path. Forward slashes work fine (Windows accepts
+them in file APIs):
+
+```
+#local f, err = loadfile("C:/Users/Jonasty/Documents/KCD2_MP/kdcmp/Data/Scripts/Startup/kdcmp.lua"); System.LogAlways("PROBE compile ok=" .. tostring(f ~= nil) .. " err=" .. tostring(err))
+```
+→ `PROBE compile ok=true err=nil`. Confirms Lua 5.1 syntax is valid for
+every change through end of Phase 2 below. This is a **compile-only**
+check — it does not execute the file, so it says nothing about runtime
+behavior, only that the parser accepts it. Runtime behavior still waits on
+a rebuilt pak (§3.5/3.6).
+
+## 4. Phase 2 — vector-getter table churn (unconditional)
+
+### 4.1 What changed
+
+Per WO-105 §3.2/17.3: `GetWorldPos()`/`GetWorldAngles()` called with **no
+argument** allocate a fresh Lua table every call; passing a table in
+writes into it instead. Converted the four hot per-tick call sites the
+brief named explicitly, each with its own file-local scratch table
+(never shared across call sites, per the brief's ownership rule):
+
+| function | call site | cadence | scratch table(s) added |
+|---|---|---|---|
+| `KCD2MP_EmitState` | player `GetWorldPos()` + `GetWorldAngles()` | every emit tick | `EMITSTATE_POS_SCRATCH`, `EMITSTATE_ANG_SCRATCH` |
+| `KCD2MP_NpcSyncTick` | player `GetWorldPos()` (once/tick) + per-tracked-NPC `GetWorldPos()`/`GetWorldAngles()` (the MP-NPCREAD-bracketed loop) | per tick × every tracked NPC | `NPCSYNCTICK_PPOS_SCRATCH`, `NPCSYNCTICK_POS_SCRATCH`, `NPCSYNCTICK_ANG_SCRATCH` |
+| `KCD2MP_NpcPuppetTick` | player `GetWorldPos()` (once/tick, target-tracking) + per-puppet `GetWorldPos()` (tug-of-war detection) | 50 ms × every live puppet | `NPCPUPPETTICK_PPOS_SCRATCH`, `NPCPUPPETTICK_AP_SCRATCH` |
+| `KCD2MP_InterpTick` | player `GetWorldPos()` (once/tick) + per-frozen-ghost `GetWorldPos()` | 50 ms × every frozen ghost | `INTERPTICK_PLAYERPOS_SCRATCH`, `INTERPTICK_WP_SCRATCH` |
+
+**9 call sites converted** out of the 84+13 = 97 total no-argument
+`GetWorldPos`/`GetWorldAngles` sites WO-105 counted. The other ~88 are
+one-off calls (spawn paths, console commands, setup) per the brief's
+explicit instruction to leave those alone — changing all 97 for tidiness
+was not the point and adds review risk for no measured benefit.
+
+### 4.2 The ownership rule applied
+
+One scratch table **per call site**, declared `local` at file scope
+immediately above the function that uses it (so it persists as an upvalue
+across calls instead of being reallocated every tick — the whole point —
+while still never being visible to, or reachable from, any other
+function). Every converted site reads the returned table's fields
+(`.x`/`.y`/`.z`) into locals or scalars **immediately**, in the same
+`pcall` closure, and never stores or returns the table itself.
+
+**Checked deliberately before converting, per the brief's warning about
+this exact trap:** every site that copies fields into a *new* table
+(`KCD2MP_NpcPuppetTick`'s `p.attr[#p.attr+1] = { x = ap.x, y = ap.y, n = 1
+}`) copies **scalars**, not the reused table reference — verified by
+reading the surrounding ~130 lines of each converted function in full
+before editing it, not just the single call line. No site was found that
+returns or stores a `GetWorldPos()` result directly; all of them
+destructure into locals or format strings within the same closure.
+
+### 4.3 What was deliberately left alone
+
+`KCD2MP_InterpTick`'s riding-check block (`GetWorldPos()` on the player and
+on each nearby entity while probing for a mount) was **not** converted: it
+runs once per 5 ticks (~100 ms) inside a small `GetEntitiesInSphere`
+result set (typically 0-2 entities within 2.5 m), so its call volume is
+roughly two orders of magnitude below the four sites above. Left as a
+one-off per the brief's scope discipline ("the hot loops, not all 84
+sites").
+
+### 4.4 Measurement
+
+**Not taken this session.** WO-103 Phase 0's `MP-NPCREAD` bracket
+(`KCD2MP_NpcSyncTick`'s `readT0`/`mp_durstat_add` pair, unchanged by this
+edit) is the intended before/after instrument, but comparing mean/p95 at
+the same tracked-NPC count needs the **fixed code actually running**,
+which needs the pak rebuilt and the game restarted (§3.5) — the same
+deploy gate blocking Phase 1's live verification. **This is an honest gap,
+not a skipped step**: the brief's instruction for this exact situation
+("if the number does not move, say so... feeds Phase 6's ranking directly")
+applies symmetrically to "the number was never measured" — recorded here
+so Phase 6's audit does not accidentally treat this as measured-and-flat.
+**Action for next session with the pak deployed:** run a tracked-NPC-heavy
+scene, read `MP-NPCREAD` mean/p95 from `kcd.log`, compare against a
+pre-Phase-2 build of the same scene if one is still available, or simply
+record the post-Phase-2 numbers as a new baseline if not.
+
+### 4.5 Synthetic coverage
+
+No new automated test added for this phase — the brief did not ask for
+one (unlike Phase 1's explicit "add checks"), and a grep-based static
+check would only prove the scratch-table argument is present, not that
+the ownership rule holds (that needs the kind of full-function read done
+by hand in §4.2). The live `loadfile` compile check (§3.7) covers syntax
+for this phase along with Phase 1.
+
+## 5. Phase 4 — replica soul-id: DEAD END, cleanly established
+
+**The 34/34 refusals are explained, and the fix is not reachable.** Branch
+B (0.4: `soul:GetId()` is a `ScriptHandle`, 16 hex digits) is confirmed,
+and the natural next steps both fail — not from a parsing bug, but from a
+structural fact about what `SharedSoulGuid` actually indexes.
+
+### 5.1 Method
+
+Reused the exact known-answer check `KCD2MP_NpcReplicaPromote` already
+uses (`r.soul ~= nil` after `XGenAIModule.SpawnEntity`) as a live, one-shot
+probe, spawning disposable throwaway entities (`kcd2mp_wo106_probe_a/b/c`)
+rather than touching the real promote path. Source NPC: `ttkc_man_5`,
+WUID `05000000000001DC` (from §1.4).
+
+### 5.2 Attempt A — bare undashed hex WUID as `SharedSoulGuid`
+
+```lua
+XGenAIModule.SpawnEntity({ Name = "kcd2mp_wo106_probe_a", ClassName = "NPC",
+    Pos = {...}, SharedSoulGuid = "05000000000001DC", NoAI = true })
+```
+Result: `spawned=false hasSoul=nil`, and `kcd.log` logged:
+```
+[Error] soul guid 05000000-0000-0000-0000-000000000000 is not in the database
+```
+**This is itself a finding, independent of the outcome:** Warhorse's
+`SharedSoulGuid` handler DID convert the bare hex into a dashed CryGUID for
+its lookup (confirming it does route through *some* GUID-formatting path,
+as WO-105 §1.2/17.4 predicted for the engine) — but it **silently dropped
+every hex digit past the first 8**, turning `...0001DC` into
+`...00000000`. Whether this is a genuine parser bug on this build or a
+deliberate 32-bit-only legacy path is not known — not chased further,
+since Attempt B below makes the question moot.
+
+### 5.3 Attempt B — the full dashed form, built by hand
+
+```lua
+SharedSoulGuid = "05000000-0000-01DC-0000-000000000000"
+```
+(hipart = the WUID hex exactly, split 8-4-4 per WO-105 §1.2's byte layout;
+lopart = all zero, split 4-12 — this exact construction, worked through by
+hand against the WUID `0x05000000000005DD` in WO-105 §17.4, reproduced
+digit-for-digit here against a different WUID.)
+
+Result: `spawned=false hasSoul=nil`, `kcd.log`:
+```
+[Error] soul guid 05000000-0000-01dc-0000-000000000000 is not in the database
+```
+This time **every digit survived intact** (confirmed by the error message
+itself echoing our exact input, lowercased) — and it still failed, with
+the same "is not in the database" reason, not a parse failure.
+
+### 5.4 Control — a known roster `SharedSoulGuid`
+
+To confirm the negative results above are real and not a broken test
+harness:
+```lua
+SharedSoulGuid = "cfa65480-f361-4cf8-80c5-1900b7846bc8"  -- from kdcmp.lua's own roster
+```
+Result: `spawned=true hasSoul=true soulId=userdata: 05000000000005E4`.
+**The mechanism works** — a real, authored `SharedSoulGuid` binds
+immediately, no error, no "not in the database". Also notable: the
+resulting replica's own WUID (`...05E4`) is a **fresh value**, unrelated
+to the GUID that was passed in — confirming a `SharedSoulGuid` and a WUID
+are populated independently at spawn time, not derived from one another.
+
+### 5.5 Conclusion — DEAD END, not a width or encoding problem
+
+The width mismatch (WO-105 contradictions entry 3: 64-bit WUID vs 128-bit
+CryGUID) was never actually the blocker. Even with the width corrected and
+every digit preserved exactly (§5.3), the lookup still fails. **The real
+finding: `SharedSoulGuid` indexes an authored content database of defined
+character templates. A live NPC's runtime WUID was never a member of
+that database, at any width, in any encoding, dashed or not — it
+identifies a live simulation instance, not an authored template.** There
+is no conversion to find, because there is nothing on the other side to
+convert to.
+
+This clears the question WO-105 §17.4 raised ("is a soul WUID the same
+thing as a soul CryGUID at all") to a firm **no**, and closes the specific
+lead §17.4 offered (`CryGUID::FromString`'s bare-hex path) — that path
+exists and even partially misbehaves (§5.2), but the destination it leads
+to doesn't contain what we need regardless.
+
+**The replica stays blocked, unchanged from WO-104: 34/34 (now effectively
+36/36 counting this session's two negative attempts) refuse on
+`soul-id-unreadable`, correctly, because there is no value that would let
+them proceed.** No code was changed in `KCD2MP_NpcReplicaPromote` this
+session — the gate's shape (refuse rather than guess) was already right
+per WO-104's fail-closed design, and this session found nothing that
+should replace what it is refusing on.
+
+**What would actually unblock this, for a future WO:** a native (RTTR or
+DLL-side) route to either (a) read an NPC's *authored* `SharedSoulGuid`
+directly instead of deriving one, if such a field exists on the soul
+object, or (b) skip `SharedSoulGuid` entirely and bind the replica to the
+original's identity through whatever native mechanism actually owns
+"which character template is this soul." Both are native-only questions,
+out of scope for a Lua-only WO.
+
+## 6. Phase 5 — `ENTITY_FLAG_NO_SAVE` on every mod-spawned body
+
+### 6.1 Mechanism, live-verified
+
+New helper `mp_set_no_save(e)` (right after `mp_log`'s definition):
+```lua
+local function mp_set_no_save(e)
+    if not e then return false end
+    local ok = false
+    pcall(function() e:SetFlags(ENTITY_FLAG_NO_SAVE, 3); ok = true end)
+    return ok
+end
+```
+Mode `3` = OR (set the bit) per `entity:SetFlags`'s documented mode
+semantics (1=AND, 2=AND-NOT, else=OR) — adds the flag without disturbing
+whatever else the engine already set on the entity.
+
+**Live-verified the mechanism itself actually works**, not just that it
+compiles: spawned a throwaway `kcd2mp_test_ghost`, called the exact same
+`SetFlags(ENTITY_FLAG_NO_SAVE, 3)` line against it, and confirmed the bit
+was really set by checking it against `GetFlags()`'s return with a bitmask
+test (`(after % (NO_SAVE*2)) >= NO_SAVE`):
+```
+PROBE no_save_apply ok=true before=1.67772e+07 after=1.681e+07 hasBit=true
+```
+The `before` value floating around 1.6777e7 (i.e. already near the 2^24
+float-precision ceiling from §1.5) is itself a reminder that this entity's
+existing flags already sit close to that boundary — worth keeping in mind
+for any future flag arithmetic on a heavily-flagged entity, though it did
+not cause a problem here since bit 15 (32768) is far below the ceiling.
+
+### 6.2 Where it was applied — every spawn call site, by grep, not by guess
+
+Grepped for every `SpawnEntity` call in the file (8 real call sites,
+excluding comments and `AddCCommand` help text) and added
+`mp_set_no_save(...)` immediately after each one resolves to a real,
+non-nil entity handle:
+
+| site | function | body |
+|---|---|---|
+| `kdcmp.lua:4595` | `KCD2MP_NpcReplicaPromote` | the replica (`kcd2mp_r_*`) |
+| `kdcmp.lua:5897`/`5902` | `KCD2MP_SpawnGhost` (primary + fallback) | every ghost body |
+| `kdcmp.lua:5996` | `KCD2MP_SpawnGhost` (class-mismatch respawn) | the replacement body when the first spawn built the wrong class |
+| `kdcmp.lua:6424` | ghost horse proxy spawn | `kcd2mp_horse_*` proxy horses (**not** an adopted real-world horse — that path returns early and is untouched, since it is a real persistent world entity, not mod scaffolding) |
+| `kdcmp.lua:10168` | `KCD2MP_SpawnArmoredNPC` (also covers `mp_spawn_knight`/`mp_spawn_white_red`, which call through it) | test/demo armored NPC spawns |
+| `kdcmp.lua:10405` | `KCD2MP_SpawnHorseTest` | class-name probe spawns |
+| `kdcmp.lua:10662` | `KCD2MP_TestXGenSpawn` | throwaway class probe (already self-removes after 10s; this is belt-and-braces for the window before that timer fires) |
+| `kdcmp.lua:10879` | `mp_item_spawn` (WO-48 dropped-item sync) | the one-tick `kcd2mp_ianchor_*` placement anchor |
+
+### 6.3 What was deliberately NOT flagged, and why
+
+**The finalized dropped-item entity (`mp_item_finalize`'s `placed`) was
+NOT flagged.** This needed a judgment call, recorded here: the anchor
+(§6.2's last row) is pure mod scaffolding, discarded within one or two
+ticks either way. `placed`, once adopted, is the **engine's own real
+bound pickup entity**, created through the ordinary
+`inventory:CreateItem` + `human:PlaceItem` path — the same mechanism any
+in-game item drop uses. Flagging it `NO_SAVE` would mean a peer's dropped
+item vanishes on any save/reload, which is a **behavior regression**, not
+a fix: a real dropped item persisting across a save is exactly what a
+player already expects from vanilla KCD2. This is different in kind from
+a replica/ghost/anchor, which are pure mod artifacts with no vanilla
+equivalent.
+
+### 6.4 The other half of the save hazard — NOT addressed this session
+
+Per WO-105 contradictions entry 2/4 and the brief's §5.3: **flagging the
+replica does not stop the ORIGINAL, hidden NPC from being saved as
+hidden.** A save taken mid-promotion still persists a hidden NPC. This
+session made **no change** to that half — no code changed in
+`KCD2MP_NpcReplicaDemote` or the `Hide`/unhide paths, and `Invisible()`
+was not tried as an alternative to `Hide()`. The brief listed this as an
+explicit either/or decision (unhide-on-every-demote-path, which is
+already true; `Invisible()` instead of `Hide()`, unverified whether it
+saves; or accept the exposure and keep the sweep). **Decision made this
+session: accept the exposure and keep the WO-84 periodic sweep**, which
+already exists and already handles this class of problem (a hidden
+original with no ghost behind it, from any cause) — not because the
+other options were evaluated and rejected, but because they were not
+evaluated at all this session, and the sweep is a working mitigation
+already in production. This is the conservative, lowest-risk choice for
+an unattended solo build; revisit with a real evaluation of `Invisible()`
+in a future WO if the sweep's window (mid-promotion crash/hard-exit only)
+ever proves too wide in the field.
+
+### 6.5 What to test after the next rebuild
+
+1. Spawn a ghost (`mp_spawn_test`), then `#local e = System.GetEntityByName("kcd2mp_test_ghost"); System.LogAlways(tostring(e:GetFlags()))` — confirm the printed value has the `32768` bit set (e.g. via the same modulo check used in §6.1).
+2. Save and reload with a live ghost or replica present; confirm the mod body is genuinely absent afterward (not just hidden) — this is the actual end-to-end proof the flag does what §8.3 of the engine reference says it does.
+3. Drop an item as a peer, confirm it is STILL there after a save/reload on the receiving side (regression check for §6.3's judgment call — a passing case here means "unchanged from before," which is correct).
+4. This phase's revert, if needed: every change is one new helper function plus one call added at 8 sites — a single `git revert` removes all of it cleanly, with no interaction with Phase 1/2/4's changes (different functions, no shared state).
+
+## 7. Unprompted finding: a refused removal became a hide (observed)
 
 From the Phase 0.5 cleanup, `mp_remove_all` on `kcd2mp_test_ghost`:
 

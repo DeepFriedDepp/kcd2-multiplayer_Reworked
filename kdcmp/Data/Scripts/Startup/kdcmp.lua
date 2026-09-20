@@ -205,6 +205,24 @@ local function mp_log(msg)
     System.LogAlways(string.format("[KCD2-MP] %s t=%.3f", msg, os.clock()))
 end
 
+-- WO-106 Phase 5: keep every mod-spawned body out of the player's save.
+-- ENTITY_FLAG_NO_SAVE is registered as a Lua global on this build (WO-106
+-- probe 0.2, live-confirmed = 32768, docs/WO-106-findings.md S1.2) and
+-- entity:SetFlags is a scriptbind -- mode 3 = OR (set the bit without
+-- disturbing whatever else the engine already set on this entity).
+-- Called at every spawn site immediately after the entity resolves.
+-- This covers only the REPLICA/GHOST/PROXY body itself -- it does NOT stop
+-- a hidden ORIGINAL NPC from being saved as hidden (docs/WO-105-
+-- contradictions.md entry 2/4); that half is a separate, harder problem
+-- (see the Phase 5 section of docs/WO-106-findings.md) and the periodic
+-- reconciliation sweep (WO-84) stays as the mitigation for it.
+local function mp_set_no_save(e)
+    if not e then return false end
+    local ok = false
+    pcall(function() e:SetFlags(ENTITY_FLAG_NO_SAVE, 3); ok = true end)
+    return ok
+end
+
 -- WO-98 Phase 6: session counters for the MP-SUMMARY-MOD line (KCD2MP_LogSummary).
 KCD2MP._stats = { toasts = 0, screenRows = 0, keys = 0, cutsceneEdges = 0, npcFightEvents = 0 }
 
@@ -498,17 +516,27 @@ function KCD2MP_FakeDeath(secs)
     KCD2MP_ShowInteractionMsg(string.format("Reporting death for %ds (test)", n))
 end
 
+-- WO-106 Phase 2: reusable scratch tables for the position-emit path's
+-- vector-getter calls (docs/WO-105-cryengine-reference.md S3.2/17.3 --
+-- GetWorldPos()/GetWorldAngles() with no argument allocate a fresh Lua
+-- table every call; passing one in writes into it instead). One table per
+-- call site, file-local, never passed outward -- KCD2MP_EmitState reads
+-- pos.x/y/z and ang.z into locals/scalars immediately and never stores or
+-- returns either table, so reusing them here is safe.
+local EMITSTATE_POS_SCRATCH = {}
+local EMITSTATE_ANG_SCRATCH = {}
+
 -- Builds and writes one state line. Returns false when the player is not in a
 -- state worth reporting (no world, mid-load).
 function KCD2MP_EmitState()
     if not player then return false end
 
     local pos = nil
-    pcall(function() pos = player:GetWorldPos() end)
+    pcall(function() pos = player:GetWorldPos(EMITSTATE_POS_SCRATCH) end)
     if not pos then return false end
 
     local ang = nil
-    pcall(function() ang = player:GetWorldAngles() end)
+    pcall(function() ang = player:GetWorldAngles(EMITSTATE_ANG_SCRATCH) end)
     local rotZ = ang and ang.z or 0
 
     local health, stamina, dead, unconscious = KCD2MP_ReadSelfVitals()
@@ -4128,6 +4156,16 @@ local function mp_drag_sensor()
     end
 end
 
+-- WO-106 Phase 2: scratch tables for KCD2MP_NpcSyncTick's read loop -- the
+-- loop MP-NPCREAD brackets (WO-103 Phase 0). ppos is one player-position
+-- read per tick; p/rot are read fresh per tracked NPC per tick inside the
+-- per-name pcall below. Both are read into locals/scalars immediately (p.x
+-- etc. feed string.format and t.lastX/Y/Z, never the table itself), so one
+-- reused table per call site is safe -- see the ownership rule in
+-- docs/WO-106-findings.md S "Phase 2".
+local NPCSYNCTICK_PPOS_SCRATCH = {}
+local NPCSYNCTICK_POS_SCRATCH  = {}
+local NPCSYNCTICK_ANG_SCRATCH  = {}
 function KCD2MP_NpcSyncTick()
     if not KCD2MP.npcSyncRunning then return end
     Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)  -- reschedule FIRST
@@ -4185,7 +4223,7 @@ function KCD2MP_NpcSyncTick()
     -- weapon-drawn tracked NPC, becomes a swing cue on the observers' side.
     local playerHit, ppos = false, nil
     if player then
-        pcall(function() ppos = player:GetWorldPos() end)
+        pcall(function() ppos = player:GetWorldPos(NPCSYNCTICK_PPOS_SCRATCH) end)
         if player.actor then
             local ph = nil
             pcall(function() ph = player.actor:GetHealth() end)
@@ -4231,9 +4269,9 @@ function KCD2MP_NpcSyncTick()
                 rot = nat.yaw
                 readNativeHits = readNativeHits + 1
             else
-                p = e:GetWorldPos()
+                p = e:GetWorldPos(NPCSYNCTICK_POS_SCRATCH)
                 rot = 0
-                pcall(function() rot = e:GetWorldAngles().z or 0 end)
+                pcall(function() rot = e:GetWorldAngles(NPCSYNCTICK_ANG_SCRATCH).z or 0 end)
                 readLuaHits = readLuaHits + 1
             end
             local hp, dead, ko = -1, false, false
@@ -4564,6 +4602,7 @@ function KCD2MP_NpcReplicaPromote(name, p, why)
         r = System.GetEntityByName(rname)
     end)
     if not r then return mp_replica_refuse(name, "spawn-failed") end
+    mp_set_no_save(r)   -- WO-106 Phase 5: never let a replica into the player's save
     local rSoul = false
     pcall(function() rSoul = r.soul ~= nil end)
     if not rSoul then
@@ -4979,6 +5018,13 @@ local function mp_npc_draw(name, e)
     if not drew then pcall(function() e.human:DrawWeapon() end) end
 end
 
+-- WO-106 Phase 2: scratch tables for KCD2MP_NpcPuppetTick -- ppos is one
+-- player-position read per tick (target-tracking); ap is read fresh per
+-- live puppet per tick inside the per-name pcall below (tug-of-war
+-- detection). Both feed only scalar math (ap.x/y, ppos.x/y) immediately,
+-- never stored past the closure, so one reused table per call site is safe.
+local NPCPUPPETTICK_PPOS_SCRATCH = {}
+local NPCPUPPETTICK_AP_SCRATCH   = {}
 function KCD2MP_NpcPuppetTick(arg, gen)
     -- WO-84: absorb the orphan of a generation that stopped ITSELF.
     --
@@ -5072,7 +5118,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
     -- emitted, so the event channel is byte-identical to 0.23.2.
     if KCD2MP.wo102.authorityHost and not KCD2MP.hitSensorOn and player then
         local ppos = nil
-        pcall(function() ppos = player:GetWorldPos() end)
+        pcall(function() ppos = player:GetWorldPos(NPCPUPPETTICK_PPOS_SCRATCH) end)
         local best, bestD = nil, 16.0   -- 4 m squared
         if ppos then
             for name, p in pairs(KCD2MP.npcPuppets) do
@@ -5283,7 +5329,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- phased between THREE points, not the documented two).
             if p.lastWroteX then
                 local ap = nil
-                pcall(function() ap = e:GetWorldPos() end)
+                pcall(function() ap = e:GetWorldPos(NPCPUPPETTICK_AP_SCRATCH) end)
                 if ap then
                     local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
                     -- WO-99 Phase 2: sustained sub-8 m contention -> yield.
@@ -5866,6 +5912,7 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         System.LogAlways("[KCD2-MP] SpawnEntity failed for ghost id=" .. tostring(id))
         return nil
     end
+    mp_set_no_save(entity)   -- WO-106 Phase 5: never let a ghost body into the player's save
 
     -- WO-69: verify-after-spawn. The face-pick line above records what was
     -- ASKED FOR; on its own it is not evidence of what the engine built. A
@@ -5953,6 +6000,7 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
             System.LogAlways("[KCD2-MP] fallback respawn failed for ghost id=" .. tostring(id))
             return nil
         end
+        mp_set_no_save(entity)   -- WO-106 Phase 5: this is a fresh entity, flag it too
         local reClass = nil
         pcall(function() reClass = entity.class end)
         System.LogAlways(string.format(
@@ -6383,6 +6431,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
         mp_log("HorseSpawn FAILED id=" .. id)
         return nil
     end
+    mp_set_no_save(horse)   -- WO-106 Phase 5: a mod-spawned proxy horse, never save it
 
     pcall(function() horse:SetWorldAngles({x=0, y=0, z=rotZ or 0}) end)
     pcall(function() horse:SetMountableByPlayer(false) end)
@@ -7859,6 +7908,12 @@ end
 -- A pumped call must NOT reschedule. Script.SetTimer is frozen for the whole
 -- duration of a local menu (WO-12 s0.3), so every timer queued by a pumped
 -- call would still be pending when the menu closes and fire as one burst.
+-- WO-106 Phase 2: scratch tables for KCD2MP_InterpTick -- _playerPos is one
+-- read per tick; wp is read per FROZEN ghost per tick (mp_ghost_is_corpse),
+-- immediately destructured into x/y/sz locals and never stored past the
+-- closure, so one reused table per call site is safe.
+local INTERPTICK_PLAYERPOS_SCRATCH = {}
+local INTERPTICK_WP_SCRATCH        = {}
 function KCD2MP_InterpTick(arg, gen)
     -- WO-84: absorb the orphan of a generation KCD2MP_Stop retired. Same
     -- mechanism as the puppet chain's retirement (see KCD2MP_NpcPuppetTick);
@@ -7912,7 +7967,7 @@ function KCD2MP_InterpTick(arg, gen)
 
     -- Fetch player position once per tick for label distance calculations.
     local _playerPos = nil
-    if player then pcall(function() _playerPos = player:GetWorldPos() end) end
+    if player then pcall(function() _playerPos = player:GetWorldPos(INTERPTICK_PLAYERPOS_SCRATCH) end) end
 
     for id, ghost in pairs(KCD2MP.ghosts) do
         local _ok, _err = pcall(function()  -- catch any crash, keep tick alive
@@ -8117,7 +8172,7 @@ function KCD2MP_InterpTick(arg, gen)
             local oneShot = istate.oneShotUntil and os.clock() < istate.oneShotUntil
             if frozen then
                 local wp = nil
-                pcall(function() wp = ghost.entity:GetWorldPos() end)
+                pcall(function() wp = ghost.entity:GetWorldPos(INTERPTICK_WP_SCRATCH) end)
                 if wp then x, y, sz = wp.x, wp.y, wp.z end
             elseif oneShot then
                 -- no position/angle writes; the one-shot owns the body
@@ -10117,6 +10172,7 @@ function KCD2MP_SpawnArmoredNPC(items_csv, preset_guid, weapon_preset)
         return
     end
     System.LogAlways("[KCD2-MP] SpawnArmoredNPC: entityId=" .. tostring(npc.id))
+    mp_set_no_save(npc)   -- WO-106 Phase 5: a mod test spawn, never save it
 
     -- Visually equip via ClothingPreset FIRST (may reset inventory state)
     if preset_guid and preset_guid ~= "" then
@@ -10353,6 +10409,7 @@ function KCD2MP_SpawnHorseTest()
         })
         if ok and ent then
             System.LogAlways(string.format("[KCD2-MP] SUCCESS class='%s' entityId=%s", cls, tostring(ent.id)))
+            mp_set_no_save(ent)   -- WO-106 Phase 5: a mod test spawn, never save it
             -- Don't remove it - let user see which one appears in-game
         else
             System.LogAlways(string.format("[KCD2-MP] FAIL class='%s' err=%s", cls, tostring(ent)))
@@ -10613,6 +10670,7 @@ function KCD2MP_TestXGenSpawn(className)
         if ent then
             System.LogAlways("[KCD2-MP] TestXGenSpawn: entity found id=" .. tostring(ent.id)
                 .. " class=" .. tostring(ent.class))
+            mp_set_no_save(ent)   -- WO-106 Phase 5: belt-and-braces -- this already self-removes in 10s
             -- Check human/actor/horse sub-objects
             local hasSoul   = pcall(function() return ent.soul end)
             local hasHuman  = pcall(function() return ent.human end)
@@ -10823,6 +10881,7 @@ local function mp_item_spawn(key, d)
         anchor = System.GetEntityByName(anchorName)
     end)
     if not anchor then return end
+    mp_set_no_save(anchor)   -- WO-106 Phase 5: a one-tick placement scaffold, never save it
     KCD2MP._itemSeen[tostring(anchor.id)] = true
 
     -- Snapshot the pickables already at the drop spot BEFORE placing: the
