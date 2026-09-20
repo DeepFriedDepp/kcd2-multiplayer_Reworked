@@ -72,17 +72,32 @@ is blocked for this reason and is explicitly NOT attempted.
   `claude/loving-curie-50182f`) from an unrelated prior session. Not
   touched, not part of this WO.
 
+## Session complete except Phase 3 and the end gate
+
+All phases with no live-two-player gate are done: Phase 0 (probes),
+Phase 1 (console placeholder), Phase 2 (table churn), Phase 4 (replica
+dead end), Phase 5 (`ENTITY_FLAG_NO_SAVE`), Phase 6 (audit). Every commit
+pushed to `origin main` (`b99cc46`, `6ce6ece`, `03510ae`).
+
+**Phase 3 is the only phase not attempted** — it needs a live two-player
+session per its own design (halving the puppet write rate on one NPC and
+watching whether sinking improves), and the maintainer confirmed none
+tonight.
+
 ## Next steps (in order)
 
-1. Phase 6 audit doc (`docs/WO-106-native-migration.md`) — the only phase
-   left besides Phase 3.
-2. Phase 3 stays blocked until a two-player session exists. Decide then
-   (not now) whether to ship the rate-mitigation tunable ahead of the
-   mechanism test, per the brief's §3.4 — deliberately not decided this
-   session since the point of §3.2's test is to run it BEFORE building
-   anything.
-3. Rebuild the pak (`tools\Build-And-Install-Mod.ps1`, game closed first)
+1. Rebuild the pak (`tools\Build-And-Install-Mod.ps1`, game closed first)
    and run every post-deploy test listed in findings §3.6 (Phase 1) and
-   §6.5 (Phase 5) before trusting any of this in a real session.
-4. Ask the maintainer for the exact VERSION string before any end-gate
-   build — do not guess or auto-increment.
+   §6.5 (Phase 5) before trusting any of this in a real session. **Not
+   done this session** — the maintainer was mid-session for the Phase 0
+   probes throughout, and closing the game was never asked for or given.
+2. Phase 3, next time a peer is available: the live write-rate test, per
+   its own field runbook shape (§3.2 of the WO-106 brief).
+3. The Phase 6 audit's recommended next WO: multi-anchor before/after for
+   the `GetEntitiesInSphere`→`GetPhysicalEntitiesInBox` swap on
+   `mp_npc_rescan`, before touching that code.
+4. End-gate build (VERSION bump, README badge, installer, release notes)
+   — **not started, and not to be started without the maintainer naming
+   the exact VERSION string first** (standing rule). Also gated on step 1
+   actually happening, since an end-gate build from a tree that was never
+   locally verified live would be building blind on Phase 1/2/5's changes.
