@@ -76,6 +76,15 @@ function mkEntity(name, x, y, z, class)
     e.StartAnimation = function(self, layer, anim) self.anims[#self.anims + 1] = anim end
     e.GetAnimationLength = function() return 1.0 end
     e.Hide = function(self, v) if v == nil then v = 1 end; self.hidden = v; self.hides[#self.hides + 1] = v end
+    -- WO-106 Phase 5: entity:SetFlags(flags, mode) is called on every
+    -- spawned body now (mp_set_no_save). No scenario asserts on the value,
+    -- so this just has to exist and not crash -- record the last call
+    -- rather than reimplement the engine's bitwise mode semantics (this
+    -- harness targets the mod's Lua 5.1 surface, which has no bit
+    -- operators to model them with anyway).
+    e.lastSetFlags = nil
+    e.SetFlags = function(self, flags, mode) self.lastSetFlags = { flags = flags, mode = mode } end
+    e.GetFlags = function(self) return (self.lastSetFlags and self.lastSetFlags.flags) or 0 end
     e.actor = { IsDead = function() return e.dead end, IsUnconscious = function() return e.ko end, GetHealth = function() return e.hp end }
     e.human = { IsWeaponDrawn = function() return e.drawnNow == true end,
                 DrawWeapon = function() e.drawnNow = true; return true end,
