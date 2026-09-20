@@ -43,7 +43,16 @@ is blocked for this reason and is explicitly NOT attempted.
       live-verified on a disposable entity, not just compiled. Hidden-
       original half of the save hazard deliberately deferred to the
       existing WO-84 sweep (recorded decision, findings §6.4).
-- [ ] Phase 6 — audit. Not started.
+- [x] Phase 6 — audit. `docs/WO-106-native-migration.md`. Live tests this
+      session found a build-specific divergence from the WO-105 stock
+      reference: `System.GetPhysicalEntitiesInBox` takes `(center,
+      radius)` on this build, not two corner points, and the CVar WO-105
+      named for gating it doesn't exist here at all -- yet the grid
+      clearly works (262 real results vs the sphere walk's 698, and MORE
+      named humans than the sphere walk at the same radius, confirming
+      the "box not sphere" over-inclusion caveat live). Redesign of
+      `mp_npc_rescan` recommended as WO-106's own next WO, not attempted
+      this session.
 - [ ] End gate build. Not started. **No VERSION bump without the
       maintainer naming the exact string first** (standing rule).
 
