@@ -2363,6 +2363,29 @@ function KCD2MP_SetTogetherParams(arg)
     return true
 end
 
+-- WO-106 Phase 3 mitigation: runtime puppet write-rate control, so a field
+-- session can find the rate where ground-collider sinking stops (see the
+-- comment above KCD2MP.npcPuppetTickMs). Read fresh by
+-- KCD2MP_NpcPuppetTick's own reschedule, so this takes effect on the next
+-- tick, not next restart -- no reconnect, no pak rebuild.
+local NPC_PUPPET_TICK_MIN_MS = 10   -- floor: below this is pegging the tick, not testing it
+function KCD2MP_SetPuppetRate(arg)
+    local ms = tonumber(arg)
+    if not ms or ms ~= ms then   -- ms ~= ms catches NaN
+        mp_log("mp_puppet_rate rejected '" .. tostring(arg) .. "' -- expected a number of milliseconds")
+        return false
+    end
+    if ms < NPC_PUPPET_TICK_MIN_MS then
+        mp_log(string.format("mp_puppet_rate rejected %.0f -- must be >= %.0f", ms, NPC_PUPPET_TICK_MIN_MS))
+        return false
+    end
+    local was = KCD2MP.npcPuppetTickMs
+    KCD2MP.npcPuppetTickMs = ms
+    mp_log(string.format("NPC-PUPPET-RATE set=%.0fms was=%.0fms", ms, was))
+    KCD2MP_ShowInteractionMsg(string.format("Puppet write rate: %.0fms", ms))
+    return true
+end
+
 function KCD2MP_SetNpcCull(arg)
     local s = tostring(arg or ""):lower()
     if s:find("on") then KCD2MP.wo1025.npcCull = true
@@ -2645,6 +2668,15 @@ KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, idleN = 0, dumpAt 
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
+
+-- WO-106 Phase 3 mitigation: the puppet write/tick rate, runtime-settable
+-- (mp_puppet_rate <ms>) instead of hardcoded, so a live session can find
+-- the rate where ground-collider sinking (docs/WO-106-findings.md,
+-- WO-105-cryengine-reference.md S4.4/17.1) stops without a rebuild. 50ms
+-- is the value every session before this one used, unchanged as the
+-- default. Read fresh by KCD2MP_NpcPuppetTick's own reschedule each tick,
+-- so a change takes effect on the VERY NEXT tick, not next restart.
+KCD2MP.npcPuppetTickMs   = 50
 
 -- ===== WO-86: NPC death sync =====
 --
@@ -5089,7 +5121,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
     -- The agent's menu pump now calls this with arg="ext": no reschedule, no
     -- alive-stamp (a pumped call must not make a dead chain look healthy).
     if arg ~= "ext" then
-        Script.SetTimer(50, function() KCD2MP_NpcPuppetTick(nil, gen) end)  -- reschedule FIRST
+        Script.SetTimer(KCD2MP.npcPuppetTickMs, function() KCD2MP_NpcPuppetTick(nil, gen) end)  -- reschedule FIRST, rate read fresh every tick (mp_puppet_rate)
         KCD2MP._npcPuppetAliveAt = os.clock()
     end
 
@@ -5663,8 +5695,8 @@ function KCD2MP_StartNpcPuppet()
     -- under an older one is, by definition, a leaked chain -- and now says so.
     KCD2MP.npcPuppetGen = (KCD2MP.npcPuppetGen or 0) + 1
     local myGen = KCD2MP.npcPuppetGen
-    mp_log("NPC-SYNC puppet tick started (50ms) gen=" .. tostring(myGen))
-    Script.SetTimer(50, function() KCD2MP_NpcPuppetTick(nil, myGen) end)
+    mp_log(string.format("NPC-SYNC puppet tick started (%.0fms) gen=%s", KCD2MP.npcPuppetTickMs, tostring(myGen)))
+    Script.SetTimer(KCD2MP.npcPuppetTickMs, function() KCD2MP_NpcPuppetTick(nil, myGen) end)
 end
 
 -- WO-69: `mp_npc_chainfix on|off`. Off (default) = a leaked chain is logged
@@ -11198,6 +11230,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_cull_off",        'KCD2MP_SetNpcCull("off")',                  "WO-102.5 Phase 3: stream every owned NPC regardless of distance")
     System.AddCCommand("mp_authority_radius",    'KCD2MP_SetAuthorityRadius("%line")',        "WO-102.5/WO-106: set the host-authority NPC ownership radius: mp_authority_radius <metres> (default 300, floor 10)")
     System.AddCCommand("mp_together_params",     'KCD2MP_SetTogetherParams("%line")',         "WO-102.5/WO-106: set the together/apart hysteresis band: mp_together_params <enterM> <exitM> <dwellS>, or 'on' for defaults (60 90 10)")
+    System.AddCCommand("mp_puppet_rate",         'KCD2MP_SetPuppetRate("%line")',              "WO-106 Phase 3 mitigation: set the puppet write/tick rate in ms, takes effect next tick, no reconnect needed: mp_puppet_rate <ms> (default 50, floor 10) -- lower it to test whether ground-collider sinking scales with write frequency")
     System.AddCCommand("mp_npc_read_native_on",  'KCD2MP_SetNpcReadNative("on")',              "WO-103 Phase 2: a tracked NPC's position/yaw comes from the agent's native scan push when fresh, falling back to the live e:GetWorldPos() read otherwise (default on)")
     System.AddCCommand("mp_npc_read_native_off", 'KCD2MP_SetNpcReadNative("off")',             "WO-103 Phase 2: always read position/yaw live off the entity, as before this WO")
     System.AddCCommand("mp_npc_read_compare",    "KCD2MP_NpcReadCompare()",                    "WO-103 Phase 2 known-answer check: diff the native push's position/yaw against a fresh live read for every currently-tracked name; a real mismatch fails mp_npc_read_native closed")
