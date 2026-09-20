@@ -72,32 +72,77 @@ is blocked for this reason and is explicitly NOT attempted.
   `claude/loving-curie-50182f`) from an unrelated prior session. Not
   touched, not part of this WO.
 
-## Session complete except Phase 3 and the end gate
+## Update: 0.26.3 built and delivered
+
+Between drafting this doc and now, the maintainer asked for two more
+things in the same session: a runtime `mp_puppet_rate <ms>` command (the
+Phase 3 mitigation tunable, shipped with default 50ms unchanged) and an
+installer build for their tester.
+
+The end-gate build ran for real: `rollback/0.26.2` tagged at `ebb0046`,
+`VERSION` bumped to `0.26.3`, README badge + release notes updated
+(`docs/releases/RELEASE-NOTES-0.26.3.md`), built from a **fresh clone of
+origin/main**, not the working tree. The first build attempt correctly
+**failed its own release gate** — `Test-WO104Synthetic.ps1` hit 7 "no Lua
+errors" failures, all from the same cause: Phase 5's new
+`entity:SetFlags` call had no mock in the synthetic test harness's
+`mkEntity`. Fixed the mock (not the mod — the real `SetFlags` call was
+already live-verified against the actual game earlier this session),
+re-cloned fresh, rebuilt clean: relay round-trip 13/13, agent unit tests
+170/170, WO-102 synthetic 196/196, WO-104 synthetic 92/92.
+
+Privacy sweep: zero occurrences of the real username anywhere in the
+built payload (checked UTF-8 and UTF-16LE, every file in the release
+folder, not just text files). Pak content check: extracted
+`Scripts/Startup/kdcmp.lua` from the built `kdcmp.pak` directly, confirmed
+all 41 of this session's markers present and zero uppercase `%LINE` in
+any `AddCCommand` call — the shipped pak is not stale.
+
+`KCDMP-Setup-0.26.3.exe` (100,581,707 bytes, SHA256
+`60cacbd6aa43ac57120cac27d6560a0a421f0696cfec8c518e0a9330815193a2` as
+computed in this session's own shell — the maintainer should still
+re-verify independently before trusting it, per this project's own
+standing rule about not trusting the coding assistant's shell for
+verification) sent directly to the maintainer. **Not published as a
+GitHub Release** — only asked for a build, not a public release; that's a
+separate, more visible action to confirm first if wanted.
+
+**Important caveat carried into this build: none of Phase 1/2/3/5's
+actual behavior has been tested against the real running game with THIS
+pak.** The synthetic suites run under MoonSharp against mocked engine
+objects, not the real CryEngine Lua sandbox — they caught a real gap
+(the missing `SetFlags` mock) but cannot substitute for the live
+console-command checklist in `docs/WO-106-findings.md` §3.6/§6.5 and this
+release's own release notes. The tester's first session with 0.26.3 is
+the first real-world test of everything this WO changed.
+
+## Session complete except Phase 3
 
 All phases with no live-two-player gate are done: Phase 0 (probes),
 Phase 1 (console placeholder), Phase 2 (table churn), Phase 4 (replica
-dead end), Phase 5 (`ENTITY_FLAG_NO_SAVE`), Phase 6 (audit). Every commit
-pushed to `origin main` (`b99cc46`, `6ce6ece`, `03510ae`).
+dead end), Phase 5 (`ENTITY_FLAG_NO_SAVE`), Phase 6 (audit), plus the
+Phase 3 mitigation tunable (`mp_puppet_rate`) and a full end-gate build to
+0.26.3 (see "Update: 0.26.3 built and delivered" above). Every commit
+pushed to `origin main`.
 
-**Phase 3 is the only phase not attempted** — it needs a live two-player
-session per its own design (halving the puppet write rate on one NPC and
-watching whether sinking improves), and the maintainer confirmed none
-tonight.
+**Phase 3's live write-rate A/B test is the only thing not attempted** —
+it needs a live two-player session per its own design (halving the
+puppet write rate on one NPC and watching whether sinking improves), and
+the maintainer confirmed none tonight. The mitigation the test would
+confirm or refute ships anyway, per the brief's own "ship the tunable
+regardless" guidance — it does nothing until someone runs `mp_puppet_rate`.
 
 ## Next steps (in order)
 
-1. Rebuild the pak (`tools\Build-And-Install-Mod.ps1`, game closed first)
-   and run every post-deploy test listed in findings §3.6 (Phase 1) and
-   §6.5 (Phase 5) before trusting any of this in a real session. **Not
-   done this session** — the maintainer was mid-session for the Phase 0
-   probes throughout, and closing the game was never asked for or given.
-2. Phase 3, next time a peer is available: the live write-rate test, per
-   its own field runbook shape (§3.2 of the WO-106 brief).
+1. **The post-deploy test checklist** (findings §3.6, §6.5, and this
+   release's own release notes) — the game was closed for the whole build
+   process, so nothing in 0.26.3 has been exercised against the real
+   engine yet. This is the tester's job now.
+2. Phase 3, next time a peer is available: the live write-rate test using
+   the now-shipped `mp_puppet_rate`, per its own field runbook shape
+   (§3.2 of the WO-106 brief).
 3. The Phase 6 audit's recommended next WO: multi-anchor before/after for
    the `GetEntitiesInSphere`→`GetPhysicalEntitiesInBox` swap on
    `mp_npc_rescan`, before touching that code.
-4. End-gate build (VERSION bump, README badge, installer, release notes)
-   — **not started, and not to be started without the maintainer naming
-   the exact VERSION string first** (standing rule). Also gated on step 1
    actually happening, since an end-gate build from a tree that was never
    locally verified live would be building blind on Phase 1/2/5's changes.
