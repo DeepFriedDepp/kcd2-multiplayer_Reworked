@@ -343,14 +343,14 @@ live edited source file directly (not pasted through the console — the
 whole file is ~500 KB, far past the transport's per-call budget).
 
 First attempt used Windows backslash paths and failed with every
-backslash silently stripped by the transport (`C:UsersJonastyDocuments...`,
+backslash silently stripped by the transport (`C:Users<user>Documents...`,
 no separators at all) — **not a syntax problem**, a path-escaping
 artifact of this transport, worth remembering for any future live probe
 that needs a Windows path. Forward slashes work fine (Windows accepts
 them in file APIs):
 
 ```
-#local f, err = loadfile("C:/Users/Jonasty/Documents/KCD2_MP/kdcmp/Data/Scripts/Startup/kdcmp.lua"); System.LogAlways("PROBE compile ok=" .. tostring(f ~= nil) .. " err=" .. tostring(err))
+#local f, err = loadfile("C:/Users/<user>/Documents/KCD2_MP/kdcmp/Data/Scripts/Startup/kdcmp.lua"); System.LogAlways("PROBE compile ok=" .. tostring(f ~= nil) .. " err=" .. tostring(err))
 ```
 → `PROBE compile ok=true err=nil`. Confirms Lua 5.1 syntax is valid for
 every change through end of Phase 2 below. This is a **compile-only**
