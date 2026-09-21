@@ -103,7 +103,60 @@ Release notes: `docs/releases/RELEASE-NOTES-0.26.4.md`.
 
 ## 4. End gate
 
-BUILD_SECTION_PLACEHOLDER
+Version `0.26.4` confirmed by the maintainer when asked (not assumed).
+`rollback/0.26.3` tagged at `0c5e4d2` — the WO-107 commit, which is
+docs-only on top of the 0.26.3 build, so it is the last commit with 0.26.3
+code and VERSION — and pushed. `VERSION`, README badge, release notes and
+the rebuilt tracked pak committed as `d54bff5` and pushed to `origin main`
+**before** the build.
+
+Built from a **fresh clone of origin/main at `d54bff5`** (not the working
+tree) with `tools\Build-Installer.ps1`:
+
+* **First run failed its own release gate**: the relay round-trip gate
+  reported `Combat_event_round_trips_in_both_lengths(len: 1)` FAIL (12/13).
+  Nothing in this WO touches the relay, the protocol or that packet; the
+  test binds a random free port and the failing assertion is a read
+  timeout on the first theory row, and the 7.5 GB game process was running
+  beside the build. The same test passed 13/13 twice in the working tree
+  immediately after. **Classified as a load-induced timing flake
+  (observed once, not reproduced); the gate was not bypassed** — the whole
+  build was re-run.
+* **Second run: every gate green** — relay round-trip 13/13, agent unit
+  tests 170/170, WO-102 synthetic 196/196, WO-104 synthetic 92/92, native
+  plugin + injector rebuilt from source (no cached artifacts in a fresh
+  clone), four self-contained publishes, ISCC compiled.
+* `KCDMP-Setup-0.26.4.exe`: **100,584,166 bytes, SHA256
+  `444c98b8e8f751650ede00d3accee1707e044738db424e64b2bff9342e33daf1`**
+  (computed in this session's shell; the maintainer should re-verify
+  independently, per the standing rule). Copied to `release\` in the
+  working tree. **Not published as a GitHub Release** — not asked.
+
+Pak content check (the WO-106 trap): `Scripts/Startup/kdcmp.lua` extracted
+from the **built** `kdcmp.pak` (857,580 bytes — the size and sha256 the
+install manifest records) carries every marker of this session
+(`WO108-BUILD`, `MP-PAUSE-GAP`, `KCD2MP_ApplyPreset`,
+`KCD2MP_ResumeAllPaused`, `authorityPause = true`, replica `enabled =
+false`, `npcYield … enabled = false`, `resumeDwellS = 10.0`,
+`mp_wo102_relax_shaped`, `pause_issued=`) and is **identical to the
+working-tree Lua modulo line endings**. Line endings, stated because the
+byte sizes differ: the repo blob and the working tree are LF; this
+machine's `core.autocrlf=true` (no `.gitattributes`) checks the clone out
+CRLF, so every fresh-clone release pak on this machine has been CRLF Lua
+(0.26.3's 834 KB pak included) while a working-tree build is LF (844 KB).
+Lua 5.1 accepts both; the smoke run (§1) ran the LF working-tree build,
+the installer ships the CRLF clone build. Same source, byte-verified with
+`diff --strip-trailing-cr`.
+
+Privacy sweep, UTF-8 **and** UTF-16LE, all 1,024 files in `release\`
+including the Setup exe: **zero** occurrences of the maintainer's username
+or real hostname. Two hits examined and cleared: `KCDMP_launcher.dll`
+contains `duckdns` — the WO-55 UI placeholder text `myserver.duckdns.org`,
+generic, in the source since 0.26.0; the six third-party `NAudio*.dll`
+carry their upstream author's `C:\Users\<naudio author>\…` build path (a
+NuGet package's own PDB path, present in every prior release, not this
+project's). PathMap still applies: no first-party binary carries a
+`C:\Users` path.
 
 ## 5. Session hygiene
 
