@@ -365,6 +365,8 @@ function KCD2MP_LogSummary(reason)
     for _ in pairs(KCD2MP._npcPaused or {}) do pausedNow = pausedNow + 1 end
     local replicasActive = 0   -- WO-104
     for _ in pairs(KCD2MP._npcReplicas or {}) do replicasActive = replicasActive + 1 end
+    local pausePending = 0     -- WO-108
+    for _ in pairs(KCD2MP._npcResumePending or {}) do pausePending = pausePending + 1 end
     local q = KCD2MP.quest
     mp_log(string.format("MP-SUMMARY-MOD reason=%s mod_clock_s=%.0f toasts=%d screen_rows=%d keys=%d cutscene_edges=%d"
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
@@ -372,7 +374,8 @@ function KCD2MP_LogSummary(reason)
         .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s"
         .. " auth_pauses=%d auth_resumes=%d auth_paused_now=%d auth_violations=%d"
         .. " resync_bursts=%d resync_emitted=%d resync_applied=%d resync_moved=%d resync_skipped=%d"
-        .. " replica_promotes=%d replica_demotes=%d replica_refused=%d replica_active=%d replica_orphans=%d replica_violations=%d",
+        .. " replica_promotes=%d replica_demotes=%d replica_refused=%d replica_active=%d replica_orphans=%d replica_violations=%d"
+        .. " pause_relax=%d pause_gaps=%d pause_reasserts=%d pause_dwell_resumes=%d pause_cancelled=%d pause_pending=%d pause_refused=%d",
         tostring(reason), os.clock(), st.toasts, st.screenRows, st.keys, st.cutsceneEdges,
         ghosts, ghostPackets, puppets, st.npcFightEvents, KCD2MP._npcDivergeN or 0,
         (q and q.divergeN) or 0, (q and q.promptN) or 0, (q and q.fireN) or 0,
@@ -388,7 +391,10 @@ function KCD2MP_LogSummary(reason)
         (KCD2MP._resyncStats or {}).skipped or 0,
         (KCD2MP._npcReplicaStats or {}).promote or 0, (KCD2MP._npcReplicaStats or {}).demote or 0,
         (KCD2MP._npcReplicaStats or {}).refused or 0, replicasActive,
-        (KCD2MP._npcReplicaStats or {}).orphan or 0, (KCD2MP._npcReplicaStats or {}).violationsOnReplica or 0))
+        (KCD2MP._npcReplicaStats or {}).orphan or 0, (KCD2MP._npcReplicaStats or {}).violationsOnReplica or 0,
+        (KCD2MP._pauseStats or {}).relax or 0, (KCD2MP._pauseStats or {}).gap or 0, (KCD2MP._pauseStats or {}).reassert or 0,
+        (KCD2MP._pauseStats or {}).dwellResumes or 0, (KCD2MP._pauseStats or {}).cancelled or 0, pausePending,
+        ((KCD2MP._pauseStats or {}).refusedNoPuppet or 0) + ((KCD2MP._pauseStats or {}).refusedAuthority or 0)))
 end
 
 -- ===== Player Position =====
@@ -639,6 +645,7 @@ local function chainMayStart(key, flagField, stampField, restart)
                 return
             end
             mine.deadConfirmed = true
+            KCD2MP._chainDeadRestartAt = os.clock()   -- WO-108: a save load forgets engine NPC suspensions; the pause reconcile re-asserts after this
             mp_log(string.format(
                 "CHAIN %s confirmed dead (timers fire, no heartbeat for %.1fs) -- restarting",
                 key, os.clock() - (KCD2MP[stampField] or os.clock())))
@@ -2292,6 +2299,13 @@ KCD2MP.wo1025 = {
     -- closed (this flag flips back to false) if KCD2MP_NpcReadCompare finds
     -- a real mismatch, not merely a stale one -- see that function.
     readNative      = true,
+    -- WO-108 s3.5: seconds a released puppet's brain pause is held before
+    -- wh_ai_ResumeNPC (mp_resume_dwell <s>). 10 s: the same dwell as the
+    -- co-location hysteresis above, longer than the cull-boundary flapping a
+    -- joiner produces walking a town, and bounded so an NPC that really left
+    -- the stream is back under its own brain within releaseS + 10 s. 0 =
+    -- resume the moment the puppet drops (the 0.26.3 behaviour).
+    resumeDwellS    = 10.0,
 }
 
 -- name:string metres. Registered as mp_authority_radius (WO-106; was
@@ -2864,7 +2878,13 @@ KCD2MP.npcDiverge          = true
 -- drops arguments, docs/WO-98), `mp_npc_yield` reports; thresholds via
 -- `#KCD2MP_SetNpcYield("0.3 10 1.0")` = dispM ticks repinM. Default ON.
 -- Every yield and re-pin logs MP-NPCYIELD (docs/WO-98-log-format.md).
-KCD2MP.npcYield = { enabled = true, dispM = 0.30, ticks = 10, repinM = 1.0 }
+-- WO-108: `enabled` ships OFF. Under host authority (the shipped model) the
+-- flag is never consulted -- KCD2MP_NpcPuppetTick's host-authority branch
+-- turns the same measurement into an MP-AUTHORITY-VIOLATION and never
+-- yields (WO-102 Phase 4) -- so this is a no-op flip that stops the status
+-- line claiming a mechanism that cannot fire. dispM/ticks stay LIVE: they
+-- are the contention detector's thresholds. mp_preset_legacy restores on.
+KCD2MP.npcYield = { enabled = false, dispM = 0.30, ticks = 10, repinM = 1.0 }
 KCD2MP._npcYieldN, KCD2MP._npcRepinN = 0, 0
 
 function KCD2MP_SetNpcYield(arg)
@@ -3005,14 +3025,20 @@ KCD2MP.npcProx = {
 --                  docs/WO-102-findings.md S3). Does nothing unless
 --                  authorityHost.
 --                  WO-102.5 Phase 1 shipped it ON on the solo probe's 8/8
---                  (later 5/8). WO-104: ships OFF. The first two-machine
---                  session with it on (2026-09-18, 0.26.1) logged 155
---                  MP-AUTHORITY-VIOLATION lines on the joiner, every one
---                  paused=1: under a live 50 ms stream the local brain
---                  kept writing the body. The solo probe measured a
---                  different situation (nothing else writing). The
---                  brainless-replica path (mp_npc_replica_on, below) is
---                  the replacement. Resume is guaranteed on release/silence,
+--                  (later 5/8). WO-104 shipped it OFF on a 2026-09-18
+--                  two-machine reading (155 MP-AUTHORITY-VIOLATION, every
+--                  one paused=1). WO-107 refuted that reading: `paused=1`
+--                  reported THIS Lua table, not engine state, and the
+--                  dist_m it fired on is the engine position-relax (WO-107
+--                  s4), not a brain. The lever itself is
+--                  C_IntelligentObject::Suspend -- latched, multi-owner,
+--                  held through a 38 Hz stream, damage, combat and ~50 min
+--                  (WO-107 s3, observed). WO-108 ships it ON again, with
+--                  the suspend-set invariant (s2.2), identity logging
+--                  (s3.1), a release dwell (s3.5) and mp_resume_all.
+--                  WO-108 Phase 0 confirmed the suspension does NOT
+--                  survive a save load (quick-load, wh_sys_LoadGame, cold
+--                  relaunch -- observed). Resume is guaranteed on release/silence,
 --                  toggle-off, host-authority-off, `mp_stop`
 --                  (KCD2MP_Stop), the AGENT going away
 --                  (KCD2MP_Wo102ResumeAll, called from GameBridge.cs's own
@@ -3043,19 +3069,21 @@ KCD2MP.npcProx = {
 --                  own call: exercise what is new rather than default back
 --                  to the already-known-broken path.
 -- Shipped defaults: host authority ON (replaces a known-broken model);
--- native position and the native NPC scan ON; the pause lever OFF since
--- WO-104 (live-disproven under a real stream, see authorityPause below --
--- the agent does not push this one, so the Lua default IS the shipped
--- default). The agent pushes ClientConfig's values for the other three at
--- connect; these are what an agent that pushes nothing leaves in place, so
--- they agree with ClientConfig by construction.
+-- native position and the native NPC scan ON; the pause lever ON since
+-- WO-108 (0.26.4) -- the agent does not push this one, so the Lua default
+-- IS the shipped default. The agent pushes ClientConfig's values for the
+-- other three at connect; these are what an agent that pushes nothing
+-- leaves in place, so they agree with ClientConfig by construction.
+-- `mp_preset_legacy` is the 0.26.3 set (lever off) in one command.
 KCD2MP.wo102 = {
     authorityHost  = true,    -- mp_authority_host_off is the 0.23.2 claim model
     posNative      = true,    -- never run live; fail-closed, kept on per the maintainer's call (same principle as npcScanNative)
-    authorityPause = false,   -- WO-104: OFF. 2026-09-18 two-machine session: 155/155 MP-AUTHORITY-VIOLATION with paused=1
-                              -- (148 contention, 7 diverge) -- wh_ai_PauseNPC does not hold a body a live stream is
-                              -- also writing. The solo 8/8 and 5/8 measured a body nothing else was touching.
-                              -- Kept as a toggle: it may still hold for idle NPCs; the violation counter shows it.
+    authorityPause = true,    -- WO-108: ON. WO-104 turned it off on `paused=1` (this Lua table, not engine state) and a
+                              -- dist_m that was the WO-107 s4 position-relax. WO-107 s3: the lever is
+                              -- C_IntelligentObject::Suspend, latched and multi-owner, held solo through a 38 Hz
+                              -- stream, melee damage, mid-combat application and ~50 min. WO-108 Phase 0: the
+                              -- suspension does not survive any save-load path (observed). Two-player: UNVERIFIED --
+                              -- this build exists to collect that evidence (docs/WO-108-peer-test-runbook.md).
     npcScanNative  = true,    -- live-verified clean 2026-09-18 (findings S6.2); kept on per the maintainer's call
 }
 KCD2MP._wo102Names = { authority_host = "authorityHost", pos_native = "posNative", authority_pause = "authorityPause", npc_scan_native = "npcScanNative" }
@@ -3093,14 +3121,20 @@ function KCD2MP_Wo102Set(name, on, source)
 end
 
 function KCD2MP_Wo102Status()
-    local paused = 0
+    local paused, pending, ever = 0, 0, 0
     for _ in pairs(KCD2MP._npcPaused or {}) do paused = paused + 1 end
-    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s npc_scan_native=%s authority=%s paused_npcs=%d",
+    for _ in pairs(KCD2MP._npcResumePending or {}) do pending = pending + 1 end
+    for _ in pairs(KCD2MP._npcEverPaused or {}) do ever = ever + 1 end
+    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s npc_scan_native=%s authority=%s paused_npcs=%d"
+        .. " pause_pending=%d pause_ever=%d pause_dwell_s=%.1f npc_replica=%s npc_yield=%s",
         KCD2MP.wo102.authorityHost and "on" or "off",
         KCD2MP.wo102.posNative and "on" or "off",
         KCD2MP.wo102.authorityPause and "on" or "off",
         KCD2MP.wo102.npcScanNative and "on" or "off",
-        KCD2MP.hitSensorOn and "self" or "peer", paused))
+        KCD2MP.hitSensorOn and "self" or "peer", paused, pending, ever,
+        (KCD2MP.wo1025 and KCD2MP.wo1025.resumeDwellS) or 0,
+        (KCD2MP.npcReplica and KCD2MP.npcReplica.enabled) and "on" or "off",
+        (KCD2MP.npcYield and KCD2MP.npcYield.enabled) and "on" or "off"))
 end
 
 -- WO-102 Phase 2: MP-AUTHORITY -- per NPC, who owns it, how it was acquired,
@@ -3163,31 +3197,135 @@ end
 --
 --   MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention dist_m=<F2> owner=<id> paused=0|1 n=<int>
 --   (per-NPC throttled to one line per 10 s; the count is exact)
-KCD2MP._npcPaused = {}           -- name -> os.clock() when wh_ai_PauseNPC was issued
-KCD2MP._authViolationAt = {}     -- name -> last logged
+KCD2MP._npcPaused = {}           -- name -> os.clock() when wh_ai_PauseNPC was issued. The mod's OWN bookkeeping,
+                                 -- not engine state (WO-107 s3.4): a field derived from it is `pause_issued`, never `paused`.
+KCD2MP._npcPauseExec = {}        -- name -> "ok" | "err:<msg>": pcall result of the last wh_ai_PauseNPC for the name
+KCD2MP._npcEverPaused = {}       -- name -> true for every name paused this Lua session (mp_resume_all sweeps this set)
+KCD2MP._npcResumePending = {}    -- name -> os.clock() deadline: released, pause held for the dwell (WO-108 s3.5)
+KCD2MP._authViolationAt = {}     -- "name|kind" -> last logged
 KCD2MP._authViolationN = {}      -- name -> count
+KCD2MP._pauseStats = { relax = 0, gap = 0, reassert = 0, refusedNoPuppet = 0, refusedAuthority = 0, dwellResumes = 0, cancelled = 0 }
+KCD2MP._chainDeadRestartAt = nil -- WO-108: stamped by chainMayStart when a chain is CONFIRMED dead (a save load); the
+                                 -- reconcile sweep re-asserts every live puppet's pause after it (Phase 0: the engine
+                                 -- forgets suspensions on a load while this Lua state survives it)
+KCD2MP._pauseReassertedAt = 0
 
+-- WO-108 s3.1: identity on every pause/resume line. The two clients resolve
+-- a NAME to a body independently; if they disagree, the joiner suspends the
+-- wrong NPC and the peer test reads exactly like WO-104 again. wuid is
+-- soul:GetId() (the 64-bit ScriptHandle, WO-106 s1.4), eid the entity id's
+-- hex tail (the WO-49 idiom). Same fields on both machines, greppable, so
+-- the two kcd.logs can be diffed after a session.
+local function mp_pause_identity(name)
+    local e = nil
+    pcall(function() e = System.GetEntityByName(name) end)
+    if not e then return "wuid=? eid=? body=missing" end
+    local wuid, eid = "?", "?"
+    pcall(function()
+        if e.soul and e.soul.GetId then
+            local s = tostring(e.soul:GetId())
+            wuid = string.match(s, "(%x+)%s*$") or s
+        end
+    end)
+    pcall(function() eid = string.match(tostring(e.id), "(%x+)%s*$") or tostring(e.id) end)
+    return string.format("wuid=%s eid=%s body=%s", tostring(wuid), tostring(eid), tostring(e.class or "?"))
+end
+
+--   MP-PAUSE npc=<name> event=pause|resume|release|cancel|reassert|refused wuid=<hex> eid=<hex> body=<class>
+--            exec=ok|err:<msg>|none why=<via> owner=<id> held_s=<F1>
+-- `exec` is the pcall verdict of System.ExecuteCommand -- the only reply the
+-- console gives Lua. "The call succeeded" is not "the brain is suspended":
+-- engine-side suspend state is not readable from Lua on this build.
+local function mp_pause_log(name, event, exec, why, owner, heldS)
+    mp_log(string.format("MP-PAUSE npc=%s event=%s %s exec=%s why=%s owner=%s held_s=%.1f",
+        tostring(name), event, mp_pause_identity(name), tostring(exec or "none"), tostring(why or "?"),
+        tostring(owner or "?"), heldS or 0))
+end
+
+-- WO-108 s2.2, the suspend-set invariant: a name is suspended ONLY while it
+-- is a puppet this machine is writing -- never on radius entry, never from a
+-- roster scan, never on the authority (its brains ARE the truth). A coverage
+-- gap therefore produces a jittery NPC (today's behaviour), never a statue.
 local function mp_wo102_pause(name, p)
     if not (KCD2MP.wo102.authorityHost and KCD2MP.wo102.authorityPause) then return end
+    if KCD2MP.hitSensorOn then
+        KCD2MP._pauseStats.refusedAuthority = KCD2MP._pauseStats.refusedAuthority + 1
+        if not KCD2MP._pauseRefusedAuthLogged then
+            KCD2MP._pauseRefusedAuthLogged = true
+            mp_pause_log(name, "refused", "none", "this-machine-is-authority", p and p.owner or "?", 0)
+        end
+        return
+    end
+    if not KCD2MP.npcPuppets[name] then
+        KCD2MP._pauseStats.refusedNoPuppet = KCD2MP._pauseStats.refusedNoPuppet + 1
+        mp_pause_log(name, "refused", "none", "not-a-puppet", p and p.owner or "?", 0)
+        return
+    end
+    if KCD2MP._npcResumePending[name] then
+        -- The stream came back inside the dwell: the engine bit is still set.
+        KCD2MP._npcResumePending[name] = nil
+        KCD2MP._pauseStats.cancelled = KCD2MP._pauseStats.cancelled + 1
+        mp_pause_log(name, "cancel", "none", "stream-back-inside-dwell", p and p.owner or "?",
+            os.clock() - (KCD2MP._npcPaused[name] or os.clock()))
+        return
+    end
     if KCD2MP._npcPaused[name] then return end
     KCD2MP._npcPaused[name] = os.clock()
+    KCD2MP._npcEverPaused[name] = true
     local ok, err = pcall(System.ExecuteCommand, "wh_ai_PauseNPC " .. tostring(name))
+    local exec = ok and "ok" or ("err:" .. tostring(err))
+    KCD2MP._npcPauseExec[name] = exec
     mp_auth_log(name, "pause", p and p.owner or "?", "wh_ai_PauseNPC", 0)
+    mp_pause_log(name, "pause", exec, "puppet-start", p and p.owner or "?", 0)
     if not ok then mp_log("WO102-PAUSE ExecuteCommand failed for " .. tostring(name) .. ": " .. tostring(err)) end
 end
 
+-- The unconditional resume: wh_ai_ResumeNPC now, forget the name.
 local function mp_wo102_resume(name, why)
     local at = KCD2MP._npcPaused[name]
     if not at then return end
     KCD2MP._npcPaused[name] = nil
-    pcall(System.ExecuteCommand, "wh_ai_ResumeNPC " .. tostring(name))
+    KCD2MP._npcResumePending[name] = nil
+    local ok, err = pcall(System.ExecuteCommand, "wh_ai_ResumeNPC " .. tostring(name))
+    local exec = ok and "ok" or ("err:" .. tostring(err))
     mp_auth_log(name, "resume", "?", why, os.clock() - at)
+    mp_pause_log(name, "resume", exec, why, "?", os.clock() - at)
+end
+
+-- WO-108 s3.5: the release used when WRITES STOP (silence). The pause is held
+-- for wo1025.resumeDwellS so a stream that comes straight back (a cull
+-- boundary, a packet gap, the joiner walking the radius edge) does not cost a
+-- resume, a ~14 s re-plan (WO-107 s10) and a re-pause. A stream that stays
+-- away resumes from mp_wo102_pending_tick when the deadline passes. Dwell 0
+-- is the 0.26.3 behaviour (resume the moment the puppet drops).
+local function mp_wo102_release(name, why)
+    if not KCD2MP._npcPaused[name] then return end
+    local dwell = (KCD2MP.wo1025 and KCD2MP.wo1025.resumeDwellS) or 0
+    if dwell <= 0 then mp_wo102_resume(name, why); return end
+    if not KCD2MP._npcResumePending[name] then
+        KCD2MP._npcResumePending[name] = os.clock() + dwell
+        mp_pause_log(name, "release", "none", tostring(why) .. "+dwell", "?", os.clock() - KCD2MP._npcPaused[name])
+    end
 end
 
 local function mp_wo102_resume_all(why)
     local names = {}
     for name in pairs(KCD2MP._npcPaused) do names[#names + 1] = name end
     for _, name in ipairs(names) do mp_wo102_resume(name, why) end
+end
+
+-- Every KCD2MP_NpcSyncTick (100 ms): dwell deadlines.
+local function mp_wo102_pending_tick()
+    local now = os.clock()
+    local due = nil
+    for name, deadline in pairs(KCD2MP._npcResumePending) do
+        if now >= deadline then due = due or {}; due[#due + 1] = name end
+    end
+    if not due then return end
+    for _, name in ipairs(due) do
+        KCD2MP._pauseStats.dwellResumes = KCD2MP._pauseStats.dwellResumes + 1
+        mp_wo102_resume(name, "dwell")
+    end
 end
 
 -- WO-102.5 Phase 1: the agent's own disconnect/shutdown path (GameBridge.cs,
@@ -3199,40 +3337,123 @@ function KCD2MP_Wo102ResumeAll(why)
     mp_wo102_resume_all(tostring(why or "agent-disconnect"))
 end
 
--- WO-102.5 Phase 1: the safety net for every case that is not one of the
--- three explicit resume paths above (release/silence, toggle-off,
--- host-authority-off) -- peer disconnect, agent shutdown, mod unload, game
--- exit, or any other way a puppet can stop existing without going through
--- the normal release call. A name in KCD2MP._npcPaused with no entry in
--- KCD2MP.npcPuppets is, by definition, a body nothing is streaming to
--- anymore: there is no reason left for its brain to stay suppressed.
--- Rate-limited by the caller (KCD2MP_NpcSyncTick), not on every tick --
--- this runs regardless of npcSync.enabled or authority role, since a
--- stray pause can outlive either.
+-- WO-102.5 Phase 1 / WO-108 s2.2: the safety net and the coverage-gap
+-- detector. Rate-limited by the caller (KCD2MP_NpcSyncTick); runs regardless
+-- of npcSync.enabled or authority role, since a stray pause can outlive
+-- either. Three cases per believed-paused name:
+--   * no puppet and no pending dwell  -> MP-PAUSE-GAP reason=untracked, resume
+--     (via=reconcile -- the WO-102.5 line, kept verbatim)
+--   * a puppet that has received no packet for releaseS + this interval ->
+--     MP-PAUSE-GAP reason=no-writes, drop the puppet, resume. The puppet tick
+--     should have released it at releaseS; if it did not, the chain is dead
+--     or suspended and the body must not stay a statue. Greppable: this line
+--     IS the coverage-gap detector the invariant asks for.
+--   * a live puppet after a confirmed-dead chain restart (a save load) ->
+--     re-issue wh_ai_PauseNPC (Suspend is idempotent: mask |= bit).
 local NPC_RECONCILE_INTERVAL_S = 5.0
+local function mp_wo102_pause_gap_s()
+    return ((KCD2MP.npcSync and KCD2MP.npcSync.releaseS) or 3.0) + NPC_RECONCILE_INTERVAL_S
+end
 local function mp_wo102_reconcile_pauses()
-    local names = {}
+    local now = os.clock()
+    local gapS = mp_wo102_pause_gap_s()
+    local reload = KCD2MP._chainDeadRestartAt ~= nil and KCD2MP._chainDeadRestartAt > (KCD2MP._pauseReassertedAt or 0)
+    local gaps, reassert = {}, {}
     for name in pairs(KCD2MP._npcPaused) do
-        if not KCD2MP.npcPuppets[name] then names[#names + 1] = name end
+        local p = KCD2MP.npcPuppets[name]
+        if not p then
+            if not KCD2MP._npcResumePending[name] then gaps[#gaps + 1] = { name, "untracked", 0 } end
+        elseif (now - (p.lastPacketAt or 0)) > gapS then
+            gaps[#gaps + 1] = { name, "no-writes", now - (p.lastPacketAt or 0) }
+        elseif reload then
+            reassert[#reassert + 1] = name
+        end
     end
-    for _, name in ipairs(names) do
-        mp_wo102_resume(name, "reconcile")
-        mp_log("WO102-AUTHORITY reconcile: resumed " .. name .. " (paused but no longer a tracked puppet)")
+    for _, g in ipairs(gaps) do
+        local name, reason, age = g[1], g[2], g[3]
+        KCD2MP._pauseStats.gap = KCD2MP._pauseStats.gap + 1
+        mp_log(string.format("MP-PAUSE-GAP npc=%s reason=%s age_s=%.1f -- paused but not being written; resuming (WO-108 coverage-gap detector)",
+            tostring(name), reason, age or 0))
+        if reason == "no-writes" then KCD2MP.npcPuppets[name] = nil end
+        mp_wo102_resume(name, reason == "untracked" and "reconcile" or "gap-no-writes")
+        mp_log("WO102-AUTHORITY reconcile: resumed " .. tostring(name) .. " (paused but no longer a tracked puppet)")
+    end
+    if reload then
+        KCD2MP._pauseReassertedAt = now
+        for _, name in ipairs(reassert) do
+            KCD2MP._pauseStats.reassert = KCD2MP._pauseStats.reassert + 1
+            local ok, err = pcall(System.ExecuteCommand, "wh_ai_PauseNPC " .. tostring(name))
+            local exec = ok and "ok" or ("err:" .. tostring(err))
+            KCD2MP._npcPauseExec[name] = exec
+            mp_pause_log(name, "reassert", exec, "chain-dead-restart", (KCD2MP.npcPuppets[name] or {}).owner or "?",
+                now - (KCD2MP._npcPaused[name] or now))
+        end
+        if #reassert > 0 then
+            mp_log(string.format("MP-PAUSE reasserted %d pause(s) after a confirmed-dead chain restart (a save load forgets engine suspensions -- WO-108 Phase 0)", #reassert))
+        end
     end
 end
 
-local function mp_wo102_violation(name, p, kind, distM)
+-- WO-108 s3.3: the WO-107 s4 position-relax, tagged instead of counted as a
+-- violation. Stop writing a body and it returns to its pre-write anchor on a
+-- clean exponential (ratio ~0.32 per ~1.2 s sample, settled in ~5 s) --
+-- paused, unpaused and NoAI alike, so it is neither brain nor mod. Between
+-- two puppet writes the same pull moves the body a few percent of its
+-- distance to the anchor, straight AT the anchor. That is the signature:
+-- displacement pointing at the puppet's creation anchor (cos >= 0.90) with a
+-- magnitude that is a small fraction of the distance to it (1.5%..12% per
+-- 50 ms tick, scaled with mp_puppet_rate). A brain walking (a fixed ~0.05 m
+-- per tick whatever the distance) falls below the band on any anchor further
+-- than ~3 m; a 131 m yank is far above it -- both still report as what they
+-- are. Tagged lines still log (kind=relax, with anchor_m and cos so the tag
+-- can be audited), and count in pause_relax; they never feed the replica
+-- trigger. Heuristic, stated as such; root-causing the relax is out of scope.
+local MP_RELAX_COS_MIN   = 0.90
+local MP_RELAX_RATIO_MIN = 0.015
+local MP_RELAX_RATIO_MAX = 0.12
+local function mp_wo102_relax_shaped(p, fx, fy)
+    if not (p and p.ax and p.lastWroteX) then return false, 0, 0 end
+    local axv, ayv = p.ax - p.lastWroteX, p.ay - p.lastWroteY
+    local aLen = math.sqrt(axv * axv + ayv * ayv)
+    local fLen = math.sqrt(fx * fx + fy * fy)
+    if aLen < 0.5 or fLen <= 0 then return false, 0, aLen end
+    local cosA = (fx * axv + fy * ayv) / (fLen * aLen)
+    local ratio = fLen / aLen
+    local scale = math.max(1.0, (KCD2MP.npcPuppetTickMs or 50) / 50)
+    return (cosA >= MP_RELAX_COS_MIN and ratio >= MP_RELAX_RATIO_MIN and ratio <= MP_RELAX_RATIO_MAX * scale), cosA, aLen
+end
+
+--   MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention|relax dist_m=<F2> owner=<id>
+--                          pause_issued=0|1 pause_exec=ok|err:..|none n=<int> body=npc|replica anchor_m=<F2> cos=<F2>
+--   (per-NPC, per-kind throttled to one line per 10 s; the count is exact)
+-- WO-108 s3.2: `paused=` is gone. `pause_issued` is what it always was -- the
+-- mod believes it issued a pause -- and `pause_exec` is the console call's
+-- pcall verdict. Neither is engine state; that is not readable from Lua here.
+local function mp_wo102_violation(name, p, kind, distM, fx, fy)
+    local cosA, anchorM = 0, 0
+    if fx ~= nil and kind == "contention" then
+        local relax
+        relax, cosA, anchorM = mp_wo102_relax_shaped(p, fx, fy)
+        if relax then kind = "relax" end
+    end
     local st = KCD2MP._authStats
-    st.violation = st.violation + 1
+    if kind == "relax" then
+        KCD2MP._pauseStats.relax = KCD2MP._pauseStats.relax + 1
+    else
+        st.violation = st.violation + 1
+    end
     KCD2MP._authViolationN[name] = (KCD2MP._authViolationN[name] or 0) + 1
     local now = os.clock()
-    if (now - (KCD2MP._authViolationAt[name] or -1e9)) >= 10.0 then
-        KCD2MP._authViolationAt[name] = now
-        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s paused=%d n=%d body=%s",
+    local tkey = tostring(name) .. "|" .. kind
+    if (now - (KCD2MP._authViolationAt[tkey] or -1e9)) >= 10.0 then
+        KCD2MP._authViolationAt[tkey] = now
+        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s pause_issued=%d pause_exec=%s n=%d body=%s anchor_m=%.2f cos=%.2f",
             tostring(name), kind, distM or 0, tostring(p and p.owner or "?"),
-            KCD2MP._npcPaused[name] and 1 or 0, KCD2MP._authViolationN[name],
-            (KCD2MP._npcReplicas or {})[name] and "replica" or "npc"))   -- WO-104: which body moved
+            KCD2MP._npcPaused[name] and 1 or 0, tostring(KCD2MP._npcPauseExec[name] or "none"),
+            KCD2MP._authViolationN[name],
+            (KCD2MP._npcReplicas or {})[name] and "replica" or "npc", anchorM or 0, cosA or 0))
     end
+    if kind == "relax" then return end   -- tagged and counted; never a contention signal
     -- WO-104 Phase 1: a violation IS the contention signal. Promote (no-op
     -- unless mp_npc_replica_on) -- every event, not only the rate-limited log.
     if KCD2MP_NpcReplicaConsider then KCD2MP_NpcReplicaConsider(name, p, kind) end
@@ -3264,6 +3485,101 @@ function KCD2MP_Wo102OnChange(field, want, was)
     elseif field == "authorityPause" then
         if not want then mp_wo102_resume_all("pause-lever-off") end
     end
+end
+
+-- ===== WO-108: the dwell setter, the panic button, the two presets =====
+
+function KCD2MP_SetResumeDwell(arg)
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "" or s == "%line" then
+        mp_log(string.format("MP-PAUSE dwell=%.1fs (mp_resume_dwell <seconds>; 0 = resume the moment writes stop, the 0.26.3 behaviour)",
+            KCD2MP.wo1025.resumeDwellS or 0))
+        return true
+    end
+    local n = tonumber(s)
+    if not n or n ~= n or n < 0 or n > 120 then
+        mp_log("mp_resume_dwell rejected '" .. tostring(arg) .. "' -- expected seconds 0..120")
+        return false
+    end
+    local was = KCD2MP.wo1025.resumeDwellS or 0
+    KCD2MP.wo1025.resumeDwellS = n
+    mp_log(string.format("MP-PAUSE dwell set=%.1fs was=%.1fs", n, was))
+    return true
+end
+
+-- mp_resume_all: the panic button for the peer test. Switches the lever OFF
+-- first (KCD2MP_Wo102Set -> OnChange resumes everything still believed
+-- paused, and the puppet tick can no longer re-pause anything 50 ms later),
+-- then issues wh_ai_ResumeNPC for every OTHER name this Lua session ever
+-- paused -- resuming a context that is not suspended is a documented engine
+-- no-op ("...in which it was not suspended", WO-107 s3.2), so the sweep is
+-- safe and catches a pause the bookkeeping lost. mp_authority_pause_on or
+-- mp_preset_clean brings the lever back.
+function KCD2MP_ResumeAllPaused(why)
+    why = tostring(why or "mp_resume_all")
+    local leverWas = KCD2MP.wo102.authorityPause
+    if leverWas then KCD2MP_Wo102Set("authority_pause", false, "resume-all") end
+    mp_wo102_resume_all(why)   -- anything OnChange did not reach (lever already off)
+    local names = {}
+    for name in pairs(KCD2MP._npcEverPaused) do names[#names + 1] = name end
+    table.sort(names)
+    local swept = 0
+    for _, name in ipairs(names) do
+        local ok, err = pcall(System.ExecuteCommand, "wh_ai_ResumeNPC " .. name)
+        mp_pause_log(name, "resume", ok and "ok" or ("err:" .. tostring(err)), why .. "-sweep", "?", 0)
+        swept = swept + 1
+    end
+    KCD2MP._npcResumePending = {}
+    mp_log(string.format("MP-PAUSE resume-all why=%s swept=%d lever_was=%s lever_now=off -- mp_authority_pause_on (or mp_preset_clean) to re-enable",
+        why, swept, leverWas and "on" or "off"))
+    KCD2MP_ShowInteractionMsg(string.format("Resumed %d NPC(s); NPC brain pause lever OFF", swept))
+    return swept
+end
+
+-- mp_preset_clean = the 0.26.4 defaults, mp_preset_legacy = the 0.26.3
+-- defaults, each re-applied in full so a mid-session tweak is undone too.
+-- Neither touches the authority model: authority_host, pos_native and
+-- npc_scan_native are the agent's (ClientConfig) and identical in both
+-- builds. Every value set logs one MP-PRESET line.
+KCD2MP._presets = {
+    clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0 },
+    legacy = { authority_pause = false, npc_replica = true,  npc_yield = true,  resume_dwell_s = 0.0 },
+}
+function KCD2MP_ApplyPreset(which)
+    which = tostring(which or "")
+    local P = KCD2MP._presets[which]
+    if not P then mp_log("MP-PRESET unknown preset '" .. which .. "' (clean|legacy)"); return false end
+    local n = 0
+    local function set(key, from, to, apply)
+        n = n + 1
+        mp_log(string.format("MP-PRESET name=%s set=%s from=%s to=%s", which, key, tostring(from), tostring(to)))
+        local ok, err = pcall(apply)
+        if not ok then mp_log(string.format("MP-PRESET name=%s set=%s FAILED: %s", which, key, tostring(err))) end
+    end
+    local w, y = KCD2MP.wo1025, KCD2MP.npcYield
+    set("authority_pause", KCD2MP.wo102.authorityPause, P.authority_pause, function() KCD2MP_Wo102Set("authority_pause", P.authority_pause, "preset") end)
+    set("npc_replica",     KCD2MP.npcReplica.enabled,    P.npc_replica,     function() KCD2MP_SetNpcReplica(P.npc_replica) end)
+    set("npc_yield",       y.enabled,                    P.npc_yield,       function() KCD2MP_SetNpcYield(P.npc_yield and "on" or "off") end)
+    set("resume_dwell_s",  w.resumeDwellS,               P.resume_dwell_s,  function() KCD2MP_SetResumeDwell(P.resume_dwell_s) end)
+    -- shared by both builds
+    set("npc_yield_thresholds", string.format("%.2f %d %.2f", y.dispM, y.ticks, y.repinM), "0.30 10 1.00", function() KCD2MP_SetNpcYield("0.30 10 1.0") end)
+    set("npc_cull",        w.npcCull,                    true,              function() KCD2MP_SetNpcCull("on") end)
+    set("npc_diverge",     KCD2MP.npcDiverge,            "on (8 m)",        function() KCD2MP_SetNpcDiverge("8") end)
+    set("npc_smooth",      KCD2MP.npcSmooth,             true,              function() KCD2MP_SetNpcSmooth("on") end)
+    set("npc_deathsync",   KCD2MP.npcDeathSync,          true,              function() KCD2MP_SetNpcDeathSync("on") end)
+    set("npc_chainfix",    KCD2MP.npcChainFix,           true,              function() KCD2MP_SetNpcChainFix("on") end)
+    set("puppet_rate_ms",  KCD2MP.npcPuppetTickMs,       50,                function() KCD2MP_SetPuppetRate(50) end)
+    set("authority_radius_m", w.authorityRadius,         300,               function() KCD2MP_SetAuthorityRadius("300") end)
+    set("together_params", string.format("%.0f %.0f %.0f", w.togetherEnterM, w.togetherExitM, w.togetherDwellS), "60 90 10", function() KCD2MP_SetTogetherParams("60 90 10") end)
+    set("npc_read_native", w.readNative,                 true,              function() KCD2MP_SetNpcReadNative("on") end)
+    set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
+    set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
+    mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
+        which, n, KCD2MP.wo102.authorityHost and "on" or "off", KCD2MP.wo102.posNative and "on" or "off",
+        KCD2MP.wo102.npcScanNative and "on" or "off"))
+    KCD2MP_ShowInteractionMsg("Preset applied: " .. which .. (which == "clean" and " (0.26.4 defaults)" or " (0.26.3 defaults)"))
+    if KCD2MP_Wo102Status then pcall(KCD2MP_Wo102Status) end
+    return true
 end
 
 
@@ -4207,6 +4523,7 @@ function KCD2MP_NpcSyncTick()
     -- npcSync.enabled and the authority gate below -- a stray pause is a
     -- native engine state this tick's own early returns must not hide.
     local nowRec = os.clock()
+    pcall(mp_wo102_pending_tick)   -- WO-108 s3.5: dwell deadlines, every tick
     if (nowRec - (KCD2MP._npcReconcileAt or 0)) >= NPC_RECONCILE_INTERVAL_S then
         KCD2MP._npcReconcileAt = nowRec
         pcall(mp_wo102_reconcile_pauses)
@@ -4441,7 +4758,14 @@ end
 
 -- ===== WO-104 Phase 1: brainless replicas for contested NPCs =====
 --
--- The pause lever (WO-102 Phase 4, wh_ai_PauseNPC) does not suppress a
+-- WO-108 CORRECTION to the premise below: WO-107 showed the pause lever DOES
+-- suppress the brain (C_IntelligentObject::Suspend, latched, held through a
+-- 38 Hz stream). The 155 `paused=1` lines reported the mod's own Lua table
+-- and the dist_m they fired on was the WO-107 s4 position-relax. The replica
+-- path is therefore OFF by default since 0.26.4 (and structurally dead per
+-- WO-106 s5 regardless); the text below is kept as the record of why it was
+-- built.
+-- ORIGINAL: The pause lever (WO-102 Phase 4, wh_ai_PauseNPC) does not suppress a
 -- local brain that is fighting a live puppet stream: 2026-09-18, joiner,
 -- 155 MP-AUTHORITY-VIOLATION lines, every one paused=1 (observed). The
 -- solo probe's 5/8 HELD measured a body nothing else was writing.
@@ -4514,7 +4838,9 @@ end
 --
 --   MP-NPCREPLICA npc=<name> event=promote|demote|refuse|orphan why=<w> body=<replica name>|- held_s=<F1> n=<int>
 KCD2MP.npcReplica = {
-    enabled         = true,    -- mp_npc_replica_on|off. ON per the maintainer's call for 0.26.2 (see header)
+    enabled         = false,   -- mp_npc_replica_on|off. WO-108: OFF. Structurally dead (WO-106 s5): SharedSoulGuid indexes an
+                               -- authored database a live NPC's WUID is never in -- 36/36 refusals, never promoted once. Was ON
+                               -- 0.26.2-0.26.3 (the maintainer's call for a fail-closed path); mp_preset_legacy puts it back.
     sheathedDemoteS = 10.0,    -- stream says weapon away for this long -> the fight is over -> demote
     orphanSweepM    = 60.0,    -- radius of the 5 s orphan sweep around the player
 }
@@ -4892,7 +5218,8 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
 
     if not p then
         local cur = e:GetWorldPos()
-        p = { cx = cur.x, cy = cur.y, cz = cur.z, cr = rot, animTag = "idle" }
+        p = { cx = cur.x, cy = cur.y, cz = cur.z, cr = rot, animTag = "idle",
+              ax = cur.x, ay = cur.y }   -- WO-108 s3.3: where the engine had this body before we wrote it (the relax anchor)
         -- WO-77: seed the sample ring with where the puppet actually IS,
         -- stamped one DELAY in the past, so the first packet renders as a
         -- DELAY-long slide from the entity's current position onto the
@@ -5180,7 +5507,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 KCD2MP.npcPuppets[name] = nil
                 mp_log("NPC-SYNC release " .. name .. " (stream silent)")
                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "silence", now - (p.ownerSince or now))   -- WO-102
-                mp_wo102_resume(name, "silence")   -- WO-102 Phase 4
+                mp_wo102_release(name, "silence")   -- WO-102 Phase 4; WO-108 s3.5: held for the dwell, resumed by mp_wo102_pending_tick
                 return
             end
             any = true
@@ -5373,7 +5700,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         if yc and (fx*fx + fy*fy) > yc.dispM * yc.dispM then
                             p.yieldStreak = (p.yieldStreak or 0) + 1
                             if p.yieldStreak >= (yc.ticks or 10) then
-                                mp_wo102_violation(name, p, "contention", math.sqrt(fx*fx + fy*fy))
+                                mp_wo102_violation(name, p, "contention", math.sqrt(fx*fx + fy*fy), fx, fy)   -- WO-108 s3.3: may be tagged relax
                                 p.yieldStreak = 0
                             end
                         else
@@ -5481,7 +5808,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                             -- released -- the stream stays the truth -- and the
                             -- event is logged loudly as what it is: something
                             -- on this machine is still writing this body.
-                            mp_wo102_violation(name, p, "diverge", math.sqrt(fx*fx + fy*fy))
+                            mp_wo102_violation(name, p, "diverge", math.sqrt(fx*fx + fy*fy), fx, fy)
                         elseif KCD2MP.npcDiverge and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
                             local keep = {}
                             for _, t0 in ipairs(p.farHits or {}) do
@@ -11216,12 +11543,22 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_pos_native_on",      'KCD2MP_Wo102Set("pos_native", true)',      "WO-102: the agent reads position/rotation/riding over the DLL pipe instead of the kcd.log line")
     System.AddCCommand("mp_pos_native_off",     'KCD2MP_Wo102Set("pos_native", false)',     "WO-102: position back on the [KCD2-MP-DATA] log tail (0.23.2 path)")
     System.AddCCommand("mp_wo102_status",       "KCD2MP_Wo102Status()",                     "WO-102: log every WO-102 toggle's state and this client's authority role")
-    System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4: under host authority, pause every puppet's local brain with wh_ai_PauseNPC (resume on release). OFF since WO-104: 155/155 violations with paused=1 under a live stream (2026-09-18); use mp_npc_replica_on instead")
-    System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing")
-    System.AddCCommand("mp_npc_replica_on",      "KCD2MP_SetNpcReplica(true)",  "WO-104: under host authority, replace a CONTESTED puppet (MP-AUTHORITY-VIOLATION) with a brainless soul-bound replica driven by the owner's stream; the NPC is hidden in place and returns when the fight ends. ON by default since 0.26.2 (unverified live) -- pass condition: zero violations with body=replica")
+    System.AddCCommand("mp_authority_pause_on",  'KCD2MP_Wo102Set("authority_pause", true)',  "WO-102 Phase 4 / WO-108: under host authority the non-authority pauses every puppet's local brain with wh_ai_PauseNPC (resume on release + mp_resume_dwell). ON by default since 0.26.4: WO-107 showed the lever works and WO-104's 0/155 was a misread metric")
+    System.AddCCommand("mp_authority_pause_off", 'KCD2MP_Wo102Set("authority_pause", false)', "WO-102 Phase 4: resume every paused NPC and stop pausing (0.26.3 behaviour; see also mp_preset_legacy)")
+    System.AddCCommand("mp_npc_replica_on",      "KCD2MP_SetNpcReplica(true)",  "WO-104: under host authority, replace a CONTESTED puppet (MP-AUTHORITY-VIOLATION) with a brainless soul-bound replica. OFF by default since 0.26.4 -- structurally dead (WO-106 S5: SharedSoulGuid cannot address a live NPC; never promoted once); kept as a toggle")
     System.AddCCommand("mp_npc_replica_off",     "KCD2MP_SetNpcReplica(false)", "WO-104: demote every replica (NPCs return where their replica stood) and stop promoting")
     System.AddCCommand("mp_npc_replica_status",  "KCD2MP_NpcReplicaStatus()",   "WO-104: log the replica toggle, active replicas and the promote/demote/refuse/orphan counters")
-    System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log")
+    System.AddCCommand("mp_probe_npc_pause",     "KCD2MP_ProbeNpcPause()",                    "WO-102 Phase 3 live probe: pause the nearest NPC (<15 m) with wh_ai_PauseNPC, move it 2 m, watch 3 s, animate, resume -- MP-PAUSEPROBE lines in kcd.log. NOTE (WO-107 S4): its SNAPPED BACK verdict measures the engine position-relax, not a brain")
+    System.AddCCommand("mp_preset_clean",        'KCD2MP_ApplyPreset("clean")',               "WO-108: re-apply the 0.26.4 defaults (pause lever ON, replicas OFF, yield OFF, 10 s resume dwell, shared values); logs every value as MP-PRESET; authority model untouched")
+    System.AddCCommand("mp_preset_legacy",       'KCD2MP_ApplyPreset("legacy")',              "WO-108: the 0.26.3 defaults (pause lever OFF, replicas ON, yield ON, no dwell) -- one command back to the old behaviour; logs every value; authority model untouched")
+    System.AddCCommand("mp_resume_all",          'KCD2MP_ResumeAllPaused("mp_resume_all")',   "WO-108 panic button: switch the pause lever OFF and wh_ai_ResumeNPC every NPC this session ever paused (mp_authority_pause_on or mp_preset_clean re-enables)")
+    System.AddCCommand("mp_resume_dwell",        'KCD2MP_SetResumeDwell("%line")',            "WO-108: seconds a released puppet's brain pause is held before wh_ai_ResumeNPC (default 10; 0 = the 0.26.3 resume-at-once): mp_resume_dwell <s>; bare = report")
+    -- WO-108 build marker: the first thing to grep for after a fresh load with
+    -- nothing typed. If this line is missing or says off, the pak is stale
+    -- (memory/kcd2mp-lua-deploy-gotcha.md), not the source.
+    mp_log(string.format("WO108-BUILD pause_lever=%s npc_replica=%s npc_yield=%s resume_dwell_s=%.1f -- 0.26.4 defaults (mp_preset_legacy = 0.26.3)",
+        KCD2MP.wo102.authorityPause and "on" or "off", KCD2MP.npcReplica.enabled and "on" or "off",
+        KCD2MP.npcYield.enabled and "on" or "off", KCD2MP.wo1025.resumeDwellS or 0))
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
@@ -11239,7 +11576,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync("%line")', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")
     System.AddCCommand("mp_npc_fight",   "KCD2MP_NpcFightReport()", "WO-40: dump per-puppet tug-of-war counts and competing attractor positions")
     System.AddCCommand("mp_npc_yield",     'KCD2MP_SetNpcYield("%line")', "WO-99: report the sub-8 m puppet yield arbitration state; thresholds via #KCD2MP_SetNpcYield(\"dispM ticks repinM\")")
-    System.AddCCommand("mp_npc_yield_on",  'KCD2MP_SetNpcYield("on")',  "WO-99: yield a puppet to the local brain after sustained sub-8 m contention (default on)")
+    System.AddCCommand("mp_npc_yield_on",  'KCD2MP_SetNpcYield("on")',  "WO-99: yield a puppet to the local brain after sustained sub-8 m contention. OFF by default since 0.26.4 (inert under host authority, WO-102 P4); only reachable with mp_authority_host_off")
     System.AddCCommand("mp_npc_yield_off", 'KCD2MP_SetNpcYield("off")', "WO-99: pre-WO-99 behaviour -- write every puppet every tick below 8 m (live A/B)")
     System.AddCCommand("mp_npc_diverge", 'KCD2MP_SetNpcDiverge("%line")', "WO-90: release a puppeted NPC the local world keeps dragging far from the stream (two players at different story beats). on (default) | off (pre-WO-90 tug-of-war) | <metres>")
     -- WO-94: Shared Quests (main-story readiness prompt).

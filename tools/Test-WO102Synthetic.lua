@@ -94,11 +94,11 @@ local function clearLog() LOG = {} end
 --     on deliberately so real usage keeps surfacing what still needs
 --     fixing, rather than defaulting back to the already-known-broken
 --     pre-WO-102.5 path. The 0.23.2 knobs are untouched.
-check("f: shipped defaults: authority_host on, pos_native on, authority_pause OFF (WO-104), npc_scan_native on",
+check("f: shipped defaults: authority_host on, pos_native on, authority_pause ON (WO-108), npc_scan_native on",
       KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == true
-      and KCD2MP.wo102.authorityPause == false and KCD2MP.wo102.npcScanNative == true)
-check("f: 0.23.2 NPC-sync defaults intact", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
-      and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == true)
+      and KCD2MP.wo102.authorityPause == true and KCD2MP.wo102.npcScanNative == true)
+check("f: 0.23.2 NPC-sync defaults intact (yield OFF since WO-108 -- inert under host authority)", KCD2MP.npcSync.enabled == true and KCD2MP.npcProx.enabled == true
+      and KCD2MP.npcDiverge == true and KCD2MP.npcYield.enabled == false)
 -- Every scenario below starts from the OFF baseline (the 0.23.2 model) and
 -- switches on what it tests, so the off state is proven to be 0.23.2.
 KCD2MP_Wo102Set("authority_host", false, "agent")
@@ -135,7 +135,7 @@ check("c: unknown toggle changes nothing", KCD2MP.wo102.authorityHost == false a
 -- (d) status.
 clearLog()
 KCD2MP_Wo102Status()
-check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off npc_scan_native=off authority=peer paused_npcs=0") == 1, lastLog("WO102-STATUS"))
+check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off npc_scan_native=off authority=peer paused_npcs=0 pause_pending=0") == 1, lastLog("WO102-STATUS"))
 
 -- (e) argless commands (registration runs at file load, captured in CCMDS).
 local names = { "mp_authority_host_on", "mp_authority_host_off", "mp_pos_native_on", "mp_pos_native_off", "mp_wo102_status" }
@@ -281,6 +281,8 @@ local function cmdCount(pat)
 end
 local function resetAll4()
     resetNpc(); CMDS = {}; KCD2MP._npcPaused = {}; KCD2MP._authViolationAt = {}; KCD2MP._authViolationN = {}
+    KCD2MP._npcResumePending = {}; KCD2MP._npcEverPaused = {}; KCD2MP.wo1025.resumeDwellS = 0   -- WO-108: these scenarios test the 0.26.3 resume-at-once shape; the dwell has its own suite
+    KCD2MP.hitSensorOn = false
     KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0, pause = 0, resume = 0, violation = 0 }
     KCD2MP.wo102.authorityHost = false; KCD2MP.wo102.authorityPause = false
     KCD2MP.npcDiverge = true; KCD2MP.npcYield.enabled = true

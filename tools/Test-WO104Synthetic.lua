@@ -196,6 +196,7 @@ local function resetReplica()
     KCD2MP.npcPuppets = {}; KCD2MP.npcTracked = {}; KCD2MP.dragging = {}; KCD2MP.dragWatch = {}
     KCD2MP.npcPuppetRunning = false; KCD2MP._npcDivergeUntil = {}
     KCD2MP._npcPaused = {}; KCD2MP._authViolationAt = {}; KCD2MP._authViolationN = {}
+    KCD2MP._npcResumePending = {}; KCD2MP._npcEverPaused = {}; KCD2MP.wo1025.resumeDwellS = 0   -- WO-108
     KCD2MP._authStats = { acquire = 0, release = 0, ownerChange = 0, pause = 0, resume = 0, violation = 0 }
     KCD2MP._npcDeathRemote = {}; KCD2MP._npcDeathDiverged = {}
     KCD2MP.npcDiverge = true; KCD2MP.npcYield.enabled = true
@@ -226,7 +227,7 @@ local CONTEND = KCD2MP.npcYield.ticks + 3
 
 do -- (b) toggle OFF: today's behaviour, byte for byte
     resetReplica()
-    check("b: replica toggle ships ON (maintainer's call, 0.26.2)", KCD2MP_WO104_REPLICA_DEFAULT == true)
+    check("b: replica toggle ships OFF since 0.26.4 (WO-108; WO-106 s5 dead end)", KCD2MP_WO104_REPLICA_DEFAULT == false)
     check("b: scenario runs the OFF path explicitly", KCD2MP.npcReplica.enabled == false)
     local e = mkEntity("b_npc", 10, 0, 0); ENTS["b_npc"] = e
     NOW = 100
@@ -454,8 +455,8 @@ do -- (i) console surface and the summary line
 end
 
 -- ---------------------------------------------------------------- Phase 2
-do -- (j) the pause lever ships OFF
-    check("j: authorityPause default is OFF (155/155 violations paused=1, 2026-09-18)", KCD2MP_WO104_PAUSE_DEFAULT == false, tostring(KCD2MP_WO104_PAUSE_DEFAULT))
+do -- (j) the pause lever ships ON again (WO-108; WO-104's OFF rested on a misread metric -- WO-107)
+    check("j: authorityPause default is ON (WO-108: WO-107 refuted the 2026-09-18 paused=1 reading)", KCD2MP_WO104_PAUSE_DEFAULT == true, tostring(KCD2MP_WO104_PAUSE_DEFAULT))
     resetReplica()   -- authorityHost on, pause as shipped
     KCD2MP.wo102.authorityPause = KCD2MP_WO104_PAUSE_DEFAULT
     local e = mkEntity("j2_npc", 10, 0, 0); ENTS["j2_npc"] = e
@@ -463,7 +464,7 @@ do -- (j) the pause lever ships OFF
     drive("j2_npc", e, 0, 3, 0)
     local paused = false
     for _, c in ipairs(CMDS) do if string.find(c, "wh_ai_PauseNPC", 1, true) then paused = true end end
-    check("j: a puppet start under host authority issues no wh_ai_PauseNPC by default", paused == false)
+    check("j: a puppet start under host authority issues wh_ai_PauseNPC by default", paused == true)
     check("j: the toggle still exists and still pauses when switched on", (function()
         KCD2MP.wo102.authorityPause = true
         local e2 = mkEntity("j3_npc", 10, 0, 0); ENTS["j3_npc"] = e2

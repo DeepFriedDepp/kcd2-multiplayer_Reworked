@@ -4952,6 +4952,10 @@ public partial class GameBridge(ClientConfig config)
                         _npcScanNative = on;
                         _npcScanMisses = 0; _npcScanGaveUp = false;
                         break;
+                    // WO-108: the brain-pause lever is Lua-only (System.ExecuteCommand
+                    // from the mod); nothing agent-side mirrors it. Acknowledged so
+                    // a preset or mp_authority_pause_on/off does not log "unknown".
+                    case "authority_pause": break;
                     default: Console.WriteLine($"[wo102] unknown toggle '{tp[0]}'"); break;
                 }
                 Console.WriteLine($"WO102-TOGGLE name={tp[0]} state={(on ? "on" : "off")} source=console authority={(_isDamageAuthority ? 1 : 0)}");
