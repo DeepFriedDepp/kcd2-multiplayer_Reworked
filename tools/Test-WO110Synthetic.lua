@@ -31,6 +31,10 @@
 --   (k) R4: KCD2MP_AuthorityOwnerLog writes MP-AUTHORITY-OWNER to kcd.log
 --   (l) R5: the owner logs MP-NPCID (wuid/eid/body) on acquire and on the
 --       first emit of a name
+--   (m) R6: samples are stamped on SENDER time (a late arrival keeps its
+--       place on the timeline); an older-seq or duplicate sample is counted
+--       and never enters the ring; a gap is counted; mp_npc_senderclock off
+--       restores arrival-time stamps; the cadence line carries the fields
 --
 -- What this proves: the Lua half behaves as documented. What it does NOT
 -- prove: anything about the engine or a second machine.
@@ -118,7 +122,9 @@ check("a: pause lever still ON, replicas/yield still OFF, dwell 10 (WO-108 defau
 check("a: WO110-BUILD marker logged with every new default",
       logCount("WO110-BUILD") == 1 and (lastLog("WO110-BUILD") or ""):find("npc_read_native=off", 1, true) ~= nil
       and (lastLog("WO110-BUILD") or ""):find("npc_track_max=200", 1, true) ~= nil
-      and (lastLog("WO110-BUILD") or ""):find("cull_radius_m=60", 1, true) ~= nil, lastLog("WO110-BUILD"))
+      and (lastLog("WO110-BUILD") or ""):find("cull_radius_m=60", 1, true) ~= nil
+      and (lastLog("WO110-BUILD") or ""):find("npc_senderclock=on", 1, true) ~= nil, lastLog("WO110-BUILD"))
+check("a: sender clock ships ON (R6)", KCD2MP.npcSenderClock == true)
 check("a: no Lua errors at load", #ERRS == 0, ERRS[1])
 
 local NEXTID = 0x0D0000
@@ -158,6 +164,8 @@ local function reset()
     KCD2MP.wo1025.resumeDwellS = 10.0; KCD2MP.wo1025.readNative = false
     KCD2MP.wo1025.npcTrackMax = 200; KCD2MP.wo1025.cullRadius = 60.0; KCD2MP.wo1025.npcCull = true
     KCD2MP.npcSmooth = true; KCD2MP.npcPuppetTickMs = 50
+    KCD2MP.npcSenderClock = true; KCD2MP._senderClock = {}
+    KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, idleN = 0, dumpAt = 0, seqGaps = 0, seqBehind = 0, seqDup = 0, sN = 0, sSum = 0, sMin = 1e9, sMax = 0 }
     KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
     KCD2MP.ghosts = {}; KCD2MP._npcScanAnchors = nil; KCD2MP._lastAnchors = nil
     ENTS = {}; SPHERE = {}; TIMERS = {}; ERRS = {}; CMDS = {}; SPAWNS = {}
@@ -411,6 +419,48 @@ do
     NOW = NOW + 0.1; e.px = 3.5; KCD2MP_NpcSyncTick()
     check("l: the first-emit line is logged once per name", logCount("via=first-emit") == 1)
     check("l: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (m)
+do
+    reset(); NOW = 1100
+    local e = mkEntity("m_a", 0, 0, 0)
+    -- sender sends every 100 ms (senderMs 1000, 1100, 1200 ...); the first two
+    -- arrive on time, the third arrives 80 ms LATE
+    KCD2MP_ApplyNpcState("m_a", 0, 0, 0, 0, 100, 0, 1, 1, 1000)
+    NOW = NOW + 0.100; KCD2MP_ApplyNpcState("m_a", 1, 0, 0, 0, 100, 0, 1, 2, 1100)
+    NOW = NOW + 0.180; KCD2MP_ApplyNpcState("m_a", 2, 0, 0, 0, 100, 0, 1, 3, 1200)
+    local p = KCD2MP.npcPuppets["m_a"]
+    local r = p.ring
+    check("m: three samples in the ring", #r >= 3, tostring(#r))
+    local d12 = r[#r - 1].at - r[#r - 2].at
+    local d23 = r[#r].at - r[#r - 1].at
+    check("m: sender-time stamps keep the 100 ms spacing despite the 80 ms late arrival", math.abs(d12 - 0.100) < 0.002 and math.abs(d23 - 0.100) < 0.002, string.format("d12=%.3f d23=%.3f", d12, d23))
+    check("m: a stamp is never in the future", r[#r].at <= NOW)
+    -- a duplicate (seq 3 again) and an older sample (seq 2) are counted, not ringed
+    local n0 = #p.ring
+    NOW = NOW + 0.010; KCD2MP_ApplyNpcState("m_a", 2, 0, 0, 0, 100, 0, 1, 3, 1200)
+    NOW = NOW + 0.010; KCD2MP_ApplyNpcState("m_a", 1, 0, 0, 0, 100, 0, 1, 2, 1100)
+    check("m: duplicate and older-seq samples never enter the ring", #p.ring == n0 and KCD2MP.npcPacketStats.seqDup == 1 and KCD2MP.npcPacketStats.seqBehind == 1,
+          string.format("ring=%d dup=%d behind=%d", #p.ring, KCD2MP.npcPacketStats.seqDup, KCD2MP.npcPacketStats.seqBehind))
+    -- a gap: seq jumps 3 -> 6
+    NOW = NOW + 0.300; KCD2MP_ApplyNpcState("m_a", 5, 0, 0, 0, 100, 0, 1, 6, 1500)
+    check("m: a sequence gap is counted (2 missing)", KCD2MP.npcPacketStats.seqGaps == 2, tostring(KCD2MP.npcPacketStats.seqGaps))
+    check("m: a stream still counts as alive on a rejected sample (lastPacketAt advanced)", p.lastPacketAt >= NOW - 0.31)
+    -- the cadence line carries the new fields
+    KCD2MP.npcPuppetRunning = true; KCD2MP.npcPacketStats.dumpAt = 0
+    clearLog(); KCD2MP_NpcPuppetTick("ext")
+    local c = lastLog("NPC-SYNC packet cadence") or ""
+    check("m: cadence line carries sender-spacing and seq fields", c:find("sender-spacing n=", 1, true) and c:find("seq_gaps=2 seq_behind=1 seq_dup=1 senderclock=on", 1, true), c)
+    -- toggle off: arrival time again
+    check("m: toggle off logs", KCD2MP_SetNpcSenderClock("off") == true and logCount("NPC-SENDERCLOCK off") == 1)
+    NOW = NOW + 0.100; KCD2MP_ApplyNpcState("m_a", 6, 0, 0, 0, 100, 0, 1, 7, 1600)
+    check("m: with the sender clock off the stamp is the arrival time (0.26.4)", math.abs(p.ring[#p.ring].at - NOW) < 1e-6, string.format("at=%.3f now=%.3f", p.ring[#p.ring].at, NOW))
+    -- pre-v7 call shape (no seq, no ms) still works and stamps arrival time
+    KCD2MP_SetNpcSenderClock("on")
+    NOW = NOW + 0.100; KCD2MP_ApplyNpcState("m_a", 7, 0, 0, 0, 100, 0, 1)
+    check("m: an 8-argument call (no seq/ms) stamps arrival time and never errors", math.abs(p.ring[#p.ring].at - NOW) < 1e-6 and #ERRS == 0, ERRS[1])
+    check("m: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 for _, r in ipairs(RESULTS) do print(r) end

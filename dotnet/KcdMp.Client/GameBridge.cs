@@ -988,6 +988,7 @@ public partial class GameBridge(ClientConfig config)
     // NPC sync (WO-32): set per connection like _sendPlayerHit; carries one
     // npc_state event line from the mod onto the wire as an NpcStateUp (0x26).
     private Func<string, float, float, float, float, float, byte, Task>? _sendNpcState;
+    private readonly Dictionary<string, ushort> _npcSeqOut = new();   // WO-110 R6: per-name outbound sequence
 
     // The only characters that appear in authored entity names. Enforced both
     // before sending (our own emitter should never produce anything else) and
@@ -1217,6 +1218,7 @@ public partial class GameBridge(ClientConfig config)
     private async Task ConnectAndRunAsync(CancellationToken appCt = default)
     {
         using var tcp = new TcpClient();
+        tcp.NoDelay = true;   // WO-110 R6: no Nagle on the 40-byte NPC frames (the relay sets it on its accepted sockets too)
 
         Console.WriteLine($"Connecting to relay server {config.ServerHost}:{config.ServerPort}...");
         try
@@ -3800,7 +3802,12 @@ public partial class GameBridge(ClientConfig config)
 
         // WO-102 Phase 6: bytes from NpcStateCodec so the relay round-trip gate
         // sends exactly what this method sends (the WO-101 rule).
-        var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags);
+        // WO-110 R6: per-name sequence and this agent's ms clock ride along
+        // (protocol v7) so the receiver renders on sender time.
+        ushort seq;
+        lock (_npcSeqOut) { _npcSeqOut.TryGetValue(npcName, out ushort s0); seq = unchecked((ushort)(s0 + 1)); _npcSeqOut[npcName] = seq; }
+        uint senderMs = unchecked((uint)Environment.TickCount64);
+        var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags, seq, senderMs);
         if ((flags & Protocol.NpcStateFlagResync) != 0) _resyncEmitted++;
         try { await WritePacketAsync(stream, packet, ct); }
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
@@ -4327,7 +4334,9 @@ public partial class GameBridge(ClientConfig config)
                             float nz    = ReadFloat(payload, o + 8);
                             float nrot  = ReadFloat(payload, o + 12);
                             float nhp   = ReadFloat(payload, o + 16);
-                            byte nflags = payload[o + 20];
+                            byte nflags = payload[o + Protocol.NpcStateFlagsOffset];
+                            ushort nseq = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(o + Protocol.NpcStateSeqOffset));      // WO-110 R6
+                            uint nSenderMs = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(o + Protocol.NpcStateSenderMsOffset));
 
                             // WO-49: a sheathed→drawn transition in the stream
                             // is the moment the local copy's hands change --
@@ -4377,8 +4386,8 @@ public partial class GameBridge(ClientConfig config)
                             }
 
                             await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
-                                "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6},{7}) end",
-                                npcName, nx, ny, nz, nrot, nhp, nflags, nsrc));   // WO-102 Phase 2: source id = the stream's owner (MP-AUTHORITY)
+                                "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6},{7},{8},{9}) end",
+                                npcName, nx, ny, nz, nrot, nhp, nflags, nsrc, nseq, nSenderMs));   // WO-102 Phase 2: source id = the stream's owner (MP-AUTHORITY); WO-110 R6: seq + sender ms
 
                             if (nDead && nSeen && !nWasDead)
                                 await ApplyRemoteNpcDeathAsync(npcName, null, nsrc, "0x27 dead transition", ct);

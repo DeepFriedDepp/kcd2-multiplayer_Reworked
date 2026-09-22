@@ -359,7 +359,8 @@ public class ClientSession
                     // carry the ENGAGED bit -- the sender's player is actively
                     // fighting this NPC -- which arms the claim's anti-flap
                     // hold in the routing table.
-                    bool engaged = (body[payloadLen - 1] & Protocol.NpcStateFlagEngaged) != 0;
+                    // WO-110 R6 (v7): flags is no longer the last byte -- seq and senderMs follow it.
+                    bool engaged = (body[1 + npcNameLen + Protocol.NpcStateFlagsOffset] & Protocol.NpcStateFlagEngaged) != 0;
 
                     // WO-66 gates. Finite checks first, any sender: a NaN/Inf
                     // never legitimately leaves the game, and a NaN position

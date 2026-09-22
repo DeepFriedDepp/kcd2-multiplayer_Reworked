@@ -2758,7 +2758,45 @@ end
 -- WO-95: `n/sum/min/max` now cover MOTION-to-MOTION gaps only; `idleN`
 -- counts the emitter's idle heartbeats, which are by design `heartbeatS`
 -- apart and must not be averaged into the cadence a jitter fix tunes on.
-KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, idleN = 0, dumpAt = 0 }
+KCD2MP.npcPacketStats = { n = 0, sum = 0, min = 1e9, max = 0, idleN = 0, dumpAt = 0,
+                          seqGaps = 0, seqBehind = 0, seqDup = 0,                 -- WO-110 R6: sequence accounting
+                          sN = 0, sSum = 0, sMin = 1e9, sMax = 0 }               -- WO-110 R6: SENDER spacing of moving packets
+-- WO-110 R6: render on the sender's clock. Each 0x27 carries the owner's
+-- millisecond stamp; the per-source offset (receiver os.clock minus sender
+-- seconds) is tracked as a rolling two-window minimum so arrival jitter --
+-- the agent loop's 10 ms quantisation, a batch flush, a 2 s scan stall,
+-- Nagle -- never moves a sample's place on the timeline, only when it becomes
+-- visible. Off = the 0.26.4 behaviour (stamp at Lua apply time).
+-- mp_npc_senderclock on|off; mp_preset_legacy sets off.
+KCD2MP.npcSenderClock = true
+KCD2MP._senderClock = {}   -- src -> { cur = {min, start}, prev = {min}, n }
+local function mp_sender_stamp(src, senderMs, nowPkt)
+    if not (KCD2MP.npcSenderClock and senderMs and senderMs > 0) then return nowPkt end
+    local senderS = senderMs / 1000
+    local sc = KCD2MP._senderClock[src or 0]
+    if not sc then sc = { cur = { min = 1e18, start = nowPkt }, prev = nil, n = 0 }; KCD2MP._senderClock[src or 0] = sc end
+    local off = nowPkt - senderS
+    if off < sc.cur.min then sc.cur.min = off end
+    if (nowPkt - sc.cur.start) > 30.0 then sc.prev = sc.cur; sc.cur = { min = off, start = nowPkt } end
+    sc.n = sc.n + 1
+    local eff = sc.cur.min
+    if sc.prev and sc.prev.min < eff then eff = sc.prev.min end
+    -- guard: never stamp in the future, never more than one window in the past
+    local at = senderS + eff
+    if at > nowPkt then at = nowPkt end
+    if at < nowPkt - 30.0 then at = nowPkt end
+    return at
+end
+function KCD2MP_SetNpcSenderClock(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "on" or s == "1" or s == "true" then KCD2MP.npcSenderClock = true
+    elseif s == "off" or s == "0" or s == "false" then KCD2MP.npcSenderClock = false; KCD2MP._senderClock = {}
+    elseif s ~= "" then mp_log("mp_npc_senderclock: expected on|off, got '" .. tostring(arg) .. "'"); return false end
+    local n = 0
+    for _ in pairs(KCD2MP._senderClock) do n = n + 1 end
+    mp_log(string.format("NPC-SENDERCLOCK %s (sources tracked=%d; off = the 0.26.4 arrival-time stamp)", KCD2MP.npcSenderClock and "on" or "off", n))
+    return true
+end
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
@@ -3679,9 +3717,9 @@ KCD2MP._presets = {
     -- WO-110: `legacy` is the 0.26.4 build (was 0.26.3 in WO-108); `clean` is
     -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = false, npc_track_max = 200, cull_radius_m = 60 },
+               npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30 },
+               npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -3712,6 +3750,7 @@ function KCD2MP_ApplyPreset(which)
     set("npc_read_native", w.readNative,                 P.npc_read_native, function() KCD2MP_SetNpcReadNative(P.npc_read_native and "on" or "off") end)   -- WO-110 R1
     set("npc_track_max",   w.npcTrackMax,                P.npc_track_max,   function() KCD2MP_SetNpcTrackMax(P.npc_track_max) end)                          -- WO-110 R3
     set("cull_radius_m",   w.cullRadius,                 P.cull_radius_m,   function() KCD2MP_SetCullRadius(P.cull_radius_m) end)                           -- WO-110 2.4
+    set("npc_senderclock", KCD2MP.npcSenderClock,        P.npc_senderclock, function() KCD2MP_SetNpcSenderClock(P.npc_senderclock and "on" or "off") end)    -- WO-110 R6
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -5347,7 +5386,7 @@ end
 -- WO-102 Phase 2: `src` is the sending ghost id (the stream's owner), an
 -- APPENDED parameter -- an agent older than this build calls with seven
 -- arguments and it arrives nil, which MP-AUTHORITY prints as owner=?.
-function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
+function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src, seq, senderMs)
     -- WO-90: refuse an inbound stream for a name that must never be synced,
     -- whatever the sender believes. The send-side exclusion above stops US
     -- emitting these; this stops a peer on an older build (or with the
@@ -5523,6 +5562,30 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
     -- compare against, so it is neither motion nor heartbeat: `nil`, and the
     -- gap that ends on the packet after it is skipped rather than guessed.
     local nowPkt = os.clock()
+    -- WO-110 R6: sequence accounting. A duplicate or an older-than-last
+    -- sample (reordered by two flushes in flight) is counted and NOT pushed
+    -- into the ring; a gap is counted. seq is per sender per name, u16.
+    seq = tonumber(seq)
+    local seqOk = true
+    if seq and p.lastSeq then
+        local d = (seq - p.lastSeq) % 65536
+        local s = KCD2MP.npcPacketStats
+        if d == 0 then s.seqDup = (s.seqDup or 0) + 1; seqOk = false
+        elseif d > 32768 then s.seqBehind = (s.seqBehind or 0) + 1; seqOk = false
+        elseif d > 1 then s.seqGaps = (s.seqGaps or 0) + (d - 1) end
+    end
+    if seq and seqOk then p.lastSeq = seq end
+    local stampAt = mp_sender_stamp(src, tonumber(senderMs), nowPkt)
+    if seqOk and senderMs and p.lastSenderMs and pktMoved and p.lastPacketMoved then
+        local sdt = (tonumber(senderMs) - p.lastSenderMs)
+        if sdt > 0 and sdt < 5000 then
+            local s = KCD2MP.npcPacketStats
+            s.sN = (s.sN or 0) + 1; s.sSum = (s.sSum or 0) + sdt
+            if sdt < (s.sMin or 1e9) then s.sMin = sdt end
+            if sdt > (s.sMax or 0) then s.sMax = sdt end
+        end
+    end
+    if seqOk and senderMs then p.lastSenderMs = tonumber(senderMs) end
     if p.lastPacketAt and p.lastPacketMoved ~= nil then
         local dtMs = (nowPkt - p.lastPacketAt) * 1000
         if dtMs > 0 and dtMs < 5000 then
@@ -5541,7 +5604,14 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src)
     if hadPrevTarget then p.lastPacketMoved = pktMoved else p.lastPacketMoved = nil end
     -- WO-77 Step 1: stamp and ring the sample. Pushed regardless of
     -- mp_npc_smooth so a live toggle-on has data to render from.
-    mp_npc_ring_push(p, x, y, z, rot, nowPkt)
+    if not seqOk then
+        -- WO-110 R6: an old/duplicate sample proves the stream is alive (the
+        -- silence release must not fire) but must not re-enter the ring.
+        p.everPacket = true
+        KCD2MP_StartNpcPuppet()
+        return
+    end
+    mp_npc_ring_push(p, x, y, z, rot, stampAt)   -- WO-110 R6: sender time (or arrival time with mp_npc_senderclock off)
     if swingCue and not p.dead and not p.ko then
         p.swingCuePending = true
     end
@@ -5678,12 +5748,16 @@ function KCD2MP_NpcPuppetTick(arg, gen)
         mp_log(string.format(
             "NPC-SYNC packet cadence: moving n=%d mean=%.0fms min=%.0fms max=%.0fms; idle-heartbeat n=%d"
             .. " (emitter is %dms, heartbeat %.0fms;"
-            .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d corpse writes suppressed=%d)",
+            .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d corpse writes suppressed=%d)"
+            .. " sender-spacing n=%d mean=%.0fms min=%.0fms max=%.0fms seq_gaps=%d seq_behind=%d seq_dup=%d senderclock=%s",
             st.n, st.n > 0 and (st.sum / st.n) or 0, st.n > 0 and st.min or 0, st.max, st.idleN or 0,
             KCD2MP.npcSync.emitMs or 250, ((KCD2MP.npcSync.heartbeatS or 2.0) * 1000),
             KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0,
-            KCD2MP._npcDeathSuppressedN or 0))
+            KCD2MP._npcDeathSuppressedN or 0,
+            st.sN or 0, (st.sN or 0) > 0 and (st.sSum / st.sN) or 0, (st.sN or 0) > 0 and st.sMin or 0, st.sMax or 0,
+            st.seqGaps or 0, st.seqBehind or 0, st.seqDup or 0, KCD2MP.npcSenderClock and "on" or "off"))
         st.n, st.sum, st.min, st.max, st.idleN = 0, 0, 1e9, 0, 0
+        st.sN, st.sSum, st.sMin, st.sMax = 0, 0, 1e9, 0
         -- WO-110 R14: the Z telemetry's rollup, same 5 s cadence, only when
         -- any puppet read back more than 5 cm off its written Z.
         local zs = KCD2MP._npcZStats
@@ -11808,8 +11882,9 @@ local ok, err = pcall(function()
         KCD2MP.npcYield.enabled and "on" or "off", KCD2MP.wo1025.resumeDwellS or 0))
     -- WO-110 build marker: every default this WO changed, on one line, two
     -- lines after MOD INIT. Missing = stale pak (memory/kcd2mp-lua-deploy-gotcha.md).
-    mp_log(string.format("WO110-BUILD npc_read_native=%s npc_track_max=%d cull_radius_m=%.0f -- 0.26.5 defaults (mp_preset_legacy = 0.26.4)",
-        KCD2MP.wo1025.readNative and "on" or "off", KCD2MP.wo1025.npcTrackMax or 0, KCD2MP.wo1025.cullRadius or 0))
+    mp_log(string.format("WO110-BUILD npc_read_native=%s npc_track_max=%d cull_radius_m=%.0f npc_senderclock=%s -- 0.26.5 defaults (mp_preset_legacy = 0.26.4)",
+        KCD2MP.wo1025.readNative and "on" or "off", KCD2MP.wo1025.npcTrackMax or 0, KCD2MP.wo1025.cullRadius or 0,
+        KCD2MP.npcSenderClock and "on" or "off"))
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
@@ -11865,6 +11940,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_quest_hide",   "KCD2MP_QuestWaitingDismiss()",    "WO-96: hide the WAITING FOR PEER line until the story positions change (same as F12 with no prompt up)")
     System.AddCCommand("mp_npc_chainfix", 'KCD2MP_SetNpcChainFix(%line)', "WO-69/WO-78: on (default since WO-78) makes a leaked puppet-tick chain exit when detected; off logs it and leaves it running: mp_npc_chainfix on|off")
     System.AddCCommand("mp_ghost_chainfix", 'KCD2MP_SetGhostChainFix(%line)', "WO-78: on (default) makes a leaked ghost interp chain exit when detected; off logs it and leaves it running: mp_ghost_chainfix on|off")
+    System.AddCCommand("mp_npc_senderclock", 'KCD2MP_SetNpcSenderClock(%line)', "WO-110 R6: render NPC puppets on the SENDER's clock (default on); off = the 0.26.4 arrival-time stamp: mp_npc_senderclock on|off")
     System.AddCCommand("mp_npc_smooth",  'KCD2MP_SetNpcSmooth(%line)', "WO-77: NPC puppet renderer -- on (default) = time-based interpolation-behind (1.2 x emit period), off = pre-WO-77 per-tick 0.5 lerp: mp_npc_smooth on|off")
 
     -- Shared player combat (WO-28)

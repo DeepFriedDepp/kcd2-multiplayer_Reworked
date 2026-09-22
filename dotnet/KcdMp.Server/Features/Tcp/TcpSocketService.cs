@@ -59,6 +59,9 @@ public class TcpSocketService : BackgroundService
 			while (!cancellationToken.IsCancellationRequested)
 			{
 				var tcpListener = await listener.AcceptTcpClientAsync(cancellationToken);
+				// WO-110 R6: no Nagle coalescing on 40-byte NPC frames; the
+				// agent sets the same on its side.
+				tcpListener.NoDelay = true;
 				var client = new ClientSession(_logger, tcpListener, _broadcastService, _sessions, _clientHandler, _idleTimeout);
 
 				_clientHandler.AddClient(client);

@@ -1063,10 +1063,27 @@ public static partial class Protocol
 
     /// <summary>
     /// NpcStateUp (0x26) payload bytes after the variable-length name:
-    /// x, y, z, rotZ, health (4f each) + flags. Full payload length is
+    /// x, y, z, rotZ, health (4f each) + flags, then (protocol v7, WO-110 R6)
+    /// [seq:u16 LE][senderMs:u32 LE]. Full payload length is
     /// 1 (nameLen) + name + this.
+    ///
+    /// seq is per sender per NPC name and wraps; senderMs is the sending
+    /// agent's monotonic millisecond clock (Environment.TickCount64 truncated
+    /// to 32 bits, wraps every ~49 days). The receiver renders on SENDER time
+    /// mapped through a per-source offset instead of on arrival time, so the
+    /// agent loop's 10 ms quantisation, batch flushes, 2 s scan stalls and
+    /// Nagle no longer land in the interpolation, and a dropped or reordered
+    /// sample is visible (seq gap / seq behind) instead of silent
+    /// (docs/WO-109-audit.md R6). v6 senders are refused at Handshake (R9),
+    /// so no mixed layout ever reaches this parser.
     /// </summary>
-    public const int NpcStateFixedTail = 4 + 4 + 4 + 4 + 4 + 1;
+    public const int NpcStateFixedTail = 4 + 4 + 4 + 4 + 4 + 1 + 2 + 4;
+    /// <summary>Offset of the flags byte inside the fixed tail (after the five floats).</summary>
+    public const int NpcStateFlagsOffset = 20;
+    /// <summary>Offset of the u16 sequence number inside the fixed tail.</summary>
+    public const int NpcStateSeqOffset = 21;
+    /// <summary>Offset of the u32 sender-ms stamp inside the fixed tail.</summary>
+    public const int NpcStateSenderMsOffset = 23;
 
     /// <summary>NpcState flag: the NPC is dead in the authority's world.</summary>
     public const byte NpcStateFlagDead = 0x01;

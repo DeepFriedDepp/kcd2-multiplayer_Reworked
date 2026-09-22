@@ -11,9 +11,10 @@ public class NpcStateCodecTests
     public void Up_then_down_round_trips_with_the_resync_flag()
     {
         byte flags = (byte)(Protocol.NpcStateFlagDead | Protocol.NpcStateFlagResync);
-        var up = NpcStateCodec.BuildUp("ttkc_man_20", 2340.5f, 2047.25f, 109.0f, 1.5f, 0f, flags);
+        var up = NpcStateCodec.BuildUp("ttkc_man_20", 2340.5f, 2047.25f, 109.0f, 1.5f, 0f, flags, seq: 65534, senderMs: 4_000_000_123);
         Assert.Equal(Protocol.NpcStateUp, up[0]);
         Assert.Equal(3 + 1 + 11 + Protocol.NpcStateFixedTail, up.Length);
+        Assert.Equal(3 + 1 + 11 + 27, up.Length);   // WO-110 R6 / protocol v7: 5 floats + flags + u16 seq + u32 senderMs
         // relay shape: [src] + body verbatim
         var down = new byte[1 + up.Length - 3];
         down[0] = 0;
@@ -25,6 +26,8 @@ public class NpcStateCodecTests
         Assert.Equal(0f, d.Health);
         Assert.Equal(flags, d.Flags);
         Assert.NotEqual(0, d.Flags & Protocol.NpcStateFlagResync);
+        Assert.Equal((ushort)65534, d.Seq);   // WO-110 R6
+        Assert.Equal(4_000_000_123u, d.SenderMs);
     }
 
     [Fact]

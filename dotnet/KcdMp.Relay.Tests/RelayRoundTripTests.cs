@@ -385,7 +385,7 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         await using var _a = a; await using var _b = b;
 
         byte flags = (byte)(Protocol.NpcStateFlagDead | Protocol.NpcStateFlagResync);
-        var up = NpcStateCodec.BuildUp("ttkc_man_20", 2340.5f, 2047.25f, 109.0f, 1.5f, 0f, flags);
+        var up = NpcStateCodec.BuildUp("ttkc_man_20", 2340.5f, 2047.25f, 109.0f, 1.5f, 0f, flags, seq: 777, senderMs: 123456789);   // WO-110 R6: v7 tail crosses the relay
         await a.SendRawAsync(up);
 
         var down = await b.ReadUntilAsync(Protocol.NpcStateDown, Wait);
@@ -396,6 +396,8 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.Equal(2340.5f, d.X); Assert.Equal(2047.25f, d.Y); Assert.Equal(109.0f, d.Z);
         Assert.Equal(flags, d.Flags);
         Assert.NotEqual(0, d.Flags & Protocol.NpcStateFlagResync);
+        Assert.Equal((ushort)777, d.Seq);          // WO-110 R6
+        Assert.Equal(123456789u, d.SenderMs);
     }
 
     [Fact]

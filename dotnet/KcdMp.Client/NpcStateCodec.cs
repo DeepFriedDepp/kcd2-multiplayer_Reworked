@@ -12,17 +12,18 @@ namespace KcdMp.Client;
 /// rule, applied to the first NpcState flag this WO adds
 /// (<see cref="Protocol.NpcStateFlagResync"/>). Shape (unchanged since WO-32):
 /// <code>
-/// Up:   [nameLen:1][name:utf8][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1]
+/// Up:   [nameLen:1][name:utf8][x:4f][y:4f][z:4f][rotZ:4f][health:4f][flags:1][seq:u16][senderMs:u32]
 /// Down: [sourceGhostId:1] + Up verbatim
 /// </code>
+/// WO-110 R6 (protocol v7) appended seq and senderMs; see Protocol.NpcStateFixedTail.
 /// </summary>
 public static class NpcStateCodec
 {
     /// <summary>One decoded NpcStateDown payload.</summary>
-    public readonly record struct Down(byte SourceGhostId, string Name, float X, float Y, float Z, float RotZ, float Health, byte Flags);
+    public readonly record struct Down(byte SourceGhostId, string Name, float X, float Y, float Z, float RotZ, float Health, byte Flags, ushort Seq, uint SenderMs);
 
     /// <summary>Builds a complete NpcStateUp packet (3-byte header included). The name must already be validated.</summary>
-    public static byte[] BuildUp(string npcName, float x, float y, float z, float rotZ, float health, byte flags)
+    public static byte[] BuildUp(string npcName, float x, float y, float z, float rotZ, float health, byte flags, ushort seq = 0, uint senderMs = 0)
     {
         byte[] nameBytes = Encoding.UTF8.GetBytes(npcName);
         if (nameBytes.Length == 0 || nameBytes.Length > Protocol.MaxNpcNameLen)
@@ -39,7 +40,9 @@ public static class NpcStateCodec
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 8), z);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 12), rotZ);
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 16), health);
-        packet[o + 20] = flags;
+        packet[o + Protocol.NpcStateFlagsOffset] = flags;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(o + Protocol.NpcStateSeqOffset), seq);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(o + Protocol.NpcStateSenderMsOffset), senderMs);
         return packet;
     }
 
@@ -58,7 +61,9 @@ public static class NpcStateCodec
             BinaryPrimitives.ReadSingleLittleEndian(payload[(o + 8)..]),
             BinaryPrimitives.ReadSingleLittleEndian(payload[(o + 12)..]),
             BinaryPrimitives.ReadSingleLittleEndian(payload[(o + 16)..]),
-            payload[o + 20]);
+            payload[o + Protocol.NpcStateFlagsOffset],
+            BinaryPrimitives.ReadUInt16LittleEndian(payload[(o + Protocol.NpcStateSeqOffset)..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(payload[(o + Protocol.NpcStateSenderMsOffset)..]));
         return true;
     }
 }
