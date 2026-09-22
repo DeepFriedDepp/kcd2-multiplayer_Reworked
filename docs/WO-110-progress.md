@@ -166,6 +166,6 @@ committed WO-110 docs were swept the same way: clean. No GitHub Release
 was created.
 
 The Setup exe is in the fresh clone under the session scratchpad
-(`freshelease\KCDMP-Setup-0.26.5.exe`); nothing was installed on this
+(`fresh\release\KCDMP-Setup-0.26.5.exe`); nothing was installed on this
 machine from it (the running game carries the working-tree pak and DLL of
 the same commit).
