@@ -468,6 +468,4 @@ end
 -- gate caught exactly that on its first run).
 local pass, fail = 0, 0
 for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end
-OUT = table.concat(RESULTS, "
-") .. string.format("
-%d passed, %d failed", pass, fail)
+OUT = table.concat(RESULTS, "\n") .. string.format("\n%d passed, %d failed", pass, fail)
