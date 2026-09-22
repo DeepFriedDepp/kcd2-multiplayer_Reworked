@@ -4702,13 +4702,37 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Escapes a string for embedding in a Lua double-quoted literal.</summary>
-    private static string EscapeLua(string s) =>
-        s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    /// <summary>
+    /// Escapes a string for interpolation inside a double-quoted Lua literal.
+    /// WO-110 R15: also newlines and every other control character (as Lua
+    /// 5.1 decimal escapes) -- a peer name with a newline used to end the
+    /// literal early and fail the WHOLE ExecuteString batch it was in.
+    /// </summary>
+    private static string EscapeLua(string s)
+    {
+        var sb = new StringBuilder(s.Length + 8);
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"':  sb.Append("\\\""); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20 || c == 0x7F) sb.Append('\\').Append(((int)c).ToString("D3", CultureInfo.InvariantCulture));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
 
     private async Task SetGhostNameAsync(string ghostId, string ghostName)
     {
-        // Escape any quotes in name to avoid Lua injection
-        var safeName = ghostName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        // Escape any quotes in name to avoid Lua injection (WO-110 R15: the shared helper, control characters too)
+        var safeName = EscapeLua(ghostName);
         try
         {
             await ExecLuaAsync($@"KCD2MP_SetGhostName(""{ghostId}"",""{safeName}"")");

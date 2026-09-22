@@ -118,7 +118,15 @@ public class ClientSession
                     nameLen, handshakeLen - 2);
                 return;
             }
-            string name = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
+            string rawName = Encoding.UTF8.GetString(handshakePayload, 2, nameLen);
+            // WO-110 R15: the peer name is logged raw into both machines'
+            // kcd.log and interpolated into Lua by the agents; a name carrying
+            // a newline or a "[KCD2-MP-EVT]" tag could break a Lua batch or
+            // forge a log-tail event (docs/WO-109-audit.md R15). Sanitised
+            // once, here, for every consumer downstream.
+            string name = SanitizeName(rawName);
+            if (!string.Equals(name, rawName, StringComparison.Ordinal))
+                _logger.Warning("[!] Peer name sanitised: {Raw} -> {Clean}", rawName.Replace('\n', ' ').Replace('\r', ' '), name);
 
             // WO-19: an optional trailing release-version field, the same
             // idiom as Invite's [configLen][config] -- whatever is left after
@@ -1184,6 +1192,24 @@ public class ClientSession
     }
 
     // ---- Helpers ----
+
+    /// <summary>
+    /// WO-110 R15: printable characters only (no control characters, so no
+    /// newline), no square brackets (the mod's log tags are bracketed), trimmed,
+    /// at most 32 characters; an empty result becomes "player".
+    /// </summary>
+    public static string SanitizeName(string raw)
+    {
+        var sb = new StringBuilder(raw.Length);
+        foreach (char c in raw)
+        {
+            if (char.IsControl(c) || c == '[' || c == ']' || char.IsSurrogate(c)) continue;
+            sb.Append(c);
+            if (sb.Length >= 32) break;
+        }
+        string s = sb.ToString().Trim();
+        return s.Length == 0 ? "player" : s;
+    }
 
     private static byte[] BuildPacket(byte type, byte[] payload)
     {

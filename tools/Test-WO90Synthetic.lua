@@ -341,7 +341,7 @@ do
     KCD2MP.hitSensorOn = true
     local logMark = #LOG
     local a = mkEntity("prepadeni_DialogTwin_decoy", 1, 0, 0)  -- contains, does not start with
-    local b = mkEntity("dialogtwin_lowercase",       2, 0, 0)  -- different case: NOT excluded in Lua
+    local b = mkEntity("dialogtwin_lowercase",       2, 0, 0)  -- different case: excluded since WO-110 R15 (GetEntityByName is case-insensitive, WO-105 entry 10)
     local c = mkEntity("DialogTwin_",                3, 0, 0)  -- the bare prefix
     SPHERE = { a, b, c }
     forceRescan()
@@ -350,8 +350,12 @@ do
     check("(e) a name that merely contains 'DialogTwin_' is still tracked",
         KCD2MP.npcTracked["prepadeni_DialogTwin_decoy"] ~= nil)
     check("(e) the bare prefix is excluded", KCD2MP.npcTracked["DialogTwin_"] == nil)
-    check("(e) the Lua test is case-SENSITIVE, matching the engine's own casing",
-        KCD2MP.npcTracked["dialogtwin_lowercase"] ~= nil)
+    -- WO-110 R15: was "case-SENSITIVE, matching the engine's own casing" --
+    -- but System.GetEntityByName is case-INsensitive (WO-105 entry 10), so a
+    -- differently-cased excluded name resolved to the excluded body while
+    -- this check let it through. Case-folded now.
+    check("(e) the Lua test is case-INSENSITIVE, like System.GetEntityByName (WO-110 R15)",
+        KCD2MP.npcTracked["dialogtwin_lowercase"] == nil)
     noErrs("(e)")
 end
 

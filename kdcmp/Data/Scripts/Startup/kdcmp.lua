@@ -3848,12 +3848,16 @@ end
 
 local function mp_is_excluded_npc_name(name)
     if not name or name == "" then return true end
+    -- WO-110 R15: case-folded. System.GetEntityByName is case-insensitive
+    -- (WO-105 entry 10), so "KCD2MP_1" or "dialogtwin_x" resolved to the
+    -- excluded body while this check, case-sensitive, let it through.
+    local lname = string.lower(name)
     for i = 1, #MP_NPC_NAME_EXCLUDE do
-        local prefix = MP_NPC_NAME_EXCLUDE[i]
-        if string.sub(name, 1, #prefix) == prefix then return true end
+        local prefix = string.lower(MP_NPC_NAME_EXCLUDE[i])
+        if string.sub(lname, 1, #prefix) == prefix then return true end
     end
     local pn = mp_local_player_name()
-    if pn and name == pn then return true end
+    if pn and lname == string.lower(pn) then return true end
     return false
 end
 

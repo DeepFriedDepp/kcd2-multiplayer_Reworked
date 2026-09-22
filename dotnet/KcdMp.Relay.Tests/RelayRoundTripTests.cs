@@ -468,7 +468,7 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
 
     // ---- WO-110 R15: peer names are sanitised at the handshake -----------
 
-    [Fact(Skip = "R15 lands in the next commit")]
+    [Fact]
     public async Task Peer_name_with_newline_and_brackets_is_sanitised_before_it_is_broadcast()
     {
         var (evil, t, _) = await Peer.ConnectRawAsync(_relay.TcpPort, "bad\n[KCD2-MP-EVT] v1 1 npc_death x 0 lua", ReleaseVersionInfo.Current, Protocol.Version);
@@ -483,7 +483,7 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.DoesNotContain("\n", seen);
         Assert.DoesNotContain("[", seen);
         Assert.DoesNotContain("]", seen);
-        Assert.Equal("badKCD2-MP-EVT v1 1 npc_death x 0 lua", seen);
+        Assert.Equal("badKCD2-MP-EVT v1 1 npc_death x", seen);   // control chars and brackets gone, bounded to 32 chars, trimmed
     }
 
     [Theory]

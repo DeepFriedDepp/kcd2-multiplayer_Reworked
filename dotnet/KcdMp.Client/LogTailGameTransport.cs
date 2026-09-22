@@ -62,6 +62,7 @@ public sealed class LogTailGameTransport : IGameTransport
     /// through the log like everything else.
     /// </summary>
     private const string EventTag = "[KCD2-MP-EVT]";
+    private int _eventTagNotAnchored;   // WO-110 R15
 
     /// <summary>
     /// Raised for each game event line: (name, argument). The argument is the
@@ -593,15 +594,29 @@ public sealed class LogTailGameTransport : IGameTransport
     }
 
     /// <summary>
-    /// Parses one log line if it is ours. The tag is searched for rather than
-    /// anchored at position 0, so an engine-added prefix does not break it.
+    /// Parses one log line if it is ours. The DATA/state tag is searched for
+    /// rather than anchored at position 0, so an engine-added prefix does not
+    /// break it. The EVENT tag is anchored to the line start (WO-110 R15): the
+    /// mod writes its event lines with System.LogAlways at column 0 (observed
+    /// in every kcd.log this project has), and an event tag appearing later in
+    /// a line is text inside some other line -- a peer name or an NPC name
+    /// that CONTAINS "[KCD2-MP-EVT] v1 1 npc_death ..." must not be able to
+    /// forge an event (docs/WO-109-audit.md R15).
     /// </summary>
     private void ProcessLine(ReadOnlySpan<char> line)
     {
-        int evtIdx = line.IndexOf(EventTag);
-        if (evtIdx >= 0)
+        if (line.StartsWith(EventTag))
         {
-            ProcessEventLine(line[(evtIdx + EventTag.Length)..].Trim());
+            ProcessEventLine(line[EventTag.Length..].Trim());
+            return;
+        }
+        if (line.IndexOf(EventTag) > 0)
+        {
+            // An event tag NOT at column 0: something quoted it. Counted so a
+            // forgery attempt, or an engine prefix this build never had, is
+            // visible rather than silently ignored.
+            if (Interlocked.Increment(ref _eventTagNotAnchored) <= 3)
+                Console.WriteLine($"[logtail] event tag not at line start, ignored (#{_eventTagNotAnchored}): {line[..Math.Min(line.Length, 120)].ToString()}");
             return;
         }
 
