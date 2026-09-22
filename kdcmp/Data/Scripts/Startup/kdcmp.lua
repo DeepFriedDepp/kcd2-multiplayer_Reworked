@@ -2312,7 +2312,15 @@ KCD2MP.wo1025 = {
     -- Ships on per the standing rule (new mechanisms default on); auto-fails
     -- closed (this flag flips back to false) if KCD2MP_NpcReadCompare finds
     -- a real mismatch, not merely a stale one -- see that function.
-    readNative      = true,
+    -- WO-110 R1 (docs/WO-109-audit.md R1): OFF by default. The native push
+    -- arrives every 2 s (GameBridge.cs NpcScanInterval) and the 100 ms
+    -- emitter re-sent that 2 s-old snapshot as the NPC's position while it
+    -- was "fresh" (<= 6 s), so a walking streamed NPC updated at ~0.5 Hz and
+    -- the joiner held ~2 s then dashed. The live e:GetWorldPos() read is two
+    -- binds on an entity already in hand; the native scan stays for
+    -- ENUMERATION only. mp_npc_read_native_on is the 0.26.4 behaviour
+    -- (mp_preset_legacy sets it).
+    readNative      = false,
     -- WO-108 s3.5: seconds a released puppet's brain pause is held before
     -- wh_ai_ResumeNPC (mp_resume_dwell <s>). 10 s: the same dwell as the
     -- co-location hysteresis above, longer than the cull-boundary flapping a
@@ -3573,8 +3581,12 @@ end
 -- npc_scan_native are the agent's (ClientConfig) and identical in both
 -- builds. Every value set logs one MP-PRESET line.
 KCD2MP._presets = {
-    clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0 },
-    legacy = { authority_pause = false, npc_replica = true,  npc_yield = true,  resume_dwell_s = 0.0 },
+    -- WO-110: `legacy` is the 0.26.4 build (was 0.26.3 in WO-108); `clean` is
+    -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
+    clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
+               npc_read_native = false },
+    legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
+               npc_read_native = true },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -3602,13 +3614,13 @@ function KCD2MP_ApplyPreset(which)
     set("puppet_rate_ms",  KCD2MP.npcPuppetTickMs,       50,                function() KCD2MP_SetPuppetRate(50) end)
     set("authority_radius_m", w.authorityRadius,         300,               function() KCD2MP_SetAuthorityRadius("300") end)
     set("together_params", string.format("%.0f %.0f %.0f", w.togetherEnterM, w.togetherExitM, w.togetherDwellS), "60 90 10", function() KCD2MP_SetTogetherParams("60 90 10") end)
-    set("npc_read_native", w.readNative,                 true,              function() KCD2MP_SetNpcReadNative("on") end)
+    set("npc_read_native", w.readNative,                 P.npc_read_native, function() KCD2MP_SetNpcReadNative(P.npc_read_native and "on" or "off") end)   -- WO-110 R1
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
         which, n, KCD2MP.wo102.authorityHost and "on" or "off", KCD2MP.wo102.posNative and "on" or "off",
         KCD2MP.wo102.npcScanNative and "on" or "off"))
-    KCD2MP_ShowInteractionMsg("Preset applied: " .. which .. (which == "clean" and " (0.26.4 defaults)" or " (0.26.3 defaults)"))
+    KCD2MP_ShowInteractionMsg("Preset applied: " .. which .. (which == "clean" and " (0.26.5 defaults)" or " (0.26.4 defaults)"))
     if KCD2MP_Wo102Status then pcall(KCD2MP_Wo102Status) end
     return true
 end

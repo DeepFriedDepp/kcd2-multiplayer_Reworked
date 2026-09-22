@@ -281,8 +281,14 @@ do
     KCD2MP.npcPuppetTickMs = 200; KCD2MP.wo1025.authorityRadius = 45
     clearLog()
     KCD2MP_ApplyPreset("legacy")
-    check("g: legacy -> lever off, replicas on, yield on, dwell 0",
-          KCD2MP.wo102.authorityPause == false and KCD2MP.npcReplica.enabled == true and KCD2MP.npcYield.enabled == true and KCD2MP.wo1025.resumeDwellS == 0)
+    -- WO-110: `legacy` is the 0.26.4 build now (lever on, replicas off, yield
+    -- off, dwell 10 -- WO-108's own defaults), and what it puts BACK is the
+    -- 0.26.4 behaviour WO-110 changed: the native position read (R1).
+    check("g: legacy -> 0.26.4: lever on, replicas off, yield off, dwell 10, native NPC read on",
+          KCD2MP.wo102.authorityPause == true and KCD2MP.npcReplica.enabled == false and KCD2MP.npcYield.enabled == false and KCD2MP.wo1025.resumeDwellS == 10.0
+          and KCD2MP.wo1025.readNative == true,
+          string.format("pause=%s replica=%s yield=%s dwell=%s readNative=%s last=%s", tostring(KCD2MP.wo102.authorityPause), tostring(KCD2MP.npcReplica.enabled),
+              tostring(KCD2MP.npcYield.enabled), tostring(KCD2MP.wo1025.resumeDwellS), tostring(KCD2MP.wo1025.readNative), tostring(lastLog("WO103-READNATIVE") or lastLog("MP-NPCREAD"))))
     check("g: legacy re-applies the shared values too (puppet rate, radius)", KCD2MP.npcPuppetTickMs == 50 and KCD2MP.wo1025.authorityRadius == 300)
     local nLegacy = logCount("MP-PRESET name=legacy set=")
     check("g: every value logs one MP-PRESET line (16)", nLegacy == 16, tostring(nLegacy))
@@ -293,7 +299,8 @@ do
     check("g: clean -> lever on, replicas off, yield off, dwell 10",
           KCD2MP.wo102.authorityPause == true and KCD2MP.npcReplica.enabled == false and KCD2MP.npcYield.enabled == false and KCD2MP.wo1025.resumeDwellS == 10.0)
     check("g: clean logs 16 values too", logCount("MP-PRESET name=clean set=") == 16)
-    check("g: a from->to line names the lever flip", logCount("MP-PRESET name=clean set=authority_pause from=false to=true") == 1)
+    check("g: a from->to line names the R1 flip", logCount("MP-PRESET name=clean set=npc_read_native from=true to=false") == 1)
+    check("g: clean -> native NPC read off (WO-110 R1 default)", KCD2MP.wo1025.readNative == false)
     check("g: round trip lands on the shipped defaults", KCD2MP.wo102.authorityPause == DEF_PAUSE and KCD2MP.npcReplica.enabled == DEF_REPLICA
           and KCD2MP.npcYield.enabled == DEF_YIELD and KCD2MP.wo1025.resumeDwellS == DEF_DWELL)
     check("g: authority model untouched by clean", KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.npcScanNative == true)
