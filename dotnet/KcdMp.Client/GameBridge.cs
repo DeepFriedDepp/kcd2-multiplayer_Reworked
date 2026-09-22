@@ -2020,13 +2020,24 @@ public partial class GameBridge(ClientConfig config)
             _ghostReleaseVersions.Clear();
             _discordPresence?.ResetForReconnect();
 
-            Console.WriteLine("Removing all ghosts...");
-            try { await ExecLuaAsync("KCD2MP_RemoveAllGhosts()"); } catch { }
+            // WO-110 R11 (docs/WO-109-audit.md R11): these two used to go into
+            // the BATCH, which is flushed only by the next connected main loop
+            // or a clean dispose -- so on a relay drop, a crash that still ran
+            // this finally, or the launcher's stop, they were queued and never
+            // sent. ExecuteNowAsync sends immediately (one round trip each).
+            // A hard process kill still runs nothing here; for that case the
+            // peer's ghost removal is the RELAY's Disconnect broadcast, and the
+            // local NPCs resume through Lua's own silence path (release +
+            // dwell), which needs no agent.
+            Console.WriteLine("Removing all ghosts (sent now, not batched -- WO-110 R11)...");
+            try { await _transport.ExecuteNowAsync("KCD2MP_RemoveAllGhosts()"); }
+            catch (Exception ex) { Console.WriteLine($"[disconnect] RemoveAllGhosts did not send: {ex.Message}"); }
             // WO-102.5 Phase 1: guarantee resume when THIS agent goes away --
             // closed, crashed, or the relay dropped it. The game and its Lua
             // state keep running without us, so whatever it still believes is
             // paused must not be left that way.
-            try { await ExecLuaAsync("if KCD2MP_Wo102ResumeAll then KCD2MP_Wo102ResumeAll(\"agent-disconnect\") end"); } catch { }
+            try { await _transport.ExecuteNowAsync("if KCD2MP_Wo102ResumeAll then KCD2MP_Wo102ResumeAll(\"agent-disconnect\") end"); }
+            catch (Exception ex) { Console.WriteLine($"[disconnect] Wo102ResumeAll did not send: {ex.Message}"); }
         }
     }
 
