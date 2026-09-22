@@ -38,13 +38,17 @@ enum class SyncPhase { pending, running, done, cancelled };
 // Separate function because __try/__except cannot share a frame with objects
 // that need unwinding (C2712), and the drain loop below owns a vector of
 // std::function.
-void run_guarded(std::function<void()>* work) {
+// Returns true when the task FAULTED (WO-110 R12: callers that reply over
+// the pipe must not report a faulted task's default-constructed result as OK).
+bool run_guarded(std::function<void()>* work) {
     __try {
         (*work)();
+        return false;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // A fault here is on the game's own thread. Swallow it so one bad task
         // cannot take the process down mid-frame.
         logf("MAIN: task raised a structured exception -- swallowed");
+        return true;
     }
 }
 
@@ -123,10 +127,16 @@ void post(std::function<void()> work) {
 }
 
 bool run_sync(std::function<void()> work, unsigned timeout_ms) {
+    return run_sync(std::move(work), timeout_ms, nullptr);
+}
+
+bool run_sync(std::function<void()> work, unsigned timeout_ms, bool* faulted) {
+    if (faulted) *faulted = false;
     // Already on the main thread: run inline. Queueing here would deadlock,
     // because the drain that would run it is the frame we are inside.
     if (g_main_thread_id != 0 && GetCurrentThreadId() == g_main_thread_id) {
-        work();
+        const bool f = run_guarded(&work);
+        if (faulted) *faulted = f;
         return true;
     }
 
@@ -135,6 +145,7 @@ bool run_sync(std::function<void()> work, unsigned timeout_ms) {
         std::condition_variable cv;
         std::function<void()> work;
         SyncPhase phase = SyncPhase::pending;
+        bool faulted = false;   // WO-110 R12
     };
 
     auto state = std::make_shared<State>();
@@ -149,11 +160,14 @@ bool run_sync(std::function<void()> work, unsigned timeout_ms) {
 
         // Guard here as well as in hooked_update so an SEH fault cannot skip
         // the completion signal and leave the waiting pipe thread blocked.
+        bool f = false;
         try {
-            run_guarded(&state->work);
+            f = run_guarded(&state->work);
         } catch (...) {
             logf("MAIN: task raised a C++ exception -- swallowed");
+            f = true;
         }
+        state->faulted = f;
 
         {
             std::lock_guard<std::mutex> lock(state->mutex);
@@ -167,6 +181,7 @@ bool run_sync(std::function<void()> work, unsigned timeout_ms) {
     if (state->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] {
             return state->phase == SyncPhase::done;
         })) {
+        if (faulted) *faulted = state->faulted;
         return true;
     }
 

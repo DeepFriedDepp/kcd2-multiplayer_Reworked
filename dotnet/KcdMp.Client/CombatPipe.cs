@@ -484,9 +484,17 @@ public sealed class CombatPipe : IAsyncDisposable
                 if (left <= TimeSpan.Zero)
                 {
                     TimedOut++;
+                    // WO-110 R12 (docs/WO-109-audit.md R12): the DLL numbers
+                    // every frame it READS, so the reply to this timed-out
+                    // command -- if it ever comes -- carries exactly the seq we
+                    // were waiting for. Left as is, the next command's wait
+                    // would take that late reply as its own answer. Advancing
+                    // past it makes the late reply read as "older" above and be
+                    // dropped, which is what it is.
+                    if (_expectedSeq is byte w) _expectedSeq = (byte)(w + 1);
                     Console.WriteLine($"[combat] no answer to 0x{type:X2} after " +
                                       $"{(DateTime.UtcNow - started).TotalMilliseconds:F0} ms " +
-                                      $"(deadline {ReplyDeadline.TotalMilliseconds:F0} ms, timeouts {TimedOut})");
+                                      $"(deadline {ReplyDeadline.TotalMilliseconds:F0} ms, timeouts {TimedOut}; seq advanced past the missing reply)");
                     return (null, PipeReason.NoAnswer);
                 }
 

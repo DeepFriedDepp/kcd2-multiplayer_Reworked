@@ -32,6 +32,10 @@ void post_repeating(std::function<void()> work);
 // before the game thread starts it. Work already running is allowed to finish
 // so lambdas capturing caller state cannot outlive that state.
 bool run_sync(std::function<void()> work, unsigned timeout_ms = 5000);
+// WO-110 R12: as above, and reports whether the task FAULTED on the game
+// thread (SEH or C++ exception, swallowed so the frame survives). A true
+// return with *faulted == true means "it ran, do not trust its output".
+bool run_sync(std::function<void()> work, unsigned timeout_ms, bool* faulted);
 
 // Frames observed since install. Zero after a second or two means the hook is
 // not on a live path, and everything queued will sit there forever.

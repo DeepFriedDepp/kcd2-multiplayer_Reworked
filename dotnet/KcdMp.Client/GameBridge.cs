@@ -342,6 +342,7 @@ public partial class GameBridge(ClientConfig config)
     private uint _npcScanGen;
     private bool _npcScanSkipLogged;   // WO-110 R13: one line per skip/resume transition
     private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
+    private long _npcScanEmptyRefused;   // WO-110 R12
     private bool _npcScanWasReplyTruncated;   // WO-103 Phase 1: edge-triggered loud log, mirrors npc_scan.cpp's g_wasTruncated
 
     // WO-102 Phase 5: the request channel. _npcTarget is the nearest owned
@@ -5889,6 +5890,19 @@ public partial class GameBridge(ClientConfig config)
             return;
         }
         _npcScanMisses = 0;
+
+        // WO-110 R12: an EMPTY scan that walked NOTHING is not "no NPCs near
+        // you", it is a scan that did not run (a faulted or pre-empted task
+        // replying a default result). Pushing it would make the owner's rescan
+        // untrack every NPC. Refused here; the DLL now also reports such a
+        // task as kReadFaulted, which the codec turns into a refusal above.
+        if (res.Entries.Count == 0 && res.TotalWalked == 0)
+        {
+            _npcScanEmptyRefused++;
+            if (_npcScanEmptyRefused <= 3 || _npcScanEmptyRefused % 50 == 0)
+                Console.WriteLine(FormattableString.Invariant($"MP-NPCSCAN dir=native verdict=refused reason=empty-walk n={_npcScanEmptyRefused} -- not pushed (would untrack everything)"));
+            return;
+        }
 
         // Same name gate the mod itself applies (kdcmp.lua's "^[%w_]+$"):
         // dropped here too, both so a stray non-conforming read (WO-97's

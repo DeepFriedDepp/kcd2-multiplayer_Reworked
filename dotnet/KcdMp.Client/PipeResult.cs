@@ -45,6 +45,10 @@ public enum PipeReason : byte
     EngineRefused = 15,
     /// <summary>The game thread never took the task inside the DLL's own bound.</summary>
     Timeout = 16,
+    /// <summary>WO-110 R12: the task ran on the game thread and FAULTED (SEH or C++ exception); its result is not to be trusted.</summary>
+    TaskFaulted = 17,
+    /// <summary>WO-110 R12: the DLL does not know this command type (an agent newer than the DLL).</summary>
+    UnknownCommand = 18,
 
     // ---- agent-side reasons. Deliberately above the native range so the two
     // vocabularies can never collide as either side grows. ----
@@ -78,6 +82,8 @@ public readonly record struct PipeResult(bool Ok, PipeReason Reason)
         PipeReason.ModuleMissing       => "module-missing",
         PipeReason.BuildMismatch       => "build-mismatch",
         PipeReason.NoExports           => "no-exports",
+        PipeReason.TaskFaulted         => "task-faulted",
+        PipeReason.UnknownCommand      => "unknown-command",
         PipeReason.TargetMissing       => "target-missing",
         PipeReason.BodyWrongState      => "body-wrong-state",
         PipeReason.ManagerMissing      => "manager-missing",

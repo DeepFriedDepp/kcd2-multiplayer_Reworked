@@ -273,10 +273,18 @@ struct PipeSyncState {
     std::condition_variable cv;
     bool done = false;
     bool ran = false;
+    bool faulted = false;   // WO-110 R12: the task ran and faulted; `value` is default-constructed garbage
     T value{};
 };
 
-constexpr unsigned kPipeSyncTimeoutMs = 5000;
+// WO-110 R12: SHORTER than the agent's 5 s reply deadline (CombatPipe.cs
+// ReplyDeadline). Both were 5 s, so when the game thread stalled the agent
+// timed out first and the DLL's late failure reply then sat in the pipe as
+// the answer to the NEXT command. Now the DLL gives up first and the agent
+// receives an explicit Timeout/failure inside its own window.
+constexpr unsigned kPipeSyncTimeoutMs = 3500;
+constexpr uint8_t  kReasonTaskFaulted    = 17;   // mirrors PipeReason.TaskFaulted
+constexpr uint8_t  kReasonUnknownCommand = 18;   // mirrors PipeReason.UnknownCommand
 
 // `work` must capture everything it needs BY VALUE: it can end up running
 // well after this function has returned to its caller. Returns run_sync's
@@ -284,13 +292,19 @@ constexpr unsigned kPipeSyncTimeoutMs = 5000;
 // and the return value; a false return with no "timed out" log from the
 // caller's usual pattern means THIS wait gave up, not run_sync's -- see the
 // distinct log line below.
+// `faultedOut` (WO-110 R12): set when the task ran but raised; the caller must
+// then reply failure with kReasonTaskFaulted instead of `outValue`'s defaults
+// -- an empty ScanResult with refuse=kOk would make the agent untrack every
+// NPC, a default BodyState would report a body at rest.
 template <typename T>
-bool run_sync_bounded(const std::function<void(T&)>& work, const char* what, T& outValue) {
+bool run_sync_bounded(const std::function<void(T&)>& work, const char* what, T& outValue, bool* faultedOut = nullptr) {
     auto state = std::make_shared<PipeSyncState<T>>();
     std::thread([state, work] {
-        const bool ran = main_thread::run_sync([&] { work(state->value); });
+        bool faulted = false;
+        const bool ran = main_thread::run_sync([&] { work(state->value); }, 5000, &faulted);
         std::lock_guard<std::mutex> lock(state->mutex);
         state->ran = ran;
+        state->faulted = faulted;
         state->done = true;
         state->cv.notify_all();
     }).detach();
@@ -303,8 +317,10 @@ bool run_sync_bounded(const std::function<void(T&)>& work, const char* what, T& 
              what, kPipeSyncTimeoutMs);
         return false;
     }
+    if (faultedOut) *faultedOut = state->faulted;
+    if (state->faulted) logf("PIPE: %s FAULTED on the main thread -- replying failure, result discarded", what);
     outValue = state->value;
-    return state->ran;
+    return state->ran && !state->faulted;
 }
 
 // One connected agent, until it disconnects.
@@ -350,15 +366,16 @@ void serve(HANDLE h) {
                 // Onto the game's thread, and wait so the agent gets a truthful
                 // result rather than an optimistic one.
                 bool ok = false;
+                bool faultedFlag = false;
                 const bool ran = run_sync_bounded<bool>(
                     [guid, stamina, health, suppress](bool& result) {
                         result = rttr::apply_damage(guid.data(), stamina, health, suppress);
                         if (result) rttr::note_remote_damage(guid.data(), health);
-                    }, "ApplyDamage", ok);
+                    }, "ApplyDamage", ok, &faultedFlag);
                 if (!ran) logf("PIPE: ApplyDamage timed out waiting for a frame");
                 logf("PIPE: ApplyDamage stamina=%.2f health=%.2f -> %s",
                      stamina, health, ok ? "applied" : "soul not loaded / failed");
-                send_result(h, ran && ok, seq);
+                send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
                 break;
             }
 
@@ -371,12 +388,13 @@ void serve(HANDLE h) {
                 std::array<unsigned char, 16> guid;
                 std::memcpy(guid.data(), body, 16);
                 bool ok = false;
+                bool faultedFlag = false;
                 const bool ran = run_sync_bounded<bool>(
                     [guid](bool& result) { result = rttr::apply_death(guid.data()); },
-                    "ApplyDeath", ok);
+                    "ApplyDeath", ok, &faultedFlag);
                 if (!ran) logf("PIPE: ApplyDeath timed out waiting for a frame");
                 logf("PIPE: ApplyDeath -> %s", ok ? "dead" : "soul not loaded / failed");
-                send_result(h, ran && ok, seq);
+                send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
                 break;
             }
 
@@ -390,13 +408,14 @@ void serve(HANDLE h) {
                 std::memcpy(guid.data(), body, 16);
                 const bool hostile = body[16] != 0;
                 bool ok = false;
+                bool faultedFlag = false;
                 const bool ran = run_sync_bounded<bool>(
                     [guid, hostile](bool& result) { result = rttr::set_ghost_faction_hostile(guid.data(), hostile); },
-                    "SetFactionHostile", ok);
+                    "SetFactionHostile", ok, &faultedFlag);
                 if (!ran) logf("PIPE: SetFactionHostile timed out waiting for a frame");
                 logf("PIPE: SetFactionHostile hostile=%s -> %s",
                      hostile ? "true" : "false", ok ? "applied" : "ghost not loaded / failed");
-                send_result(h, ran && ok, seq);
+                send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
                 break;
             }
 
@@ -438,13 +457,14 @@ void serve(HANDLE h) {
                 std::memcpy(guid.data(), body, 16);
                 const bool on = body[16] != 0;
                 bool ok = false;
+                bool faultedFlag = false;
                 const bool ran = run_sync_bounded<bool>(
                     [guid, on](bool& result) { result = sctx::apply_isolation(guid.data(), on); },
-                    "GhostIsolate", ok);
+                    "GhostIsolate", ok, &faultedFlag);
                 if (!ran) logf("PIPE: GhostIsolate timed out waiting for a frame");
                 logf("PIPE: GhostIsolate on=%s -> %s", on ? "true" : "false",
                      ok ? "all contexts in state" : "not fully applied (see SCTX lines)");
-                send_result(h, ran && ok, seq);
+                send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
                 break;
             }
 
@@ -468,12 +488,19 @@ void serve(HANDLE h) {
                 uint32_t entityId = 0;
                 std::memcpy(&entityId, body, 4);
                 const bool wantPlayer = (entityId == 0);
-                bool ok = false;
-                const bool ran = run_sync_bounded<bool>(
-                    [wantPlayer, entityId, &bs](bool& result) {
-                        result = kcdmp::mannequin::read_body_state(wantPlayer, entityId, &bs);
-                    }, "ReadBodyState", ok);
-                send_body_state(h, ran && ok, seq, bs);
+                // WO-110 R12: the lambda used to capture the stack `bs` by
+                // reference; after a bounded-wait timeout it could run later and
+                // write into a dead frame. The result now lives in the shared
+                // state (process lifetime), captured by value only.
+                struct BodyStateOut { bool ok = false; kcdmp::mannequin::BodyState bs{}; };
+                BodyStateOut r{};
+                bool faulted = false;
+                const bool ran = run_sync_bounded<BodyStateOut>(
+                    [wantPlayer, entityId](BodyStateOut& out) {
+                        out.ok = kcdmp::mannequin::read_body_state(wantPlayer, entityId, &out.bs);
+                    }, "ReadBodyState", r, &faulted);
+                if (faulted) r.bs = kcdmp::mannequin::BodyState{};
+                send_body_state(h, ran && r.ok, seq, r.bs);
                 break;
             }
 
@@ -496,11 +523,15 @@ void serve(HANDLE h) {
                     send_local_state(h, false, seq, ls);
                     break;
                 }
-                bool ok = false;
-                const bool ran = run_sync_bounded<bool>(
-                    [&ls](bool& result) { result = kcdmp::localstate::read_local_state(&ls); },
-                    "ReadLocalState", ok);
-                send_local_state(h, ran && ok, seq, ls);
+                // WO-110 R12: by-value capture; result in the shared state (see ReadBodyState).
+                struct LocalStateOut { bool ok = false; kcdmp::localstate::LocalState ls{}; };
+                LocalStateOut r{};
+                bool faulted = false;
+                const bool ran = run_sync_bounded<LocalStateOut>(
+                    [](LocalStateOut& out) { out.ok = kcdmp::localstate::read_local_state(&out.ls); },
+                    "ReadLocalState", r, &faulted);
+                if (faulted) { r.ls = kcdmp::localstate::LocalState{}; r.ls.refuse = kcdmp::localstate::kReadFaulted; }
+                send_local_state(h, ran && r.ok, seq, r.ls);
                 break;
             }
 
@@ -530,11 +561,19 @@ void serve(HANDLE h) {
                     std::memcpy(&anchors[i], body + 5 + i * 12, 12);
                 }
                 bool ok = false;
+                bool faulted = false;
                 const bool ran = run_sync_bounded<kcdmp::npcscan::ScanResult>(
                     [anchors, radius](kcdmp::npcscan::ScanResult& result) {
                         kcdmp::npcscan::scan(anchors.data(), static_cast<int>(anchors.size()), radius, &result);
-                    }, "ScanNpcs", sr);
-                ok = ran && sr.refuse == kcdmp::npcscan::kOk;
+                    }, "ScanNpcs", sr, &faulted);
+                // WO-110 R12: a faulted or never-run scan must not reply an
+                // empty result with refuse=kOk -- the agent would push an empty
+                // set and the owner's rescan would untrack every NPC.
+                if (faulted || !ran) {
+                    sr = kcdmp::npcscan::ScanResult{};
+                    sr.refuse = kcdmp::npcscan::kReadFaulted;
+                }
+                ok = ran && !faulted && sr.refuse == kcdmp::npcscan::kOk;
                 if (!ran) logf("PIPE: ScanNpcs timed out waiting for a frame");
                 send_npc_scan_result(h, ok, seq, sr);
                 break;
@@ -548,13 +587,14 @@ void serve(HANDLE h) {
                 }
                 std::string path(reinterpret_cast<const char*>(body), len);
                 bool ok = false;
+                bool faultedFlag = false;
                 const bool ran = run_sync_bounded<bool>(
                     [path](bool& result) { result = conceptread::probe(path.c_str()); },
-                    "ConceptProbe", ok);
+                    "ConceptProbe", ok, &faultedFlag);
                 if (!ran) logf("PIPE: ConceptProbe timed out waiting for a frame");
                 logf("PIPE: ConceptProbe(\"%s\") -> %s", path.c_str(),
                      ok ? "ran" : "failed (see CONCEPT lines)");
-                send_result(h, ran && ok, seq);
+                send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
                 break;
             }
 
@@ -578,7 +618,10 @@ void serve(HANDLE h) {
             }
 
             default:
-                logf("PIPE: unknown frame type 0x%02X (%u bytes)", type, len);
+                // WO-110 R12: answered, not ignored -- an agent newer than this
+                // DLL used to wait out its whole deadline for nothing.
+                logf("PIPE: unknown frame type 0x%02X (%u bytes) -- replying failure/unknown-command", type, len);
+                send_result(h, false, seq, kReasonUnknownCommand);
                 break;
         }
     }
