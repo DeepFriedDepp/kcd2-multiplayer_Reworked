@@ -529,8 +529,11 @@ end
 -- call site, file-local, never passed outward -- KCD2MP_EmitState reads
 -- pos.x/y/z and ang.z into locals/scalars immediately and never stores or
 -- returns either table, so reusing them here is safe.
-local EMITSTATE_POS_SCRATCH = {}
-local EMITSTATE_ANG_SCRATCH = {}
+-- WO-110 Phase 0.2: the WO-106 vector-getter scratch tables, one namespace table
+-- instead of nine top-level locals (the Lua 5.1 200-local cliff, WO-109 s5.1).
+local SCRATCH = {}
+SCRATCH.EMITSTATE_POS_SCRATCH = {}
+SCRATCH.EMITSTATE_ANG_SCRATCH = {}
 
 -- Builds and writes one state line. Returns false when the player is not in a
 -- state worth reporting (no world, mid-load).
@@ -538,11 +541,11 @@ function KCD2MP_EmitState()
     if not player then return false end
 
     local pos = nil
-    pcall(function() pos = player:GetWorldPos(EMITSTATE_POS_SCRATCH) end)
+    pcall(function() pos = player:GetWorldPos(SCRATCH.EMITSTATE_POS_SCRATCH) end)
     if not pos then return false end
 
     local ang = nil
-    pcall(function() ang = player:GetWorldAngles(EMITSTATE_ANG_SCRATCH) end)
+    pcall(function() ang = player:GetWorldAngles(SCRATCH.EMITSTATE_ANG_SCRATCH) end)
     local rotZ = ang and ang.z or 0
 
     local health, stamina, dead, unconscious = KCD2MP_ReadSelfVitals()
@@ -614,9 +617,13 @@ end
 -- like tickAlive, not rendering math (WO-70 constraint 1 is about the
 -- latter). A chain whose flag is false -- never started, or stopped on
 -- purpose (the puppet chain's "no puppets" exit) -- still starts at once.
-local CHAIN_PROBE_MS        = 400
-local CHAIN_PROBE_SETTLE_MS = 200
-local CHAIN_PROBE_REARM_S   = 3.0   -- a probe this old that never fired was itself killed or suspended; arm another
+-- WO-110 Phase 0.2: tuning constants (chain probe, smooth renderer, read-compare,
+-- drag sensor, relax tag, diverge) in one namespace table instead of 19 top-level
+-- locals (the Lua 5.1 200-local cliff, WO-109 s5.1). Values unchanged.
+local TUNE = {}
+TUNE.CHAIN_PROBE_MS        = 400
+TUNE.CHAIN_PROBE_SETTLE_MS = 200
+TUNE.CHAIN_PROBE_REARM_S   = 3.0   -- a probe this old that never fired was itself killed or suspended; arm another
 KCD2MP._chainProbe = {}
 KCD2MP._chainSuspendedN = 0        -- false restarts this gate has refused (diagnostic)
 
@@ -629,11 +636,11 @@ local function chainMayStart(key, flagField, stampField, restart)
         KCD2MP._chainProbe[key] = nil
         return true
     end
-    if pr and (now - pr.armedAt) < CHAIN_PROBE_REARM_S then return false end
+    if pr and (now - pr.armedAt) < TUNE.CHAIN_PROBE_REARM_S then return false end
     local mine = { armedAt = now, staleFor = now - KCD2MP[stampField] }
     KCD2MP._chainProbe[key] = mine
-    Script.SetTimer(CHAIN_PROBE_MS, function()
-        Script.SetTimer(CHAIN_PROBE_SETTLE_MS, function()
+    Script.SetTimer(TUNE.CHAIN_PROBE_MS, function()
+        Script.SetTimer(TUNE.CHAIN_PROBE_SETTLE_MS, function()
             if KCD2MP._chainProbe[key] ~= mine then return end   -- superseded by a later probe
             if tickAlive(KCD2MP[flagField], KCD2MP[stampField]) then
                 KCD2MP._chainProbe[key] = nil
@@ -1472,7 +1479,7 @@ local function buildHtml()
     -- The action strip shows REAL keys. It briefly listed console commands
     -- instead, because the keybinds at that point were unverified guesses and
     -- advertising dead keys reads as broken. The names behind these were
-    -- captured from a live game (see DICE_CONFIRM_ACTIONS), so they can be
+    -- captured from a live game (see ACTS.DICE_CONFIRM_ACTIONS), so they can be
     -- shown honestly now. The mp_dice_* commands still work and are the
     -- fallback if a key is rebound.
     if D.err then
@@ -2462,45 +2469,48 @@ KCD2MP.npcSmooth = true
 -- segment duration used for speed: a packet arriving after a `moved`-gated
 -- silence renders as a DELAY-long move at the NPC's implied speed, not as a
 -- slow slide across the whole silent gap.
-local NPC_SMOOTH_DELAY_FACTOR = 1.2
+TUNE.NPC_SMOOTH_DELAY_FACTOR = 1.2
 function KCD2MP_NpcSmoothDelayS()
-    return ((KCD2MP.npcSync and KCD2MP.npcSync.emitMs) or 250) / 1000 * NPC_SMOOTH_DELAY_FACTOR
+    return ((KCD2MP.npcSync and KCD2MP.npcSync.emitMs) or 250) / 1000 * TUNE.NPC_SMOOTH_DELAY_FACTOR
 end
 -- Ring depth: renderAt only ever looks DELAY back, and packets are ~emitMs
 -- apart, so three samples cover it with one to spare.
-local NPC_SMOOTH_RING = 3
+TUNE.NPC_SMOOTH_RING = 3
 -- Anim only: while the renderer holds at the newest sample because the next
 -- packet is merely LATE (jitter past DELAY), keep the last segment's speed
 -- for up to this long before reading the hold as "stopped". Position is not
 -- affected -- it holds regardless. Without this a 130 ms gap against a
 -- 120 ms delay would flick walk->idle->walk for one tick, which is exactly
 -- the churn Step 1 exists to remove.
-local NPC_SMOOTH_ANIM_GRACE_S = 0.06
+TUNE.NPC_SMOOTH_ANIM_GRACE_S = 0.06
 
--- Copy of the ghost path's calcAnimTag hysteresis bands (kdcmp.lua ANIM_UP /
--- ANIM_DOWN + calcAnimTag), stance-free. Deliberately a COPY, not a shared
+-- Copy of the ghost path's calcAnimTag hysteresis bands (kdcmp.lua ANIMS.ANIM_UP /
+-- ANIMS.ANIM_DOWN + calcAnimTag), stance-free. Deliberately a COPY, not a shared
 -- helper: the puppet and ghost render paths must stay separate code (WO-70
 -- constraint 1), so a retune of one can never silently retune the other.
-local NPC_ANIM_UP   = { walk=1.0, run=2.5, sprint=4.0 }
-local NPC_ANIM_DOWN = { walk=0.4, run=1.8, sprint=3.2 }
+-- WO-110 Phase 0.2: animation name tables and speed thresholds, one namespace
+-- table instead of 20 top-level locals (the Lua 5.1 200-local cliff, WO-109 s5.1).
+local ANIMS = {}
+ANIMS.NPC_ANIM_UP   = { walk=1.0, run=2.5, sprint=4.0 }
+ANIMS.NPC_ANIM_DOWN = { walk=0.4, run=1.8, sprint=3.2 }
 local function mp_npc_anim_tag(speed, cur)
     local t = cur or "idle"
     if t == "combatidle" then t = "idle" end
     if t == "sprint" then
-        if speed < NPC_ANIM_DOWN.sprint then t = "run"   else return "sprint" end
+        if speed < ANIMS.NPC_ANIM_DOWN.sprint then t = "run"   else return "sprint" end
     end
     if t == "run" then
-        if     speed >= NPC_ANIM_UP.sprint  then return "sprint"
-        elseif speed <  NPC_ANIM_DOWN.run   then t = "walk"  else return "run" end
+        if     speed >= ANIMS.NPC_ANIM_UP.sprint  then return "sprint"
+        elseif speed <  ANIMS.NPC_ANIM_DOWN.run   then t = "walk"  else return "run" end
     end
     if t == "walk" then
-        if     speed >= NPC_ANIM_UP.sprint  then return "sprint"
-        elseif speed >= NPC_ANIM_UP.run     then return "run"
-        elseif speed <  NPC_ANIM_DOWN.walk  then return "idle" else return "walk" end
+        if     speed >= ANIMS.NPC_ANIM_UP.sprint  then return "sprint"
+        elseif speed >= ANIMS.NPC_ANIM_UP.run     then return "run"
+        elseif speed <  ANIMS.NPC_ANIM_DOWN.walk  then return "idle" else return "walk" end
     end
-    if     speed >= NPC_ANIM_UP.sprint then return "sprint"
-    elseif speed >= NPC_ANIM_UP.run    then return "run"
-    elseif speed >= NPC_ANIM_UP.walk   then return "walk"
+    if     speed >= ANIMS.NPC_ANIM_UP.sprint then return "sprint"
+    elseif speed >= ANIMS.NPC_ANIM_UP.run    then return "run"
+    elseif speed >= ANIMS.NPC_ANIM_UP.walk   then return "walk"
     else                                     return "idle" end
 end
 
@@ -2522,7 +2532,7 @@ local function mp_npc_ring_push(p, x, y, z, rot, at)
         end
     end
     ring[#ring + 1] = { x = x, y = y, z = z, rot = rot, at = at }
-    while #ring > NPC_SMOOTH_RING do table.remove(ring, 1) end
+    while #ring > TUNE.NPC_SMOOTH_RING do table.remove(ring, 1) end
 end
 
 -- Render state for one puppet at wall-clock `now`: position/yaw plus the
@@ -2550,8 +2560,8 @@ local function mp_npc_smooth_render(p, now)
     if a == b then
         p.cx, p.cy, p.cz, p.cr = a.x, a.y, a.z, a.rot
         -- Holding. A late packet (jitter) is indistinguishable from a stop
-        -- for the first NPC_SMOOTH_ANIM_GRACE_S; after that it is a stop.
-        if a == ring[n] and (renderAt - a.at) <= NPC_SMOOTH_ANIM_GRACE_S then
+        -- for the first TUNE.NPC_SMOOTH_ANIM_GRACE_S; after that it is a stop.
+        if a == ring[n] and (renderAt - a.at) <= TUNE.NPC_SMOOTH_ANIM_GRACE_S then
             spd = p.segSpd or 0
         else
             spd = 0
@@ -2589,7 +2599,7 @@ function KCD2MP_SetNpcSmooth(arg)
     end
     mp_log(string.format("mp_npc_smooth = %s (interp delay %.0f ms = %.1f x emitMs %d)",
         tostring(KCD2MP.npcSmooth), KCD2MP_NpcSmoothDelayS() * 1000,
-        NPC_SMOOTH_DELAY_FACTOR, KCD2MP.npcSync.emitMs))
+        TUNE.NPC_SMOOTH_DELAY_FACTOR, KCD2MP.npcSync.emitMs))
 end
 
 -- WO-69: chain identity for the two NPC-sync Script.SetTimer chains.
@@ -2911,10 +2921,10 @@ function KCD2MP_SetNpcYield(arg)
     KCD2MP_ShowInteractionMsg("NPC puppet yield: " .. (y.enabled and "ON" or "OFF"))
     return true
 end
-local MP_NPC_DIVERGE_M          = 8.0    -- metres in one tick that cannot be footwork
-local MP_NPC_DIVERGE_HITS       = 3      -- far readings needed inside the window
-local MP_NPC_DIVERGE_WINDOW_S   = 30.0   -- sliding window
-local MP_NPC_DIVERGE_COOLDOWN_S = 180.0  -- how long the name refuses to re-puppet (WO-90 shipped 60; WO-94 raised to 3 min at the maintainer's direction)
+TUNE.MP_NPC_DIVERGE_M          = 8.0    -- metres in one tick that cannot be footwork
+TUNE.MP_NPC_DIVERGE_HITS       = 3      -- far readings needed inside the window
+TUNE.MP_NPC_DIVERGE_WINDOW_S   = 30.0   -- sliding window
+TUNE.MP_NPC_DIVERGE_COOLDOWN_S = 180.0  -- how long the name refuses to re-puppet (WO-90 shipped 60; WO-94 raised to 3 min at the maintainer's direction)
 KCD2MP._npcDivergeUntil    = {}          -- name -> os.clock() the stand-off ends
 KCD2MP._npcDivergeN        = 0
 
@@ -2929,11 +2939,11 @@ function KCD2MP_SetNpcDiverge(arg)
         -- the literal "%LINE" when no argument was typed.
         mp_log(string.format("NPC-DIVERGE release is %s (threshold %.1fm, %d hits in %.0fs,"
             .. " %.0fs stand-off; released %d so far). Usage: mp_npc_diverge on|off|<metres>",
-            KCD2MP.npcDiverge and "ON" or "OFF", MP_NPC_DIVERGE_M, MP_NPC_DIVERGE_HITS,
-            MP_NPC_DIVERGE_WINDOW_S, MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN or 0))
+            KCD2MP.npcDiverge and "ON" or "OFF", TUNE.MP_NPC_DIVERGE_M, TUNE.MP_NPC_DIVERGE_HITS,
+            TUNE.MP_NPC_DIVERGE_WINDOW_S, TUNE.MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN or 0))
         return
     elseif n and n > 0 then
-        MP_NPC_DIVERGE_M = n
+        TUNE.MP_NPC_DIVERGE_M = n
         KCD2MP.npcDiverge = true
     elseif s == "on" or s == "1" or s == "true" then
         KCD2MP.npcDiverge = true
@@ -2946,8 +2956,8 @@ function KCD2MP_SetNpcDiverge(arg)
     end
     mp_log(string.format("NPC-DIVERGE release %s (threshold %.1fm, %d hits in %.0fs, %.0fs stand-off; released %d so far)",
         KCD2MP.npcDiverge and "enabled" or "disabled (pre-WO-90: fight forever)",
-        MP_NPC_DIVERGE_M, MP_NPC_DIVERGE_HITS, MP_NPC_DIVERGE_WINDOW_S,
-        MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN or 0))
+        TUNE.MP_NPC_DIVERGE_M, TUNE.MP_NPC_DIVERGE_HITS, TUNE.MP_NPC_DIVERGE_WINDOW_S,
+        TUNE.MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN or 0))
 end
 
 KCD2MP.npcPuppetRunning  = false
@@ -3408,9 +3418,9 @@ end
 -- are. Tagged lines still log (kind=relax, with anchor_m and cos so the tag
 -- can be audited), and count in pause_relax; they never feed the replica
 -- trigger. Heuristic, stated as such; root-causing the relax is out of scope.
-local MP_RELAX_COS_MIN   = 0.90
-local MP_RELAX_RATIO_MIN = 0.015
-local MP_RELAX_RATIO_MAX = 0.12
+TUNE.MP_RELAX_COS_MIN   = 0.90
+TUNE.MP_RELAX_RATIO_MIN = 0.015
+TUNE.MP_RELAX_RATIO_MAX = 0.12
 local function mp_wo102_relax_shaped(p, fx, fy)
     if not (p and p.ax and p.lastWroteX) then return false, 0, 0 end
     local axv, ayv = p.ax - p.lastWroteX, p.ay - p.lastWroteY
@@ -3420,7 +3430,7 @@ local function mp_wo102_relax_shaped(p, fx, fy)
     local cosA = (fx * axv + fy * ayv) / (fLen * aLen)
     local ratio = fLen / aLen
     local scale = math.max(1.0, (KCD2MP.npcPuppetTickMs or 50) / 50)
-    return (cosA >= MP_RELAX_COS_MIN and ratio >= MP_RELAX_RATIO_MIN and ratio <= MP_RELAX_RATIO_MAX * scale), cosA, aLen
+    return (cosA >= TUNE.MP_RELAX_COS_MIN and ratio >= TUNE.MP_RELAX_RATIO_MIN and ratio <= TUNE.MP_RELAX_RATIO_MAX * scale), cosA, aLen
 end
 
 --   MP-AUTHORITY-VIOLATION npc=<name> kind=diverge|contention|relax dist_m=<F2> owner=<id>
@@ -4023,14 +4033,14 @@ end
 -- tick -- only over currently-tracked names, since those are the ones the
 -- substitution actually touches. A moving NPC genuinely drifts during the
 -- push's own staleness window, so the tolerance scales with the push's age
--- at a generous walking/jogging bound (NPC_READ_COMPARE_SPEED_MPS) plus a
+-- at a generous walking/jogging bound (TUNE.NPC_READ_COMPARE_SPEED_MPS) plus a
 -- flat base for read/measurement noise -- a mismatch beyond that is not
 -- explainable by movement, so it means the offset math itself disagrees.
 -- Disagreement means stop, not tune: any mismatch fails the whole check
 -- closed (KCD2MP.wo1025.readNative = false), not just for the mismatched
 -- name, since a wrong offset is wrong for every entity, not one.
-local NPC_READ_COMPARE_BASE_M = 1.0
-local NPC_READ_COMPARE_SPEED_MPS = 3.0
+TUNE.NPC_READ_COMPARE_BASE_M = 1.0
+TUNE.NPC_READ_COMPARE_SPEED_MPS = 3.0
 function KCD2MP_NpcReadCompare()
     local ageS = KCD2MP._nativeScan.at and (os.clock() - KCD2MP._nativeScan.at) or nil
     if not ageS then mp_log("MP-NPCREAD dir=compare verdict=no-data reason=never-received"); return end
@@ -4063,7 +4073,7 @@ function KCD2MP_NpcReadCompare()
                     n = n + 1
                     sumD = sumD + d
                     if d > maxD then maxD = d end
-                    local allowed = NPC_READ_COMPARE_BASE_M + NPC_READ_COMPARE_SPEED_MPS * ageS
+                    local allowed = TUNE.NPC_READ_COMPARE_BASE_M + TUNE.NPC_READ_COMPARE_SPEED_MPS * ageS
                     if d > allowed then
                         mismatches[#mismatches + 1] = string.format("%s:%.2f", name, d)
                     end
@@ -4400,10 +4410,10 @@ end
 -- its state is emitted as npc_drag lines -- which is how the entity is
 -- claimed; the relay arbitrates first-come and mutes the authority's stream
 -- for it. Nothing is sent for bodies nobody is touching.
-local DRAG_RADIUS   = 6.0   -- metres: bodies this close to the player are watched
-local DRAG_MIN_MOVE = 0.3   -- metres between samples that count as manipulation
-local DRAG_TAIL_S   = 3.0   -- emit tail after the last observed move
-local DRAG_SCAN_MS  = 500   -- watch-scan cadence (emission runs every tick)
+TUNE.DRAG_RADIUS   = 6.0   -- metres: bodies this close to the player are watched
+TUNE.DRAG_MIN_MOVE = 0.3   -- metres between samples that count as manipulation
+TUNE.DRAG_TAIL_S   = 3.0   -- emit tail after the last observed move
+TUNE.DRAG_SCAN_MS  = 500   -- watch-scan cadence (emission runs every tick)
 
 local function mp_drag_sensor()
     if not player then return end
@@ -4412,9 +4422,9 @@ local function mp_drag_sensor()
     if not pp then return end
     local now = os.clock()
 
-    if (now - (KCD2MP._dragScanAt or 0)) * 1000 >= DRAG_SCAN_MS then
+    if (now - (KCD2MP._dragScanAt or 0)) * 1000 >= TUNE.DRAG_SCAN_MS then
         KCD2MP._dragScanAt = now
-        local ents = System.GetEntitiesInSphere(pp, DRAG_RADIUS) or {}
+        local ents = System.GetEntitiesInSphere(pp, TUNE.DRAG_RADIUS) or {}
         local seen = {}
         for _, e in ipairs(ents) do
             local cls = e.class
@@ -4434,7 +4444,7 @@ local function mp_drag_sensor()
                         local w = KCD2MP.dragWatch[name]
                         if w then
                             local dx, dy, dz = p.x - w.x, p.y - w.y, p.z - w.z
-                            if (dx*dx + dy*dy + dz*dz) > DRAG_MIN_MOVE * DRAG_MIN_MOVE then
+                            if (dx*dx + dy*dy + dz*dz) > TUNE.DRAG_MIN_MOVE * TUNE.DRAG_MIN_MOVE then
                                 -- A move that lands on the inbound stream's
                                 -- target was the puppet body-follow, not us.
                                 local pup = KCD2MP.npcPuppets[name]
@@ -4465,9 +4475,9 @@ local function mp_drag_sensor()
     end
 
     for name, lastMove in pairs(KCD2MP.dragging) do
-        if now - lastMove > DRAG_TAIL_S then
+        if now - lastMove > TUNE.DRAG_TAIL_S then
             KCD2MP.dragging[name] = nil
-            mp_log("NPC-DRAG released " .. name .. " (idle " .. DRAG_TAIL_S .. "s)")
+            mp_log("NPC-DRAG released " .. name .. " (idle " .. TUNE.DRAG_TAIL_S .. "s)")
             mp_auth_log(name, "release", "self", "drag-idle", now - ((KCD2MP._dragSince or {})[name] or now))   -- WO-102
         else
             pcall(function()
@@ -4511,9 +4521,9 @@ end
 -- etc. feed string.format and t.lastX/Y/Z, never the table itself), so one
 -- reused table per call site is safe -- see the ownership rule in
 -- docs/WO-106-findings.md S "Phase 2".
-local NPCSYNCTICK_PPOS_SCRATCH = {}
-local NPCSYNCTICK_POS_SCRATCH  = {}
-local NPCSYNCTICK_ANG_SCRATCH  = {}
+SCRATCH.NPCSYNCTICK_PPOS_SCRATCH = {}
+SCRATCH.NPCSYNCTICK_POS_SCRATCH  = {}
+SCRATCH.NPCSYNCTICK_ANG_SCRATCH  = {}
 function KCD2MP_NpcSyncTick()
     if not KCD2MP.npcSyncRunning then return end
     Script.SetTimer(KCD2MP.npcSync.emitMs, KCD2MP_NpcSyncTick)  -- reschedule FIRST
@@ -4572,7 +4582,7 @@ function KCD2MP_NpcSyncTick()
     -- weapon-drawn tracked NPC, becomes a swing cue on the observers' side.
     local playerHit, ppos = false, nil
     if player then
-        pcall(function() ppos = player:GetWorldPos(NPCSYNCTICK_PPOS_SCRATCH) end)
+        pcall(function() ppos = player:GetWorldPos(SCRATCH.NPCSYNCTICK_PPOS_SCRATCH) end)
         if player.actor then
             local ph = nil
             pcall(function() ph = player.actor:GetHealth() end)
@@ -4618,9 +4628,9 @@ function KCD2MP_NpcSyncTick()
                 rot = nat.yaw
                 readNativeHits = readNativeHits + 1
             else
-                p = e:GetWorldPos(NPCSYNCTICK_POS_SCRATCH)
+                p = e:GetWorldPos(SCRATCH.NPCSYNCTICK_POS_SCRATCH)
                 rot = 0
-                pcall(function() rot = e:GetWorldAngles(NPCSYNCTICK_ANG_SCRATCH).z or 0 end)
+                pcall(function() rot = e:GetWorldAngles(SCRATCH.NPCSYNCTICK_ANG_SCRATCH).z or 0 end)
                 readLuaHits = readLuaHits + 1
             end
             local hp, dead, ko = -1, false, false
@@ -5382,8 +5392,8 @@ end
 -- live puppet per tick inside the per-name pcall below (tug-of-war
 -- detection). Both feed only scalar math (ap.x/y, ppos.x/y) immediately,
 -- never stored past the closure, so one reused table per call site is safe.
-local NPCPUPPETTICK_PPOS_SCRATCH = {}
-local NPCPUPPETTICK_AP_SCRATCH   = {}
+SCRATCH.NPCPUPPETTICK_PPOS_SCRATCH = {}
+SCRATCH.NPCPUPPETTICK_AP_SCRATCH   = {}
 function KCD2MP_NpcPuppetTick(arg, gen)
     -- WO-84: absorb the orphan of a generation that stopped ITSELF.
     --
@@ -5477,7 +5487,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
     -- emitted, so the event channel is byte-identical to 0.23.2.
     if KCD2MP.wo102.authorityHost and not KCD2MP.hitSensorOn and player then
         local ppos = nil
-        pcall(function() ppos = player:GetWorldPos(NPCPUPPETTICK_PPOS_SCRATCH) end)
+        pcall(function() ppos = player:GetWorldPos(SCRATCH.NPCPUPPETTICK_PPOS_SCRATCH) end)
         local best, bestD = nil, 16.0   -- 4 m squared
         if ppos then
             for name, p in pairs(KCD2MP.npcPuppets) do
@@ -5688,7 +5698,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- phased between THREE points, not the documented two).
             if p.lastWroteX then
                 local ap = nil
-                pcall(function() ap = e:GetWorldPos(NPCPUPPETTICK_AP_SCRATCH) end)
+                pcall(function() ap = e:GetWorldPos(SCRATCH.NPCPUPPETTICK_AP_SCRATCH) end)
                 if ap then
                     local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
                     -- WO-99 Phase 2: sustained sub-8 m contention -> yield.
@@ -5802,35 +5812,35 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         -- not 760 (we write every tick, so most ticks read
                         -- back exactly where we put it; the engine yanks it
                         -- away intermittently).
-                        if KCD2MP.wo102.authorityHost and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
+                        if KCD2MP.wo102.authorityHost and (fx*fx + fy*fy) > TUNE.MP_NPC_DIVERGE_M * TUNE.MP_NPC_DIVERGE_M then
                             -- WO-102 Phase 4: under host authority there is no
                             -- second world to diverge from. The body is NOT
                             -- released -- the stream stays the truth -- and the
                             -- event is logged loudly as what it is: something
                             -- on this machine is still writing this body.
                             mp_wo102_violation(name, p, "diverge", math.sqrt(fx*fx + fy*fy), fx, fy)
-                        elseif KCD2MP.npcDiverge and (fx*fx + fy*fy) > MP_NPC_DIVERGE_M * MP_NPC_DIVERGE_M then
+                        elseif KCD2MP.npcDiverge and (fx*fx + fy*fy) > TUNE.MP_NPC_DIVERGE_M * TUNE.MP_NPC_DIVERGE_M then
                             local keep = {}
                             for _, t0 in ipairs(p.farHits or {}) do
-                                if (now - t0) <= MP_NPC_DIVERGE_WINDOW_S then keep[#keep + 1] = t0 end
+                                if (now - t0) <= TUNE.MP_NPC_DIVERGE_WINDOW_S then keep[#keep + 1] = t0 end
                             end
                             keep[#keep + 1] = now
                             p.farHits = keep
-                            if #keep >= MP_NPC_DIVERGE_HITS then
+                            if #keep >= TUNE.MP_NPC_DIVERGE_HITS then
                                 mp_log(string.format(
                                     "NPC-DIVERGE %s: local world moved it %.1fm from our write, %d times in %.0fs"
                                     .. " -- releasing the puppet and leaving it to this world for %.0fs"
                                     .. " (WO-90; `mp_npc_diverge off` to restore the pre-WO-90 tug-of-war)",
-                                    name, math.sqrt(fx*fx + fy*fy), #keep, MP_NPC_DIVERGE_WINDOW_S,
-                                    MP_NPC_DIVERGE_COOLDOWN_S))
+                                    name, math.sqrt(fx*fx + fy*fy), #keep, TUNE.MP_NPC_DIVERGE_WINDOW_S,
+                                    TUNE.MP_NPC_DIVERGE_COOLDOWN_S))
                                 -- WO-94: a release inside a catch-up window is the "dragged NPC state" hazard (WO-92 s6.4 hazard 3).
                                 if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-dragged", string.format("%s released by the divergence rule (%.1fm from our write)", name, math.sqrt(fx*fx + fy*fy))) end
                                 KCD2MP_NpcReplicaDemote(name, "diverge")   -- WO-104
                                 KCD2MP.npcPuppets[name] = nil
-                                KCD2MP._npcDivergeUntil[name] = now + MP_NPC_DIVERGE_COOLDOWN_S
+                                KCD2MP._npcDivergeUntil[name] = now + TUNE.MP_NPC_DIVERGE_COOLDOWN_S
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
                                 mp_log(string.format("MP-NPCDIVERGE npc=%s dist_m=%.1f hits=%d window_s=%.0f standoff_s=%.0f total=%d",
-                                    name, math.sqrt(fx*fx + fy*fy), #keep, MP_NPC_DIVERGE_WINDOW_S, MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN))
+                                    name, math.sqrt(fx*fx + fy*fy), #keep, TUNE.MP_NPC_DIVERGE_WINDOW_S, TUNE.MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN))
                                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "diverge", now - (p.ownerSince or now))   -- WO-102
                                 -- Tell the player, at most once a minute: an
                                 -- NPC that suddenly stops matching the other
@@ -7202,7 +7212,7 @@ end
 -- needed too. Same probe-on-first-use pattern as the jump list: none of
 -- these names is confirmed on this build; a wrong candidate can never play,
 -- and none-found keeps today's standing body.
-local DEATH_ANIMS = {
+ANIMS.DEATH_ANIMS = {
     "relaxed_death", "death", "3d_death", "dead_pose",
     "relaxed_lie_pose", "lie_pose", "lying_idle", "3d_lying_idle",
     "relaxed_knockdown", "knockdown", "ko_pose", "unconscious_pose",
@@ -7225,7 +7235,7 @@ function KCD2MP_SetGhostDead(id, dead)
             if ghost and ghost.entity then
                 if KCD2MP._deathAnim == nil then
                     local found = nil
-                    for _, nm in ipairs(DEATH_ANIMS) do
+                    for _, nm in ipairs(ANIMS.DEATH_ANIMS) do
                         local len = 0
                         pcall(function() len = ghost.entity:GetAnimationLength(0, nm) or 0 end)
                         if len > 0 then found = nm; break end
@@ -7414,13 +7424,13 @@ end
 -- ===== Animation Update =====
 
 -- Sneak animation candidates (probed on first use, result cached).
-local SNEAK_WALK_ANIMS = {
+ANIMS.SNEAK_WALK_ANIMS = {
     "3d_sneak_walk_turn_strafe",
     "3d_sneaking_walk_turn_strafe",
     "3d_stealth_walk_turn_strafe",
     "3d_crouch_walk_turn_strafe",
 }
-local SNEAK_IDLE_ANIMS = {
+ANIMS.SNEAK_IDLE_ANIMS = {
     "sneak_idle_both",
     "sneaking_idle_both",
     "stealth_idle_both",
@@ -7440,7 +7450,7 @@ KCD2MP._sneakIdleAnim = nil
 -- Animations.pak's male.animevents this session (plain one-shot .caf files,
 -- the class that renders via StartAnimation -- not the 1d_jump_* blendspaces,
 -- which never render). The old WO-38 guesses stay as a tail.
-local JUMP_ANIMS = {
+ANIMS.JUMP_ANIMS = {
     "relaxed_jump_idle",                 -- full in-place jump (Animations.pak, WO-40)
     "relaxed_run_jump_rleg_start",       -- moving jump, start half
     "relaxed_jump_start",                -- start half (pairs with land)
@@ -7458,7 +7468,7 @@ KCD2MP._jumpAnim = nil   -- nil=not probed yet, false=probed and none found, str
 -- vault (low vertical speed but a z step up), live-tuning deferred -- for
 -- now the list rides behind mp_combat_frag-style manual probing and the
 -- jump branch's fallback ordering.
-local VAULT_ANIMS = {
+ANIMS.VAULT_ANIMS = {
     "relaxed_jump_over_obstacle_idle_low",
     "relaxed_jump_over_obstacle_idle_high",
     "relaxed_jump_over_obstacle_lleg_walk_low",
@@ -7468,7 +7478,7 @@ KCD2MP._vaultAnim = nil
 
 -- Riding animation candidates (probed on first use, result cached).
 -- false = probed but none found (avoid re-probing every tick).
-local RIDING_IDLE_ANIMS = {
+ANIMS.RIDING_IDLE_ANIMS = {
     -- Confirmed working on KCD2 NPC class:
     "horse_idle",
     -- Simple names
@@ -7495,7 +7505,7 @@ local RIDING_IDLE_ANIMS = {
     -- npc specific
     "npc_horse_idle", "npc_riding_idle",
 }
-local RIDING_GALLOP_ANIMS = {
+ANIMS.RIDING_GALLOP_ANIMS = {
     -- Based on confirmed idle pattern: 1d_idle_slope_relaxed_idle_rider_01
     "1d_gallop_slope_relaxed_gallop_rider_01",
     "1d_canter_slope_relaxed_canter_rider_01",
@@ -7511,7 +7521,7 @@ KCD2MP._ridingIdleAnim  = nil   -- nil=not probed yet, false=not found, string=f
 KCD2MP._ridingGallopAnim = nil
 
 -- Horse entity animation candidates (Horse class entity, not NPC riding).
-local HORSE_ENTITY_IDLE_ANIMS = {
+ANIMS.HORSE_ENTITY_IDLE_ANIMS = {
     -- Confirmed present on KCD2 horse entities (from mp_scan_horse on real game horse):
     "relaxed_idle",
     -- Other candidates:
@@ -7522,11 +7532,11 @@ local HORSE_ENTITY_IDLE_ANIMS = {
     "horse_stand", "horse_stand_idle", "horse_rest",
 }
 -- Separate walk vs gallop so we don't accidentally use relaxed_walk for full gallop.
-local HORSE_ENTITY_WALK_ANIMS = {
+ANIMS.HORSE_ENTITY_WALK_ANIMS = {
     "relaxed_walk", "relaxed_trot",
     "horse_walk", "horse_trot", "walk", "trot",
 }
-local HORSE_ENTITY_GALLOP_ANIMS = {
+ANIMS.HORSE_ENTITY_GALLOP_ANIMS = {
     -- Fastest gaits first ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â confirmed on KCD2 horse entities:
     "relaxed_gallop", "relaxed_canter", "relaxed_run",
     -- Other candidates:
@@ -7569,21 +7579,21 @@ end
 --     attack/defense zone.
 -- The swing cue therefore is a fast right-to-left guard transition -- a
 -- big lateral sword move, human-confirmed "usable" as an attack read at a
--- few metres -- played at SWING_ANIM_SPEED. Not a true swing; the honest
+-- few metres -- played at ANIMS.SWING_ANIM_SPEED. Not a true swing; the honest
 -- reachable ceiling this build gives us.
-local COMBAT_SWING_ANIMS = {
+ANIMS.COMBAT_SWING_ANIMS = {
     "combat_rg_sz1_idle_to_lg_sz0_idle_lngsw",   -- CONFIRMED live 2026-08-18
     "combat_rg_sz1_idle_to_rg_sz5_idle_lngsw",   -- confirmed exists; second choice
 }
-local SWING_ANIM_SPEED = 1.6   -- the transition reads as a strike at this rate
-local COMBAT_BLOCK_ANIMS = {
+ANIMS.SWING_ANIM_SPEED = 1.6   -- the transition reads as a strike at this rate
+ANIMS.COMBAT_BLOCK_ANIMS = {
     "combat_rg_sz1_dz0_blk_slash_lngsw",         -- CONFIRMED live 2026-08-18
     "combat_free_blk_lngsw_player_over",         -- exists; long hold, worse read
 }
 -- Weapon-ready idle for a ghost whose owner has their weapon drawn, so the
 -- drawn state reads at a glance even between swings. Right guard: the
 -- sword arm is the raised one.
-local COMBAT_IDLE_ANIMS = {
+ANIMS.COMBAT_IDLE_ANIMS = {
     "combat_rg_sz1_idle_lngsw_player",           -- CONFIRMED live 2026-08-18
     "combat_lg_sz0_idle_lngsw_player",           -- exists; reads shield-y (left guard)
 }
@@ -7615,11 +7625,11 @@ KCD2MP.combatSwingFragTags = ""
 -- Animations.pak sweep (plain .caf clips, the class that renders via
 -- StartAnimation) -- probed with findAnim, none-found degrades to the
 -- existing KO freeze.
-local TAKEDOWN_MASTER_ANIMS = {
+ANIMS.TAKEDOWN_MASTER_ANIMS = {
     "stealth_kill_hand_stand_success_start_m",   -- choke-out, perpetrator half
     "combat_takedown_back_nw_nw_m",              -- unarmed takedown, perpetrator
 }
-local TAKEDOWN_VICTIM_ANIMS = {
+ANIMS.TAKEDOWN_VICTIM_ANIMS = {
     "stealth_kill_hand_stand_success_start_s",   -- choke-out, victim half
     "combat_takedown_back_nw_nw_s",              -- unarmed takedown, victim
 }
@@ -7630,7 +7640,7 @@ function KCD2MP_NpcTakedownCue(name, e, x, y, z)
     local p = KCD2MP.npcPuppets[name]
     -- Victim half on the NPC itself.
     if KCD2MP._takedownVictimAnim == nil then
-        KCD2MP._takedownVictimAnim = findAnim(e, TAKEDOWN_VICTIM_ANIMS) or false
+        KCD2MP._takedownVictimAnim = findAnim(e, ANIMS.TAKEDOWN_VICTIM_ANIMS) or false
         mp_log("TakedownVictimAnim: " .. tostring(KCD2MP._takedownVictimAnim))
     end
     if KCD2MP._takedownVictimAnim then
@@ -7654,7 +7664,7 @@ function KCD2MP_NpcTakedownCue(name, e, x, y, z)
     end
     if best then
         if KCD2MP._takedownMasterAnim == nil then
-            KCD2MP._takedownMasterAnim = findAnim(best.entity, TAKEDOWN_MASTER_ANIMS) or false
+            KCD2MP._takedownMasterAnim = findAnim(best.entity, ANIMS.TAKEDOWN_MASTER_ANIMS) or false
             mp_log("TakedownMasterAnim: " .. tostring(KCD2MP._takedownMasterAnim))
         end
         if KCD2MP._takedownMasterAnim then
@@ -7675,14 +7685,14 @@ end
 -- window as the ghost swing cue, applied to an NPC puppet.
 function KCD2MP_PuppetSwingCue(name, p, e)
     if KCD2MP._swingAnim == nil then
-        KCD2MP._swingAnim = findAnim(e, COMBAT_SWING_ANIMS) or false
+        KCD2MP._swingAnim = findAnim(e, ANIMS.COMBAT_SWING_ANIMS) or false
         mp_log("SwingAnim: " .. tostring(KCD2MP._swingAnim))
     end
     if not KCD2MP._swingAnim then return end
     local len = 0
     pcall(function() len = e:GetAnimationLength(0, KCD2MP._swingAnim) or 0 end)
-    pcall(function() e:StartAnimation(0, KCD2MP._swingAnim, 0, 0.08, SWING_ANIM_SPEED, false) end)
-    local dur = (len > 0 and len or 0.8) / SWING_ANIM_SPEED
+    pcall(function() e:StartAnimation(0, KCD2MP._swingAnim, 0, 0.08, ANIMS.SWING_ANIM_SPEED, false) end)
+    local dur = (len > 0 and len or 0.8) / ANIMS.SWING_ANIM_SPEED
     p.oneShotUntil = os.clock() + math.min(dur, 1.5)
     p.animTag = "swing"   -- locomotion re-asserts itself after the window
     mp_log("NPC-SYNC swing cue " .. name)
@@ -7723,7 +7733,7 @@ end
 -- with the ghost path's cache.
 function KCD2MP_CombatIdleFor(e)
     if KCD2MP._combatIdleAnim == nil then
-        KCD2MP._combatIdleAnim = findAnim(e, COMBAT_IDLE_ANIMS) or false
+        KCD2MP._combatIdleAnim = findAnim(e, ANIMS.COMBAT_IDLE_ANIMS) or false
         mp_log("CombatIdleAnim: " .. tostring(KCD2MP._combatIdleAnim))
     end
     return KCD2MP._combatIdleAnim or nil
@@ -7773,13 +7783,13 @@ function KCD2MP_GhostCombat(id, evt)
         local anim
         if evt == 2 then
             if KCD2MP._swingAnim == nil then
-                KCD2MP._swingAnim = findAnim(ghost.entity, COMBAT_SWING_ANIMS) or false
+                KCD2MP._swingAnim = findAnim(ghost.entity, ANIMS.COMBAT_SWING_ANIMS) or false
                 mp_log("SwingAnim: " .. tostring(KCD2MP._swingAnim))
             end
             anim = KCD2MP._swingAnim
         else
             if KCD2MP._blockAnim == nil then
-                KCD2MP._blockAnim = findAnim(ghost.entity, COMBAT_BLOCK_ANIMS) or false
+                KCD2MP._blockAnim = findAnim(ghost.entity, ANIMS.COMBAT_BLOCK_ANIMS) or false
                 mp_log("BlockAnim: " .. tostring(KCD2MP._blockAnim))
             end
             anim = KCD2MP._blockAnim
@@ -7789,7 +7799,7 @@ function KCD2MP_GhostCombat(id, evt)
         -- Swings play fast (the guard transition reads as a strike at 1.6x,
         -- confirmed live); blocks at natural speed. The one-shot window is
         -- the played duration, so the speed divides the length.
-        local speed = (evt == 2) and SWING_ANIM_SPEED or 1.0
+        local speed = (evt == 2) and ANIMS.SWING_ANIM_SPEED or 1.0
         local len = 0
         pcall(function() len = ghost.entity:GetAnimationLength(0, anim) or 0 end)
         pcall(function() ghost.entity:StartAnimation(0, anim, 0, 0.08, speed, false) end)
@@ -7890,9 +7900,9 @@ function KCD2MP_CombatProbe()
         System.LogAlways("[KCD2-MP] no ghost to probe anims on (spawn one first)")
         return
     end
-    local lists = { SWING = COMBAT_SWING_ANIMS, BLOCK = COMBAT_BLOCK_ANIMS, CIDLE = COMBAT_IDLE_ANIMS,
-                    JUMP = JUMP_ANIMS, VAULT = VAULT_ANIMS,
-                    TDWN_M = TAKEDOWN_MASTER_ANIMS, TDWN_S = TAKEDOWN_VICTIM_ANIMS }
+    local lists = { SWING = ANIMS.COMBAT_SWING_ANIMS, BLOCK = ANIMS.COMBAT_BLOCK_ANIMS, CIDLE = ANIMS.COMBAT_IDLE_ANIMS,
+                    JUMP = ANIMS.JUMP_ANIMS, VAULT = ANIMS.VAULT_ANIMS,
+                    TDWN_M = ANIMS.TAKEDOWN_MASTER_ANIMS, TDWN_S = ANIMS.TAKEDOWN_VICTIM_ANIMS }
     for label, list in pairs(lists) do
         local hits = {}
         for _, nm in ipairs(list) do
@@ -7935,8 +7945,8 @@ end
 -- Different enter/exit speeds prevent oscillation when speed hovers at a boundary.
 -- Enter: must EXCEED this speed to switch INTO this state.
 -- Exit:  must DROP BELOW this speed to switch OUT of this state (go lower).
-local ANIM_UP   = { walk=1.0, run=2.5, sprint=4.0 }
-local ANIM_DOWN = { walk=0.4, run=1.8, sprint=3.2 }
+ANIMS.ANIM_UP   = { walk=1.0, run=2.5, sprint=4.0 }
+ANIMS.ANIM_DOWN = { walk=0.4, run=1.8, sprint=3.2 }
 
 local function calcAnimTag(speed, cur, stance)
     if stance == "c" then
@@ -7945,21 +7955,21 @@ local function calcAnimTag(speed, cur, stance)
     -- Start from current tag and check if we cross hysteresis bands.
     local t = cur or "idle"
     if t == "sprint" then
-        if speed < ANIM_DOWN.sprint then t = "run"   else return "sprint" end
+        if speed < ANIMS.ANIM_DOWN.sprint then t = "run"   else return "sprint" end
     end
     if t == "run" then
-        if     speed >= ANIM_UP.sprint  then return "sprint"
-        elseif speed <  ANIM_DOWN.run   then t = "walk"  else return "run" end
+        if     speed >= ANIMS.ANIM_UP.sprint  then return "sprint"
+        elseif speed <  ANIMS.ANIM_DOWN.run   then t = "walk"  else return "run" end
     end
     if t == "walk" then
-        if     speed >= ANIM_UP.sprint  then return "sprint"
-        elseif speed >= ANIM_UP.run     then return "run"
-        elseif speed <  ANIM_DOWN.walk  then return "idle" else return "walk" end
+        if     speed >= ANIMS.ANIM_UP.sprint  then return "sprint"
+        elseif speed >= ANIMS.ANIM_UP.run     then return "run"
+        elseif speed <  ANIMS.ANIM_DOWN.walk  then return "idle" else return "walk" end
     end
     -- idle / sneak states
-    if     speed >= ANIM_UP.sprint then return "sprint"
-    elseif speed >= ANIM_UP.run    then return "run"
-    elseif speed >= ANIM_UP.walk   then return "walk"
+    if     speed >= ANIMS.ANIM_UP.sprint then return "sprint"
+    elseif speed >= ANIMS.ANIM_UP.run    then return "run"
+    elseif speed >= ANIMS.ANIM_UP.walk   then return "walk"
     else                                 return "idle" end
 end
 
@@ -8126,7 +8136,7 @@ function KCD2MP_UpdateAnimation(id, ghost, pumped)
         end
         if istate.animTag == "jump" then return end  -- fragment already playing
         if KCD2MP._jumpAnim == nil then
-            KCD2MP._jumpAnim = findAnim(ghost.entity, JUMP_ANIMS) or false
+            KCD2MP._jumpAnim = findAnim(ghost.entity, ANIMS.JUMP_ANIMS) or false
             mp_log("JumpAnim: " .. tostring(KCD2MP._jumpAnim))
         end
         if KCD2MP._jumpAnim then
@@ -8152,14 +8162,14 @@ function KCD2MP_UpdateAnimation(id, ghost, pumped)
     local animName
     if wantTag == "sneak_walk" then
         if not KCD2MP._sneakWalkAnim then
-            KCD2MP._sneakWalkAnim = findAnim(ghost.entity, SNEAK_WALK_ANIMS)
+            KCD2MP._sneakWalkAnim = findAnim(ghost.entity, ANIMS.SNEAK_WALK_ANIMS)
                                     or "3d_relaxed_walk_turn_strafe"
             mp_log("SneakWalkAnim: " .. KCD2MP._sneakWalkAnim)
         end
         animName = KCD2MP._sneakWalkAnim
     elseif wantTag == "sneak_idle" then
         if not KCD2MP._sneakIdleAnim then
-            KCD2MP._sneakIdleAnim = findAnim(ghost.entity, SNEAK_IDLE_ANIMS)
+            KCD2MP._sneakIdleAnim = findAnim(ghost.entity, ANIMS.SNEAK_IDLE_ANIMS)
                                     or "relaxed_idle_both"
             mp_log("SneakIdleAnim: " .. KCD2MP._sneakIdleAnim)
         end
@@ -8178,7 +8188,7 @@ function KCD2MP_UpdateAnimation(id, ghost, pumped)
         -- other list; none-found keeps the relaxed idle.
         if wantTag == "idle" and KCD2MP.ghostWeaponDrawn[id] then
             if KCD2MP._combatIdleAnim == nil then
-                KCD2MP._combatIdleAnim = findAnim(ghost.entity, COMBAT_IDLE_ANIMS) or false
+                KCD2MP._combatIdleAnim = findAnim(ghost.entity, ANIMS.COMBAT_IDLE_ANIMS) or false
                 mp_log("CombatIdleAnim: " .. tostring(KCD2MP._combatIdleAnim))
             end
             if KCD2MP._combatIdleAnim then animName = KCD2MP._combatIdleAnim end
@@ -8271,8 +8281,8 @@ end
 -- read per tick; wp is read per FROZEN ghost per tick (mp_ghost_is_corpse),
 -- immediately destructured into x/y/sz locals and never stored past the
 -- closure, so one reused table per call site is safe.
-local INTERPTICK_PLAYERPOS_SCRATCH = {}
-local INTERPTICK_WP_SCRATCH        = {}
+SCRATCH.INTERPTICK_PLAYERPOS_SCRATCH = {}
+SCRATCH.INTERPTICK_WP_SCRATCH        = {}
 function KCD2MP_InterpTick(arg, gen)
     -- WO-84: absorb the orphan of a generation KCD2MP_Stop retired. Same
     -- mechanism as the puppet chain's retirement (see KCD2MP_NpcPuppetTick);
@@ -8326,7 +8336,7 @@ function KCD2MP_InterpTick(arg, gen)
 
     -- Fetch player position once per tick for label distance calculations.
     local _playerPos = nil
-    if player then pcall(function() _playerPos = player:GetWorldPos(INTERPTICK_PLAYERPOS_SCRATCH) end) end
+    if player then pcall(function() _playerPos = player:GetWorldPos(SCRATCH.INTERPTICK_PLAYERPOS_SCRATCH) end) end
 
     for id, ghost in pairs(KCD2MP.ghosts) do
         local _ok, _err = pcall(function()  -- catch any crash, keep tick alive
@@ -8531,7 +8541,7 @@ function KCD2MP_InterpTick(arg, gen)
             local oneShot = istate.oneShotUntil and os.clock() < istate.oneShotUntil
             if frozen then
                 local wp = nil
-                pcall(function() wp = ghost.entity:GetWorldPos(INTERPTICK_WP_SCRATCH) end)
+                pcall(function() wp = ghost.entity:GetWorldPos(SCRATCH.INTERPTICK_WP_SCRATCH) end)
                 if wp then x, y, sz = wp.x, wp.y, wp.z end
             elseif oneShot then
                 -- no position/angle writes; the one-shot owns the body
@@ -8572,11 +8582,11 @@ function KCD2MP_InterpTick(arg, gen)
                     end
                     -- Probe valid riding animations once (on first ghost that is riding).
                     if KCD2MP._ridingIdleAnim == nil then
-                        KCD2MP._ridingIdleAnim = findAnim(ghost.entity, RIDING_IDLE_ANIMS) or false
+                        KCD2MP._ridingIdleAnim = findAnim(ghost.entity, ANIMS.RIDING_IDLE_ANIMS) or false
                         mp_log("RideIdleAnim: " .. tostring(KCD2MP._ridingIdleAnim))
                     end
                     if KCD2MP._ridingGallopAnim == nil then
-                        KCD2MP._ridingGallopAnim = findAnim(ghost.entity, RIDING_GALLOP_ANIMS) or false
+                        KCD2MP._ridingGallopAnim = findAnim(ghost.entity, ANIMS.RIDING_GALLOP_ANIMS) or false
                         mp_log("RideGallopAnim: " .. tostring(KCD2MP._ridingGallopAnim))
                     end
 
@@ -8635,15 +8645,15 @@ function KCD2MP_InterpTick(arg, gen)
 
                         -- Probe horse entity animations once.
                         if KCD2MP._horseEntityIdleAnim == nil then
-                            KCD2MP._horseEntityIdleAnim = findAnim(horseData.entity, HORSE_ENTITY_IDLE_ANIMS) or false
+                            KCD2MP._horseEntityIdleAnim = findAnim(horseData.entity, ANIMS.HORSE_ENTITY_IDLE_ANIMS) or false
                             mp_log("HorseEntityIdleAnim: " .. tostring(KCD2MP._horseEntityIdleAnim))
                         end
                         if KCD2MP._horseEntityWalkAnim == nil then
-                            KCD2MP._horseEntityWalkAnim = findAnim(horseData.entity, HORSE_ENTITY_WALK_ANIMS) or false
+                            KCD2MP._horseEntityWalkAnim = findAnim(horseData.entity, ANIMS.HORSE_ENTITY_WALK_ANIMS) or false
                             mp_log("HorseEntityWalkAnim: " .. tostring(KCD2MP._horseEntityWalkAnim))
                         end
                         if KCD2MP._horseEntityGallopAnim == nil then
-                            KCD2MP._horseEntityGallopAnim = findAnim(horseData.entity, HORSE_ENTITY_GALLOP_ANIMS) or false
+                            KCD2MP._horseEntityGallopAnim = findAnim(horseData.entity, ANIMS.HORSE_ENTITY_GALLOP_ANIMS) or false
                             mp_log("HorseEntityGallopAnim: " .. tostring(KCD2MP._horseEntityGallopAnim))
                         end
 
@@ -10655,8 +10665,8 @@ function KCD2MP_ProbeRidingAnims()
     System.LogAlways("[KCD2-MP] === PROBE RIDING ANIMS ===")
     local ent = ghost.entity
     local allCandidates = {}
-    for _, v in ipairs(RIDING_IDLE_ANIMS)   do allCandidates[#allCandidates+1] = v end
-    for _, v in ipairs(RIDING_GALLOP_ANIMS) do allCandidates[#allCandidates+1] = v end
+    for _, v in ipairs(ANIMS.RIDING_IDLE_ANIMS)   do allCandidates[#allCandidates+1] = v end
+    for _, v in ipairs(ANIMS.RIDING_GALLOP_ANIMS) do allCandidates[#allCandidates+1] = v end
     -- Extra patterns
     local extras = {
         "horse", "Horse", "riding", "Riding", "mounted", "Mounted",
@@ -11705,11 +11715,14 @@ end
 -- Toggle-style sneak actions (each press flips state).
 -- NOTE: chat_init_with_focus is NOT sneak ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ it's the focus/chat key (triggered by Tab/V).
 -- Stance is detected via player:GetStance() polling in KCD2MP_Exchange (reliable fallback).
-local SNEAK_TOGGLE_ACTIONS = {
+-- WO-110 Phase 0.2: the OnAction name sets, one namespace table instead of 12
+-- top-level locals (the Lua 5.1 200-local cliff, WO-109 s5.1).
+local ACTS = {}
+ACTS.SNEAK_TOGGLE_ACTIONS = {
     sneak_toggle=true, toggle_sneak=true,
 }
 -- Hold-style sneak: pressed=on, released=off (other games/bindings)
-local SNEAK_HOLD_ACTIONS = {
+ACTS.SNEAK_HOLD_ACTIONS = {
     sneak=true, stealth=true, crouch=true,
     wh_sneak=true, wh_stealth=true,
     action_sneak=true, action_stealth=true,
@@ -11717,7 +11730,7 @@ local SNEAK_HOLD_ACTIONS = {
 }
 
 -- Analog axis actions - ignore completely, they flood the log
-local AXIS_ACTIONS = {
+ACTS.AXIS_ACTIONS = {
     combat_zone_mouse_x=true, combat_zone_mouse_y=true,
     mouse_x=true, mouse_y=true, look_lx=true, look_ly=true,
     move_lx=true, move_ly=true,
@@ -11733,12 +11746,12 @@ local AXIS_ACTIONS = {
 -- listed (it is the abort, not the swing). The unconfirmed non-mouse
 -- variants stay for gamepad input, same harmless-if-never-fires idiom as
 -- the dialog_answerN guesses above.
-local COMBAT_SWING_ACTIONS = {
+ACTS.COMBAT_SWING_ACTIONS = {
     attack_primary_mouse=true,                        -- CONFIRMED live
     attack_secondary_mouse=true,                      -- same family (stab)
     attack_primary=true, attack_secondary=true,       -- gamepad guesses
 }
-local COMBAT_BLOCK_ACTIONS = {
+ACTS.COMBAT_BLOCK_ACTIONS = {
     block=true,                                       -- CONFIRMED live (hold/release)
     combat_block=true, wh_block=true,                 -- gamepad guesses
 }
@@ -11754,9 +11767,9 @@ local COMBAT_BLOCK_ACTIONS = {
 -- outside an active match (KCD2MP.dice.open false) these two actions are
 -- never consumed by the dice-board block below, so they fall through here
 -- unclaimed. mp_accept / mp_decline remain the documented console fallback.
-local ACCEPT_ACTIONS  = { ["dialog_answer1"] = true, ["confirm"] = true, ["ui_accept"] = true,
+ACTS.ACCEPT_ACTIONS  = { ["dialog_answer1"] = true, ["confirm"] = true, ["ui_accept"] = true,
                            ["kcd2mp_dice_bank"] = true }
-local DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_cancel"] = true,
+ACTS.DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_cancel"] = true,
                            ["kcd2mp_dice_yield"] = true }
 
 -- Dice-invite keybind (WO-5, real bind added WO-33). dialog_answer3/4 are the
@@ -11768,7 +11781,7 @@ local DECLINE_ACTIONS = { ["dialog_answer2"] = true, ["cancel"] = true, ["ui_can
 -- itself refuses unless a DiceInteractor entity is actually in range, so a
 -- spurious F9 press elsewhere in the world is a no-op, not an unwanted
 -- invite. mp_invite dice remains the documented console fallback.
-local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = true,
+ACTS.DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = true,
                                ["kcd2mp_dice_cast"] = true }
 
 -- Dice overlay keys (WO-6).
@@ -11829,10 +11842,10 @@ local DICE_INVITE_ACTIONS = { ["dialog_answer3"] = true, ["dialog_answer4"] = tr
 --
 -- All of these are gated on KCD2MP.dice.open, so none can fire outside a
 -- match. The mp_dice_* console commands remain and always work.
-local DICE_CONFIRM_ACTIONS = { ["kcd2mp_dice_cast"]  = true, ["toggle_torch"] = true }
-local DICE_BANK_ACTIONS    = { ["kcd2mp_dice_bank"]  = true, ["knock_out"]    = true }  -- held
-local DICE_YIELD_ACTIONS   = { ["kcd2mp_dice_yield"] = true, ["call"]         = true }  -- held
-local DICE_CANCEL_ACTIONS  = { ["kcd2mp_dice_cancel"] = true }
+ACTS.DICE_CONFIRM_ACTIONS = { ["kcd2mp_dice_cast"]  = true, ["toggle_torch"] = true }
+ACTS.DICE_BANK_ACTIONS    = { ["kcd2mp_dice_bank"]  = true, ["knock_out"]    = true }  -- held
+ACTS.DICE_YIELD_ACTIONS   = { ["kcd2mp_dice_yield"] = true, ["call"]         = true }  -- held
+ACTS.DICE_CANCEL_ACTIONS  = { ["kcd2mp_dice_cancel"] = true }
 
 -- Marking a die. kcd2mp_dice_mark_N's trailing digit is the die index, which
 -- lines up with the numbered row drawn under the dice.
@@ -11846,7 +11859,7 @@ local function diceMarkIndex(action)
 end
 
 local function handleAction(action, activation, value)
-    if AXIS_ACTIONS[action] then return end
+    if ACTS.AXIS_ACTIONS[action] then return end
     if KCD2MP.logActions then
         mp_log(string.format("ACT '%s' a=%s", tostring(action), tostring(activation)))
     end
@@ -11854,11 +11867,11 @@ local function handleAction(action, activation, value)
     -- Only consume these while a prompt is actually up, so they never interfere
     -- with normal dialogue or menus.
     if KCD2MP.invite and activation == "press" then
-        if ACCEPT_ACTIONS[action] then
+        if ACTS.ACCEPT_ACTIONS[action] then
             pcall(KCD2MP_AcceptInvite)
             return
         end
-        if DECLINE_ACTIONS[action] then
+        if ACTS.DECLINE_ACTIONS[action] then
             pcall(KCD2MP_DeclineInvite)
             return
         end
@@ -11872,14 +11885,14 @@ local function handleAction(action, activation, value)
         if activation == "press" then
             local mark = diceMarkIndex(action)
             if mark then pcall(KCD2MP_DiceMark, mark); return end
-            if DICE_CONFIRM_ACTIONS[action] then pcall(KCD2MP_DiceConfirm); return end
-            if DICE_CANCEL_ACTIONS[action] then pcall(KCD2MP_DiceUnmarkAll); return end
+            if ACTS.DICE_CONFIRM_ACTIONS[action] then pcall(KCD2MP_DiceConfirm); return end
+            if ACTS.DICE_CANCEL_ACTIONS[action] then pcall(KCD2MP_DiceUnmarkAll); return end
             -- Bank and yield are irreversible, so they are hold-to-confirm:
             -- start the timer on press, and only KCD2MP_DiceHoldTick fires them.
-            if DICE_BANK_ACTIONS[action]  then pcall(KCD2MP_DiceHoldBegin, "bank");    return end
-            if DICE_YIELD_ACTIONS[action] then pcall(KCD2MP_DiceHoldBegin, "forfeit"); return end
+            if ACTS.DICE_BANK_ACTIONS[action]  then pcall(KCD2MP_DiceHoldBegin, "bank");    return end
+            if ACTS.DICE_YIELD_ACTIONS[action] then pcall(KCD2MP_DiceHoldBegin, "forfeit"); return end
         elseif activation == "release" then
-            if DICE_BANK_ACTIONS[action] or DICE_YIELD_ACTIONS[action] then
+            if ACTS.DICE_BANK_ACTIONS[action] or ACTS.DICE_YIELD_ACTIONS[action] then
                 pcall(KCD2MP_DiceHoldEnd)
                 return
             end
@@ -11905,18 +11918,18 @@ local function handleAction(action, activation, value)
     -- branch in this hook it runs AFTER the game's own handler and cannot
     -- block or intercept any other input.
     if KCD2MP.quest and KCD2MP.quest.prompt and activation == "press" then
-        if ACCEPT_ACTIONS[action] then
+        if ACTS.ACCEPT_ACTIONS[action] then
             pcall(KCD2MP_QuestAnswer, true)
             return
         end
-        if DECLINE_ACTIONS[action] then
+        if ACTS.DECLINE_ACTIONS[action] then
             pcall(KCD2MP_QuestAnswer, false)
             return
         end
     end
     -- WO-96: with no prompt up, F12 hides a visible WAITING_FOR_PEER line
     -- (until the divergence pair changes). F11 alone does nothing here.
-    if KCD2MP.quest and not KCD2MP.quest.prompt and activation == "press" and DECLINE_ACTIONS[action]
+    if KCD2MP.quest and not KCD2MP.quest.prompt and activation == "press" and ACTS.DECLINE_ACTIONS[action]
        and KCD2MP_QuestWaitingVisible and KCD2MP_QuestWaitingVisible() then
         pcall(KCD2MP_QuestWaitingDismiss)
         return
@@ -11924,11 +11937,11 @@ local function handleAction(action, activation, value)
 
     -- Challenge the nearest player to dice (WO-5, gated to a real table in
     -- WO-6). Unlike accept/decline this has no KCD2MP.invite-style gate to
-    -- check first -- see the comment on DICE_INVITE_ACTIONS above for why
+    -- check first -- see the comment on ACTS.DICE_INVITE_ACTIONS above for why
     -- that's an accepted risk here. KCD2MP_InviteDiceAtTable refuses unless a
     -- DiceInteractor entity is actually in range, so a spurious press is now a
     -- no-op rather than an unwanted invite.
-    if DICE_INVITE_ACTIONS[action] and activation == "press" then
+    if ACTS.DICE_INVITE_ACTIONS[action] and activation == "press" then
         pcall(KCD2MP_InviteDiceAtTable)
         return
     end
@@ -11937,7 +11950,7 @@ local function handleAction(action, activation, value)
     -- Deliberately NO return -- this hook must never consume combat input;
     -- the game's own handler already ran (we are chained after it), and a
     -- swing that also triggered something else must keep doing so.
-    if COMBAT_SWING_ACTIONS[action] then
+    if ACTS.COMBAT_SWING_ACTIONS[action] then
         if activation == "press" or activation == 1 then
             local now = os.clock()
             if now - (KCD2MP._lastSwingEmit or 0) >= 0.15 then
@@ -11945,7 +11958,7 @@ local function handleAction(action, activation, value)
                 KCD2MP_EmitEvent("combat", "swing")
             end
         end
-    elseif COMBAT_BLOCK_ACTIONS[action] then
+    elseif ACTS.COMBAT_BLOCK_ACTIONS[action] then
         -- 'block' never fires 'press' on this build -- only a per-frame
         -- 'hold' stream and a 'release' (confirmed live). Edge-detect the
         -- first hold so one raise of the guard is one event, not sixty.
@@ -11967,14 +11980,14 @@ local function handleAction(action, activation, value)
     end
 
     -- Toggle-style: each press of C flips sneak on/off
-    if SNEAK_TOGGLE_ACTIONS[action] and activation == "press" then
+    if ACTS.SNEAK_TOGGLE_ACTIONS[action] and activation == "press" then
         KCD2MP.playerSneaking = not KCD2MP.playerSneaking
         mp_log("SNEAK=" .. tostring(KCD2MP.playerSneaking) .. " toggle via '" .. action .. "'")
         return
     end
 
     -- Hold-style: press = on, release = off
-    if SNEAK_HOLD_ACTIONS[action] then
+    if ACTS.SNEAK_HOLD_ACTIONS[action] then
         local pressed = (activation == "press" or activation == "hold"
                          or activation == 1 or activation == 2)
         if pressed ~= KCD2MP.playerSneaking then
