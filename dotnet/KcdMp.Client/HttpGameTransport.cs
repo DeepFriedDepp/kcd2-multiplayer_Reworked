@@ -203,25 +203,30 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             return;
         }
 
-        bool flushFirst = false, flushAfter = false;
+        // The decision and the add happen under ONE lock acquisition. Callers
+        // fire-and-forget from several loops at once (the native-scan push
+        // queues its chunks in a burst); with the check in a separate lock
+        // section every caller saw an empty queue, all of them added, and the
+        // chunks still landed in one oversize batch (observed live 2026-09-22).
+        string[]? sendFirst = null;
+        bool full = false;
         await _batchLock.WaitAsync(ct);
         try
         {
-            if (_pending.Count > 0 && _pendingEncoded + enc > MaxBatchChars) flushFirst = true;
-        }
-        finally { _batchLock.Release(); }
-        if (flushFirst) await FlushAsync(ct);   // send what is queued; this statement starts the next batch
-
-        await _batchLock.WaitAsync(ct);
-        try
-        {
+            if (_pending.Count > 0 && _pendingEncoded + enc > MaxBatchChars)
+            {
+                sendFirst = [.. _pending];   // what is queued goes out now; this statement starts the next batch
+                _pending.Clear();
+                _pendingEncoded = 0;
+            }
             _pending.Add(lua);
             _pendingEncoded += enc;
-            if (_pendingEncoded >= MaxBatchChars - 200) flushAfter = true;   // full enough: do not wait for the loop
+            if (_pendingEncoded >= MaxBatchChars - 200) full = true;   // full enough: do not wait for the loop
         }
         finally { _batchLock.Release(); }
 
-        if (flushAfter) await FlushAsync(ct);
+        if (sendFirst is not null) await SendBatchAsync(sendFirst, ct);
+        if (full) await FlushAsync(ct);
     }
 
     /// <summary>WO-110: statements that could never fit one ExecuteString and were dropped (see LuaCommandBudget).</summary>
@@ -240,6 +245,11 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             _pendingEncoded = 0;
         }
         finally { _batchLock.Release(); }
+        await SendBatchAsync(batch, ct);
+    }
+
+    private async Task SendBatchAsync(string[] batch, CancellationToken ct)
+    {
 
         // Each statement gets its own pcall so one failure cannot swallow the
         // rest of the batch -- measured: unwrapped, a fault at statement 6 of 12
