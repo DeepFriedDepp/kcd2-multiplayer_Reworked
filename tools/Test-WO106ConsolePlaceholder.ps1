@@ -60,6 +60,29 @@ if ($badCase.Count -gt 0) {
     $badCase | ForEach-Object { Write-Host "    offending: $($_.Trim())" -ForegroundColor Yellow }
 }
 
+# --- 1b. WO-110 R2: no template may QUOTE the placeholder --------------------
+# The engine substitutes %line with the typed argument ALREADY QUOTED (WO-106
+# s1.1 observed `PROBE line=["hello world"]`), so 'f("%line")' expands to
+# f(""x"") -- a Lua syntax error on every argument, for every argument-taking
+# command, from 0.26.3 until WO-110 (docs/WO-109-audit.md R2, confirmed live
+# 2026-09-22). The correct template is 'f(%line)': with an argument it runs
+# f("x"), bare it runs f() with arg nil. The original WO-106 check above only
+# looked at the case of the placeholder, so this shipped for two releases.
+$badQuote = $ccLines | Where-Object { $_ -match '["'']%line["'']' -or $_ -match '["'']%1["'']' -or $_ -match '["'']%2["'']' }
+Check ($badQuote.Count -eq 0) "no AddCCommand template wraps %line/%1/%2 in quotes (the engine inserts the argument already quoted)"
+if ($badQuote.Count -gt 0) {
+    $badQuote | ForEach-Object { Write-Host "    offending: $($_.Trim())" -ForegroundColor Yellow }
+}
+
+# --- 1c. WO-110 R2: a placeholder must be the ONLY thing between its parens --
+# 'f(%line, "x")' is a syntax error when typed bare (f(, "x")); a fixed second
+# argument has to be a default inside the handler instead.
+$badExtra = $ccLines | Where-Object { $_ -match '%line\s*,' -or $_ -match ',\s*%line' }
+Check ($badExtra.Count -eq 0) "no AddCCommand template combines %line with another argument (bare invocation would be a syntax error)"
+if ($badExtra.Count -gt 0) {
+    $badExtra | ForEach-Object { Write-Host "    offending: $($_.Trim())" -ForegroundColor Yellow }
+}
+
 # --- 2. every %line/%1/%%-taking command names a function that exists -------
 $funcNames = New-Object 'System.Collections.Generic.HashSet[string]'
 foreach ($l in $lines) {
