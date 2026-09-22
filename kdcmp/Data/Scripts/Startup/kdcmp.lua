@@ -2644,7 +2644,11 @@ local function mp_npc_smooth_render(p, now)
         if t < 0 then t = 0 elseif t > 1 then t = 1 end
         p.cx = a.x + (b.x - a.x) * t
         p.cy = a.y + (b.y - a.y) * t
-        p.cz = b.z
+        -- WO-110 R14: Z was taken from the NEWER sample while XY interpolated,
+        -- so while moving Z led XY by up to one segment -- a small,
+        -- rate-independent downhill sink / uphill float (WO-109 s1.5). Same
+        -- segment, same t.
+        p.cz = a.z + (b.z - a.z) * t
         p.cr = lerpAngle(a.rot, b.rot, t)
         local sdx, sdy = b.x - a.x, b.y - a.y
         spd = math.sqrt(sdx*sdx + sdy*sdy) / segDur
@@ -3279,6 +3283,7 @@ KCD2MP._npcResumePending = {}    -- name -> os.clock() deadline: released, pause
 KCD2MP._authViolationAt = {}     -- "name|kind" -> last logged
 KCD2MP._authViolationN = {}      -- name -> count
 KCD2MP._pauseStats = { relax = 0, gap = 0, reassert = 0, refusedNoPuppet = 0, refusedAuthority = 0, dwellResumes = 0, cancelled = 0 }
+KCD2MP._npcZStats = { n = 0, sumAbs = 0, maxAbs = 0, sinkN = 0, floatN = 0 }   -- WO-110 R14: written-vs-read-back Z over every puppet (MP-NPCZ)
 KCD2MP._chainDeadRestartAt = nil -- WO-108: stamped by chainMayStart when a chain is CONFIRMED dead (a save load); the
                                  -- reconcile sweep re-asserts every live puppet's pause after it (Phase 0: the engine
                                  -- forgets suspensions on a load while this Lua state survives it)
@@ -5607,6 +5612,14 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0,
             KCD2MP._npcDeathSuppressedN or 0))
         st.n, st.sum, st.min, st.max, st.idleN = 0, 0, 1e9, 0, 0
+        -- WO-110 R14: the Z telemetry's rollup, same 5 s cadence, only when
+        -- any puppet read back more than 5 cm off its written Z.
+        local zs = KCD2MP._npcZStats
+        if zs and zs.n > 0 then
+            mp_log(string.format("MP-NPCZ-SUMMARY n=%d mean_abs=%.3f max_abs=%.3f sink_n=%d float_n=%d rate_ms=%d",
+                zs.n, zs.sumAbs / zs.n, zs.maxAbs, zs.sinkN, zs.floatN, KCD2MP.npcPuppetTickMs or 50))
+            zs.n, zs.sumAbs, zs.maxAbs, zs.sinkN, zs.floatN = 0, 0, 0, 0, 0
+        end
     end
     -- WO-102 Phase 5: which owned NPC is this player facing? The nearest live
     -- puppet within 4 m, re-evaluated every tick, emitted on change as
@@ -5830,23 +5843,46 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                 pcall(function() ap = e:GetWorldPos(SCRATCH.NPCPUPPETTICK_AP_SCRATCH) end)
                 if ap then
                     local fx, fy = ap.x - p.lastWroteX, ap.y - p.lastWroteY
+                    -- WO-110 R14: the first log line that can see SINKING. Every
+                    -- displacement detector below was XY-only, so every sinking
+                    -- report to date was unfalsifiable from logs (WO-109 R14).
+                    -- delta = read-back Z minus written Z on the tick after the
+                    -- write; negative = the body sits lower than we put it.
+                    -- Per-puppet throttle 2 s, only while |delta| > 0.05 m.
+                    local fz = 0
+                    if p.lastWroteZ then
+                        fz = ap.z - p.lastWroteZ
+                        if math.abs(fz) > 0.05 then
+                            local zs = KCD2MP._npcZStats
+                            zs.n = zs.n + 1; zs.sumAbs = zs.sumAbs + math.abs(fz)
+                            if math.abs(fz) > zs.maxAbs then zs.maxAbs = math.abs(fz) end
+                            if fz < 0 then zs.sinkN = zs.sinkN + 1 else zs.floatN = zs.floatN + 1 end
+                            if (now - (p.zLogAt or -1e9)) >= 2.0 then
+                                p.zLogAt = now
+                                mp_log(string.format("MP-NPCZ npc=%s wrote=%.3f read=%.3f delta=%.3f xy_delta=%.3f rate_ms=%d pause_issued=%d anim=%s",
+                                    name, p.lastWroteZ, ap.z, fz, math.sqrt(fx*fx + fy*fy), KCD2MP.npcPuppetTickMs or 50,
+                                    KCD2MP._npcPaused[name] and 1 or 0, tostring(p.animTag)))
+                            end
+                        end
+                    end
+                    local f2 = fx*fx + fy*fy + fz*fz   -- WO-110 R14: the detectors below measure 3-D displacement now
                     -- WO-99 Phase 2: sustained sub-8 m contention -> yield.
                     local yc = KCD2MP.npcYield
                     if KCD2MP.wo102.authorityHost then
                         -- WO-102 Phase 4: no yielding -- no second writer is
                         -- allowed. Sustained contention is a violation, logged,
                         -- never a hand-back.
-                        if yc and (fx*fx + fy*fy) > yc.dispM * yc.dispM then
+                        if yc and f2 > yc.dispM * yc.dispM then
                             p.yieldStreak = (p.yieldStreak or 0) + 1
                             if p.yieldStreak >= (yc.ticks or 10) then
-                                mp_wo102_violation(name, p, "contention", math.sqrt(fx*fx + fy*fy), fx, fy)   -- WO-108 s3.3: may be tagged relax
+                                mp_wo102_violation(name, p, "contention", math.sqrt(f2), fx, fy)   -- WO-108 s3.3: may be tagged relax
                                 p.yieldStreak = 0
                             end
                         else
                             p.yieldStreak = 0
                         end
                     elseif yc and yc.enabled and not p.yielded then
-                        if (fx*fx + fy*fy) > yc.dispM * yc.dispM then
+                        if f2 > yc.dispM * yc.dispM then
                             p.yieldStreak = (p.yieldStreak or 0) + 1
                             if p.yieldStreak >= yc.ticks then
                                 p.yielded = true
@@ -5855,7 +5891,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                 KCD2MP._npcYieldN = (KCD2MP._npcYieldN or 0) + 1
                                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "yield", now - (p.ownerSince or now))   -- WO-102
                                 mp_log(string.format("MP-NPCYIELD npc=%s state=yield disp_m=%.2f streak=%d fight_n=%d total_yields=%d total_repins=%d",
-                                    name, math.sqrt(fx*fx + fy*fy), p.yieldStreak, p.fightN or 0,
+                                    name, math.sqrt(f2), p.yieldStreak, p.fightN or 0,
                                     KCD2MP._npcYieldN, KCD2MP._npcRepinN or 0))
                             end
                         else
@@ -5871,10 +5907,10 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                     -- act at. It also LOGS now, throttled: the count alone
                     -- only ever printed from the manual mp_npc_fight command,
                     -- which no field session has ever run.
-                    if (fx*fx + fy*fy) > 0.0025 then
+                    if f2 > 0.0025 then
                         p.fightN = (p.fightN or 0) + 1
                         KCD2MP._stats.npcFightEvents = KCD2MP._stats.npcFightEvents + 1
-                        local fdist = math.sqrt(fx*fx + fy*fy)
+                        local fdist = math.sqrt(f2)
                         -- WO-98 Phase 6: the machine-readable record is a
                         -- per-NPC 10 s aggregate; the prose line stays for a
                         -- human skimming the log, at 30 s instead of 5 s.
@@ -5941,14 +5977,14 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         -- not 760 (we write every tick, so most ticks read
                         -- back exactly where we put it; the engine yanks it
                         -- away intermittently).
-                        if KCD2MP.wo102.authorityHost and (fx*fx + fy*fy) > TUNE.MP_NPC_DIVERGE_M * TUNE.MP_NPC_DIVERGE_M then
+                        if KCD2MP.wo102.authorityHost and f2 > TUNE.MP_NPC_DIVERGE_M * TUNE.MP_NPC_DIVERGE_M then
                             -- WO-102 Phase 4: under host authority there is no
                             -- second world to diverge from. The body is NOT
                             -- released -- the stream stays the truth -- and the
                             -- event is logged loudly as what it is: something
                             -- on this machine is still writing this body.
-                            mp_wo102_violation(name, p, "diverge", math.sqrt(fx*fx + fy*fy), fx, fy)
-                        elseif KCD2MP.npcDiverge and (fx*fx + fy*fy) > TUNE.MP_NPC_DIVERGE_M * TUNE.MP_NPC_DIVERGE_M then
+                            mp_wo102_violation(name, p, "diverge", math.sqrt(f2), fx, fy)
+                        elseif KCD2MP.npcDiverge and f2 > TUNE.MP_NPC_DIVERGE_M * TUNE.MP_NPC_DIVERGE_M then
                             local keep = {}
                             for _, t0 in ipairs(p.farHits or {}) do
                                 if (now - t0) <= TUNE.MP_NPC_DIVERGE_WINDOW_S then keep[#keep + 1] = t0 end
@@ -5960,16 +5996,16 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                     "NPC-DIVERGE %s: local world moved it %.1fm from our write, %d times in %.0fs"
                                     .. " -- releasing the puppet and leaving it to this world for %.0fs"
                                     .. " (WO-90; `mp_npc_diverge off` to restore the pre-WO-90 tug-of-war)",
-                                    name, math.sqrt(fx*fx + fy*fy), #keep, TUNE.MP_NPC_DIVERGE_WINDOW_S,
+                                    name, math.sqrt(f2), #keep, TUNE.MP_NPC_DIVERGE_WINDOW_S,
                                     TUNE.MP_NPC_DIVERGE_COOLDOWN_S))
                                 -- WO-94: a release inside a catch-up window is the "dragged NPC state" hazard (WO-92 s6.4 hazard 3).
-                                if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-dragged", string.format("%s released by the divergence rule (%.1fm from our write)", name, math.sqrt(fx*fx + fy*fy))) end
+                                if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-dragged", string.format("%s released by the divergence rule (%.1fm from our write)", name, math.sqrt(f2))) end
                                 KCD2MP_NpcReplicaDemote(name, "diverge")   -- WO-104
                                 KCD2MP.npcPuppets[name] = nil
                                 KCD2MP._npcDivergeUntil[name] = now + TUNE.MP_NPC_DIVERGE_COOLDOWN_S
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
                                 mp_log(string.format("MP-NPCDIVERGE npc=%s dist_m=%.1f hits=%d window_s=%.0f standoff_s=%.0f total=%d",
-                                    name, math.sqrt(fx*fx + fy*fy), #keep, TUNE.MP_NPC_DIVERGE_WINDOW_S, TUNE.MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN))
+                                    name, math.sqrt(f2), #keep, TUNE.MP_NPC_DIVERGE_WINDOW_S, TUNE.MP_NPC_DIVERGE_COOLDOWN_S, KCD2MP._npcDivergeN))
                                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "diverge", now - (p.ownerSince or now))   -- WO-102
                                 -- Tell the player, at most once a minute: an
                                 -- NPC that suddenly stops matching the other
@@ -6067,7 +6103,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             end
 
             e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
-            p.lastWroteX, p.lastWroteY = p.cx, p.cy
+            p.lastWroteX, p.lastWroteY, p.lastWroteZ = p.cx, p.cy, p.cz   -- WO-110 R14: Z too, for MP-NPCZ
             pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
 
             -- Animation from rendered speed. Without this the NPC slides in
