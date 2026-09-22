@@ -2286,7 +2286,13 @@ KCD2MP.wo1025 = {
     -- 150 m circle in a town is behind buildings or just far from both
     -- players. An engaged NPC (fighting a player) is never culled by
     -- construction -- NPC_ENGAGE_RANGE_SQ's 12 m is always inside this.
-    cullRadius = 30.0,
+    -- WO-110 Phase 2.4 (maintainer request): 30 m was too small for play.
+    -- WO-109 s4.3: the relay is not the wall (60 m is ~6 KB/s typical,
+    -- ~160 frames/s, inside the joiner's estimated Lua ingress ceiling);
+    -- R3's 40-name cap was, and it is gone. Console door: mp_cull_radius
+    -- <m>, floor 10, hard ceiling 150 (clamped, logged loudly).
+    -- mp_preset_legacy sets 30 (the 0.26.4 value).
+    cullRadius = 60.0,
     npcCull = true,   -- mp_npc_cull_on|off
     -- WO-102.5 Phase 4: ONE coarse together/apart state for the whole
     -- session, not per-NPC proximity ownership (deliberately unlike the
@@ -2432,6 +2438,35 @@ function KCD2MP_SetPuppetRate(arg)
     KCD2MP.npcPuppetTickMs = ms
     mp_log(string.format("NPC-PUPPET-RATE set=%.0fms was=%.0fms", ms, was))
     KCD2MP_ShowInteractionMsg(string.format("Puppet write rate: %.0fms", ms))
+    return true
+end
+
+-- WO-110 Phase 2.4: the streaming (cull) radius gets its console door.
+CULL_RADIUS_MIN, CULL_RADIUS_MAX = 10.0, 150.0   -- fields, not locals: the 200-local cliff (Phase 0.2)
+function KCD2MP_SetCullRadius(arg)
+    local w = KCD2MP.wo1025
+    if arg == nil or tostring(arg):match("^%s*$") then
+        mp_log(string.format("WO1025-CULL-RADIUS current=%.1f (mp_cull_radius <metres>, %.0f..%.0f; default 60, 0.26.4 was 30; cull %s)",
+            w.cullRadius, CULL_RADIUS_MIN, CULL_RADIUS_MAX, w.npcCull and "on" or "off"))
+        return true
+    end
+    local m = tonumber(arg)
+    if not m or m ~= m then
+        mp_log("WO1025-CULL-RADIUS rejected '" .. tostring(arg) .. "' -- expected a number of metres")
+        return false
+    end
+    if m < CULL_RADIUS_MIN then
+        mp_log(string.format("WO1025-CULL-RADIUS %.1f raised to the floor of %.0f m", m, CULL_RADIUS_MIN)); m = CULL_RADIUS_MIN
+    end
+    if m > CULL_RADIUS_MAX then
+        mp_log(string.format("WO1025-CULL-RADIUS %.1f EXCEEDS THE HARD CEILING -- clamped to %.0f m (WO-109 s4.3: the dense-town all-moving bound past this exceeds the joiner's Lua ingress)", m, CULL_RADIUS_MAX))
+        pcall(function() KCD2MP_ShowNativeToast(string.format("KCD2-MP: cull radius clamped to %.0f m", CULL_RADIUS_MAX)) end)
+        m = CULL_RADIUS_MAX
+    end
+    local was = w.cullRadius
+    w.cullRadius = m
+    mp_log(string.format("WO1025-CULL-RADIUS set=%.1f was=%.1f", m, was))
+    KCD2MP_ShowInteractionMsg(string.format("NPC streaming radius: %.0fm", m))
     return true
 end
 
@@ -3584,9 +3619,9 @@ KCD2MP._presets = {
     -- WO-110: `legacy` is the 0.26.4 build (was 0.26.3 in WO-108); `clean` is
     -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = false, npc_track_max = 200 },
+               npc_read_native = false, npc_track_max = 200, cull_radius_m = 60 },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = true,  npc_track_max = 40 },
+               npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30 },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -3616,6 +3651,7 @@ function KCD2MP_ApplyPreset(which)
     set("together_params", string.format("%.0f %.0f %.0f", w.togetherEnterM, w.togetherExitM, w.togetherDwellS), "60 90 10", function() KCD2MP_SetTogetherParams("60 90 10") end)
     set("npc_read_native", w.readNative,                 P.npc_read_native, function() KCD2MP_SetNpcReadNative(P.npc_read_native and "on" or "off") end)   -- WO-110 R1
     set("npc_track_max",   w.npcTrackMax,                P.npc_track_max,   function() KCD2MP_SetNpcTrackMax(P.npc_track_max) end)                          -- WO-110 R3
+    set("cull_radius_m",   w.cullRadius,                 P.cull_radius_m,   function() KCD2MP_SetCullRadius(P.cull_radius_m) end)                           -- WO-110 2.4
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -11666,7 +11702,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
     System.AddCCommand("mp_npc_scan_compare",    "KCD2MP_NpcScanCompare()",                   "WO-102.5 Phase 2 known-answer check: diff the native scan's last pushed name set against a fresh Lua GetEntitiesInSphere enumerate over the same anchors/radius")
-    System.AddCCommand("mp_npc_cull_on",         'KCD2MP_SetNpcCull("on")',                   "WO-102.5 Phase 3: under host authority, an owned NPC beyond cullRadius is tracked but not streamed (default on). Radius: mp_authority_radius <metres>")
+    System.AddCCommand("mp_npc_cull_on",         'KCD2MP_SetNpcCull("on")',                   "WO-102.5 Phase 3: under host authority, an owned NPC beyond the streaming radius is tracked but not streamed (default on). Radius: mp_cull_radius <metres>")
+    System.AddCCommand("mp_cull_radius",         'KCD2MP_SetCullRadius(%line)',               "WO-110: the NPC streaming radius around every player: mp_cull_radius <metres> (10..150, default 60; 0.26.4 was 30); bare = report")
     System.AddCCommand("mp_npc_cull_off",        'KCD2MP_SetNpcCull("off")',                  "WO-102.5 Phase 3: stream every owned NPC regardless of distance")
     System.AddCCommand("mp_authority_radius",    'KCD2MP_SetAuthorityRadius(%line)',        "WO-102.5/WO-106: set the host-authority NPC ownership radius: mp_authority_radius <metres> (default 300, floor 10)")
     System.AddCCommand("mp_together_params",     'KCD2MP_SetTogetherParams(%line)',         "WO-102.5/WO-106: set the together/apart hysteresis band: mp_together_params <enterM> <exitM> <dwellS>, or 'on' for defaults (60 90 10)")
