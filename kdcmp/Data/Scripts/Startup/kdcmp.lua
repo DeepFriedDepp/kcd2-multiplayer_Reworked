@@ -653,6 +653,9 @@ local function chainMayStart(key, flagField, stampField, restart)
             end
             mine.deadConfirmed = true
             KCD2MP._chainDeadRestartAt = os.clock()   -- WO-108: a save load forgets engine NPC suspensions; the pause reconcile re-asserts after this
+            -- WO-110 R7: the same stamp resets the bookkeeping a load leaves
+            -- stale (death marks, pending dwells, last-written positions).
+            if KCD2MP_OnChainDeadRestart then pcall(KCD2MP_OnChainDeadRestart, key) end
             mp_log(string.format(
                 "CHAIN %s confirmed dead (timers fire, no heartbeat for %.1fs) -- restarting",
                 key, os.clock() - (KCD2MP[stampField] or os.clock())))
@@ -3414,6 +3417,49 @@ local function mp_wo102_pending_tick()
         KCD2MP._pauseStats.dwellResumes = KCD2MP._pauseStats.dwellResumes + 1
         mp_wo102_resume(name, "dwell")
     end
+end
+
+-- WO-110 R7 (docs/WO-109-audit.md R7): a save load leaves this Lua state
+-- acting on bookkeeping the engine no longer shares. Called from chainMayStart
+-- the moment a chain is CONFIRMED dead (the existing WO-108 stamp), once per
+-- 5 s however many chains die together:
+--   (a) _npcDeathSeen is cleared, so an NPC that is dead in the loaded save is
+--       "first seen already dead -- not announced" instead of a fresh
+--       alive->dead transition that kills the peer's copy;
+--   (b) pending dwells are forgotten AND the names leave _npcPaused: the
+--       engine dropped every suspension with the load (WO-108 Phase 0), so
+--       resuming them later would be a no-op against a body the reconcile
+--       sweep (event=reassert) is about to pause again if it is still a
+--       puppet, or that is simply free if it is not;
+--   (c) every puppet's lastWroteX/Y/Z is cleared, so the first read-back after
+--       the load is not a false kind=diverge (plus its toast).
+KCD2MP._reloadResetAt = nil
+KCD2MP._reloadResetN = 0
+function KCD2MP_OnChainDeadRestart(key)
+    local now = os.clock()
+    if KCD2MP._reloadResetAt and (now - KCD2MP._reloadResetAt) < 5.0 then return end
+    KCD2MP._reloadResetAt = now
+    KCD2MP._reloadResetN = KCD2MP._reloadResetN + 1
+    local deaths = 0
+    for _ in pairs(KCD2MP._npcDeathSeen or {}) do deaths = deaths + 1 end
+    KCD2MP._npcDeathSeen = {}
+    local dwells = 0
+    for name in pairs(KCD2MP._npcResumePending) do
+        dwells = dwells + 1
+        local at = KCD2MP._npcPaused[name]
+        KCD2MP._npcResumePending[name] = nil
+        KCD2MP._npcPaused[name] = nil
+        mp_pause_log(name, "forget", "none", "chain-dead-restart", "?", at and (now - at) or 0)
+    end
+    KCD2MP._pauseStats.forgot = (KCD2MP._pauseStats.forgot or 0) + dwells
+    local puppets = 0
+    for _, p in pairs(KCD2MP.npcPuppets or {}) do
+        puppets = puppets + 1
+        p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
+        p.yieldStreak, p.farHits = 0, nil
+    end
+    mp_log(string.format("MP-RELOAD-RESET chain=%s death_seen_cleared=%d dwells_forgotten=%d puppets_reset=%d n=%d",
+        tostring(key), deaths, dwells, puppets, KCD2MP._reloadResetN))
 end
 
 -- WO-102.5 Phase 1: the agent's own disconnect/shutdown path (GameBridge.cs,

@@ -24,6 +24,13 @@
 --       legacy = 0.26.4 (read native on, cap 40, radius 30); both log every
 --       value; the pause lever stays ON in both
 --   (i) the new console commands are registered with the unquoted %line
+--   (j) R7: on a confirmed-dead chain restart (a save load) the death marks
+--       are cleared (a save-dead NPC is "first seen already dead", not
+--       announced), pending dwells are forgotten and leave _npcPaused, every
+--       puppet's lastWrote is cleared (no false diverge), once per 5 s
+--   (k) R4: KCD2MP_AuthorityOwnerLog writes MP-AUTHORITY-OWNER to kcd.log
+--   (l) R5: the owner logs MP-NPCID (wuid/eid/body) on acquire and on the
+--       first emit of a name
 --
 -- What this proves: the Lua half behaves as documented. What it does NOT
 -- prove: anything about the engine or a second machine.
@@ -336,6 +343,74 @@ do
         local c = CCMDS[name]
         check("i: " .. name .. " registered with an unquoted %line", c ~= nil and c.body:find("(%line)", 1, true) ~= nil and not c.body:find('"%line"', 1, true), c and c.body)
     end
+end
+
+-- ---------------------------------------------------------------- (j)
+do
+    reset(); NOW = 800
+    local a = mkEntity("j_a", 0, 0, 0); local b = mkEntity("j_b", 5, 0, 0)
+    -- a live puppet with a written position, a paused name mid-dwell, and a
+    -- name seen alive (so a later "dead" would be a fresh transition)
+    tick("j_a", 0, 0, 0); tick("j_a", 0.1, 0, 0)
+    check("j: precondition -- puppet has a last-written position", KCD2MP.npcPuppets["j_a"].lastWroteX ~= nil)
+    KCD2MP._npcPaused["j_b"] = NOW - 20; KCD2MP._npcEverPaused["j_b"] = true
+    KCD2MP._npcResumePending["j_b"] = NOW + 5
+    KCD2MP._npcDeathSeen["j_c"] = false
+    clearLog()
+    KCD2MP_OnChainDeadRestart("npcsync")
+    check("j: death marks cleared", next(KCD2MP._npcDeathSeen) == nil)
+    check("j: pending dwell forgotten and the name left _npcPaused", KCD2MP._npcResumePending["j_b"] == nil and KCD2MP._npcPaused["j_b"] == nil)
+    check("j: forget is logged as an MP-PAUSE event", logCount("MP-PAUSE npc=j_b event=forget") == 1 and (lastLog("MP-PAUSE npc=j_b") or ""):find("why=chain-dead-restart", 1, true) ~= nil, lastLog("MP-PAUSE npc=j_b"))
+    check("j: no wh_ai_ResumeNPC was issued for the forgotten name (the engine already forgot)", #CMDS == 0 or not tostring(CMDS[#CMDS]):find("ResumeNPC j_b", 1, true))
+    check("j: every puppet's lastWrote cleared", KCD2MP.npcPuppets["j_a"].lastWroteX == nil and KCD2MP.npcPuppets["j_a"].lastWroteZ == nil)
+    check("j: one MP-RELOAD-RESET line with counts (j_a seen alive by the puppet tick + j_c)", logCount("MP-RELOAD-RESET chain=npcsync death_seen_cleared=2 dwells_forgotten=1 puppets_reset=1") == 1, lastLog("MP-RELOAD-RESET"))
+    -- a save-dead NPC after the reset is not announced
+    b.dead = true
+    KCD2MP.hitSensorOn = true; KCD2MP.npcTracked["j_b"] = { since = NOW }; SPHERE = { b }
+    KCD2MP._lastAnchors = { { x = 0, y = 0, z = 0 } }
+    clearLog(); NOW = NOW + 0.1; KCD2MP_NpcSyncTick()
+    check("j: a save-dead NPC is 'first seen already dead', never announced", logCount("first seen already dead") == 1 and evtCount("npc_death", "j_b") == 0, lastLog("NPC-DEATH"))
+    -- idempotent within 5 s: a second chain dying in the same load does not reset twice
+    KCD2MP._npcDeathSeen["j_d"] = true
+    KCD2MP_OnChainDeadRestart("puppet")
+    check("j: a second chain death inside 5 s is a no-op", KCD2MP._npcDeathSeen["j_d"] == true and KCD2MP._reloadResetN == 1)
+    NOW = NOW + 6
+    KCD2MP_OnChainDeadRestart("puppet")
+    check("j: after 5 s it resets again", KCD2MP._npcDeathSeen["j_d"] == nil and KCD2MP._reloadResetN == 2)
+    -- the chain gate calls it: a confirmed-dead restart stamps AND resets
+    KCD2MP._npcDeathSeen["j_e"] = true; NOW = NOW + 6
+    KCD2MP.npcSyncRunning = true; KCD2MP._npcSyncAliveAt = NOW - 30   -- stale heartbeat: chain looks dead
+    TIMERS = {}
+    KCD2MP_StartNpcSync()                                             -- arms the probe
+    check("j: precondition -- a probe timer was armed", #TIMERS >= 1)
+    local fired = 0
+    while #TIMERS > 0 and fired < 4 do local t = table.remove(TIMERS, 1); fired = fired + 1; t.f() end   -- probe + settle, heartbeat still stale
+    check("j: the confirmed-dead restart ran the reset (death mark gone)", KCD2MP._npcDeathSeen["j_e"] == nil and logCount("MP-RELOAD-RESET chain=npcsync") >= 1, lastLog("CHAIN"))
+    check("j: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (k)
+do
+    reset(); NOW = 900
+    KCD2MP_AuthorityOwnerLog(3, true)
+    check("k: MP-AUTHORITY-OWNER written to kcd.log with self_id and authority", logCount("MP-AUTHORITY-OWNER self_id=3 authority=self reason=relay-combatrole") == 1, lastLog("MP-AUTHORITY-OWNER"))
+    KCD2MP_AuthorityOwnerLog(4, false)
+    check("k: ...and for the peer role", logCount("MP-AUTHORITY-OWNER self_id=4 authority=peer") == 1)
+end
+
+-- ---------------------------------------------------------------- (l)
+do
+    reset(); NOW = 1000
+    KCD2MP.hitSensorOn = true; KCD2MP.wo102.npcScanNative = false
+    local e = mkEntity("l_a", 3, 0, 0); SPHERE = { e }
+    clearLog()
+    KCD2MP._npcScanAt = 0
+    KCD2MP_NpcSyncTick()
+    check("l: the owner logs MP-NPCID on acquire with wuid/eid/body", logCount("MP-NPCID npc=l_a wuid=05000000000001DC eid=") == 2 and logCount("body=NPC via=acquire") == 1, lastLog("MP-NPCID"))
+    check("l: ...and once on the first emit", logCount("via=first-emit") == 1, tostring(logCount("via=first-emit")))
+    NOW = NOW + 0.1; e.px = 3.5; KCD2MP_NpcSyncTick()
+    check("l: the first-emit line is logged once per name", logCount("via=first-emit") == 1)
+    check("l: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 for _, r in ipairs(RESULTS) do print(r) end
