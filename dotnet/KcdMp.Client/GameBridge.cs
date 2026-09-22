@@ -313,25 +313,33 @@ public partial class GameBridge(ClientConfig config)
     // (WO-102.5 findings S6.3) held zero violations and culling kept 150m's
     // streaming cost to 22-of-78, so the two agree before any change.
     private volatile float _npcScanRadiusM = 300.0f;
-    // WO-102.5 picked 200 for a NAMES-ONLY push (~20 chars/name average,
-    // ~4000 chars total -- exactly HttpGameTransport.MaxBatchChars). WO-103
-    // Phase 2 adds "x:y:z:yaw:isHorse" to every entry (~37 more chars even at
-    // the worst-case 59-char name, per npc_scan.h's kMaxNameLen): unchanged,
-    // 200 entries could run past 10,000 chars over an ExecuteString GET --
-    // the transport does not split a single statement across requests (only
-    // batches separate ones), so an oversized one either fails outright or
-    // silently never lands, and Lua's own staleness gate then just falls
-    // back to the live read for every name it never received (safe, just
-    // wasted native work). Recomputed for the richer entry, worst case:
-    // (59-char name + 37) * 40 + ~60 chars of KCD2MP_ApplyNativeScan(...)
-    // wrapper stays under 4000. At high tracked counts (Phase 3's ceiling
-    // search) this becomes the tighter bottleneck vs the native wire's own
-    // ~200-400 entry ceiling (kMaxReplyBytes=8000) -- most tracked NPCs
-    // beyond the first 40 simply keep falling back to the live Lua read,
-    // which is correct, just not the win Phase 2 intended for them. Chunking
-    // the push across multiple ExecuteString calls would fix this; not built
-    // this session (docs/WO-103-findings.md).
-    private const int    NpcScanMaxNamesPushed = 40;
+    // WO-110 R3 (docs/WO-109-audit.md R3). Until 0.26.4 this was a constant
+    // 40, applied in the DLL's iterator order, and the comment here claimed
+    // the rest "fall back to the live Lua read". They did not: under host
+    // authority mp_npc_rescan tracks ONLY pushed names and untracks
+    // everything else, so the owner owned at most the first 40 NPCs the
+    // engine happened to walk, not the nearest -- roughly half the NPCs
+    // inside the streaming radius were never streamed or paused.
+    //
+    // Now: entries are sorted by distance to the nearest anchor BEFORE the
+    // cap, the push is chunked into several KCD2MP_ApplyNativeScan(csv, gen,
+    // idx, total) statements (each under ~3 KB, so the cap is no longer
+    // forced by HttpGameTransport.MaxBatchChars), and the cap is a runtime
+    // setting: mp_npc_track_max <n> in the mod, mirrored here through the
+    // npc_track_max event exactly like authority_radius. Default 200: the
+    // largest NPC/NPC_Female/Horse count observed inside 150 m of a dense
+    // town spot was 76 (WO-109 s4.3) and the 60 m streaming radius holds
+    // 45-48, so with distance ordering the STREAMING RADIUS decides
+    // coverage, not this number; 200 is also the lower end of the native
+    // reply's own byte ceiling (kMaxReplyBytes=8000, ~200-400 entries), and
+    // the owner's per-tick state reads cost ~1.5 ms per 100 ms at 78 tracked
+    // (WO-103 s5.1), i.e. ~4 ms at 200 -- affordable. mp_preset_legacy sets
+    // 40 (the 0.26.4 value; the ordering fix is unconditional).
+    private const int    NpcTrackMaxDefault = 200;
+    private const int    NpcTrackMaxFloor = 10, NpcTrackMaxCeiling = 400;
+    private const int    NpcScanChunkChars = 3000;
+    private volatile int _npcTrackMax = NpcTrackMaxDefault;
+    private uint _npcScanGen;
     private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
     private bool _npcScanWasReplyTruncated;   // WO-103 Phase 1: edge-triggered loud log, mirrors npc_scan.cpp's g_wasTruncated
 
@@ -4983,6 +4991,19 @@ public partial class GameBridge(ClientConfig config)
                 break;
             }
 
+            case "npc_track_max":
+            {
+                // WO-110 R3: mp_npc_track_max <n> in the mod -- the push cap
+                // is Lua-owned like authority_radius and announced the same way.
+                if (int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cap))
+                {
+                    _npcTrackMax = Math.Clamp(cap, NpcTrackMaxFloor, NpcTrackMaxCeiling);
+                    Console.WriteLine(FormattableString.Invariant($"[npcscan] track cap set to {_npcTrackMax} (asked {cap})"));
+                }
+                else Console.WriteLine($"[npcscan] ignored malformed npc_track_max '{arg}'");
+                break;
+            }
+
             case "npc_deathsync":
                 // WO-86: mp_npc_deathsync on|off, mirrored here because the
                 // inbound death apply runs in the agent (Lua writes are inert)
@@ -5744,18 +5765,50 @@ public partial class GameBridge(ClientConfig config)
         // Each entry now carries name:x:y:z:yaw:isHorse -- colon-separated,
         // comma-joined; safe with no escaping since the name gate already
         // forbids ':' and ',' and the floats never produce either.
-        var entries = new List<string>(res.Entries.Count);
+        // WO-110 R3: nearest-first, THEN the cap. Distance is to the nearest
+        // anchor (the owner's player and each co-located peer ghost), XY only
+        // like the mod's own cull test. Without this the cap truncated in the
+        // DLL iterator's order, which has nothing to do with proximity.
         int filtered = 0;
+        var ranked = new List<(float D2, NpcScanEntry E)>(res.Entries.Count);
         foreach (var e in res.Entries)
         {
             if (!NpcNamePattern.IsMatch(e.Name)) { filtered++; continue; }
-            if (entries.Count >= NpcScanMaxNamesPushed) { _npcScanNamesTruncated++; break; }
+            float best = float.MaxValue;
+            foreach (var a in anchors)
+            {
+                float dx = e.X - a.X, dy = e.Y - a.Y;
+                float d2 = dx * dx + dy * dy;
+                if (d2 < best) best = d2;
+            }
+            ranked.Add((best, e));
+        }
+        ranked.Sort((p, q) => p.D2.CompareTo(q.D2));
+        int cap = _npcTrackMax;
+        var entries = new List<string>(Math.Min(cap, ranked.Count));
+        foreach (var (_, e) in ranked)
+        {
+            if (entries.Count >= cap) { _npcScanNamesTruncated++; break; }
             entries.Add(FormattableString.Invariant(
                 $"{e.Name}:{e.X:F3}:{e.Y:F3}:{e.Z:F3}:{e.Yaw:F4}:{(e.IsHorse ? 1 : 0)}"));
         }
+        // Chunk so no single ExecuteString statement outgrows the transport
+        // (HttpGameTransport.MaxBatchChars is 4000 and a statement is never
+        // split); the mod reassembles by (gen, idx, total) and commits when
+        // every chunk of a generation has arrived, in any order.
+        var chunks = new List<string>();
+        var cur = new StringBuilder();
+        foreach (var s in entries)
+        {
+            if (cur.Length > 0 && cur.Length + 1 + s.Length > NpcScanChunkChars) { chunks.Add(cur.ToString()); cur.Clear(); }
+            if (cur.Length > 0) cur.Append(',');
+            cur.Append(s);
+        }
+        if (cur.Length > 0 || chunks.Count == 0) chunks.Add(cur.ToString());
+        float farthestM = entries.Count > 0 ? MathF.Sqrt(ranked[entries.Count - 1].D2) : 0f;
 
         Console.WriteLine(FormattableString.Invariant(
-            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={_npcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={entries.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
+            $"MP-NPCSCAN dir=native anchors={anchors.Count} radius_m={_npcScanRadiusM:F0} total_walked={res.TotalWalked} matched={res.Entries.Count} pushed={entries.Count} cap={cap} farthest_pushed_m={farthestM:F1} chunks={chunks.Count} name_filtered={filtered} name_rejects={res.NameRejects} wire_truncated={(res.Truncated ? 1 : 0)} dur_ms={sw.Elapsed.TotalMilliseconds:F1}"));
         if (res.Truncated) _npcScanTruncatedWire++;
 
         // WO-103 Phase 1: this used to be silent past the wire_truncated=
@@ -5772,8 +5825,13 @@ public partial class GameBridge(ClientConfig config)
         }
 
         _npcScanPushes++;
-        string payload = EscapeLua(string.Join(',', entries));
-        _ = ExecLuaAsync($"if KCD2MP_ApplyNativeScan then KCD2MP_ApplyNativeScan(\"{payload}\") end");
+        uint gen = unchecked(++_npcScanGen);
+        for (int i = 0; i < chunks.Count; i++)
+        {
+            string payload = EscapeLua(chunks[i]);
+            _ = ExecLuaAsync(FormattableString.Invariant(
+                $"if KCD2MP_ApplyNativeScan then KCD2MP_ApplyNativeScan(\"{payload}\",{gen},{i + 1},{chunks.Count}) end"));
+        }
     }
 
     /// <summary>

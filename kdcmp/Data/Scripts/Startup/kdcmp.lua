@@ -3584,9 +3584,9 @@ KCD2MP._presets = {
     -- WO-110: `legacy` is the 0.26.4 build (was 0.26.3 in WO-108); `clean` is
     -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = false },
+               npc_read_native = false, npc_track_max = 200 },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = true },
+               npc_read_native = true,  npc_track_max = 40 },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -3615,6 +3615,7 @@ function KCD2MP_ApplyPreset(which)
     set("authority_radius_m", w.authorityRadius,         300,               function() KCD2MP_SetAuthorityRadius("300") end)
     set("together_params", string.format("%.0f %.0f %.0f", w.togetherEnterM, w.togetherExitM, w.togetherDwellS), "60 90 10", function() KCD2MP_SetTogetherParams("60 90 10") end)
     set("npc_read_native", w.readNative,                 P.npc_read_native, function() KCD2MP_SetNpcReadNative(P.npc_read_native and "on" or "off") end)   -- WO-110 R1
+    set("npc_track_max",   w.npcTrackMax,                P.npc_track_max,   function() KCD2MP_SetNpcTrackMax(P.npc_track_max) end)                          -- WO-110 R3
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -4041,23 +4042,82 @@ end
 -- rather than erroring, since "the scan found nothing near you" is a normal
 -- reply, not a malformed one.
 KCD2MP._nativeScan = { at = nil, names = {}, pos = {} }
+-- WO-110 R3: the agent now pushes one scan as several chunks,
+-- KCD2MP_ApplyNativeScan(csv, gen, idx, total), each under ~3 KB so the cap is
+-- no longer forced by the transport's 4000-char batch (it was 40 names, in
+-- engine walk order, for two releases). Chunks of one generation are
+-- collected here and committed together when the last arrives, in any order
+-- (an inline flush and a main-loop flush can be in flight at once, WO-109
+-- R6). A one-argument call (gen nil) is the pre-WO-110 shape and commits at
+-- once. Generations older than 10 s are dropped.
+KCD2MP._nativeScanChunks = {}
+KCD2MP._nativeScanStats = { commits = 0, chunks = 0, dropped = 0 }
 
-function KCD2MP_ApplyNativeScan(csv)
+function KCD2MP_ApplyNativeScan(csv, gen, idx, total)
     local names, pos = {}, {}
-    if csv and #csv > 0 then
-        for entry in string.gmatch(csv, "[^,]+") do
+    local function parse(text)
+        if not text or #text == 0 then return end
+        for entry in string.gmatch(text, "[^,]+") do
             local name, x, y, z, yaw, horse =
                 string.match(entry, "^([%w_]+):(%-?[%d%.]+):(%-?[%d%.]+):(%-?[%d%.]+):(%-?[%d%.]+):([01])$")
-            if name then
+            if name and not pos[name] then
                 names[#names + 1] = name
                 pos[name] = { x = tonumber(x), y = tonumber(y), z = tonumber(z),
                               yaw = tonumber(yaw), isHorse = (horse == "1") }
             end
         end
     end
+    local st = KCD2MP._nativeScanStats
+    gen, idx, total = tonumber(gen), tonumber(idx), tonumber(total)
+    if gen and idx and total and total > 1 then
+        st.chunks = st.chunks + 1
+        local now = os.clock()
+        for g, acc in pairs(KCD2MP._nativeScanChunks) do
+            if (now - acc.at) > 10.0 then KCD2MP._nativeScanChunks[g] = nil; st.dropped = st.dropped + 1 end
+        end
+        local acc = KCD2MP._nativeScanChunks[gen]
+        if not acc then acc = { at = now, parts = {}, got = 0, total = total }; KCD2MP._nativeScanChunks[gen] = acc end
+        if not acc.parts[idx] then acc.parts[idx] = csv or ""; acc.got = acc.got + 1 end
+        if acc.got < acc.total then return end
+        KCD2MP._nativeScanChunks[gen] = nil
+        for i = 1, acc.total do parse(acc.parts[i]) end
+    else
+        if gen and idx and total then st.chunks = st.chunks + 1 end
+        parse(csv)
+    end
+    st.commits = st.commits + 1
     KCD2MP._nativeScan.names = names
     KCD2MP._nativeScan.pos = pos
     KCD2MP._nativeScan.at = os.clock()
+end
+
+-- WO-110 R3: the push cap, Lua-owned and announced to the agent on the event
+-- channel like authority_radius. Default 200 (see GameBridge.cs
+-- NpcTrackMaxDefault for the arithmetic: the largest count observed inside
+-- 150 m of a dense town spot was 76, the 60 m streaming radius holds 45-48,
+-- so with nearest-first ordering the streaming radius decides coverage, not
+-- this). Floor 10, ceiling 400 (the native reply's own byte ceiling).
+-- mp_preset_legacy sets 40, the 0.26.4 value.
+KCD2MP.wo1025.npcTrackMax = 200
+function KCD2MP_SetNpcTrackMax(arg)
+    if arg == nil or tostring(arg):match("^%s*$") then
+        mp_log(string.format("MP-NPCTRACK cap=%d (mp_npc_track_max <n>, 10..400; default 200, 0.26.4 was 40 in engine walk order)", KCD2MP.wo1025.npcTrackMax))
+        return true
+    end
+    local n = tonumber(arg)
+    if not n or n ~= n then
+        mp_log("mp_npc_track_max rejected '" .. tostring(arg) .. "' -- expected a number of NPCs")
+        return false
+    end
+    n = math.floor(n)
+    if n < 10 then mp_log(string.format("mp_npc_track_max %d raised to the floor of 10", n)); n = 10 end
+    if n > 400 then mp_log(string.format("mp_npc_track_max %d CLAMPED to the ceiling of 400 (the native scan reply's byte budget)", n)); n = 400 end
+    local was = KCD2MP.wo1025.npcTrackMax
+    KCD2MP.wo1025.npcTrackMax = n
+    mp_log(string.format("MP-NPCTRACK cap set=%d was=%d", n, was))
+    KCD2MP_ShowInteractionMsg(string.format("NPC track cap: %d", n))
+    KCD2MP_EmitEvent("npc_track_max", tostring(n))
+    return true
 end
 
 -- WO-103 Phase 2 known-answer check, on the model of KCD2MP_NpcScanCompare
@@ -11614,6 +11674,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_read_native_on",  'KCD2MP_SetNpcReadNative("on")',              "WO-103 Phase 2: a tracked NPC's position/yaw comes from the agent's native scan push when fresh, falling back to the live e:GetWorldPos() read otherwise (default on)")
     System.AddCCommand("mp_npc_read_native_off", 'KCD2MP_SetNpcReadNative("off")',             "WO-103 Phase 2: always read position/yaw live off the entity, as before this WO")
     System.AddCCommand("mp_npc_read_compare",    "KCD2MP_NpcReadCompare()",                    "WO-103 Phase 2 known-answer check: diff the native push's position/yaw against a fresh live read for every currently-tracked name; a real mismatch fails mp_npc_read_native closed")
+    System.AddCCommand("mp_npc_track_max",       'KCD2MP_SetNpcTrackMax(%line)',               "WO-110 R3: how many NPCs (nearest first) the native scan pushes for the owner to track: mp_npc_track_max <n> (10..400, default 200; 0.26.4 was 40 in engine walk order); bare = report")
 
     -- Dropped-item sync (WO-48)
     System.AddCCommand("mp_item_sync",   'KCD2MP_EnableItemSync(%line)', "WO-48: share deliberately dropped items with peers: mp_item_sync on|off")

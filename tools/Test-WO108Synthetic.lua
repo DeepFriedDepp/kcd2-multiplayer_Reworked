@@ -291,14 +291,16 @@ do
               tostring(KCD2MP.npcYield.enabled), tostring(KCD2MP.wo1025.resumeDwellS), tostring(KCD2MP.wo1025.readNative), tostring(lastLog("WO103-READNATIVE") or lastLog("MP-NPCREAD"))))
     check("g: legacy re-applies the shared values too (puppet rate, radius)", KCD2MP.npcPuppetTickMs == 50 and KCD2MP.wo1025.authorityRadius == 300)
     local nLegacy = logCount("MP-PRESET name=legacy set=")
-    check("g: every value logs one MP-PRESET line (16)", nLegacy == 16, tostring(nLegacy))
-    check("g: applied line says authority_model=untouched", logCount("MP-PRESET applied name=legacy values=16 authority_model=untouched") == 1, lastLog("MP-PRESET applied"))
+    check("g: every value logs one MP-PRESET line (17)", nLegacy == 17, tostring(nLegacy))   -- WO-110: + npc_track_max
+    check("g: applied line says authority_model=untouched", logCount("MP-PRESET applied name=legacy values=17 authority_model=untouched") == 1, lastLog("MP-PRESET applied"))
+    check("g: legacy -> 0.26.4 track cap 40", KCD2MP.wo1025.npcTrackMax == 40 and logCount("[KCD2-MP-EVT] v1 ") >= 1)
     check("g: authority model untouched by legacy", KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.npcScanNative == true)
     clearLog()
     KCD2MP_ApplyPreset("clean")
     check("g: clean -> lever on, replicas off, yield off, dwell 10",
           KCD2MP.wo102.authorityPause == true and KCD2MP.npcReplica.enabled == false and KCD2MP.npcYield.enabled == false and KCD2MP.wo1025.resumeDwellS == 10.0)
-    check("g: clean logs 16 values too", logCount("MP-PRESET name=clean set=") == 16)
+    check("g: clean logs 17 values too", logCount("MP-PRESET name=clean set=") == 17)
+    check("g: clean -> track cap 200", KCD2MP.wo1025.npcTrackMax == 200)
     check("g: a from->to line names the R1 flip", logCount("MP-PRESET name=clean set=npc_read_native from=true to=false") == 1)
     check("g: clean -> native NPC read off (WO-110 R1 default)", KCD2MP.wo1025.readNative == false)
     check("g: round trip lands on the shipped defaults", KCD2MP.wo102.authorityPause == DEF_PAUSE and KCD2MP.npcReplica.enabled == DEF_REPLICA
