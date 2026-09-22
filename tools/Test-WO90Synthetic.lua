@@ -122,6 +122,14 @@ local function mkEntity(name, x, y, z, cls)
     end
     e.SetWorldAngles = function(self, a) self.rz = a.z end
     e.StartAnimation = function(self, layer, anim) self.anims[#self.anims + 1] = { anim = anim, at = NOW } end
+    -- WO-110 (WO-109 s2.9): WO-106 Phase 5 made every mod spawn call
+    -- entity:SetFlags(ENTITY_FLAG_NO_SAVE, 3) through mp_set_no_save; this
+    -- harness had no SetFlags, so scenario (i) reported a swallowed
+    -- "attempt to call a nil value" that was a mock gap, not a mod bug.
+    -- Same stub shape as Test-WO104Synthetic.lua's.
+    e.lastSetFlags = nil
+    e.SetFlags = function(self, flags, mode) self.lastSetFlags = { flags = flags, mode = mode } end
+    e.GetFlags = function(self) return (self.lastSetFlags and self.lastSetFlags.flags) or 0 end
     e.actor = setmetatable({
         IsDead        = function() return e.dead end,
         IsUnconscious = function() return e.ko end,

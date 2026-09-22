@@ -80,18 +80,43 @@ if (-not $SkipPublish) {
     Write-Host "Agent unit tests (dotnet\KcdMp.Client.Tests) ..."
     & dotnet test (Join-Path $root "dotnet\KcdMp.Client.Tests\KcdMp.Client.Tests.csproj") -c Release --nologo -v q
     if ($LASTEXITCODE -ne 0) { throw "agent unit tests FAILED. Not shipping." }
-    Write-Host "WO-102 synthetic authority suite (tools\Test-WO102Synthetic.ps1) ..."
-    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Test-WO102Synthetic.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "WO-102 synthetic suite FAILED. Not shipping." }
-    # WO-104: the time_now formatting guard (a "%g" tostring mimic -- the exact
-    # field failure that killed time sync past 1e6 world-seconds) and the
-    # replica promote/demote/refuse paths. A regression here does not ship.
-    Write-Host "WO-104 synthetic time-format + replica suite (tools\Test-WO104Synthetic.ps1) ..."
-    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Test-WO104Synthetic.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "WO-104 synthetic suite FAILED. Not shipping." }
+
+    # WO-110 R10 (docs/WO-109-audit.md): EVERY synthetic suite gates the
+    # release, not four of them. Before this, WO-108's own suite, WO-86,
+    # WO-99, NpcSmooth, GhostInterp, WO-106's static check and WO-90 (which
+    # was failing on a harness mock gap for two releases) never ran here.
+    # The list is a glob so a new Test-*Synthetic.ps1 is gated the moment it
+    # is added; nothing has to remember to register it.
+    $suites = Get-ChildItem (Join-Path $PSScriptRoot "Test-*Synthetic.ps1") | Sort-Object Name
+    if ($suites.Count -lt 14) { throw "release gate: expected at least 14 Test-*Synthetic.ps1 suites, found $($suites.Count) -- the tools folder is incomplete" }
+    foreach ($suite in $suites) {
+        Write-Host "Synthetic suite $($suite.Name) ..."
+        & powershell -ExecutionPolicy Bypass -File $suite.FullName
+        if ($LASTEXITCODE -ne 0) { throw "$($suite.Name) FAILED. Not shipping." }
+    }
+    # The two static checks on kdcmp.lua: the console placeholder rules (WO-106
+    # case, WO-110 quoting -- R2 shipped for two releases with the case check
+    # alone) and the Lua 5.1 200-local cliff (WO-110 Phase 0.2; MoonSharp does
+    # not enforce it, so no suite above can see it).
+    foreach ($static in @("Test-WO106ConsolePlaceholder.ps1", "Test-WO110LuaLocals.ps1")) {
+        Write-Host "Static check $static ..."
+        & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $static)
+        if ($LASTEXITCODE -ne 0) { throw "$static FAILED. Not shipping." }
+    }
 
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Publish-Release.ps1 failed" }
+
+    # WO-110 R10: execute the MERGED payload. Publish-Release flat-copies four
+    # self-contained publishes over each other (later projects overwrite
+    # shared DLLs) and no gate had ever started the result. This starts the
+    # published relay and the published agent from a byte-identical copy of
+    # the payload (a copy, so the run's own kcdmp-client.json / agent.log /
+    # relay.log never land in the folder the installer is about to embed),
+    # completes one Handshake + Ping/Pong round trip through the published
+    # protocol assembly on both sides, and fails the build otherwise.
+    & (Join-Path $PSScriptRoot "Test-PayloadSmoke.ps1") -Payload $payload
+    if ($LASTEXITCODE -ne 0) { throw "payload smoke FAILED -- the published agent and relay did not complete a round trip. Not shipping." }
 }
 
 # The .iss embeds this folder wholesale, so an empty or missing one would

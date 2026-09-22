@@ -360,6 +360,7 @@ public sealed class ClientConfig
                         NpcScanNativeEnabled = false;
                         break;
                     case "--benchmark":
+                    case "--relay-smoke":   // WO-110 R10
                         // Handled in Program before the agent starts; listed
                         // here so it is not reported as an unknown argument.
                         break;

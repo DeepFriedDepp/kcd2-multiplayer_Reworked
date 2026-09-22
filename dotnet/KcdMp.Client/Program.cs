@@ -99,6 +99,18 @@ if (args.Contains("--fingerprint"))
     return 0;
 }
 
+// --relay-smoke (WO-110 R10): connect to the relay, handshake, one Ping/Pong,
+// print RELAY-SMOKE and exit. Never touches the game. The release gate runs
+// the PUBLISHED agent against the PUBLISHED relay this way, so the merged
+// payload folder is executed before an installer embeds it (RelaySmoke.cs).
+// Handled before name resolution (no kcd.log needed) and before anything
+// writes a config file next to the exe.
+if (args.Contains("--relay-smoke"))
+{
+    string smokeName = config.PlayerName is { Length: > 0 } pn ? pn : "relay-smoke";
+    return await RelaySmoke.RunAsync(config.ServerHost, config.ServerPort, smokeName, TimeSpan.FromSeconds(15));
+}
+
 // --benchmark measures the game channel and exits; it never touches the relay,
 // so it needs no name resolution and no server.
 if (args.Contains("--benchmark"))

@@ -92,12 +92,18 @@ New-Item -ItemType Directory -Path $masterServerOutDir -Force | Out-Null
 Copy-Item "$masterServerPublish\*" $masterServerOutDir -Recurse -Force
 
 # --- Native plugin + injector ---
+# WO-110 R10 (docs/WO-109-audit.md s5.3): ALWAYS rebuilt, not only when
+# missing. A stale KCDMP.dll beside a fresh agent used to be prevented by the
+# fresh-clone discipline alone -- there is no DLL/agent version handshake to
+# catch it -- and a working-tree publish after a native edit shipped whatever
+# native\build already held. Build-Native.ps1 parks a DLL that a running game
+# still has loaded, so this is safe with the game up.
 $nativeDll = Join-Path $root "native\build\KCDMP\KCDMP.dll"
 $nativeInjector = Join-Path $root "native\build\KCDMP_LauncherInjector\KCDMP_LauncherInjector.exe"
-if (-not (Test-Path $nativeDll) -or -not (Test-Path $nativeInjector)) {
-    Write-Output "Native artifacts missing, building..."
-    & powershell -ExecutionPolicy Bypass -File (Join-Path $root "native\Build-Native.ps1")
-}
+Write-Output "Building the native plugin + injector (always, WO-110 R10)..."
+& powershell -ExecutionPolicy Bypass -File (Join-Path $root "native\Build-Native.ps1")
+if ($LASTEXITCODE -ne 0) { throw "native build failed" }
+if (-not (Test-Path $nativeDll) -or -not (Test-Path $nativeInjector)) { throw "native build produced no artifacts at $nativeDll / $nativeInjector" }
 Copy-Item $nativeDll $OutDir -Force
 Copy-Item $nativeInjector $OutDir -Force
 
