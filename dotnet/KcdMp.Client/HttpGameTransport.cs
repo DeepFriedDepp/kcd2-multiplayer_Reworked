@@ -216,9 +216,32 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             sb.Append("pcall(function() ").Append(stmt).Append(" end)\n");
         }
 
+        // WO-110 Phase 6 (WO-109 s2.3): a failed flush drops EVERY statement
+        // in the batch -- one Lua syntax error fails the whole ExecuteString
+        // before any per-statement pcall runs, and an 800 ms timeout drops it
+        // too. This used to be silent. Logged with the count and the head of
+        // the batch, throttled to one line per 5 s so a stuck game does not
+        // flood; the total is in the counter for the summary.
         try { await SendNowAsync(sb.ToString(), ct); }
-        catch { /* fire-and-forget, same as the unbatched path */ }
+        catch (Exception ex)
+        {
+            BatchesDropped++;
+            StatementsDropped += batch.Length;
+            var now = DateTime.UtcNow;
+            if ((now - _lastDropLogUtc) >= TimeSpan.FromSeconds(5))
+            {
+                _lastDropLogUtc = now;
+                string head = batch[0].Length > 120 ? batch[0][..120] + "..." : batch[0];
+                Console.WriteLine($"MP-BATCH-DROP statements={batch.Length} total_batches={BatchesDropped} total_statements={StatementsDropped} why={ex.GetType().Name}: {ex.Message} first=\"{head}\"");
+            }
+        }
     }
+
+    /// <summary>WO-110 Phase 6: batches whose ExecuteString failed (timeout, HTTP error, a syntax error in any statement).</summary>
+    public long BatchesDropped { get; private set; }
+    /// <summary>WO-110 Phase 6: statements lost inside those batches.</summary>
+    public long StatementsDropped { get; private set; }
+    private DateTime _lastDropLogUtc = DateTime.MinValue;
 
     /// <summary>Sends immediately, bypassing the batch buffer.</summary>
     private async Task SendNowAsync(string lua, CancellationToken ct = default)

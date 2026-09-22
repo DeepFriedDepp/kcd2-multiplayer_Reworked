@@ -4,7 +4,7 @@
 -- seconds:
 --
 --   NPC-SYNC packet cadence: n=11 mean=2057ms min=1923ms max=2206ms
---     (emitter is 100ms; apply tick is 50ms; ...)
+--     (receiver assumes emitter 100ms; apply tick is <mp_puppet_rate>ms; ...)
 --
 -- with a session mean-of-means of 1,738 ms (host) and 1,887 ms (joiner), and
 -- not one five-second window under 100 ms. Read literally that says the NPC
@@ -264,7 +264,7 @@ do
         s.mean >= 95 and s.mean <= 105, s.mean)
     check("(c) ...the idlers are visible, but separately", s.idle >= 4, s.idle)
     check("(c) ...the printed line names both the emit interval and the heartbeat",
-        (lastLog("NPC-SYNC packet cadence", mark) or ""):find("emitter is 100ms, heartbeat 2000ms", 1, true) ~= nil,
+        (lastLog("NPC-SYNC packet cadence", mark) or ""):find("receiver assumes emitter 100ms, heartbeat 2000ms", 1, true) ~= nil,   -- WO-110 Phase 6: the label says whose number it is
         lastLog("NPC-SYNC packet cadence", mark))
     -- The pre-WO-95 behaviour, computed over the same window for contrast:
     -- one mean over motion and heartbeat together.

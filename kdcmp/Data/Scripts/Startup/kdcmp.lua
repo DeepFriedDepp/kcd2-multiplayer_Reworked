@@ -372,7 +372,7 @@ function KCD2MP_LogSummary(reason)
         .. " ghosts=%d ghost_packets=%d puppets=%d npcfight_events=%d diverge_releases=%d quest_divergences=%d"
         .. " quest_prompts=%d quest_fires=%d clock_offset_ms=%s clock_rtt_ms=%s npc_yields=%d npc_repins=%d"
         .. " auth_acquire=%d auth_release=%d auth_owner_changes=%d auth_model=%s"
-        .. " auth_pauses=%d auth_resumes=%d auth_paused_now=%d auth_violations=%d"
+        .. " auth_pauses=%d auth_resumes=%d auth_pause_issued_now=%d auth_violations=%d"
         .. " resync_bursts=%d resync_emitted=%d resync_applied=%d resync_moved=%d resync_skipped=%d"
         .. " replica_promotes=%d replica_demotes=%d replica_refused=%d replica_active=%d replica_orphans=%d replica_violations=%d"
         .. " pause_relax=%d pause_gaps=%d pause_reasserts=%d pause_dwell_resumes=%d pause_cancelled=%d pause_pending=%d pause_refused=%d",
@@ -3253,7 +3253,8 @@ function KCD2MP_Wo102Status()
     for _ in pairs(KCD2MP._npcPaused or {}) do paused = paused + 1 end
     for _ in pairs(KCD2MP._npcResumePending or {}) do pending = pending + 1 end
     for _ in pairs(KCD2MP._npcEverPaused or {}) do ever = ever + 1 end
-    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s npc_scan_native=%s authority=%s paused_npcs=%d"
+    -- WO-110 Phase 6: `pause_issued_npcs` -- the Lua table, not engine state (WO-108 s3.2; engine read = WO-110 R8, not shipped)
+    mp_log(string.format("WO102-STATUS authority_host=%s pos_native=%s authority_pause=%s npc_scan_native=%s authority=%s pause_issued_npcs=%d"
         .. " pause_pending=%d pause_ever=%d pause_dwell_s=%.1f npc_replica=%s npc_yield=%s",
         KCD2MP.wo102.authorityHost and "on" or "off",
         KCD2MP.wo102.posNative and "on" or "off",
@@ -3498,6 +3499,32 @@ function KCD2MP_OnChainDeadRestart(key)
     end
     mp_log(string.format("MP-RELOAD-RESET chain=%s death_seen_cleared=%d dwells_forgotten=%d puppets_reset=%d n=%d",
         tostring(key), deaths, dwells, puppets, KCD2MP._reloadResetN))
+end
+
+-- WO-110 Phase 6 (WO-109 s2.3): the four human:IsInDialog guards used to
+-- default to "not in dialogue" silently when the call threw. Logged once per
+-- (name, site) and counted; the default stands (nothing else is readable).
+KCD2MP._dialogGuardFailed = {}
+KCD2MP._dialogGuardFailedN = 0
+function KCD2MP_DialogGuardFailed(name, where)
+    KCD2MP._dialogGuardFailedN = KCD2MP._dialogGuardFailedN + 1
+    local key = tostring(name) .. "|" .. tostring(where)
+    if KCD2MP._dialogGuardFailed[key] then return end
+    KCD2MP._dialogGuardFailed[key] = true
+    mp_log(string.format("MP-DIALOG-GUARD npc=%s site=%s verdict=call-failed default=not-in-dialog n=%d", tostring(name), tostring(where), KCD2MP._dialogGuardFailedN))
+end
+
+-- WO-110 Phase 6 (WO-109 s2.5): dwell resumes lived only in KCD2MP_NpcSyncTick,
+-- which the agent re-arms only while mp_npc_sync is on -- so with the sync
+-- off plus a load, a pending resume could never fire until mp_resume_all.
+-- The ghost interp chain (re-armed regardless) now also drives the pending
+-- dwells, once a second. mp_wo102_pending_tick is a local defined above.
+KCD2MP._pendingTickAt = 0
+function KCD2MP_DwellTickFromInterp()
+    local now = os.clock()
+    if (now - (KCD2MP._pendingTickAt or 0)) < 1.0 then return end
+    KCD2MP._pendingTickAt = now
+    if next(KCD2MP._npcResumePending) ~= nil then pcall(mp_wo102_pending_tick) end
 end
 
 -- WO-102.5 Phase 1: the agent's own disconnect/shutdown path (GameBridge.cs,
@@ -4432,7 +4459,7 @@ local function mp_wo1025_colocate_transition(newTogether, distM)
         for name, t in pairs(KCD2MP.npcTracked) do
             local e = System.GetEntityByName(name)
             local inDialog = false
-            pcall(function() if e and e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end)
+            if not pcall(function() if e and e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end) then KCD2MP_DialogGuardFailed(name, "colocate") end   -- WO-110 Phase 6
             if t.sentEngaged or inDialog then
                 frozen = frozen + 1
                 KCD2MP._colocatePendingRelease[name] = true
@@ -4914,7 +4941,7 @@ function KCD2MP_NpcSyncTick()
             -- NPC stays tracked either way).
             if KCD2MP._colocatePendingRelease[name] and not engaged then
                 local inDialog = false
-                pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end)
+                if not pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end) then KCD2MP_DialogGuardFailed(name, "synctick") end   -- WO-110 Phase 6
                 if not inDialog then
                     KCD2MP._colocatePendingRelease[name] = nil
                     KCD2MP.npcTracked[name] = nil
@@ -5184,7 +5211,7 @@ function KCD2MP_NpcReplicaPromote(name, p, why)
 
     local inDialog = false
     if e.human and type(e.human.IsInDialog) == "function" then
-        pcall(function() inDialog = e.human:IsInDialog() == true end)
+        if not pcall(function() inDialog = e.human:IsInDialog() == true end) then KCD2MP_DialogGuardFailed(name, "body") end   -- WO-110 Phase 6
     end
     if inDialog then return mp_replica_refuse(name, "in-dialog") end
 
@@ -5215,7 +5242,7 @@ function KCD2MP_NpcReplicaPromote(name, p, why)
         r = System.GetEntityByName(rname)
     end)
     if not r then return mp_replica_refuse(name, "spawn-failed") end
-    mp_set_no_save(r)   -- WO-106 Phase 5: never let a replica into the player's save
+    if not mp_set_no_save(r) then mp_log("NO-SAVE flag FAILED on replica " .. tostring(r and r:GetName())) end   -- WO-106 Phase 5 / WO-110: checked
     local rSoul = false
     pcall(function() rSoul = r.soul ~= nil end)
     if not rSoul then
@@ -5431,7 +5458,7 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src, seq, senderMs)
             local streamDead = (math.floor(fIn) % 2) == 1
             local locallyDead, inDialog, nearPlayer = false, false, false
             if e.actor then pcall(function() locallyDead = e.actor:IsDead() == true end) end
-            pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end)
+            if not pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end) then KCD2MP_DialogGuardFailed(name, "resync") end   -- WO-110 Phase 6
             if player then
                 pcall(function()
                     local pp = player:GetWorldPos()
@@ -5747,11 +5774,12 @@ function KCD2MP_NpcPuppetTick(arg, gen)
         st.dumpAt = now
         mp_log(string.format(
             "NPC-SYNC packet cadence: moving n=%d mean=%.0fms min=%.0fms max=%.0fms; idle-heartbeat n=%d"
-            .. " (emitter is %dms, heartbeat %.0fms;"
-            .. " apply tick is 50ms; chain leaks=%d orphans absorbed=%d corpse writes suppressed=%d)"
+            .. " (receiver assumes emitter %dms, heartbeat %.0fms;"
+            .. " apply tick is %dms; chain leaks=%d orphans absorbed=%d corpse writes suppressed=%d)"
             .. " sender-spacing n=%d mean=%.0fms min=%.0fms max=%.0fms seq_gaps=%d seq_behind=%d seq_dup=%d senderclock=%s",
             st.n, st.n > 0 and (st.sum / st.n) or 0, st.n > 0 and st.min or 0, st.max, st.idleN or 0,
             KCD2MP.npcSync.emitMs or 250, ((KCD2MP.npcSync.heartbeatS or 2.0) * 1000),
+            KCD2MP.npcPuppetTickMs or 50,   -- WO-110 Phase 6: the real tick, not a hard-coded 50
             KCD2MP._chainLeakN.puppet or 0, KCD2MP._npcPuppetRetiredN or 0,
             KCD2MP._npcDeathSuppressedN or 0,
             st.sN or 0, (st.sN or 0) > 0 and (st.sSum / st.sN) or 0, (st.sN or 0) > 0 and st.sMin or 0, st.sMax or 0,
@@ -6592,7 +6620,7 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
         System.LogAlways("[KCD2-MP] SpawnEntity failed for ghost id=" .. tostring(id))
         return nil
     end
-    mp_set_no_save(entity)   -- WO-106 Phase 5: never let a ghost body into the player's save
+    if not mp_set_no_save(entity) then mp_log("NO-SAVE flag FAILED on ghost body " .. tostring(name)) end   -- WO-106 Phase 5 / WO-110: checked
 
     -- WO-69: verify-after-spawn. The face-pick line above records what was
     -- ASKED FOR; on its own it is not evidence of what the engine built. A
@@ -6680,7 +6708,7 @@ function KCD2MP_SpawnGhost(id, x, y, z, rotZ)
             System.LogAlways("[KCD2-MP] fallback respawn failed for ghost id=" .. tostring(id))
             return nil
         end
-        mp_set_no_save(entity)   -- WO-106 Phase 5: this is a fresh entity, flag it too
+        if not mp_set_no_save(entity) then mp_log("NO-SAVE flag FAILED on respawned ghost body") end   -- WO-106 Phase 5 / WO-110: checked
         local reClass = nil
         pcall(function() reClass = entity.class end)
         System.LogAlways(string.format(
@@ -7111,7 +7139,7 @@ function KCD2MP_SpawnHorse(id, x, y, z, rotZ)
         mp_log("HorseSpawn FAILED id=" .. id)
         return nil
     end
-    mp_set_no_save(horse)   -- WO-106 Phase 5: a mod-spawned proxy horse, never save it
+    if not mp_set_no_save(horse) then mp_log("NO-SAVE flag FAILED on proxy horse") end   -- WO-106 Phase 5 / WO-110: checked
 
     pcall(function() horse:SetWorldAngles({x=0, y=0, z=rotZ or 0}) end)
     pcall(function() horse:SetMountableByPlayer(false) end)
@@ -8604,6 +8632,7 @@ function KCD2MP_InterpTick(arg, gen)
         return
     end
     if not KCD2MP.interpRunning then return end
+    if KCD2MP_DwellTickFromInterp then KCD2MP_DwellTickFromInterp() end   -- WO-110 Phase 6: dwell resumes even with mp_npc_sync off
     -- WO-78: chain identity, mirroring the puppet tick's WO-69 instrument.
     -- `gen` is nil for the external menu pump (never reschedules, cannot leak)
     -- and for any legacy bare reschedule. The 2026-09-11 field session had no
@@ -9488,7 +9517,7 @@ function KCD2MP_Start()
     end
     KCD2MP.running = true
     KCD2MP.tickCount = 0
-    System.LogAlways("[KCD2-MP] Starting (pos tick=500ms, interp tick=50ms)")
+    System.LogAlways("[KCD2-MP] Starting (pos tick=500ms, interp tick=20ms)")   -- WO-110 Phase 6: it runs at 20 ms (KCD2MP_StartInterp), not 50
     Script.SetTimer(500, KCD2MP_Tick)
     KCD2MP_StartInterp()
 end
@@ -10852,7 +10881,7 @@ function KCD2MP_SpawnArmoredNPC(items_csv, preset_guid, weapon_preset)
         return
     end
     System.LogAlways("[KCD2-MP] SpawnArmoredNPC: entityId=" .. tostring(npc.id))
-    mp_set_no_save(npc)   -- WO-106 Phase 5: a mod test spawn, never save it
+    if not mp_set_no_save(npc) then mp_log("NO-SAVE flag FAILED on test spawn") end   -- WO-106 Phase 5 / WO-110: checked
 
     -- Visually equip via ClothingPreset FIRST (may reset inventory state)
     if preset_guid and preset_guid ~= "" then
@@ -11089,7 +11118,7 @@ function KCD2MP_SpawnHorseTest()
         })
         if ok and ent then
             System.LogAlways(string.format("[KCD2-MP] SUCCESS class='%s' entityId=%s", cls, tostring(ent.id)))
-            mp_set_no_save(ent)   -- WO-106 Phase 5: a mod test spawn, never save it
+            if not mp_set_no_save(ent) then mp_log("NO-SAVE flag FAILED on test spawn") end   -- WO-106 Phase 5 / WO-110: checked
             -- Don't remove it - let user see which one appears in-game
         else
             System.LogAlways(string.format("[KCD2-MP] FAIL class='%s' err=%s", cls, tostring(ent)))
@@ -11350,11 +11379,13 @@ function KCD2MP_TestXGenSpawn(className)
         if ent then
             System.LogAlways("[KCD2-MP] TestXGenSpawn: entity found id=" .. tostring(ent.id)
                 .. " class=" .. tostring(ent.class))
-            mp_set_no_save(ent)   -- WO-106 Phase 5: belt-and-braces -- this already self-removes in 10s
+            if not mp_set_no_save(ent) then mp_log("NO-SAVE flag FAILED on xgen test spawn") end   -- WO-106 Phase 5 / WO-110: checked
             -- Check human/actor/horse sub-objects
-            local hasSoul   = pcall(function() return ent.soul end)
-            local hasHuman  = pcall(function() return ent.human end)
-            local isMounted = pcall(function() return ent.human and ent.human:IsMounted() end)
+            -- WO-110 Phase 6: these printed pcall's SUCCESS flag, not the value.
+            local _, soulV   = pcall(function() return ent.soul end)
+            local _, humanV  = pcall(function() return ent.human end)
+            local _, mountV  = pcall(function() return ent.human and ent.human:IsMounted() end)
+            local hasSoul, hasHuman, isMounted = soulV ~= nil, humanV ~= nil, mountV
             System.LogAlways("[KCD2-MP] TestXGenSpawn: hasSoul=" .. tostring(hasSoul)
                 .. " hasHuman=" .. tostring(hasHuman)
                 .. " IsMounted=" .. tostring(isMounted))
@@ -11561,7 +11592,7 @@ local function mp_item_spawn(key, d)
         anchor = System.GetEntityByName(anchorName)
     end)
     if not anchor then return end
-    mp_set_no_save(anchor)   -- WO-106 Phase 5: a one-tick placement scaffold, never save it
+    if not mp_set_no_save(anchor) then mp_log("NO-SAVE flag FAILED on item anchor") end   -- WO-106 Phase 5 / WO-110: checked
     KCD2MP._itemSeen[tostring(anchor.id)] = true
 
     -- Snapshot the pickables already at the drop spot BEFORE placing: the
@@ -13199,7 +13230,13 @@ function KCD2MP_QuestFire(beat, who)
     mp_log(string.format("QUEST-CATCHUP ExecuteCommand returned %s%s", tostring(ok), ok and "" or (": " .. tostring(err))))
     local hit = questIndex().byPath[beat]
     local fix = fixIndex().byPath[beat]
-    if fix then
+    -- WO-110 Phase 6 (WO-109 s2.3): the toast used to announce success whatever
+    -- ExecuteCommand did. A pcall that returns ok still only proves the Lua
+    -- call did not throw (WO-43), but a call that DID throw must not be
+    -- toasted as a granted objective.
+    if not ok then
+        KCD2MP_ShowNativeToast("KCD2-MP: catch-up command FAILED for " .. beat .. " -- see kcd.log")
+    elseif fix then
         KCD2MP_ShowNativeToast("Granting objective " .. fix.o .. " (" .. fix.dir .. ") via " .. beat)
     else
         KCD2MP_ShowNativeToast("Catching up to " .. who .. "'s story: " .. tostring((hit and hit.quest.title ~= "" and hit.quest.title) or beat))

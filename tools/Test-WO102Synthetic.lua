@@ -135,7 +135,7 @@ check("c: unknown toggle changes nothing", KCD2MP.wo102.authorityHost == false a
 -- (d) status.
 clearLog()
 KCD2MP_Wo102Status()
-check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off npc_scan_native=off authority=peer paused_npcs=0 pause_pending=0") == 1, lastLog("WO102-STATUS"))
+check("d: status line", logCount("WO102-STATUS authority_host=off pos_native=off authority_pause=off npc_scan_native=off authority=peer pause_issued_npcs=0 pause_pending=0") == 1, lastLog("WO102-STATUS"))   -- WO-110 Phase 6: label says what it counts
 
 -- (e) argless commands (registration runs at file load, captured in CCMDS).
 local names = { "mp_authority_host_on", "mp_authority_host_off", "mp_pos_native_on", "mp_pos_native_off", "mp_wo102_status" }
@@ -663,7 +663,7 @@ do
     -- MP-SUMMARY-MOD carries the currently-paused count.
     KCD2MP._npcPaused["aa_now"] = NOW
     clearLog(); KCD2MP_LogSummary("t")
-    check("aa: summary carries auth_paused_now", logCount("auth_paused_now=1") == 1, lastLog("MP-SUMMARY-MOD"))
+    check("aa: summary carries auth_pause_issued_now", logCount("auth_pause_issued_now=1") == 1, lastLog("MP-SUMMARY-MOD"))   -- WO-110 Phase 6
     KCD2MP._npcPaused["aa_now"] = nil
 
     KCD2MP.npcSyncRunning = false

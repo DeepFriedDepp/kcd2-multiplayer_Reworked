@@ -3329,7 +3329,10 @@ public partial class GameBridge(ClientConfig config)
             Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -- already applied {(now - lastUtc).TotalSeconds:F0}s ago, ignoring");
             return;
         }
-        _npcDeathAppliedUtc[npcName] = now;
+        // WO-110 Phase 6 (WO-109 s2.3): the dedupe used to be stamped HERE,
+        // before the apply, so a failed ApplyDeath blocked the second route
+        // (0x27 dead bit vs 0x30 FATAL) for 60 s. Stamped after a successful
+        // apply now, at the bottom.
 
         if (!_npcDeathSyncEnabled)
         {
@@ -3357,6 +3360,7 @@ public partial class GameBridge(ClientConfig config)
         bool applied = false;
         try { applied = await _combat.ApplyDeathAsync(lg, ct); }
         catch (Exception ex) { Console.WriteLine($"[npcdeath] ApplyDeath threw for '{npcName}': {ex.Message}"); }
+        if (applied) _npcDeathAppliedUtc[npcName] = DateTime.UtcNow;   // WO-110 Phase 6: dedupe only a death that landed
         // WO-99 Phase 0: the lethal apply's own drop will surface as a
         // LocalHit(fatal) from the DLL (ApplyDeath books no credit); the
         // guard drops that echo for EchoWindow.
@@ -3810,7 +3814,7 @@ public partial class GameBridge(ClientConfig config)
         uint senderMs = unchecked((uint)Environment.TickCount64);
         var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags, seq, senderMs);
         if ((flags & Protocol.NpcStateFlagResync) != 0) _resyncEmitted++;
-        try { await WritePacketAsync(stream, packet, ct); }
+        try { await WritePacketAsync(stream, packet, ct); if (!asClaim) _stats.NpcStateOut++; }   // WO-110 Phase 6: a SENT packet, not a hand-off
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
     }
 
@@ -4959,8 +4963,26 @@ public partial class GameBridge(ClientConfig config)
         {
             // WO-104: console flip of mp_npc_replica_on|off. Log only -- the
             // mechanism is entirely mod-side; the agent has no gate to mirror.
-            Console.WriteLine($"[npcsync] mp_npc_replica {arg} (mod-side toggle; ships on since 0.26.2, unverified live)");
+            Console.WriteLine($"[npcsync] mp_npc_replica {arg} (mod-side toggle; ships OFF since 0.26.4 -- WO-106 s5 dead end)");
             return;
+        }
+
+        // WO-110 Phase 6 (WO-109 s2.8): the console-state mirrors below used to
+        // sit BEHIND this gate, so while disconnected every aggro_toggle,
+        // npc_deathsync, authority_radius, npc_track_max and wo102_toggle the
+        // player typed was dropped -- and the 2.5 s re-arm then pushed this
+        // agent's stale mirrors back into Lua, overwriting the console. The
+        // mirrors are updated whether or not a session is up; only the
+        // interaction-session cases below need `interactions`.
+        switch (name)
+        {
+            case "aggro_toggle":
+            case "npc_deathsync":
+            case "authority_radius":
+            case "npc_track_max":
+            case "wo102_toggle":
+                HandleStateMirrorEvent(name, arg);
+                return;
         }
 
         var interactions = Interactions;
@@ -4976,25 +4998,6 @@ public partial class GameBridge(ClientConfig config)
             case "invite_decline":
                 Console.WriteLine("[interaction] player declined");
                 _ = interactions.RespondAsync(false);
-                break;
-
-            case "aggro_toggle":
-                // mp_enable_aggro on|off (WO-17): the real, always-available
-                // toggle Phase B agreed on. Decided locally, per player -- it
-                // only changes how THIS client's world treats an incoming
-                // ghost, so it needs no session invite/agreement the way dice
-                // does. Off means every damage event below is a no-op, which
-                // is what keeps the default (never-toggled) path byte-for-
-                // byte identical to pre-WO-17 behaviour.
-                _aggroEnabled = arg.Equals("on", StringComparison.OrdinalIgnoreCase);
-                Console.WriteLine($"[aggro] {(_aggroEnabled ? "enabled" : "disabled")}");
-                if (!_aggroEnabled)
-                {
-                    // Turning it off mid-fight must not leave a ghost stuck
-                    // hostile forever with nothing left to detach it.
-                    foreach (var id in _ghostHostileUntilUtc.Keys.ToArray())
-                        _ = DetachGhostAggroAsync(id, CancellationToken.None);
-                }
                 break;
 
             case "ghost_hit":
@@ -5041,79 +5044,6 @@ public partial class GameBridge(ClientConfig config)
                 _npcTarget = tgt;
                 break;
             }
-
-            case "wo102_toggle":
-            {
-                // WO-102 Phase 0: "<name> on|off" from KCD2MP_Wo102Set (console).
-                var tp = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (tp.Length != 2) { Console.WriteLine($"[wo102] malformed wo102_toggle '{arg}'"); break; }
-                bool on = tp[1].Equals("on", StringComparison.OrdinalIgnoreCase);
-                switch (tp[0])
-                {
-                    case "authority_host": _hostAuthority = on; break;
-                    case "pos_native":
-                        _posNative = on;
-                        // A fresh start each time it is switched on: the give-up
-                        // and oracle verdicts belong to the previous run.
-                        _posNativeMisses = 0; _posNativeGaveUp = false; _posNativeRefusedByOracle = false;
-                        _oracleBadRun = 0; _oracleN = 0; _oracleSum = 0; _oracleMax = 0;
-                        _cadNative.Reset(); _lastNativeFrame = 0; _lastNative = null;
-                        break;
-                    case "npc_scan_native":
-                        _npcScanNative = on;
-                        _npcScanMisses = 0; _npcScanGaveUp = false;
-                        break;
-                    // WO-108: the brain-pause lever is Lua-only (System.ExecuteCommand
-                    // from the mod); nothing agent-side mirrors it. Acknowledged so
-                    // a preset or mp_authority_pause_on/off does not log "unknown".
-                    case "authority_pause": break;
-                    default: Console.WriteLine($"[wo102] unknown toggle '{tp[0]}'"); break;
-                }
-                Console.WriteLine($"WO102-TOGGLE name={tp[0]} state={(on ? "on" : "off")} source=console authority={(_isDamageAuthority ? 1 : 0)}");
-                break;
-            }
-
-            case "authority_radius":
-            {
-                // WO-102.5 Phase 3: #KCD2MP_SetAuthorityRadius announces its
-                // new value here so the native scan's own radius (agent-side,
-                // NpcScanTickAsync) does not silently stay capped at the old
-                // number -- Lua's fallback path (System.GetEntitiesInSphere)
-                // already reads the mod's own config directly and needs no
-                // mirror.
-                if (float.TryParse(arg, System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out var radiusM) && radiusM > 0)
-                {
-                    _npcScanRadiusM = radiusM;
-                    Console.WriteLine(FormattableString.Invariant($"[npcscan] authority radius set to {radiusM:F1}m"));
-                }
-                else
-                {
-                    Console.WriteLine($"[npcscan] ignored malformed authority_radius '{arg}'");
-                }
-                break;
-            }
-
-            case "npc_track_max":
-            {
-                // WO-110 R3: mp_npc_track_max <n> in the mod -- the push cap
-                // is Lua-owned like authority_radius and announced the same way.
-                if (int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cap))
-                {
-                    _npcTrackMax = Math.Clamp(cap, NpcTrackMaxFloor, NpcTrackMaxCeiling);
-                    Console.WriteLine(FormattableString.Invariant($"[npcscan] track cap set to {_npcTrackMax} (asked {cap})"));
-                }
-                else Console.WriteLine($"[npcscan] ignored malformed npc_track_max '{arg}'");
-                break;
-            }
-
-            case "npc_deathsync":
-                // WO-86: mp_npc_deathsync on|off, mirrored here because the
-                // inbound death apply runs in the agent (Lua writes are inert)
-                // and the agent cannot read the mod's toggle back.
-                _npcDeathSyncEnabled = !arg.Equals("off", StringComparison.OrdinalIgnoreCase);
-                Console.WriteLine($"[npcdeath] mp_npc_deathsync {(_npcDeathSyncEnabled ? "on" : "off")} -- inbound NPC deaths will {(_npcDeathSyncEnabled ? "" : "NOT ")}be applied here");
-                break;
 
             case "npc_death":
             {
@@ -5174,7 +5104,7 @@ public partial class GameBridge(ClientConfig config)
                 if (sendNpc is null) break;
                 if (name == "npc_state") lock (_requestsIn) _ownedNpcSeenUtc[f[0]] = DateTime.UtcNow;   // WO-102 Phase 5
                 _ = sendNpc(f[0], nsx, nsy, nsz, nsrot, nshp, nsflags);
-                if (name == "npc_state") _stats.NpcStateOut++; else if (name == "npc_claim") _stats.NpcClaimOut++; else _stats.NpcDragOut++;   // WO-98
+                if (name == "npc_claim") _stats.NpcClaimOut++; else if (name == "npc_drag") _stats.NpcDragOut++;   // WO-98; WO-110 Phase 6: NpcStateOut is counted in SendNpcStateAsync after the write, not here at the hand-off
                 break;
             }
 
@@ -5662,6 +5592,105 @@ public partial class GameBridge(ClientConfig config)
     /// Returning without a round trip is the point -- the receive loop can take
     /// a burst of ghost updates without blocking on HTTP for each one.
     /// </summary>
+    /// <summary>
+    /// WO-110 Phase 6: the mod's console-state mirrors (agent-side gates that
+    /// follow a console flip in Lua). Handled whether or not an interaction
+    /// session exists -- see OnGameEvent.
+    /// </summary>
+    private void HandleStateMirrorEvent(string name, string arg)
+    {
+        switch (name)
+        {
+            case "aggro_toggle":
+                // mp_enable_aggro on|off (WO-17): the real, always-available
+                // toggle Phase B agreed on. Decided locally, per player -- it
+                // only changes how THIS client's world treats an incoming
+                // ghost, so it needs no session invite/agreement the way dice
+                // does. Off means every damage event below is a no-op, which
+                // is what keeps the default (never-toggled) path byte-for-
+                // byte identical to pre-WO-17 behaviour.
+                _aggroEnabled = arg.Equals("on", StringComparison.OrdinalIgnoreCase);
+                Console.WriteLine($"[aggro] {(_aggroEnabled ? "enabled" : "disabled")}");
+                if (!_aggroEnabled)
+                {
+                    // Turning it off mid-fight must not leave a ghost stuck
+                    // hostile forever with nothing left to detach it.
+                    foreach (var id in _ghostHostileUntilUtc.Keys.ToArray())
+                        _ = DetachGhostAggroAsync(id, CancellationToken.None);
+                }
+                break;
+            case "npc_deathsync":
+                // WO-86: mp_npc_deathsync on|off, mirrored here because the
+                // inbound death apply runs in the agent (Lua writes are inert)
+                // and the agent cannot read the mod's toggle back.
+                _npcDeathSyncEnabled = !arg.Equals("off", StringComparison.OrdinalIgnoreCase);
+                Console.WriteLine($"[npcdeath] mp_npc_deathsync {(_npcDeathSyncEnabled ? "on" : "off")} -- inbound NPC deaths will {(_npcDeathSyncEnabled ? "" : "NOT ")}be applied here");
+                break;
+            case "authority_radius":
+            {
+                // WO-102.5 Phase 3: #KCD2MP_SetAuthorityRadius announces its
+                // new value here so the native scan's own radius (agent-side,
+                // NpcScanTickAsync) does not silently stay capped at the old
+                // number -- Lua's fallback path (System.GetEntitiesInSphere)
+                // already reads the mod's own config directly and needs no
+                // mirror.
+                if (float.TryParse(arg, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var radiusM) && radiusM > 0)
+                {
+                    _npcScanRadiusM = radiusM;
+                    Console.WriteLine(FormattableString.Invariant($"[npcscan] authority radius set to {radiusM:F1}m"));
+                }
+                else
+                {
+                    Console.WriteLine($"[npcscan] ignored malformed authority_radius '{arg}'");
+                }
+                break;
+            }
+            case "npc_track_max":
+            {
+                // WO-110 R3: mp_npc_track_max <n> in the mod -- the push cap
+                // is Lua-owned like authority_radius and announced the same way.
+                if (int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out int cap))
+                {
+                    _npcTrackMax = Math.Clamp(cap, NpcTrackMaxFloor, NpcTrackMaxCeiling);
+                    Console.WriteLine(FormattableString.Invariant($"[npcscan] track cap set to {_npcTrackMax} (asked {cap})"));
+                }
+                else Console.WriteLine($"[npcscan] ignored malformed npc_track_max '{arg}'");
+                break;
+            }
+            case "wo102_toggle":
+            {
+                // WO-102 Phase 0: "<name> on|off" from KCD2MP_Wo102Set (console).
+                var tp = arg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (tp.Length != 2) { Console.WriteLine($"[wo102] malformed wo102_toggle '{arg}'"); break; }
+                bool on = tp[1].Equals("on", StringComparison.OrdinalIgnoreCase);
+                switch (tp[0])
+                {
+                    case "authority_host": _hostAuthority = on; break;
+                    case "pos_native":
+                        _posNative = on;
+                        // A fresh start each time it is switched on: the give-up
+                        // and oracle verdicts belong to the previous run.
+                        _posNativeMisses = 0; _posNativeGaveUp = false; _posNativeRefusedByOracle = false;
+                        _oracleBadRun = 0; _oracleN = 0; _oracleSum = 0; _oracleMax = 0;
+                        _cadNative.Reset(); _lastNativeFrame = 0; _lastNative = null;
+                        break;
+                    case "npc_scan_native":
+                        _npcScanNative = on;
+                        _npcScanMisses = 0; _npcScanGaveUp = false;
+                        break;
+                    // WO-108: the brain-pause lever is Lua-only (System.ExecuteCommand
+                    // from the mod); nothing agent-side mirrors it. Acknowledged so
+                    // a preset or mp_authority_pause_on/off does not log "unknown".
+                    case "authority_pause": break;
+                    default: Console.WriteLine($"[wo102] unknown toggle '{tp[0]}'"); break;
+                }
+                Console.WriteLine($"WO102-TOGGLE name={tp[0]} state={(on ? "on" : "off")} source=console authority={(_isDamageAuthority ? 1 : 0)}");
+                break;
+            }
+        }
+    }
+
     private Task ExecLuaAsync(string lua) => _transport.ExecuteAsync(lua);
 
     // WO-110 R9: the client side of the framing-drop counters (the relay has
