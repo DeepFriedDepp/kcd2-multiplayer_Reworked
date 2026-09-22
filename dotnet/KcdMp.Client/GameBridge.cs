@@ -340,6 +340,7 @@ public partial class GameBridge(ClientConfig config)
     private const int    NpcScanChunkChars = 3000;
     private volatile int _npcTrackMax = NpcTrackMaxDefault;
     private uint _npcScanGen;
+    private bool _npcScanSkipLogged;   // WO-110 R13: one line per skip/resume transition
     private long _npcScanPushes, _npcScanTruncatedWire, _npcScanNamesTruncated;
     private bool _npcScanWasReplyTruncated;   // WO-103 Phase 1: edge-triggered loud log, mirrors npc_scan.cpp's g_wasTruncated
 
@@ -1890,7 +1891,25 @@ public partial class GameBridge(ClientConfig config)
                     // WO-102.5 Phase 2: its own cadence, independent of the
                     // position tick's -- this feeds a background candidate
                     // list, not a per-frame read.
-                    if (_npcScanNative && IntervalElapsed(ref lastNpcScan, NpcScanInterval, nowTimestamp))
+                    // WO-110 R13: under host authority only the owner's Lua
+                    // ever consumes the push (a non-authority's
+                    // KCD2MP_NpcSyncTick returns before the rescan runs), so
+                    // the joiner used to walk every entity on its main thread
+                    // every 2 s and hold the pipe for nothing. Gate on the
+                    // relay's CombatRole; the claim model (host authority off)
+                    // still needs candidates on every machine.
+                    bool scanWanted = _isDamageAuthority || !_hostAuthority;
+                    if (_npcScanNative && !scanWanted && !_npcScanSkipLogged)
+                    {
+                        _npcScanSkipLogged = true;
+                        Console.WriteLine("MP-NPCSCAN dir=native verdict=skipped reason=not-authority -- this machine renders puppets, it does not own NPCs (WO-110 R13)");
+                    }
+                    else if (_npcScanNative && scanWanted && _npcScanSkipLogged)
+                    {
+                        _npcScanSkipLogged = false;
+                        Console.WriteLine("MP-NPCSCAN dir=native verdict=resumed reason=authority-acquired");
+                    }
+                    if (_npcScanNative && scanWanted && IntervalElapsed(ref lastNpcScan, NpcScanInterval, nowTimestamp))
                         _ = NpcScanTickAsync(x, y, z, cts.Token);
 
                     bool posHeartbeat = IntervalElapsed(
