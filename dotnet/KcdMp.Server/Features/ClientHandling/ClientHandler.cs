@@ -26,7 +26,17 @@ public class ClientHandler
 	// connection never burns one -- and released back to the pool on
 	// disconnect (RemoveClient), so a long-lived relay can serve far more
 	// than 256 total connections without ever handing out a live-colliding id.
-	private readonly Queue<byte> _freeIds = new(Enumerable.Range(0, 256).Select(i => (byte)i));
+	//
+	// WO-110 R4 (docs/WO-109-audit.md R4): LOWEST FREE ID FIRST, not FIFO.
+	// Damage/NPC authority is "the lowest ready id" (DamageAuthority below).
+	// With a FIFO pool a host-agent reconnect got a NEW id from the back of
+	// the queue (0 -> 2), so the joiner (1) became the authority for the rest
+	// of the session: NPC ownership, the pause side, the damage rule and
+	// weather silently inverted. A sorted pool hands a reconnecting client
+	// its old id back (nothing else can have taken it: only a new connection
+	// allocates, and it takes the lowest free), so authority stays put.
+	private readonly SortedSet<byte> _freeIds = new(Enumerable.Range(0, 256).Select(i => (byte)i));
+	private byte? _lastAuthorityId;   // WO-110 R4: for the MP-AUTHORITY-OWNER change log
 
 	// ---- WO-66 claim-update validation tunables ----
 	//
@@ -105,7 +115,8 @@ public class ClientHandler
 			if (_readyClients.Count >= _maxPlayers || _freeIds.Count == 0)
 				return false;
 
-			client.Id = _freeIds.Dequeue();
+			client.Id = _freeIds.Min;
+			_freeIds.Remove(client.Id);
 			return _readyClients.Add(client);
 		}
 	}
@@ -124,7 +135,7 @@ public class ClientHandler
 		{
 			_clients.Remove(client);
 			if (_readyClients.Remove(client))
-				_freeIds.Enqueue(client.Id);
+				_freeIds.Add(client.Id);
 		}
 	}
 
@@ -158,14 +169,51 @@ public class ClientHandler
 	{
 		get
 		{
-			lock (_lock)
-			{
-				ClientSession? best = null;
-				foreach (var c in _clients)
-					if (c.IsReady && (best is null || c.Id < best.Id))
-						best = c;
-				return best;
-			}
+			lock (_lock) return PickAuthority(out _);
+		}
+	}
+
+	/// <summary>
+	/// WO-110 R4: the authority decision, with its reason. Two rules, in
+	/// order: (1) if exactly one ready client is connected over a loopback
+	/// socket, it is the relay host's own agent (the launcher starts relay and
+	/// agent on the same machine) and it is the authority whatever its id --
+	/// sticky across its own reconnects by construction; (2) otherwise the
+	/// lowest ready id, which the sorted id pool keeps stable across
+	/// reconnects. Rule 1 is inert for a dedicated relay box (no loopback
+	/// client) and for a two-peers-on-one-machine test (two loopback clients),
+	/// both of which fall through to rule 2 exactly as before.
+	/// </summary>
+	private ClientSession? PickAuthority(out string reason)
+	{
+		ClientSession? loop = null; int loopN = 0;
+		ClientSession? lowest = null;
+		foreach (var c in _clients)
+		{
+			if (!c.IsReady) continue;
+			if (c.IsLoopback) { loopN++; loop ??= c; }
+			if (lowest is null || c.Id < lowest.Id) lowest = c;
+		}
+		if (loopN == 1) { reason = "relay-local"; return loop; }
+		reason = lowest is null ? "none" : "lowest-id";
+		return lowest;
+	}
+
+	/// <summary>
+	/// WO-110 R4: one MP-AUTHORITY-OWNER line per authority decision (every
+	/// CombatRole broadcast: a client became ready or left). The line is
+	/// greppable in relay.log next to the agents' own MP-AUTHORITY-OWNER lines.
+	/// </summary>
+	public void LogAuthorityDecision(string trigger)
+	{
+		lock (_lock)
+		{
+			var a = PickAuthority(out var reason);
+			int ready = _readyClients.Count;
+			bool changed = a?.Id != _lastAuthorityId;
+			_lastAuthorityId = a?.Id;
+			_logger.Information("MP-AUTHORITY-OWNER id={Id} name={Name} reason={Reason} trigger={Trigger} ready={Ready} changed={Changed}",
+				a is null ? "-" : a.Id.ToString(), a?.Name ?? "-", reason, trigger, ready, changed ? 1 : 0);
 		}
 	}
 

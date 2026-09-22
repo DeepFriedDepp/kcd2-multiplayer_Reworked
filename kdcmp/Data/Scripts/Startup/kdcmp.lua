@@ -3198,6 +3198,15 @@ function KCD2MP_Wo102Set(name, on, source)
     return true
 end
 
+-- WO-110 R4: the relay's authority decision, as received by THIS agent, into
+-- kcd.log -- the file the peer-test runbook reads. Logged on every CombatRole
+-- packet (connect, a peer joining or leaving), not only on a change, so the
+-- log always says who owns the NPCs right now and why.
+function KCD2MP_AuthorityOwnerLog(selfId, isAuthority)
+    mp_log(string.format("MP-AUTHORITY-OWNER self_id=%s authority=%s reason=relay-combatrole hit_sensor_was=%s",
+        tostring(selfId), isAuthority and "self" or "peer", KCD2MP.hitSensorOn and "on" or "off"))
+end
+
 function KCD2MP_Wo102Status()
     local paused, pending, ever = 0, 0, 0
     for _ in pairs(KCD2MP._npcPaused or {}) do paused = paused + 1 end

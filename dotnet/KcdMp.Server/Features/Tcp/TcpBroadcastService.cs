@@ -292,6 +292,7 @@ public class TcpBroadcastService
     /// </summary>
     public void BroadcastCombatRole()
     {
+        _clientHandler.LogAuthorityDecision("combat-role");   // WO-110 R4: MP-AUTHORITY-OWNER on every decision
         var authority = _clientHandler.DamageAuthority;
         foreach (var target in _clientHandler.GetClients().Where(c => c.IsReady))
             target.EnqueueCombatRole(ReferenceEquals(target, authority));

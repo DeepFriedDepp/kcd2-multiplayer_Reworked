@@ -4234,7 +4234,14 @@ public partial class GameBridge(ClientConfig config)
                 }
                 else if (type == Protocol.CombatRole && payloadLen == Protocol.CombatRolePayloadLen)
                 {
-                    await ApplyCombatRoleAsync(payload[0] != 0, ct);
+                    // WO-110 R4: every authority decision the relay sends, on
+                    // this machine's console AND in kcd.log (the runbook reads
+                    // kcd.log), whether or not it changes anything.
+                    bool amAuthority = payload[0] != 0;
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"MP-AUTHORITY-OWNER self_id={_myGhostId} authority={(amAuthority ? "self" : "peer")} reason=relay-combatrole"));
+                    try { await ExecLuaAsync(FormattableString.Invariant($"if KCD2MP_AuthorityOwnerLog then KCD2MP_AuthorityOwnerLog({_myGhostId},{(amAuthority ? "true" : "false")}) end")); } catch { }
+                    await ApplyCombatRoleAsync(amAuthority, ct);
                 }
                 else if (type == Protocol.TimeSkipDown && payloadLen == Protocol.TimeSkipDownPayloadLen)
                 {

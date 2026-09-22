@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using KcdMp.Server.Features.Interactions;
@@ -39,6 +40,10 @@ public class ClientSession
     public string? Name { get; private set; }
     public bool IsReady => Name is not null;
 
+    /// <summary>WO-110 R4: connected over a loopback address, i.e. the relay
+    /// host's own agent. Read once at construction; see ClientHandler.PickAuthority.</summary>
+    public bool IsLoopback { get; }
+
     /// <summary>WO-19. Null when the client's Handshake carried no trailing
     /// release-version field (an old build, or a synthetic test peer).</summary>
     public string? ReleaseVersion { get; private set; }
@@ -64,6 +69,7 @@ public class ClientSession
         _broadcastService = broadcastService;
         _sessions = sessions;
         _clientHandler = clientHandler;
+        IsLoopback = tcp.Client.RemoteEndPoint is IPEndPoint ep && IPAddress.IsLoopback(ep.Address);
     }
 
     public async Task RunAsync()
@@ -133,13 +139,19 @@ public class ClientSession
                 return;
             }
 
+            // WO-110 R4: the Ack is queued BEFORE this session becomes visible
+            // as ready (Name != null). Broadcasts to "all ready clients" run on
+            // other sessions' threads; with the Ack queued after Name was set,
+            // a Ghost/Name/CombatRole packet could land in this client's queue
+            // ahead of the Ack, and the agent -- which reads exactly one reply
+            // and expects 0xFF -- dropped the connection ("Expected Ack, got
+            // packet type ..."). The write queue is FIFO, so first-queued is
+            // first-sent. Id is already assigned (TryMarkReady above).
+            EnqueueRaw(BuildPacket(Protocol.Ack, [Id]));
             Name = name;
 
-            _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}, release {Release}) from {ClientRemoteEndPoint}.",
-                Name, Id, clientVersion, ReleaseVersion ?? "(none)", _tcp.Client.RemoteEndPoint);
-
-            // Send Ack with assigned ID
-            EnqueueRaw(BuildPacket(Protocol.Ack, [Id]));
+            _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}, release {Release}, loopback={Loopback}) from {ClientRemoteEndPoint}.",
+                Name, Id, clientVersion, ReleaseVersion ?? "(none)", IsLoopback ? 1 : 0, _tcp.Client.RemoteEndPoint);
 
             // Broadcast this client's name to all others; send existing names to this client
             _broadcastService.BroadcastName(this);
