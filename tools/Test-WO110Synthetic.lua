@@ -463,7 +463,11 @@ do
     check("m: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
-for _, r in ipairs(RESULTS) do print(r) end
+-- Summary, in the shared driver's contract (Test-NpcSmoothSynthetic.ps1 reads
+-- the global OUT; a scenario that only prints exits 2 -- the WO-110 fresh-clone
+-- gate caught exactly that on its first run).
 local pass, fail = 0, 0
 for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end
-print(string.format("RESULT: %d passed, %d failed", pass, fail))
+OUT = table.concat(RESULTS, "
+") .. string.format("
+%d passed, %d failed", pass, fail)
