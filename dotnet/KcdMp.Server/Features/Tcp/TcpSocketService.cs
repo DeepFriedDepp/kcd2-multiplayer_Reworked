@@ -51,6 +51,8 @@ public class TcpSocketService : BackgroundService
 		// Pending invites nobody answers have to expire, or the invitee stays
 		// marked busy and can never be invited again.
 		var expiry = ExpireInvitesLoopAsync(cancellationToken);
+		// WO-110 R9: one MP-RELAY-DROPS line every 60 s while anything is dropped.
+		var drops = ReportDropsLoopAsync(cancellationToken);
 
 		try
 		{
@@ -127,6 +129,20 @@ public class TcpSocketService : BackgroundService
 	/// Sweeps unanswered invites. Runs on a coarse interval because the timeout
 	/// is 30 s — checking more often would only add wakeups.
 	/// </summary>
+	private async Task ReportDropsLoopAsync(CancellationToken ct)
+	{
+		try
+		{
+			while (!ct.IsCancellationRequested)
+			{
+				await Task.Delay(TimeSpan.FromSeconds(60), ct);
+				var line = _clientHandler.DrainDropsLine();
+				if (line is not null) _logger.Warning("{Line}", line);
+			}
+		}
+		catch (OperationCanceledException) { }
+	}
+
 	private async Task ExpireInvitesLoopAsync(CancellationToken ct)
 	{
 		try

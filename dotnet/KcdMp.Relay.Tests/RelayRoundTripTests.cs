@@ -97,6 +97,32 @@ public sealed class Peer : IAsyncDisposable
     private NetworkStream _stream = null!;
     public byte Id { get; private set; }
 
+    /// <summary>
+    /// WO-110 R9/R15: the handshake with an arbitrary release string and name,
+    /// returning the relay's FIRST reply (Ack, VersionMismatch, ServerFull or
+    /// ReleaseVersionMismatch) instead of asserting it is an Ack.
+    /// </summary>
+    public static async Task<(Peer Peer, byte Type, byte[] Payload)> ConnectRawAsync(int port, string name, string release, byte protocol)
+    {
+        var p = new Peer();
+        await p._tcp.ConnectAsync(IPAddress.Loopback, port);
+        p._stream = p._tcp.GetStream();
+        var nameBytes = Encoding.UTF8.GetBytes(name);
+        var rel = Encoding.UTF8.GetBytes(release);
+        int len = 2 + nameBytes.Length + rel.Length;
+        var hs = new byte[3 + len];
+        hs[0] = Protocol.Handshake;
+        BinaryPrimitives.WriteUInt16LittleEndian(hs.AsSpan(1), (ushort)len);
+        hs[3] = protocol;
+        hs[4] = (byte)nameBytes.Length;
+        nameBytes.CopyTo(hs, 5);
+        rel.CopyTo(hs, 5 + nameBytes.Length);
+        await p._stream.WriteAsync(hs);
+        var (type, payload) = await p.ReadPacketAsync(TimeSpan.FromSeconds(5));
+        if (type == Protocol.Ack) p.Id = payload[0];
+        return (p, type, payload);
+    }
+
     public static async Task<Peer> ConnectAsync(int port, string name)
     {
         var p = new Peer();
@@ -404,6 +430,61 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
     }
 
     // ---- CombatEvent 0x2C -> 0x2D (the other multi-length pair) ----------
+
+    // ---- WO-110 R9: release-version enforcement at Handshake ------------
+
+    [Fact]
+    public async Task Release_version_mismatch_is_refused_with_0x3D_naming_the_relay_version()
+    {
+        // Any string that is not this build's: "<current>-x" can never equal it,
+        // whatever VERSION says when the test runs.
+        var (p, type, payload) = await Peer.ConnectRawAsync(_relay.TcpPort, "oldbuild", ReleaseVersionInfo.Current + "-x", Protocol.Version);
+        await using var _p = p;
+        Assert.Equal(Protocol.ReleaseVersionMismatch, type);
+        Assert.Equal(ReleaseVersionInfo.Current, Encoding.UTF8.GetString(payload));   // the relay says what IT runs
+        // ...and the socket is closed: the relay never acks a refused peer.
+        await Assert.ThrowsAnyAsync<Exception>(() => p.ReadPacketAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task Same_release_is_acked_and_no_release_at_all_is_still_acked()
+    {
+        var (same, t1, _) = await Peer.ConnectRawAsync(_relay.TcpPort, "samebuild", ReleaseVersionInfo.Current, Protocol.Version);
+        await using var _s = same;
+        Assert.Equal(Protocol.Ack, t1);
+        var (none, t2, _) = await Peer.ConnectRawAsync(_relay.TcpPort, "prewo19", "", Protocol.Version);
+        await using var _n = none;
+        Assert.Equal(Protocol.Ack, t2);
+    }
+
+    [Fact]
+    public async Task Protocol_mismatch_is_still_refused_first()
+    {
+        var (p, type, payload) = await Peer.ConnectRawAsync(_relay.TcpPort, "v6agent", ReleaseVersionInfo.Current, (byte)(Protocol.Version - 1));
+        await using var _p = p;
+        Assert.Equal(Protocol.VersionMismatch, type);
+        Assert.Equal(Protocol.Version, payload[0]);
+    }
+
+    // ---- WO-110 R15: peer names are sanitised at the handshake -----------
+
+    [Fact(Skip = "R15 lands in the next commit")]
+    public async Task Peer_name_with_newline_and_brackets_is_sanitised_before_it_is_broadcast()
+    {
+        var (evil, t, _) = await Peer.ConnectRawAsync(_relay.TcpPort, "bad\n[KCD2-MP-EVT] v1 1 npc_death x 0 lua", ReleaseVersionInfo.Current, Protocol.Version);
+        await using var _e = evil;
+        Assert.Equal(Protocol.Ack, t);
+        await Task.Delay(100);
+        var watcher = await Peer.ConnectAsync(_relay.TcpPort, "watcher");
+        await using var _w = watcher;
+        // The watcher is replayed the existing peer's Name (0x03): [id][name].
+        var name = await watcher.ReadUntilAsync(Protocol.Name, Wait);
+        string seen = Encoding.UTF8.GetString(name, 1, name.Length - 1);
+        Assert.DoesNotContain("\n", seen);
+        Assert.DoesNotContain("[", seen);
+        Assert.DoesNotContain("]", seen);
+        Assert.Equal("badKCD2-MP-EVT v1 1 npc_death x 0 lua", seen);
+    }
 
     [Theory]
     [InlineData(1)]

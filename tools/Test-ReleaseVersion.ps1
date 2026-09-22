@@ -30,8 +30,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$P = @{ Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09; ReleaseVersion = 0x1E }
+$P = @{ Handshake = 0x00; Ack = 0xFF; VersionMismatch = 0x09; ReleaseVersion = 0x1E; ReleaseVersionMismatch = 0x3D }
 . (Join-Path $PSScriptRoot 'ProtocolVersion.ps1')   # $PROTOCOL_VERSION, read from Protocol.cs
+# WO-110 R9: the relay now REFUSES a declared release that is not its own, so
+# every accepted peer below declares the repo's VERSION (what a relay built
+# from this tree carries); the made-up "0.9.x" strings of the WO-19 script
+# became the refusal case (5).
+$REL = (Get-Content (Join-Path $PSScriptRoot '..\VERSION') -TotalCount 1).Trim()
+$REL_OTHER = "$REL-x"
 
 $script:pass = 0
 $script:fail = 0
@@ -89,7 +95,8 @@ function Connect-Client([string] $Name, [string] $ReleaseVersion = $null, [int] 
     $ack = Read-Packet $s
     [pscustomobject]@{ Name = $Name; Tcp = $c; Stream = $s
                        Id = $(if ($ack -and $ack.Type -eq $P.Ack) { $ack.Payload[0] } else { $null })
-                       AckType = $(if ($ack) { $ack.Type } else { $null }) }
+                       AckType = $(if ($ack) { $ack.Type } else { $null })
+                       AckPayload = $(if ($ack) { $ack.Payload } else { $null }) }   # WO-110 R9: the 0x3D body names the relay's release
 }
 
 function Read-ReleaseVersionFor($client, [byte] $ghostId, [int] $ms = 1000) {
@@ -110,23 +117,23 @@ function Read-ReleaseVersionFor($client, [byte] $ghostId, [int] $ms = 1000) {
 Write-Host "`n=== WO-19 release-version handshake layer, relay at ${RelayHost}:${Port} ===`n"
 
 # --- 1. two clients that both declare a version see each other's ------------
-$a = Connect-Client 'alice' '0.9.5'
-$b = Connect-Client 'bob'   '0.9.4'
-if ($null -eq $a.Id -or $null -eq $b.Id) { throw "handshake failed (relay running? version $PROTOCOL_VERSION accepted?)" }
-Write-Host "1. alice(0.9.5) id=$($a.Id)  bob(0.9.4) id=$($b.Id)"
+$a = Connect-Client 'alice' $REL
+$b = Connect-Client 'bob'   $REL
+if ($null -eq $a.Id -or $null -eq $b.Id) { throw "handshake failed (relay running? version $PROTOCOL_VERSION accepted? relay built from this tree's VERSION=$REL?)" }
+Write-Host "1. alice($REL) id=$($a.Id)  bob($REL) id=$($b.Id)"
 
 $bobSeesAlice = Read-ReleaseVersionFor $b $a.Id
-Check ($bobSeesAlice -eq '0.9.5') "bob receives alice's release version (0.9.5)"
+Check ($bobSeesAlice -eq $REL) "bob receives alice's release version ($REL)"
 
 $aliceSeesBob = Read-ReleaseVersionFor $a $b.Id
-Check ($aliceSeesBob -eq '0.9.4') "alice receives bob's release version (0.9.4)"
+Check ($aliceSeesBob -eq $REL) "alice receives bob's release version ($REL)"
 
 $a.Tcp.Close(); $b.Tcp.Close()
 
 # --- 2. a client with no trailing field at all (old-build shape) is fine ----
 Write-Host "`n2. old-style handshake (no release-version field)"
 $old = Connect-Client 'oldbuild' $null
-$new = Connect-Client 'newbuild' '0.9.5'
+$new = Connect-Client 'newbuild' $REL
 Check ($null -ne $old.Id -and $old.AckType -eq $P.Ack) "old-shape handshake is still accepted"
 
 $newSeesOld = Read-ReleaseVersionFor $new $old.Id -ms 800
@@ -136,18 +143,27 @@ $old.Tcp.Close(); $new.Tcp.Close()
 
 # --- 3. a late joiner is replayed an existing peer's release version --------
 Write-Host "`n3. late joiner replay"
-$first = Connect-Client 'first' '0.9.3'
+$first = Connect-Client 'first' $REL
 Start-Sleep -Milliseconds 200
-$second = Connect-Client 'second' '0.9.3'
+$second = Connect-Client 'second' $REL
 $secondSeesFirst = Read-ReleaseVersionFor $second $first.Id
-Check ($secondSeesFirst -eq '0.9.3') "late joiner is replayed the existing peer's release version"
+Check ($secondSeesFirst -eq $REL) "late joiner is replayed the existing peer's release version"
 
 $first.Tcp.Close(); $second.Tcp.Close()
 
 # --- 4. the existing protocol-version hard refusal is unaffected ------------
 Write-Host "`n4. protocol-version hard refusal (unchanged by any of the above)"
-$badProto = Connect-Client 'badproto' '0.9.5' -Version ($PROTOCOL_VERSION + 1)
+$badProto = Connect-Client 'badproto' $REL -Version ($PROTOCOL_VERSION + 1)
 Check ($badProto.AckType -eq $P.VersionMismatch) "a wire-protocol mismatch is still refused, hard, regardless of release version"
+
+# --- 5. WO-110 R9: a release mismatch is refused with 0x3D naming the relay's release
+Write-Host "`n5. release-version refusal (WO-110 R9)"
+$badRel = Connect-Client 'mixedbuild' $REL_OTHER
+Check ($badRel.AckType -eq $P.ReleaseVersionMismatch) "a declared release that is not the relay's is refused with 0x3D (got 0x$('{0:X2}' -f $badRel.AckType))"
+if ($badRel.AckPayload) {
+    $named = [System.Text.Encoding]::UTF8.GetString($badRel.AckPayload)
+    Check ($named -eq $REL) "the 0x3D payload names the relay's own release ($named)"
+}
 $badProto.Tcp.Close()
 
 Write-Host "`n--------------------------------------------"

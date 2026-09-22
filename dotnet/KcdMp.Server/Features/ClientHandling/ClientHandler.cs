@@ -90,6 +90,41 @@ public class ClientHandler
 	/// <summary>The effective (clamped) player cap, echoed in the ServerFull (0x36) packet.</summary>
 	public int MaxPlayers => _maxPlayers;
 
+	// ---- WO-110 R9: per-type drop counters ----
+	//
+	// Every exact-length check in ClientSession and the unknown-type skip used
+	// to drop silently: no log, no counter. 0.23.1 shipped a Position shape the
+	// relay dropped on a length check for a whole release with nothing to see
+	// (docs/WO-101-findings.md). Counted here by "0x<type>:<reason>", drained
+	// into one MP-RELAY-DROPS line every 60 s by TcpSocketService, only when
+	// anything was dropped. WO-66's plausibility rejects keep their own
+	// counters and lines; these are the FRAMING drops.
+	private readonly Dictionary<string, long> _drops = new();
+	private long _dropsTotal;
+
+	public void CountDrop(byte type, string reason)
+	{
+		lock (_drops)
+		{
+			string key = $"0x{type:X2}:{reason}";
+			_drops[key] = _drops.TryGetValue(key, out var n) ? n + 1 : 1;
+			_dropsTotal++;
+		}
+	}
+
+	/// <summary>The MP-RELAY-DROPS line for the interval, or null when nothing was dropped; resets the interval counters.</summary>
+	public string? DrainDropsLine()
+	{
+		lock (_drops)
+		{
+			if (_drops.Count == 0) return null;
+			string by = string.Join(",", _drops.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}={kv.Value}"));
+			long interval = _drops.Values.Sum();
+			_drops.Clear();
+			return $"MP-RELAY-DROPS side=relay interval_s=60 dropped={interval} total={_dropsTotal} by={by}";
+		}
+	}
+
 	/// <summary>
 	/// Add a client.
 	///

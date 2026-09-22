@@ -690,7 +690,21 @@ namespace KcdMp.Wire;
 /// read loop's fall-through), so a new client against an old relay simply
 /// never gets an estimate; an old client never sends it. No version bump.
 ///
-/// Free type bytes for new features: 0x3B and up.
+/// ---- Release-version enforcement (WO-110 R9) ----
+///
+/// S→C  0x3D  ReleaseVersionMismatch: [relayReleaseVersion:UTF-8]
+///
+/// Sent instead of the Ack when a Handshake's trailing release-version field
+/// is non-empty and differs from the relay's own build version, then the
+/// socket is closed. Until 0.26.4 the release string was logged, forwarded
+/// (0x1E) and shown by the launcher for the first peer only, and enforced
+/// nowhere: 0.26.3 and 0.26.4 connected silently, one side with the pause
+/// lever off (docs/WO-109-audit.md R9). Fatal for the client like
+/// VersionMismatch (0x09): it prints both versions and stops retrying. A
+/// Handshake with NO release field (a pre-WO-19 build or a synthetic test
+/// peer) is still accepted and logged; the field is what is compared.
+///
+/// Free type bytes for new features: 0x3E and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -716,8 +730,15 @@ public static partial class Protocol
     /// there is no separate "does the peer support this" gate to add on top
     /// of that, because a peer that didn't would never have gotten past
     /// Handshake.
+    ///
+    /// Bumped to 7 in WO-110: the NpcState (0x26/0x27) body gains a sender
+    /// sequence number and sender millisecond stamp (R6), and the relay now
+    /// also refuses a release-version mismatch (R9, 0x3D). A v6 agent and a
+    /// v7 relay refuse each other at Handshake with a clear message on both
+    /// sides, instead of silently dropping every NPC packet on a length check
+    /// the way 0.23.1 did.
     /// </summary>
-    public const byte Version = 6;
+    public const byte Version = 7;
 
     // C→S
     public const byte Handshake      = 0x00;
@@ -783,6 +804,7 @@ public static partial class Protocol
     public const byte StoryBeatDown    = 0x38;
     public const byte ClockSyncDown    = 0x3A;   // WO-98
     public const byte ActionDown       = 0x3C;   // WO-100.5 Phase 3
+    public const byte ReleaseVersionMismatch = 0x3D;   // WO-110 R9
     public const byte Ack              = 0xFF;
 
     /// <summary>WO-98: ClockSyncUp payload -- one int64 of client UTC ticks.</summary>

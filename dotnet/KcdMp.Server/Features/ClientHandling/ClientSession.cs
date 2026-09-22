@@ -106,6 +106,7 @@ public class ClientSession
             {
                 _logger.Warning("[!] Rejecting client with protocol v{ClientVersion}; this relay speaks v{ServerVersion}.",
                     clientVersion, Protocol.Version);
+                _clientHandler.CountDrop(Protocol.Handshake, "protocol-mismatch");   // WO-110 R9
                 EnqueueRaw(BuildPacket(Protocol.VersionMismatch, [Protocol.Version]));
                 return;
             }
@@ -126,6 +127,19 @@ public class ClientSession
             int releaseVersionOffset = 2 + nameLen;
             if (handshakeLen > releaseVersionOffset)
                 ReleaseVersion = Encoding.UTF8.GetString(handshakePayload, releaseVersionOffset, handshakeLen - releaseVersionOffset);
+
+            // WO-110 R9: a declared release version must equal this relay's.
+            // Protocol.cs, "Release-version enforcement": 0.26.4 + 0.26.5 must
+            // not connect; a peer that declares nothing (pre-WO-19 build or a
+            // synthetic test peer) is still accepted and logged as such.
+            if (ReleaseVersion is { Length: > 0 } && !string.Equals(ReleaseVersion, RelayReleaseVersion.Current, StringComparison.Ordinal))
+            {
+                _logger.Warning("[!] Rejecting '{Name}' from {ClientRemoteEndPoint}: release {ClientRelease} does not match this relay's {RelayRelease} (both machines must run the same build).",
+                    name, _tcp.Client.RemoteEndPoint, ReleaseVersion, RelayReleaseVersion.Current);
+                _clientHandler.CountDrop(Protocol.Handshake, "release-mismatch");
+                EnqueueRaw(BuildPacket(Protocol.ReleaseVersionMismatch, Encoding.UTF8.GetBytes(RelayReleaseVersion.Current)));
+                return;
+            }
 
             if (!_clientHandler.TryMarkReady(this))
             {
@@ -328,7 +342,10 @@ public class ClientSession
                     await ReadExactAsync(body);
                     int npcNameLen = body[0];
                     if (npcNameLen != payloadLen - 1 - Protocol.NpcStateFixedTail)
+                    {
+                        _clientHandler.CountDrop(Protocol.NpcStateUp, "namelen-mismatch");   // WO-110 R9: counted, not silent
                         continue;   // nameLen disagrees with the framing: malformed, drop
+                    }
                     string npcName = System.Text.Encoding.UTF8.GetString(body, 1, npcNameLen);
                     // WO-60: the flags byte (last byte of the fixed tail) may
                     // carry the ENGAGED bit -- the sender's player is actively
@@ -445,6 +462,8 @@ public class ClientSession
                     await ReadExactAsync(body);
                     if (body[0] == payloadLen - 1)
                         _broadcastService.BroadcastHorseInfo(this, body);
+                    else
+                        _clientHandler.CountDrop(Protocol.HorseInfoUp, "namelen-mismatch");   // WO-110 R9
                     continue;
                 }
 
@@ -588,7 +607,11 @@ public class ClientSession
                 if (type != Protocol.Position
                     || (payloadLen != Protocol.PositionPayloadLen && payloadLen != Protocol.PositionPayloadLenV2))
                 {
-                    // Skip unknown/malformed packet
+                    // Skip unknown/malformed packet. WO-110 R9: counted by type
+                    // -- a known type landing here failed one of the exact-
+                    // length gates above (the 0.23.1 shape), an unknown type
+                    // is a newer peer; either way MP-RELAY-DROPS says so.
+                    _clientHandler.CountDrop((byte)type, type == Protocol.Position ? "wrong-length" : "unknown-or-wrong-length");
                     if (payloadLen > 0)
                     {
                         var skip = new byte[payloadLen];

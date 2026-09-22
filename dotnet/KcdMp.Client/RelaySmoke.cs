@@ -55,6 +55,11 @@ public static class RelaySmoke
                 Console.WriteLine($"RELAY-SMOKE FAIL protocol mismatch: relay speaks v{payload[0]}, this agent v{Protocol.Version}");
                 return 1;
             }
+            if (type == Protocol.ReleaseVersionMismatch)
+            {
+                Console.WriteLine($"RELAY-SMOKE FAIL release mismatch: relay is {Encoding.UTF8.GetString(payload)}, this agent {ReleaseVersionInfo.Current}");
+                return 1;
+            }
             if (type != Protocol.Ack)
             {
                 Console.WriteLine($"RELAY-SMOKE FAIL expected Ack 0x{Protocol.Ack:X2}, got 0x{type:X2} ({payload.Length} bytes)");

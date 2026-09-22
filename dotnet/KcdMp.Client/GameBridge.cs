@@ -1161,6 +1161,13 @@ public partial class GameBridge(ClientConfig config)
                 Console.WriteLine($"[!] {ex.Message}");
                 break;
             }
+            catch (ReleaseVersionMismatchException ex)
+            {
+                // WO-110 R9: fatal, same as the protocol byte -- the relay
+                // will refuse this build every time.
+                Console.WriteLine($"[!] {ex.Message}");
+                break;
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[!] Unexpected error: {ex.Message}");
@@ -1251,24 +1258,37 @@ public partial class GameBridge(ClientConfig config)
         releaseVersionBytes.CopyTo(handshake, 5 + nameBytes.Length);
         await stream.WriteAsync(handshake);
 
-        // --- Ack (S→C 0xFF [id:1]) or rejection (S→C 0x09 [serverVersion:1]) ---
-        // Both are 4 bytes on the wire, so the type byte decides.
-        var reply = new byte[4]; // header(3) + 1
-        await ReadExactAsync(stream, reply);
+        // --- Ack (S→C 0xFF [id:1]) or a rejection: 0x09 [serverVersion:1],
+        // 0x36 [maxPlayers:1], or 0x3D [relayRelease:UTF-8] (WO-110 R9). The
+        // first three are 4 bytes; 0x3D is variable, so the header is read
+        // first and the payload sized from it.
+        var replyHeader = new byte[3];
+        await ReadExactAsync(stream, replyHeader);
+        int replyLen = BinaryPrimitives.ReadUInt16LittleEndian(replyHeader.AsSpan(1));
+        var replyBody = new byte[replyLen];
+        if (replyLen > 0) await ReadExactAsync(stream, replyBody);
 
-        if (reply[0] == Protocol.VersionMismatch)
-            throw new ProtocolVersionMismatchException(reply[3]);
+        if (replyHeader[0] == Protocol.VersionMismatch && replyLen >= 1)
+            throw new ProtocolVersionMismatchException(replyBody[0]);
 
-        if (reply[0] == Protocol.ServerFull)
-            throw new ServerFullException(reply[3]);
+        if (replyHeader[0] == Protocol.ServerFull && replyLen >= 1)
+            throw new ServerFullException(replyBody[0]);
 
-        if (reply[0] != Protocol.Ack)
+        if (replyHeader[0] == Protocol.ReleaseVersionMismatch)
         {
-            Console.WriteLine($"[!] Expected Ack, got packet type 0x{reply[0]:X2}. Dropping connection.");
+            string relayRelease = Encoding.UTF8.GetString(replyBody);
+            // Into the game too: the player sees why nothing connects.
+            try { await ExecLuaAsync($"if KCD2MP_ShowNativeToast then KCD2MP_ShowNativeToast(\"KCD2-MP: relay runs {EscapeLua(relayRelease)}, you run {EscapeLua(ReleaseVersionInfo.Current)} -- both machines must install the same release\") end"); await _transport.FlushAsync(appCt); } catch { }
+            throw new ReleaseVersionMismatchException(relayRelease);
+        }
+
+        if (replyHeader[0] != Protocol.Ack || replyLen < 1)
+        {
+            Console.WriteLine($"[!] Expected Ack, got packet type 0x{replyHeader[0]:X2}. Dropping connection.");
             return;
         }
 
-        byte myId = reply[3];
+        byte myId = replyBody[0];
         _myGhostId = myId;
         Console.WriteLine($"Connected! Assigned id={myId} (protocol v{Protocol.Version})");
         Console.WriteLine();
@@ -1640,6 +1660,7 @@ public partial class GameBridge(ClientConfig config)
             long lastWeatherTick = nowTimestamp;
             long lastPositionHeartbeat = nowTimestamp;
             long lastCadenceReport = Stopwatch.GetTimestamp();   // WO-102 Phase 1
+            long lastDropReport = 0;   // WO-110 R9
             long lastRequestSweep = Stopwatch.GetTimestamp();     // WO-102 Phase 5
             long lastNpcScan = Stopwatch.GetTimestamp();          // WO-102.5 Phase 2
             long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
@@ -1855,6 +1876,8 @@ public partial class GameBridge(ClientConfig config)
                     _cadNative.Break();
                 if (IntervalElapsed(ref lastCadenceReport, CadenceReportInterval, nowTimestamp))
                     ReportCadence();
+                if (IntervalElapsed(ref lastDropReport, DropReportInterval, nowTimestamp))
+                    ReportDrops();   // WO-110 R9
                 if (IntervalElapsed(ref lastRequestSweep, RequestResolveWindow, nowTimestamp))
                     SweepRequests();   // WO-102 Phase 5
 
@@ -4291,9 +4314,11 @@ public partial class GameBridge(ClientConfig config)
                     // to inject code. A name for an entity not loaded in this
                     // world is handled (ignored) on the Lua side.
                     int nameLen = payload[1];
+                    if (payloadLen != 2 + nameLen + Protocol.NpcStateFixedTail) CountDrop(type, "namelen-mismatch");   // WO-110 R9
                     if (payloadLen == 2 + nameLen + Protocol.NpcStateFixedTail)
                     {
                         string npcName = Encoding.UTF8.GetString(payload, 2, nameLen);
+                        if (!NpcNamePattern.IsMatch(npcName)) CountDrop(type, "name-rejected");   // WO-110 R9
                         if (NpcNamePattern.IsMatch(npcName))
                         {
                             int o = 2 + nameLen;
@@ -4604,6 +4629,13 @@ public partial class GameBridge(ClientConfig config)
                 else if (Dice?.HandlePacket(type, payload) == true)
                 {
                     // Dice packet consumed by the dice layer.
+                }
+                else
+                {
+                    // WO-110 R9: a known type that failed its exact-length gate
+                    // above, or a type this build does not know. Counted, not
+                    // silent -- MP-RELAY-DROPS side=client every 60 s.
+                    CountDrop(type, "unknown-or-wrong-length");
                 }
             }
         }
@@ -5597,6 +5629,37 @@ public partial class GameBridge(ClientConfig config)
     /// a burst of ghost updates without blocking on HTTP for each one.
     /// </summary>
     private Task ExecLuaAsync(string lua) => _transport.ExecuteAsync(lua);
+
+    // WO-110 R9: the client side of the framing-drop counters (the relay has
+    // ClientHandler.CountDrop). Drained into one MP-RELAY-DROPS line every
+    // 60 s from the main loop, only when something was dropped.
+    private readonly Dictionary<string, long> _drops = new();
+    private long _dropsTotal;
+    private void CountDrop(int type, string reason)
+    {
+        lock (_drops)
+        {
+            string key = $"0x{type:X2}:{reason}";
+            _drops[key] = _drops.TryGetValue(key, out var n) ? n + 1 : 1;
+            _dropsTotal++;
+        }
+    }
+    private void ReportDrops()
+    {
+        string? line = null;
+        lock (_drops)
+        {
+            if (_drops.Count > 0)
+            {
+                long interval = _drops.Values.Sum();
+                string by = string.Join(",", _drops.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}={kv.Value}"));
+                _drops.Clear();
+                line = $"MP-RELAY-DROPS side=client interval_s=60 dropped={interval} total={_dropsTotal} by={by}";
+            }
+        }
+        if (line is not null) Console.WriteLine(line);
+    }
+    private static readonly TimeSpan DropReportInterval = TimeSpan.FromSeconds(60);
 
     // -------------------------------------------------------------------------
     // TCP helpers
