@@ -34,7 +34,7 @@ was deleted. One commit per fix; nothing reverted.** Paths: `<repo>`,
 | + console ceiling | **found and fixed live** | two commits (encoded budget; atomic check-and-add) |
 | 7 — presets, marker, runbook, predictions | done | 19 rows per preset; `WO110-BUILD`; runbook rewritten; predictions in findings §1 |
 | 8 — smoke, 12 items | 11 ran (observed), 1 n/a (R8) | findings §4 |
-| end gate | see §4 | |
+| end gate | see §4 | the first two fresh-clone runs each failed on a synthetic suite that PASSED every check yet exited 2: `Test-WO110Synthetic.lua` (new) and `Test-WO99Synthetic.lua` (never gated before R10) printed their results instead of setting the driver's `OUT` global. Both fixed; a print-only scenario can no longer ship |
 
 ### Method notes
 
@@ -115,4 +115,57 @@ was deleted. One commit per fix; nothing reverted.** Paths: `<repo>`,
 
 ## 4. End gate
 
-Filled in after the fresh-clone build; see the last section of this file.
+Version `0.26.5` as named by the maintainer in the prompt (not assumed).
+`rollback/0.26.4` tagged at `f698046` -- the last commit with 0.26.4 code
+and VERSION (WO-109's docs-only commit on top of the 0.26.4 build) -- and
+pushed. `VERSION`, README badge, release notes and the rebuilt tracked pak
+committed and pushed to `origin main` **before** the build. (Side effect:
+`git push --tags` also pushed a pre-existing local tag `BETA` that was not
+on the remote; it was deleted from the remote in the same minute.)
+
+Built from a **fresh clone of `origin/main`** (not the working tree) with
+`tools\Build-Installer.ps1`, three runs:
+
+1. **Failed** at `Test-WO110Synthetic.ps1`: 85 checks passed, exit 2 --
+   the scenario printed its results instead of setting the driver's `OUT`
+   global. Fixed (`f86d763`, after `f2191bd`, whose heredoc turned the
+   escape into a literal newline).
+2. **Failed** at `Test-WO99Synthetic.ps1`: 39 passed, exit 2, the same
+   print-only contract, pre-existing since WO-99 and never gated before
+   R10. Fixed (`55bf1a6`).
+3. **Green** at `55bf1a6`: relay round-trip 17/17, agent unit tests
+   174/174, fourteen synthetic suites green (35/48/33/196/92/94/85/72/47/
+   70/101/32/160/50/39), both static checks (7/7, 6/6), native plugin
+   rebuilt, payload smoke `RELAY-SMOKE ok id=0 protocol=v7 release=0.26.5`
+   with no assembly-load line, install manifest 1,024 entries, Inno Setup
+   compile 47 s.
+
+| artifact | size | sha256 |
+|---|---|---|
+| `release\KCDMP-Setup-0.26.5.exe` | 100,611,295 B | `2817918a24555b1ba801d69bb2384ed3d2818cb32cb3bb59336b6a84851a6f3b` |
+| `kdcmp\Data\kdcmp.pak` (built in the clone; not byte-deterministic) | 883,977 B | `6204fa53f45fed71f1078be95df22aaaae3c375711ed9a265126a30dd8a31dae` |
+| `KCDMP.dll` | 402,432 B | `98a0d9683e1ba38a0705a3c78bf38ecbee08c48dae756072eda884c62b985aa9` |
+| `KcdMpClient.exe` | 151,552 B | `2886641fba8fd3b64d3d58b3fa2f4e6b57d105a7719a0259e65913d483f23a36` |
+| `KcdMpServer.exe` | 151,552 B | `33001074c87d6b025063fe41e1837c764c3cb2ef11a117b1c8aa4c99c8370d06` |
+
+**Pak content check:** `Scripts/Startup/kdcmp.lua` extracted from the
+built pak contains `WO110-BUILD`, `KCD2MP_SetCullRadius`,
+`KCD2MP_SetNpcTrackMax`, `KCD2MP_SetNpcSenderClock`, `MP-NPCZ`,
+`KCD2MP_OnChainDeadRestart`, `KCD2MP_AuthorityOwnerLog`, `MP-NPCID`, the
+unquoted `(%line)` templates and `pause_issued_npcs`; the manifest's MOD
+row carries the same pak sha256.
+
+**Privacy sweep:** every file in the release folder (1,024), read as UTF-8
+and as UTF-16LE, for the Windows user name, `duckdns`, `nip.io`, the
+personal mail domain, the maintainer's Steam persona (taken from the relay
+log, never written here), private-range IPv4 literals and repository
+paths. Eight hits, all benign: the launcher's own placeholder text
+`myserver.duckdns.org` (WO-55 UI copy, in the public source), NAudio's
+third-party PDB build paths, and one `10.1.0.0` assembly version. The
+committed WO-110 docs were swept the same way: clean. No GitHub Release
+was created.
+
+The Setup exe is in the fresh clone under the session scratchpad
+(`freshelease\KCDMP-Setup-0.26.5.exe`); nothing was installed on this
+machine from it (the running game carries the working-tree pak and DLL of
+the same commit).
