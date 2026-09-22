@@ -2149,7 +2149,14 @@ function KCD2MP_DebugHud(arg)
         mp_log("mp_debug_hud: expected 'on' or 'off', got '" .. tostring(arg) .. "'")
         return false
     end
-    mp_log("DEBUG HUD (r_DisplayInfo) = " .. tostring(System.GetCVarValue("r_DisplayInfo")))
+    -- WO-110: System.GetCVarValue does not exist on this build (observed live
+    -- 2026-09-22: "attempt to call field 'GetCVarValue' (a nil value)" on
+    -- every mp_debug_hud on|off since WO-50 -- the SetCVar above had already
+    -- landed, so the toggle worked and only the report line errored). Read
+    -- back through System.GetCVar when it exists, else report what was set.
+    local rb = nil
+    pcall(function() if type(System.GetCVar) == "function" then rb = System.GetCVar("r_DisplayInfo") end end)
+    mp_log("DEBUG HUD (r_DisplayInfo) = " .. tostring(rb ~= nil and rb or (KCD2MP.debugHud and "3 (set)" or "0 (set)")))
     return true
 end
 
