@@ -5907,10 +5907,10 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                     -- act at. It also LOGS now, throttled: the count alone
                     -- only ever printed from the manual mp_npc_fight command,
                     -- which no field session has ever run.
-                    if f2 > 0.0025 then
+                    if (fx*fx + fy*fy) > 0.0025 then   -- WO-110 R14: the WO-40 attractor clustering stays XY (its history is XY); Z has MP-NPCZ
                         p.fightN = (p.fightN or 0) + 1
                         KCD2MP._stats.npcFightEvents = KCD2MP._stats.npcFightEvents + 1
-                        local fdist = math.sqrt(f2)
+                        local fdist = math.sqrt(fx*fx + fy*fy)
                         -- WO-98 Phase 6: the machine-readable record is a
                         -- per-NPC 10 s aggregate; the prose line stays for a
                         -- human skimming the log, at 30 s instead of 5 s.
@@ -11734,6 +11734,10 @@ local ok, err = pcall(function()
     mp_log(string.format("WO108-BUILD pause_lever=%s npc_replica=%s npc_yield=%s resume_dwell_s=%.1f -- 0.26.4 defaults (mp_preset_legacy = 0.26.3)",
         KCD2MP.wo102.authorityPause and "on" or "off", KCD2MP.npcReplica.enabled and "on" or "off",
         KCD2MP.npcYield.enabled and "on" or "off", KCD2MP.wo1025.resumeDwellS or 0))
+    -- WO-110 build marker: every default this WO changed, on one line, two
+    -- lines after MOD INIT. Missing = stale pak (memory/kcd2mp-lua-deploy-gotcha.md).
+    mp_log(string.format("WO110-BUILD npc_read_native=%s npc_track_max=%d cull_radius_m=%.0f -- 0.26.5 defaults (mp_preset_legacy = 0.26.4)",
+        KCD2MP.wo1025.readNative and "on" or "off", KCD2MP.wo1025.npcTrackMax or 0, KCD2MP.wo1025.cullRadius or 0))
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
