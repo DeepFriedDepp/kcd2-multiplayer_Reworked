@@ -4534,6 +4534,12 @@ local function mp_npc_rescan()
             KCD2MP.npcTracked[name] = { since = os.clock() }
             mp_log("NPC-SYNC tracking " .. name)
             mp_auth_log(name, "acquire", "self", KCD2MP.hitSensorOn and "authority-default" or "claim", 0)   -- WO-102
+            -- WO-110 R5: the OWNER's identity for this name, so the joiner's
+            -- MP-PAUSE wuid=/eid= can be diffed against the host after a
+            -- session (WO-109 s1.2). Same tuple as the joiner's line. Note for
+            -- the diff: eid >= 0x70000 is a runtime event spawn and gets a new
+            -- id and WUID on every load -- not a mismatch (WO-109 s1.4).
+            mp_log("MP-NPCID npc=" .. name .. " " .. mp_pause_identity(name) .. " via=acquire")
         end
     end
     for name, t in pairs(KCD2MP.npcTracked) do
@@ -4878,6 +4884,13 @@ function KCD2MP_NpcSyncTick()
                 KCD2MP_EmitEvent(isAuthority and "npc_state" or "npc_claim",
                     string.format("%s %.3f %.3f %.3f %.4f %.1f %d",
                     name, p.x, p.y, p.z, rot, hp, flags))
+                -- WO-110 R5: identity on the first emit per name too (the
+                -- acquire line fires at rescan time, before culling decided
+                -- whether the name is ever streamed).
+                if not t.idLogged then
+                    t.idLogged = true
+                    mp_log("MP-NPCID npc=" .. name .. " " .. mp_pause_identity(name) .. " via=first-emit")
+                end
                 -- WO-86 Phase 1: the outbound dead bit, the moment it first
                 -- goes out (it then rides every heartbeat for this body).
                 if dead and not t.sentDead then
