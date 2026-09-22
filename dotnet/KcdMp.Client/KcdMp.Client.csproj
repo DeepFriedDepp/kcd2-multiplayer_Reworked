@@ -26,6 +26,17 @@
   <ItemGroup>
     <PackageReference Include="DiscordRichPresence" Version="1.6.1.70" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- WO-110 R10: pinned to the version the relay's and master server's
+         publishes carry (Serilog.Extensions.Hosting 10 -> Microsoft.Extensions.*
+         10 -> System.Text.Json 10). tools/Publish-Release.ps1 flat-merges the
+         four publishes, so the relay's System.Text.Json 10 overwrote this
+         project's inbox 8.0 copy while KcdMpClient.deps.json still listed 8.0
+         and no System.IO.Pipelines at all: the shipped agent's loader could
+         not see the System.IO.Pipelines 10 that STJ 10 needs, and every JSON
+         write failed (observed by tools/Test-PayloadSmoke.ps1, 2026-09-22).
+         Referencing the same package here puts both assemblies, at the same
+         versions, into this exe's own dependency graph. -->
+    <PackageReference Include="System.Text.Json" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

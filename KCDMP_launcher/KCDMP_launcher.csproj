@@ -31,6 +31,11 @@
 		<PackageReference Include="Photino.Blazor" Version="4.0.13" />
 		<PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
 		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+		<!-- WO-110 R10: same reason as KcdMp.Client.csproj: the flat-merged
+		     release folder holds System.Text.Json 10 (relay/master publishes);
+		     this exe's deps.json must list that version too, or its loader
+		     cannot resolve STJ 10's System.IO.Pipelines dependency. -->
+		<PackageReference Include="System.Text.Json" Version="10.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>
