@@ -337,7 +337,12 @@ public partial class GameBridge(ClientConfig config)
     // 40 (the 0.26.4 value; the ordering fix is unconditional).
     private const int    NpcTrackMaxDefault = 200;
     private const int    NpcTrackMaxFloor = 10, NpcTrackMaxCeiling = 400;
-    private const int    NpcScanChunkChars = 3000;
+    // WO-110: chunks are cut by ENCODED size against the console's measured
+    // ~2,100-character ceiling (LuaCommandBudget); the statement wrapper
+    // "if KCD2MP_ApplyNativeScan then KCD2MP_ApplyNativeScan(\"...\",g,i,n) end"
+    // costs ~90 encoded characters on top of the CSV.
+    private const int    NpcScanChunkEncodedBudget = 1500;
+    private const int    NpcScanChunkWrapperEncoded = 120;
     private volatile int _npcTrackMax = NpcTrackMaxDefault;
     private uint _npcScanGen;
     private bool _npcScanSkipLogged;   // WO-110 R13: one line per skip/resume transition
@@ -5968,19 +5973,13 @@ public partial class GameBridge(ClientConfig config)
             entries.Add(FormattableString.Invariant(
                 $"{e.Name}:{e.X:F3}:{e.Y:F3}:{e.Z:F3}:{e.Yaw:F4}:{(e.IsHorse ? 1 : 0)}"));
         }
-        // Chunk so no single ExecuteString statement outgrows the transport
-        // (HttpGameTransport.MaxBatchChars is 4000 and a statement is never
-        // split); the mod reassembles by (gen, idx, total) and commits when
-        // every chunk of a generation has arrived, in any order.
-        var chunks = new List<string>();
-        var cur = new StringBuilder();
-        foreach (var s in entries)
-        {
-            if (cur.Length > 0 && cur.Length + 1 + s.Length > NpcScanChunkChars) { chunks.Add(cur.ToString()); cur.Clear(); }
-            if (cur.Length > 0) cur.Append(',');
-            cur.Append(s);
-        }
-        if (cur.Length > 0 || chunks.Count == 0) chunks.Add(cur.ToString());
+        // Chunk so no single ExecuteString statement outgrows the console's
+        // ENCODED ceiling (LuaCommandBudget: ':' and ',' encode to three
+        // characters each, so a 55-character entry is ~70 encoded); the mod
+        // reassembles by (gen, idx, total) and commits when every chunk of a
+        // generation has arrived, in any order. The transport's own encoded
+        // batch budget then keeps each chunk in a batch of its own.
+        var chunks = LuaCommandBudget.ChunkCsv(entries, NpcScanChunkEncodedBudget, NpcScanChunkWrapperEncoded);
         float farthestM = entries.Count > 0 ? MathF.Sqrt(ranked[entries.Count - 1].D2) : 0f;
 
         Console.WriteLine(FormattableString.Invariant(

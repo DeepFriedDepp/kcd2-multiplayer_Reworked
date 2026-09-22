@@ -36,7 +36,12 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
     /// 8000-character chunk was verified to execute, so this is comfortably
     /// conservative rather than a measured ceiling.
     /// </summary>
-    private const int MaxBatchChars = 4000;
+    // WO-110: the batch is bounded by ENCODED size against the console's
+    // measured ceiling (LuaCommandBudget), not by a raw character count. The
+    // previous 4,000-raw bound let a full batch be truncated by the engine
+    // with a Lua error nobody on this side could see.
+    private const int MaxBatchChars = LuaCommandBudget.MaxEncodedCommandChars;
+    private int _pendingEncoded;   // encoded size of the statements in _pending, wrappers included
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
 
@@ -183,17 +188,45 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             return;
         }
 
-        bool flushNow = false;
+        int enc = LuaCommandBudget.EncodedLength(lua) + LuaCommandBudget.WrapperEncodedChars;
+        if (enc > MaxBatchChars)
+        {
+            // Cannot ever be sent whole: the engine would truncate it and fail
+            // every statement around it. Said out loud, once per 5 s, counted.
+            OversizeDropped++;
+            var now = DateTime.UtcNow;
+            if ((now - _lastOversizeLogUtc) >= TimeSpan.FromSeconds(5))
+            {
+                _lastOversizeLogUtc = now;
+                Console.WriteLine($"MP-BATCH-DROP reason=oversize encoded={enc} budget={MaxBatchChars} total={OversizeDropped} first=\"{(lua.Length > 100 ? lua[..100] + "..." : lua)}\"");
+            }
+            return;
+        }
+
+        bool flushFirst = false, flushAfter = false;
+        await _batchLock.WaitAsync(ct);
+        try
+        {
+            if (_pending.Count > 0 && _pendingEncoded + enc > MaxBatchChars) flushFirst = true;
+        }
+        finally { _batchLock.Release(); }
+        if (flushFirst) await FlushAsync(ct);   // send what is queued; this statement starts the next batch
+
         await _batchLock.WaitAsync(ct);
         try
         {
             _pending.Add(lua);
-            if (_pending.Sum(s => s.Length + 32) >= MaxBatchChars) flushNow = true;
+            _pendingEncoded += enc;
+            if (_pendingEncoded >= MaxBatchChars - 200) flushAfter = true;   // full enough: do not wait for the loop
         }
         finally { _batchLock.Release(); }
 
-        if (flushNow) await FlushAsync(ct);
+        if (flushAfter) await FlushAsync(ct);
     }
+
+    /// <summary>WO-110: statements that could never fit one ExecuteString and were dropped (see LuaCommandBudget).</summary>
+    public long OversizeDropped { get; private set; }
+    private DateTime _lastOversizeLogUtc = DateTime.MinValue;
 
     public async Task FlushAsync(CancellationToken ct = default)
     {
@@ -204,6 +237,7 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             if (_pending.Count == 0) return;
             batch = [.. _pending];
             _pending.Clear();
+            _pendingEncoded = 0;
         }
         finally { _batchLock.Release(); }
 
@@ -433,7 +467,16 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
     /// frozen.
     /// </summary>
     public Task ExecuteNowAsync(string lua, CancellationToken ct = default)
-        => SendNowAsync($"pcall(function() {lua} end)", ct);
+    {
+        int enc = LuaCommandBudget.EncodedLength(lua) + LuaCommandBudget.WrapperEncodedChars;
+        if (enc > MaxBatchChars)
+        {
+            OversizeDropped++;
+            Console.WriteLine($"MP-BATCH-DROP reason=oversize-now encoded={enc} budget={MaxBatchChars} total={OversizeDropped} first=\"{(lua.Length > 100 ? lua[..100] + "..." : lua)}\"");
+            return Task.CompletedTask;
+        }
+        return SendNowAsync($"pcall(function() {lua} end)", ct);
+    }
 
     public async ValueTask DisposeAsync()
     {
