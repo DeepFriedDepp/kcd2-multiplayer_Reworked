@@ -277,9 +277,9 @@ do
 end
 
 -- ---------------------------------------------------------------- report
+-- WO-110: the shared driver (Test-NpcSmoothSynthetic.ps1) reads the global OUT;
+-- this scenario only printed, so it exited 2 with every check passing and was
+-- never green as a gate. Caught by the WO-110 fresh-clone build (R10).
 local pass, fail = 0, 0
-for _, r in ipairs(RESULTS) do
-    print(r)
-    if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end
-end
-print(string.format("RESULT: %d passed, %d failed", pass, fail))
+for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end
+OUT = table.concat(RESULTS, "\n") .. string.format("\n%d passed, %d failed", pass, fail)
