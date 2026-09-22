@@ -21,14 +21,30 @@ public class ClientSession
     private readonly TcpBroadcastService _broadcastService;
     private readonly SessionManager _sessions;
     private readonly ClientHandler _clientHandler;
-    private const int MaxQueuedPackets = 512;
+    // WO-110 Phase 4.4 (docs/WO-109-audit.md s4.3/s4.7): the per-client
+    // outbound queue is sized in BYTES, and a slow client degrades before it
+    // is dropped. Until 0.26.4 the queue was 512 packets and overflow meant
+    // an immediate disconnect -- a joiner whose Lua ingress fell behind a
+    // dense town's NPC stream was cut off rather than thinned. Now:
+    //   * under PressureBytes queued, a new NpcStateDown for a (source, name)
+    //     that already has one waiting REPLACES the waiting one (same
+    //     coalescing the Ghost packets always had, per name): stale NPC
+    //     samples are dropped first, counted as 0x27:pressure-coalesced;
+    //   * only past MaxQueuedBytes is the client disconnected, as before.
+    // The Lua receiver renders on sender time (R6), so a thinned stream keeps
+    // its timeline; only its sample density drops.
+    private const int MaxQueuedBytes = 512 * 1024;
+    private const int PressureBytes  = 64 * 1024;
     private readonly object _writeQueueLock = new();
     private readonly Queue<QueuedWrite> _writeQueue = new();
     private readonly Dictionary<byte, byte[]> _pendingGhostPackets = new();
+    private readonly Dictionary<string, byte[]> _pendingNpcPackets = new();   // WO-110 4.4: "<src>|<name>" -> newest packet, only under pressure
     private readonly SemaphoreSlim _writeSignal = new(0);
     private bool _writeQueueStopped;
+    private int _queuedBytes;
+    private long _npcCoalesced;
 
-    private readonly record struct QueuedWrite(byte[]? Packet, byte? GhostId);
+    private readonly record struct QueuedWrite(byte[]? Packet, byte? GhostId, string? NpcKey = null);
 
     /// <summary>
     /// WO-76: assigned by <see cref="ClientHandler.TryMarkReady"/> from its
@@ -877,7 +893,10 @@ public class ClientSession
         var payload = new byte[1 + upstreamBody.Length];
         payload[0] = sourceId;
         Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
-        EnqueueRaw(BuildPacket(Protocol.NpcStateDown, payload));
+        // WO-110 4.4: keyed by source + NPC name so pressure thinning is per NPC.
+        int nameLen = upstreamBody[0];
+        string key = sourceId + "|" + Encoding.UTF8.GetString(upstreamBody, 1, nameLen);
+        EnqueueNpcPacket(key, BuildPacket(Protocol.NpcStateDown, payload));
     }
 
     /// <summary>
@@ -1088,12 +1107,48 @@ public class ClientSession
         lock (_writeQueueLock)
         {
             if (_writeQueueStopped) return;
-            overflow = _writeQueue.Count >= MaxQueuedPackets;
-            if (!overflow) _writeQueue.Enqueue(new(packet, null));
+            overflow = _queuedBytes + packet.Length > MaxQueuedBytes;
+            if (!overflow) { _writeQueue.Enqueue(new(packet, null)); _queuedBytes += packet.Length; }
         }
 
-        if (overflow) AbortWriteQueue("outbound queue limit reached");
+        if (overflow) AbortWriteQueue($"outbound queue limit reached ({MaxQueuedBytes / 1024} KB queued; {_npcCoalesced} NPC samples were already thinned)");
         else _writeSignal.Release();
+    }
+
+    /// <summary>
+    /// WO-110 4.4: an NpcStateDown for a (source, name). Below PressureBytes
+    /// it is an ordinary FIFO entry (full sample density). Above it, one slot
+    /// per key: a waiting sample for the same NPC is replaced by the newer
+    /// one and counted, so a slow client sees fewer, newer samples instead
+    /// of a disconnect.
+    /// </summary>
+    private void EnqueueNpcPacket(string key, byte[] packet)
+    {
+        bool overflow = false, queued = false, coalesced = false;
+        lock (_writeQueueLock)
+        {
+            if (_writeQueueStopped) return;
+            if (_queuedBytes >= PressureBytes && _pendingNpcPackets.TryGetValue(key, out var old))
+            {
+                _queuedBytes += packet.Length - old.Length;
+                _pendingNpcPackets[key] = packet;
+                _npcCoalesced++;
+                coalesced = true;
+            }
+            else if (_queuedBytes >= PressureBytes)
+            {
+                overflow = _queuedBytes + packet.Length > MaxQueuedBytes;
+                if (!overflow) { _pendingNpcPackets[key] = packet; _writeQueue.Enqueue(new(null, null, key)); _queuedBytes += packet.Length; queued = true; }
+            }
+            else
+            {
+                overflow = _queuedBytes + packet.Length > MaxQueuedBytes;
+                if (!overflow) { _writeQueue.Enqueue(new(packet, null)); _queuedBytes += packet.Length; queued = true; }
+            }
+        }
+        if (coalesced) _clientHandler.CountDrop(Protocol.NpcStateDown, "pressure-coalesced");
+        if (overflow) AbortWriteQueue($"outbound queue limit reached ({MaxQueuedBytes / 1024} KB queued; {_npcCoalesced} NPC samples were already thinned)");
+        else if (queued) _writeSignal.Release();
     }
 
     private void EnqueueGhostPacket(byte ghostId, byte[] packet)
@@ -1104,19 +1159,21 @@ public class ClientSession
         {
             if (_writeQueueStopped) return;
 
-            if (_pendingGhostPackets.ContainsKey(ghostId))
+            if (_pendingGhostPackets.TryGetValue(ghostId, out var oldGhost))
             {
                 // A marker for this source is already queued. Replace only its
                 // payload so a slow client receives the newest position.
+                _queuedBytes += packet.Length - oldGhost.Length;
                 _pendingGhostPackets[ghostId] = packet;
                 return;
             }
 
-            overflow = _writeQueue.Count >= MaxQueuedPackets;
+            overflow = _queuedBytes + packet.Length > MaxQueuedBytes;
             if (!overflow)
             {
                 _pendingGhostPackets[ghostId] = packet;
                 _writeQueue.Enqueue(new(null, ghostId));
+                _queuedBytes += packet.Length;
                 queued = true;
             }
         }
@@ -1139,6 +1196,8 @@ public class ClientSession
             _writeQueueStopped = true;
             _writeQueue.Clear();
             _pendingGhostPackets.Clear();
+            _pendingNpcPackets.Clear();
+            _queuedBytes = 0;
         }
 
         if (reason is not null)
@@ -1163,10 +1222,15 @@ public class ClientSession
                     {
                         _pendingGhostPackets.Remove(ghostId, out packet);
                     }
+                    else if (queued.NpcKey is string npcKey)
+                    {
+                        _pendingNpcPackets.Remove(npcKey, out packet);   // WO-110 4.4
+                    }
                     else
                     {
                         packet = queued.Packet;
                     }
+                    if (packet is not null) _queuedBytes -= packet.Length;
                 }
                 else if (_writeQueueStopped)
                 {
