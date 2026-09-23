@@ -82,8 +82,39 @@
 //                        the agent stopped, exactly like 0x05/0x07's probes.
 //                        NOTHING IS TRIGGERED -- see concept_read.h.
 //
+//     0x0C SetSession   [on:1]                                     (1)
+//                        WO-113: the agent says a multiplayer session is live
+//                        (relay connected, Ack received) or over. The death
+//                        guard arms only while this is on; the pipe dropping
+//                        clears it. Idempotent -- the agent re-sends it on every
+//                        pipe (re)connect and as a heartbeat.
+//     0x0D SetRespawn   [on:1]                                     (1)
+//                        WO-113: mp_respawn on/off, forwarded by the agent
+//                        when the toggle is typed on the Lua side. The DLL's
+//                        own native console command sets the same flag.
+//     0x0E MirrorGrave  [op:1][owner:1][graveId:8 LE][x:4f][y:4f][z:4f]  (22)
+//                        WO-113: op 1 = add a peer's gravestone + marker
+//                        (never lootable, never saved), op 0 = remove it,
+//                        op 2 = remove every mirror of `owner` (0xFF = all).
+//     0x0F ListGraves   []                           -> replies 0x88
+//                        WO-113: every grave this player still owns, for the
+//                        agent's on-connect re-announce.
+//
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
+//     0x88 GraveList    [ok:1][seq:1][count:1] { [graveId:8][x:4f][y:4f][z:4f] }*count
+//                        WO-113 reply to 0x0F; at most 40 graves.
+//     0x91 LocalDowned  [on:1][kind:1]                   (unsolicited, 2)
+//                        WO-113: the player hit the floor (on=1) or the
+//                        respawn/wake-up finished (on=0). kind: 0 death,
+//                        1 knockdown, 2 execution. The agent sets 0x1F flags
+//                        bit 0 while on -- NOT 0x23: a downed player's vitals
+//                        read 1.0 and would clear a peer's death tag.
+//     0x92 LocalRespawned [x:4f][y:4f][z:4f][reason:1]   (unsolicited, 13)
+//                        WO-113: where the player stands after the sequence.
+//     0x93 LocalGrave   [op:1][graveId:8][x:4f][y:4f][z:4f] (unsolicited, 21)
+//                        WO-113: op 1 a grave was made, op 0 it is gone
+//                        (looted empty or expired).
 //     0x83 Pong         []
 //     0x86 LocalState   [ok:1][seq:1][refuse:1][frame:8 LE]
 //                       [x:4f][y:4f][z:4f][rotZ:4f][flags:1][haveBody:1]
@@ -162,6 +193,16 @@ constexpr uint8_t kConceptProbe       = 0x08;   // WO-97, read-only
 constexpr uint8_t kReadBodyState      = 0x09;   // WO-100.5 Phase 2, read-only
 constexpr uint8_t kReadLocalState     = 0x0A;   // WO-102 Phase 1, read-only
 constexpr uint8_t kScanNpcs           = 0x0B;   // WO-102.5 Phase 2, read-only
+constexpr uint8_t kSetSession         = 0x0C;   // WO-113
+constexpr uint8_t kSetRespawn         = 0x0D;   // WO-113
+constexpr uint8_t kMirrorGrave        = 0x0E;   // WO-113
+constexpr uint8_t kListGraves         = 0x0F;   // WO-113
+constexpr uint8_t kGraveList          = 0x88;   // WO-113 reply
+constexpr uint8_t kLocalDowned        = 0x91;   // WO-113, unsolicited
+constexpr uint8_t kLocalRespawned     = 0x92;   // WO-113, unsolicited
+constexpr uint8_t kLocalGrave         = 0x93;   // WO-113, unsolicited
+constexpr int     kMirrorGraveLen     = 1 + 1 + 8 + 12;
+constexpr int     kMaxGraveList       = 40;
 constexpr uint8_t kResult             = 0x81;
 constexpr uint8_t kPong               = 0x83;
 constexpr uint8_t kClosureInfo        = 0x84;

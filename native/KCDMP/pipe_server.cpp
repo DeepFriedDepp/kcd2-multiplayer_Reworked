@@ -8,6 +8,8 @@
 #include "lua_closure.h"
 #include "script_context.h"
 #include "concept_read.h"
+#include "respawn.h"
+#include "respawn_actions.h"
 #include "log.h"
 
 #include <windows.h>
@@ -129,6 +131,70 @@ void send_local_hit(const unsigned char guid[16], float health_delta, bool died)
     // A failed write used to be indistinguishable from a delivered one, which is
     // how a deadlocked send looked like a working one for so long.
     if (!sent) logf("PIPE: LocalHit write failed: %lu", err);
+}
+
+// WO-113: unsolicited respawn frames, written from the game thread under the
+// same write lock as LocalHit. A missing agent is logged by respawn.cpp's own
+// lines; here only a failed write is.
+void send_unsolicited(uint8_t type, const void* body, uint16_t len, const char* what) {
+    if (!g_connected || g_pipe == INVALID_HANDLE_VALUE) return;
+    EnterCriticalSection(&g_write_lock);
+    const bool sent = send_frame(g_pipe, type, body, len);
+    const DWORD err = sent ? 0 : GetLastError();
+    LeaveCriticalSection(&g_write_lock);
+    if (!sent) logf("PIPE: %s write failed: %lu", what, err);
+}
+
+void send_local_downed(bool on, respawn::Kind kind) {
+    const BYTE body[2] = { static_cast<BYTE>(on ? 1 : 0), static_cast<BYTE>(kind) };
+    logf("PIPE: LocalDowned on=%d kind=%u%s", on ? 1 : 0, static_cast<unsigned>(kind),
+         g_connected ? "" : "  [no agent attached, not sent]");
+    send_unsolicited(kLocalDowned, body, sizeof(body), "LocalDowned");
+}
+
+void send_local_respawned(float x, float y, float z, respawn::Kind reason) {
+    BYTE body[13]{};
+    std::memcpy(body + 0, &x, 4);
+    std::memcpy(body + 4, &y, 4);
+    std::memcpy(body + 8, &z, 4);
+    body[12] = static_cast<BYTE>(reason);
+    logf("PIPE: LocalRespawned (%.1f, %.1f, %.1f) reason=%u%s", x, y, z, static_cast<unsigned>(reason),
+         g_connected ? "" : "  [no agent attached, not sent]");
+    send_unsolicited(kLocalRespawned, body, sizeof(body), "LocalRespawned");
+}
+
+void send_local_grave(bool add, uint64_t id, float x, float y, float z) {
+    BYTE body[21]{};
+    body[0] = add ? 1 : 0;
+    std::memcpy(body + 1, &id, 8);
+    std::memcpy(body + 9, &x, 4);
+    std::memcpy(body + 13, &y, 4);
+    std::memcpy(body + 17, &z, 4);
+    logf("PIPE: LocalGrave %s id=0x%016llX%s", add ? "add" : "remove", static_cast<unsigned long long>(id),
+         g_connected ? "" : "  [no agent attached, not sent]");
+    send_unsolicited(kLocalGrave, body, sizeof(body), "LocalGrave");
+}
+
+void on_grave_add(uint64_t id, float x, float y, float z) { send_local_grave(true, id, x, y, z); }
+void on_grave_remove(uint64_t id) { send_local_grave(false, id, 0, 0, 0); }
+
+void send_grave_list(HANDLE h, bool ok, uint8_t seq, const actions::GraveInfo* g, int n) {
+    BYTE body[3 + kMaxGraveList * 20]{};
+    body[0] = ok ? 1 : 0;
+    body[1] = seq;
+    if (n < 0) n = 0;
+    if (n > kMaxGraveList) n = kMaxGraveList;
+    body[2] = static_cast<BYTE>(n);
+    for (int i = 0; i < n; ++i) {
+        BYTE* p = body + 3 + i * 20;
+        std::memcpy(p + 0, &g[i].id, 8);
+        std::memcpy(p + 8, &g[i].x, 4);
+        std::memcpy(p + 12, &g[i].y, 4);
+        std::memcpy(p + 16, &g[i].z, 4);
+    }
+    EnterCriticalSection(&g_write_lock);
+    send_frame(h, kGraveList, body, static_cast<uint16_t>(3 + n * 20));
+    LeaveCriticalSection(&g_write_lock);
 }
 
 // WO-20 Phase 2 diagnostic reply. Not on the write-lock'd send path used by
@@ -579,6 +645,60 @@ void serve(HANDLE h) {
                 break;
             }
 
+            // WO-113: session state and the respawn toggle. Atomic setters, so
+            // no main-thread hop is needed; the tick picks them up.
+            case kSetSession:
+            case kSetRespawn: {
+                if (len != 1) {
+                    logf("PIPE: %s wrong length %u", type == kSetSession ? "SetSession" : "SetRespawn", len);
+                    send_result(h, false, seq);
+                    break;
+                }
+                const bool on = body[0] != 0;
+                if (type == kSetSession) respawn::set_session(on, "agent");
+                else respawn::set_enabled(on, "agent");
+                send_result(h, true, seq);
+                break;
+            }
+
+            case kMirrorGrave: {
+                if (len != kMirrorGraveLen) {
+                    logf("PIPE: MirrorGrave wrong length %u", len);
+                    send_result(h, false, seq);
+                    break;
+                }
+                const uint8_t op = body[0], owner = body[1];
+                uint64_t id = 0;
+                float x = 0, y = 0, z = 0;
+                std::memcpy(&id, body + 2, 8);
+                std::memcpy(&x, body + 10, 4);
+                std::memcpy(&y, body + 14, 4);
+                std::memcpy(&z, body + 18, 4);
+                bool ok = false;
+                bool faultedFlag = false;
+                const bool ran = run_sync_bounded<bool>(
+                    [op, owner, id, x, y, z](bool& result) {
+                        if (op == 1) result = actions::mirror_add(owner, id, x, y, z);
+                        else if (op == 0) result = actions::mirror_remove(owner, id);
+                        else { actions::mirror_clear(owner); result = true; }
+                    }, "MirrorGrave", ok, &faultedFlag);
+                logf("PIPE: MirrorGrave op=%u owner=%u id=0x%016llX -> %s", op, owner,
+                     static_cast<unsigned long long>(id), (ran && ok) ? "applied" : "refused");
+                send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
+                break;
+            }
+
+            case kListGraves: {
+                struct ListOut { int n = 0; actions::GraveInfo g[kMaxGraveList]{}; };
+                ListOut r{};
+                bool faulted = false;
+                const bool ran = run_sync_bounded<ListOut>(
+                    [](ListOut& out) { out.n = actions::graves_list(out.g, kMaxGraveList); },
+                    "ListGraves", r, &faulted);
+                send_grave_list(h, ran && !faulted, seq, r.g, (ran && !faulted) ? r.n : 0);
+                break;
+            }
+
             case kConceptProbe: {
                 if (len > kConceptProbeMaxLen) {
                     logf("PIPE: ConceptProbe path too long (%u > %d)", len, kConceptProbeMaxLen);
@@ -628,6 +748,8 @@ void serve(HANDLE h) {
 
     g_connected = false;
     logf("PIPE: agent disconnected");
+    // WO-113: no agent, no session -- the death guard stands down (vanilla).
+    respawn::set_session(false, "pipe closed");
 }
 
 void listen_loop() {
@@ -689,6 +811,14 @@ bool start() {
     main_thread::post_repeating([] {
         rttr::sample_health(&send_local_hit);
     });
+
+    // WO-113: the respawn module's outbound events become pipe frames.
+    respawn::Events ev{};
+    ev.downed = &send_local_downed;
+    ev.respawned = &send_local_respawned;
+    ev.grave_add = &on_grave_add;
+    ev.grave_remove = &on_grave_remove;
+    respawn::set_events(ev);
 
     // The injected plugin has process lifetime. Detaching keeps DLL teardown
     // free of a blocking join under the Windows loader lock.
