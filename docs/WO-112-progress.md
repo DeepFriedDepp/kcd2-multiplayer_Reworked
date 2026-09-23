@@ -207,5 +207,6 @@ uses the prompt's evidence summary as given.
   `origin main`.
 * **Privacy sweep** of all three files (user name, home paths, host names,
   IPs, DDNS, Steam ids, the save header's `UserName`/build-computer fields):
-  results in the commit notes of this session.
+  **none found**; no NUL bytes. A generated `tools/__pycache__/` (created
+  when an agent imported the tool) was deleted, not committed.
 * The tool never prints the save header's user or build-computer fields.
