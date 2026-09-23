@@ -621,6 +621,39 @@ public class ClientSession
                     continue;
                 }
 
+                // --- Death without Game Over (WO-113) ---
+                // Exact lengths: a short body forwarded on becomes a pipe
+                // command in the receiving game (a mirror gravestone spawn).
+                // Rare and load-bearing, so each is one relay line.
+                if ((type == Protocol.PlayerRespawnedUp && payloadLen == Protocol.PlayerRespawnedUpPayloadLen)
+                    || (type == Protocol.GraveAddUp && payloadLen == Protocol.GraveAddUpPayloadLen)
+                    || (type == Protocol.GraveRemoveUp && payloadLen == Protocol.GraveRemoveUpPayloadLen))
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    if (type == Protocol.PlayerRespawnedUp)
+                    {
+                        _logger.Information("[respawn] '{Name}' (id={Id}) respawned at ({X:F1}, {Y:F1}, {Z:F1}) reason={Reason}.",
+                            Name, Id, BitConverter.ToSingle(body, 0), BitConverter.ToSingle(body, 4),
+                            BitConverter.ToSingle(body, 8), Protocol.RespawnReasonName(body[12]));
+                        _broadcastService.BroadcastSenderFact(this, Protocol.PlayerRespawnedDown, body);
+                    }
+                    else if (type == Protocol.GraveAddUp)
+                    {
+                        _logger.Information("[grave] '{Name}' (id={Id}) grave 0x{Grave:X16} at ({X:F1}, {Y:F1}, {Z:F1}).",
+                            Name, Id, BinaryPrimitives.ReadUInt64LittleEndian(body), BitConverter.ToSingle(body, 8),
+                            BitConverter.ToSingle(body, 12), BitConverter.ToSingle(body, 16));
+                        _broadcastService.BroadcastSenderFact(this, Protocol.GraveAddDown, body);
+                    }
+                    else
+                    {
+                        _logger.Information("[grave] '{Name}' (id={Id}) grave 0x{Grave:X16} removed.",
+                            Name, Id, BinaryPrimitives.ReadUInt64LittleEndian(body));
+                        _broadcastService.BroadcastSenderFact(this, Protocol.GraveRemoveDown, body);
+                    }
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.
@@ -864,6 +897,20 @@ public class ClientSession
     /// Thread-safe: enqueue a WeatherDown (0x2F, WO-40 Phase 3). The body is
     /// the upstream payload verbatim, prefixed with who sent it.
     /// </summary>
+    /// <summary>
+    /// Thread-safe (WO-113): enqueue a sender-prefixed copy of an upstream body
+    /// under <paramref name="downType"/> -- PlayerRespawnedDown (0x3F),
+    /// GraveAddDown (0x41) or GraveRemoveDown (0x43). Facts about the sender,
+    /// relayed verbatim like WeatherDown.
+    /// </summary>
+    public void EnqueueSenderFact(byte downType, byte sourceId, byte[] upstreamBody)
+    {
+        var payload = new byte[1 + upstreamBody.Length];
+        payload[0] = sourceId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, upstreamBody.Length);
+        EnqueueRaw(BuildPacket(downType, payload));
+    }
+
     public void EnqueueWeather(byte sourceId, byte[] upstreamBody)
     {
         var payload = new byte[1 + upstreamBody.Length];

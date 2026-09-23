@@ -36,10 +36,30 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte BodyStateReply    = 0x85;   // WO-100.5 Phase 2
     private const byte LocalStateReply   = 0x86;   // WO-102 Phase 1
     private const byte NpcScanReply      = 0x87;   // WO-102.5 Phase 2
+    private const byte SetSession        = 0x0C;   // WO-113
+    private const byte SetRespawn        = 0x0D;   // WO-113
+    private const byte MirrorGrave       = 0x0E;   // WO-113
+    private const byte ListGraves        = 0x0F;   // WO-113
+    private const byte GraveListReply    = 0x88;   // WO-113
 
     private const int GuidLen = 16;
 
     private const byte LocalHit = 0x90;
+    private const byte LocalDowned    = 0x91;   // WO-113, unsolicited
+    private const byte LocalRespawned = 0x92;   // WO-113, unsolicited
+    private const byte LocalGrave     = 0x93;   // WO-113, unsolicited
+
+    /// <summary>
+    /// WO-113: the DLL's death guard floored the player (on=true) or finished
+    /// the respawn/wake-up (on=false). kind: 0 death, 1 knockdown, 2 execution.
+    /// </summary>
+    public Func<bool, byte, Task>? OnLocalDowned { get; set; }
+
+    /// <summary>WO-113: where the player stands after a respawn; reason as LocalDowned's kind.</summary>
+    public Func<float, float, float, byte, Task>? OnLocalRespawned { get; set; }
+
+    /// <summary>WO-113: a grave was made (add=true) or is gone (looted empty / expired).</summary>
+    public Func<bool, ulong, float, float, float, Task>? OnLocalGrave { get; set; }
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private NamedPipeClientStream? _pipe;
@@ -224,6 +244,57 @@ public sealed class CombatPipe : IAsyncDisposable
         return SendAsync(GhostIsolate, payload, ct);
     }
 
+    /// <summary>
+    /// WO-113: tell the DLL whether a multiplayer session is live. The death
+    /// guard arms only while this is on (and mp_respawn is on); the pipe
+    /// dropping clears it on the DLL side. Idempotent -- re-sent as a heartbeat.
+    /// </summary>
+    public Task<bool> SetSessionAsync(bool on, CancellationToken ct = default)
+        => SendAsync(SetSession, [on ? (byte)1 : (byte)0], ct);
+
+    /// <summary>WO-113: mp_respawn on/off, mirrored from the mod's console toggle.</summary>
+    public Task<bool> SetRespawnAsync(bool on, CancellationToken ct = default)
+        => SendAsync(SetRespawn, [on ? (byte)1 : (byte)0], ct);
+
+    /// <summary>
+    /// WO-113: a peer's mirror gravestone. op 1 add, 0 remove, 2 clear every
+    /// mirror of <paramref name="owner"/> (0xFF = all owners).
+    /// </summary>
+    public Task<bool> MirrorGraveAsync(byte op, byte owner, ulong graveId, float x, float y, float z,
+                                       CancellationToken ct = default)
+    {
+        var payload = new byte[1 + 1 + 8 + 12];
+        payload[0] = op;
+        payload[1] = owner;
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(2), graveId);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(10), x);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(14), y);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(18), z);
+        return SendAsync(MirrorGrave, payload, ct);
+    }
+
+    /// <summary>
+    /// WO-113: every grave this player still owns. Null when the DLL refused or
+    /// predates the command (a pre-WO-113 DLL answers unknown-command).
+    /// </summary>
+    public async Task<List<(ulong Id, float X, float Y, float Z)>?> ListGravesAsync(CancellationToken ct = default)
+    {
+        var (body, _) = await SendAndAwaitAsync(ListGraves, [], GraveListReply, ct);
+        if (body is null || body.Length < 3 || body[0] != 1) return null;
+        int n = body[2];
+        if (body.Length < 3 + n * 20) return null;
+        var list = new List<(ulong, float, float, float)>(n);
+        for (int i = 0; i < n; i++)
+        {
+            int o = 3 + i * 20;
+            list.Add((BinaryPrimitives.ReadUInt64LittleEndian(body.AsSpan(o)),
+                      BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(o + 8)),
+                      BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(o + 12)),
+                      BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(o + 16))));
+        }
+        return list;
+    }
+
     /// <summary>Round-trip check that the DLL is alive and pumping frames.</summary>
     public async Task<bool> PingAsync(CancellationToken ct = default)
     {
@@ -289,6 +360,42 @@ public sealed class CombatPipe : IAsyncDisposable
                     {
                         try { await handler(soul, stamina, health, died); }
                         catch (Exception ex) { Console.WriteLine($"[combat] local hit not sent: {ex.Message}"); }
+                    }
+                }
+                else if (type == LocalDowned && body.Length >= 2)
+                {
+                    // WO-113: unsolicited, like LocalHit -- never a reply.
+                    if (OnLocalDowned is { } h)
+                    {
+                        try { await h(body[0] != 0, body[1]); }
+                        catch (Exception ex) { Console.WriteLine($"[respawn] downed not handled: {ex.Message}"); }
+                    }
+                }
+                else if (type == LocalRespawned && body.Length >= 13)
+                {
+                    if (OnLocalRespawned is { } h)
+                    {
+                        try
+                        {
+                            await h(BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(0)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(4)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(8)), body[12]);
+                        }
+                        catch (Exception ex) { Console.WriteLine($"[respawn] respawned not handled: {ex.Message}"); }
+                    }
+                }
+                else if (type == LocalGrave && body.Length >= 21)
+                {
+                    if (OnLocalGrave is { } h)
+                    {
+                        try
+                        {
+                            await h(body[0] != 0, BinaryPrimitives.ReadUInt64LittleEndian(body.AsSpan(1)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(9)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(13)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(17)));
+                        }
+                        catch (Exception ex) { Console.WriteLine($"[grave] local grave not handled: {ex.Message}"); }
                     }
                 }
                 else if (!_replies.Writer.TryWrite((type, body)))

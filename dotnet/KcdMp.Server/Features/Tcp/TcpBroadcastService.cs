@@ -194,6 +194,18 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// WO-113: relays a sender fact (PlayerRespawnedUp 0x3E, GraveAddUp 0x40,
+    /// GraveRemoveUp 0x42) to all other ready clients under
+    /// <paramref name="downType"/> with the sender id prefixed. No gate, no
+    /// state: the owner re-announces its graves for late joiners.
+    /// </summary>
+    public void BroadcastSenderFact(ClientSession source, byte downType, byte[] body)
+    {
+        foreach (var target in Others(source))
+            target.EnqueueSenderFact(downType, source.Id, body);
+    }
+
+    /// <summary>
     /// Relays a WeatherUp (0x2E) from <paramref name="source"/> to all other
     /// ready clients as a WeatherDown (0x2F) (WO-40 Phase 3). Cosmetic and
     /// idempotent at the receiver (applied only on profile change), so no

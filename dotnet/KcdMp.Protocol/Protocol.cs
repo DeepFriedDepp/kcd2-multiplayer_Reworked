@@ -704,7 +704,41 @@ namespace KcdMp.Wire;
 /// Handshake with NO release field (a pre-WO-19 build or a synthetic test
 /// peer) is still accepted and logged; the field is what is compared.
 ///
-/// Free type bytes for new features: 0x3E and up.
+/// ---- Death without Game Over (WO-113) ----
+///
+/// C→S  0x3E  PlayerRespawnedUp:   [x:4f][y:4f][z:4f][reason:1]              (13)
+/// S→C  0x3F  PlayerRespawnedDown: [sourceGhostId:1][x:4f][y:4f][z:4f][reason:1] (14)
+/// C→S  0x40  GraveAddUp:          [graveId:8 LE][x:4f][y:4f][z:4f]          (20)
+/// S→C  0x41  GraveAddDown:        [sourceGhostId:1][graveId:8][x:4f][y:4f][z:4f] (21)
+/// C→S  0x42  GraveRemoveUp:       [graveId:8 LE]                            (8)
+/// S→C  0x43  GraveRemoveDown:     [sourceGhostId:1][graveId:8]              (9)
+///
+/// Under the WO-113 death guard a player is never dead: the engine floors
+/// health at 1.0 and the mod's DLL respawns them (reason 0 = death, at the
+/// nearest blackout wake-up spot, leaving a grave) or wakes them in place
+/// (reason 1 = a fistfight knockdown; 2 = a crime execution, treated as a
+/// death). 0x23 is therefore never sent for such a downing; while it lasts the
+/// sender sets 0x1F flags bit 0 (unconscious), which peers already render as a
+/// body (WO-38 Phase 6), and clears it on the wake-up. 0x3E then names where
+/// the player stands, so a peer logs it and the ghost snaps (its interpolator
+/// teleports any jump over 5 m) rather than walking there.
+///
+/// A grave is the dying player's own container, lootable only in their world
+/// in this release; 0x40/0x42 let peers show a mirror gravestone and map
+/// marker (never lootable, never saved) and remove it when the owner loots it
+/// empty or it expires (3 in-game days). The relay is stateless, so the owner
+/// re-announces every grave it still holds on connect and on a slow heartbeat,
+/// like WO-48's dropped items. graveId is the owner's own 64-bit id; a peer
+/// keys mirrors on (sourceGhostId, graveId) and clears an owner's mirrors when
+/// that peer disconnects.
+///
+/// All three are facts about the sender, relayed verbatim with no gate, under
+/// the relay's usual exact-length discipline. Additive: an older relay drops
+/// them (counted, MP-RELAY-DROPS) and an older client never sends them, so
+/// Protocol.Version stays 7 -- but the release-version check (0x3D) already
+/// refuses a mixed pair, and both machines must run the same build.
+///
+/// Free type bytes for new features: 0x44 and up.
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -768,6 +802,9 @@ public static partial class Protocol
     public const byte StoryBeatUp    = 0x37;
     public const byte ClockSyncUp    = 0x39;   // WO-98
     public const byte ActionUp       = 0x3B;   // WO-100.5 Phase 3
+    public const byte PlayerRespawnedUp = 0x3E;   // WO-113
+    public const byte GraveAddUp        = 0x40;   // WO-113
+    public const byte GraveRemoveUp     = 0x42;   // WO-113
 
     // S→C
     public const byte Ghost            = 0x02;
@@ -805,12 +842,42 @@ public static partial class Protocol
     public const byte ClockSyncDown    = 0x3A;   // WO-98
     public const byte ActionDown       = 0x3C;   // WO-100.5 Phase 3
     public const byte ReleaseVersionMismatch = 0x3D;   // WO-110 R9
+    public const byte PlayerRespawnedDown = 0x3F;   // WO-113
+    public const byte GraveAddDown        = 0x41;   // WO-113
+    public const byte GraveRemoveDown     = 0x43;   // WO-113
     public const byte Ack              = 0xFF;
 
     /// <summary>WO-98: ClockSyncUp payload -- one int64 of client UTC ticks.</summary>
     public const int ClockSyncUpPayloadLen = 8;
     /// <summary>WO-98: ClockSyncDown payload -- client send, relay receive, relay send (UTC ticks each).</summary>
     public const int ClockSyncDownPayloadLen = 24;
+
+    // ---- WO-113: death without Game Over ----
+    /// <summary>Exact PlayerRespawnedUp (0x3E) payload: x, y, z, reason.</summary>
+    public const int PlayerRespawnedUpPayloadLen = 4 + 4 + 4 + 1;
+    /// <summary>Exact PlayerRespawnedDown (0x3F) payload: sourceGhostId + the Up body.</summary>
+    public const int PlayerRespawnedDownPayloadLen = 1 + PlayerRespawnedUpPayloadLen;
+    /// <summary>Exact GraveAddUp (0x40) payload: graveId, x, y, z.</summary>
+    public const int GraveAddUpPayloadLen = 8 + 4 + 4 + 4;
+    /// <summary>Exact GraveAddDown (0x41) payload.</summary>
+    public const int GraveAddDownPayloadLen = 1 + GraveAddUpPayloadLen;
+    /// <summary>Exact GraveRemoveUp (0x42) payload: graveId.</summary>
+    public const int GraveRemoveUpPayloadLen = 8;
+    /// <summary>Exact GraveRemoveDown (0x43) payload.</summary>
+    public const int GraveRemoveDownPayloadLen = 1 + GraveRemoveUpPayloadLen;
+    /// <summary>PlayerRespawned reason: a death (grave + wake-up spot).</summary>
+    public const byte RespawnReasonDeath = 0;
+    /// <summary>PlayerRespawned reason: a fistfight knockdown (woke in place).</summary>
+    public const byte RespawnReasonKnockdown = 1;
+    /// <summary>PlayerRespawned reason: a crime execution, handled as a death.</summary>
+    public const byte RespawnReasonExecution = 2;
+    public static string RespawnReasonName(byte r) => r switch
+    {
+        RespawnReasonDeath => "death", RespawnReasonKnockdown => "knockdown", RespawnReasonExecution => "execution",
+        _ => $"unknown-{r}",
+    };
+    /// <summary>How often the owner re-announces its graves for late joiners.</summary>
+    public const int GraveHeartbeatSeconds = 30;
 
     /// <summary>Exact Position (0x01) payload length.</summary>
     public const int PositionPayloadLen = 17;

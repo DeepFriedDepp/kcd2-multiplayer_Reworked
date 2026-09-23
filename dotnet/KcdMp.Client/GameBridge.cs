@@ -924,6 +924,8 @@ public partial class GameBridge(ClientConfig config)
     // duplicate the item on every peer that kept the old one.
     private readonly ConcurrentDictionary<uint, byte[]> _myOpenDrops = new();
     private static readonly TimeSpan ItemDropHeartbeatInterval = TimeSpan.FromSeconds(30);
+    /// <summary>WO-113: SetSession heartbeat to the DLL; graves re-announced every 6th (30 s).</summary>
+    private static readonly TimeSpan RespawnHeartbeatInterval = TimeSpan.FromSeconds(Protocol.GraveHeartbeatSeconds / 6.0);
 
     // Relay-assigned ghost id of THIS client, from the connect Ack. The
     // receive loop needs it to tell the mod whether an ItemClaimDown echo
@@ -947,6 +949,14 @@ public partial class GameBridge(ClientConfig config)
     // source -- the emitter reports "dead" at ~50 Hz for as long as the death
     // screen is up, and every one of those must not be a packet.
     private bool _sentDeathForThisLife;
+
+    // WO-113: death without Game Over. The DLL floors the player at 1 hp and
+    // runs its own respawn; while it does, this is true and 0x1F carries flags
+    // bit 0 (unconscious) -- never 0x23, whose receiver clears the death tag on
+    // the next vitals packet that reads health > 0, and a downed player reads 1.0.
+    private volatile bool _localDowned;
+    private volatile byte _localDownedKind;
+    private int _respawnHeartbeats;   // counts RespawnHeartbeatInterval ticks; graves re-announced every 6th
 
     // Rule 2. Set from a CombatRole (0x25) packet; false until the relay says
     // otherwise, so a client that was never told cannot assume it holds
@@ -1570,6 +1580,14 @@ public partial class GameBridge(ClientConfig config)
         // Connect now rather than lazily, so the DLL has somewhere to push hits
         // before the first inbound packet ever arrives.
         _ = _combat.EnsureConnectedAsync(cts.Token);
+        // WO-113: the DLL's death guard arms only while a session is live --
+        // this connection is one. Downed/respawn/grave frames from the DLL go
+        // out on THIS connection's stream, so the handlers are re-bound per
+        // connection like OnLocalHit.
+        _combat.OnLocalDowned = OnLocalDownedAsync;
+        _combat.OnLocalRespawned = (x, y, z, reason) => SendPlayerRespawnedAsync(stream, x, y, z, reason, cts.Token);
+        _combat.OnLocalGrave = (add, id, x, y, z) => SendGraveAsync(stream, add, id, x, y, z, cts.Token);
+        _ = RespawnHeartbeatAsync(stream, announceGraves: true, cts.Token);
         // WO-99 Phase 0: learn who the local player is before the first hit.
         _dmgGuard.ResetEchoMemory();
         await RefreshPlayerIdentityAsync(force: true, cts.Token);
@@ -1673,6 +1691,7 @@ public partial class GameBridge(ClientConfig config)
             long lastNpcScan = Stopwatch.GetTimestamp();          // WO-102.5 Phase 2
             long lastQuestRepush = nowTimestamp;    // WO-98 Phase 7
             long lastSummary = nowTimestamp;        // WO-99 Phase 4
+            long lastRespawnHeartbeat = nowTimestamp;   // WO-113
 
             while (tcp.Connected)
             {
@@ -1792,6 +1811,13 @@ public partial class GameBridge(ClientConfig config)
                     try { await ExecLuaAsync("if KCD2MP_ReconcileGhosts then KCD2MP_ReconcileGhosts() end"); }
                     catch { }
                 }
+
+                // WO-113: keep the DLL's session flag fresh -- idempotent, and
+                // it is what re-arms the guard after a game restart reconnected
+                // the pipe -- and re-announce our graves for late joiners (the
+                // relay is stateless, like WO-48's drops).
+                if (IntervalElapsed(ref lastRespawnHeartbeat, RespawnHeartbeatInterval, nowTimestamp))
+                    _ = RespawnHeartbeatAsync(stream, announceGraves: (++_respawnHeartbeats % 6) == 0, cts.Token);
 
                 // WO-17: cheap when nothing is attached -- see the method doc.
                 if (IntervalElapsed(ref lastAggroSweep, AggroSweepInterval, nowTimestamp))
@@ -2021,6 +2047,12 @@ public partial class GameBridge(ClientConfig config)
             _sendItemDrop = null;
             _sendItemClaim = null;
             _myOpenDrops.Clear();
+            // WO-113: no relay, no session -- the DLL's guard stands down
+            // (vanilla death), and every peer's mirror gravestone goes.
+            _combat.OnLocalRespawned = null;
+            _combat.OnLocalGrave = null;
+            try { await _combat.SetSessionAsync(false); } catch { }
+            try { await _combat.MirrorGraveAsync(2, 0xFF, 0, 0, 0, 0); } catch { }
             _sessionWeatherProfile = null;
             _lastAppliedWeatherProfile = null;
             _weatherNextRepickUtc = DateTime.MinValue;
@@ -3426,6 +3458,94 @@ public partial class GameBridge(ClientConfig config)
     }
 
     // -------------------------------------------------------------------------
+    // Death without Game Over (WO-113)
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// The DLL floored the player (on) or finished the respawn/wake-up (off).
+    /// Only the flag moves here; the next vitals tick carries it (the change
+    /// detection in SendPlayerStateIfChangedAsync keys on the flags byte).
+    /// </summary>
+    private Task OnLocalDownedAsync(bool on, byte kind)
+    {
+        _localDowned = on;
+        _localDownedKind = kind;
+        Console.WriteLine($"[respawn] local player {(on ? "DOWNED" : "back up")} kind={Protocol.RespawnReasonName(kind)} -- 0x1F unconscious bit {(on ? "set" : "cleared")}");
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Puts one PlayerRespawnedUp (0x3E) on the wire.</summary>
+    private async Task SendPlayerRespawnedAsync(NetworkStream stream, float x, float y, float z, byte reason, CancellationToken ct)
+    {
+        try
+        {
+            var packet = new byte[3 + Protocol.PlayerRespawnedUpPayloadLen];
+            packet[0] = Protocol.PlayerRespawnedUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), Protocol.PlayerRespawnedUpPayloadLen);
+            BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(3), x);
+            BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(7), y);
+            BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(11), z);
+            packet[15] = reason;
+            await WritePacketAsync(stream, packet, ct);
+            Console.WriteLine(FormattableString.Invariant(
+                $"[respawn] sent 0x3E respawned at ({x:F1}, {y:F1}, {z:F1}) reason={Protocol.RespawnReasonName(reason)}"));
+        }
+        catch (Exception ex) { Console.WriteLine($"[respawn] 0x3E send failed: {ex.Message}"); }
+    }
+
+    /// <summary>Puts one GraveAddUp (0x40) or GraveRemoveUp (0x42) on the wire.</summary>
+    private async Task SendGraveAsync(NetworkStream stream, bool add, ulong id, float x, float y, float z, CancellationToken ct)
+    {
+        try
+        {
+            int len = add ? Protocol.GraveAddUpPayloadLen : Protocol.GraveRemoveUpPayloadLen;
+            var packet = new byte[3 + len];
+            packet[0] = add ? Protocol.GraveAddUp : Protocol.GraveRemoveUp;
+            BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(1), (ushort)len);
+            BinaryPrimitives.WriteUInt64LittleEndian(packet.AsSpan(3), id);
+            if (add)
+            {
+                BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(11), x);
+                BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(15), y);
+                BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(19), z);
+            }
+            await WritePacketAsync(stream, packet, ct);
+            Console.WriteLine(FormattableString.Invariant(
+                $"[grave] sent 0x{packet[0]:X2} grave 0x{id:X16}{(add ? $" at ({x:F1}, {y:F1}, {z:F1})" : " removed")}"));
+        }
+        catch (Exception ex) { Console.WriteLine($"[grave] send failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// SetSession(on) to the DLL, and optionally re-announce every grave the
+    /// DLL says we still own. Both idempotent; cheap enough for a 5 s cadence.
+    /// </summary>
+    private async Task RespawnHeartbeatAsync(NetworkStream stream, bool announceGraves, CancellationToken ct)
+    {
+        try
+        {
+            bool ok = await _combat.SetSessionAsync(true, ct);
+            if (!ok && !_respawnSessionWarned)
+            {
+                _respawnSessionWarned = true;
+                Console.WriteLine("[respawn] the DLL did not take SetSession -- the death guard stays vanilla this session (DLL absent or pre-WO-113)");
+            }
+            else if (ok && _respawnSessionWarned)
+            {
+                _respawnSessionWarned = false;
+                Console.WriteLine("[respawn] the DLL took SetSession -- death guard eligible");
+            }
+            if (!announceGraves || !ok) return;
+            var graves = await _combat.ListGravesAsync(ct);
+            if (graves is null) return;
+            foreach (var (id, x, y, z) in graves)
+                await SendGraveAsync(stream, add: true, id, x, y, z, ct);
+        }
+        catch (Exception ex) { Console.WriteLine($"[respawn] heartbeat failed: {ex.Message}"); }
+    }
+    private bool _respawnSessionWarned;
+
+    // -------------------------------------------------------------------------
     // Weather sync (WO-40 Phase 3)
     // -------------------------------------------------------------------------
 
@@ -3677,7 +3797,7 @@ public partial class GameBridge(ClientConfig config)
         float stamina = st.Stamina ?? Protocol.UnknownStat;
 
         byte flags = 0;
-        if (st.IsUnconscious == true) flags |= Protocol.PlayerStateFlagUnconscious;
+        if (st.IsUnconscious == true || _localDowned) flags |= Protocol.PlayerStateFlagUnconscious;   // WO-113: downed = a body
         // Bleeding has no confirmed read on this build -- it is a buff, and the
         // mod's emitter does not sample the buff list. The bit stays clear
         // rather than being faked from low health, which would be a guess a
@@ -4123,6 +4243,9 @@ public partial class GameBridge(ClientConfig config)
                     // A peer who disconnects mid-pause must not leave us
                     // slowed forever with no PauseDown(exit) ever coming.
                     await ApplyPeerPauseAsync(ghostId, paused: false, ct);
+                    // WO-113: a gone peer's mirror gravestones go with them;
+                    // the owner re-announces on its next connect.
+                    try { await _combat.MirrorGraveAsync(2, ghostId, 0, 0, 0, 0, ct); } catch { }
                     try { await ExecLuaAsync($"KCD2MP_RemoveGhost(\"{ghostId}\")"); } catch { }
                 }
                 else if (type == Protocol.VoiceDown && payloadLen == 1 + Protocol.VoiceFrameLen)
@@ -4268,6 +4391,35 @@ public partial class GameBridge(ClientConfig config)
                     float healthLoss  = ReadFloat(payload, 0);
                     float staminaLoss = ReadFloat(payload, 4);
                     await ApplyPlayerHitAsync(healthLoss, staminaLoss, ct);
+                }
+                else if (type == Protocol.PlayerRespawnedDown && payloadLen == Protocol.PlayerRespawnedDownPayloadLen)
+                {
+                    // WO-113: [ghostId:1][x:4f][y:4f][z:4f][reason:1]. The
+                    // ghost's own position stream follows and its interpolator
+                    // snaps any jump over 5 m; this names the event.
+                    byte sourceId = payload[0];
+                    float rx = ReadFloat(payload, 1), ry = ReadFloat(payload, 5), rz = ReadFloat(payload, 9);
+                    string who = _ghostNames.TryGetValue(sourceId, out var rn) ? rn : $"player {sourceId}";
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"[respawn] {who} respawned at ({rx:F1}, {ry:F1}, {rz:F1}) reason={Protocol.RespawnReasonName(payload[13])}"));
+                }
+                else if (type == Protocol.GraveAddDown && payloadLen == Protocol.GraveAddDownPayloadLen)
+                {
+                    // WO-113: [ghostId:1][graveId:8][x:4f][y:4f][z:4f] -> a mirror
+                    // gravestone + marker in our world (never lootable, never saved).
+                    byte sourceId = payload[0];
+                    ulong gid = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(1));
+                    float gx = ReadFloat(payload, 9), gy = ReadFloat(payload, 13), gz = ReadFloat(payload, 17);
+                    bool ok = await _combat.MirrorGraveAsync(1, sourceId, gid, gx, gy, gz, ct);
+                    Console.WriteLine(FormattableString.Invariant(
+                        $"[grave] peer {sourceId} grave 0x{gid:X16} at ({gx:F1}, {gy:F1}, {gz:F1}) -> mirror {(ok ? "shown" : "not shown (DLL refused/absent)")}"));
+                }
+                else if (type == Protocol.GraveRemoveDown && payloadLen == Protocol.GraveRemoveDownPayloadLen)
+                {
+                    byte sourceId = payload[0];
+                    ulong gid = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(1));
+                    bool ok = await _combat.MirrorGraveAsync(0, sourceId, gid, 0, 0, 0, ct);
+                    Console.WriteLine($"[grave] peer {sourceId} grave 0x{gid:X16} removed -> mirror {(ok ? "removed" : "not present")}");
                 }
                 else if (type == Protocol.PlayerDeathDown && payloadLen == Protocol.PlayerDeathDownPayloadLen)
                 {
@@ -4982,6 +5134,7 @@ public partial class GameBridge(ClientConfig config)
         switch (name)
         {
             case "aggro_toggle":
+            case "respawn_toggle":   // WO-113
             case "npc_deathsync":
             case "authority_radius":
             case "npc_track_max":
@@ -5606,6 +5759,21 @@ public partial class GameBridge(ClientConfig config)
     {
         switch (name)
         {
+            case "respawn_toggle":
+                // WO-113: mp_respawn on|off. The policy is native; the DLL
+                // keeps its own copy (it outlives an agent restart), so this
+                // only forwards the flip -- nothing is sent at agent startup.
+                {
+                    bool on = arg.Equals("on", StringComparison.OrdinalIgnoreCase);
+                    Console.WriteLine($"[respawn] mp_respawn {(on ? "on" : "off")} -> DLL");
+                    _ = Task.Run(async () =>
+                    {
+                        bool ok = false;
+                        try { ok = await _combat.SetRespawnAsync(on); } catch { }
+                        Console.WriteLine($"[respawn] DLL {(ok ? "took" : "did NOT take")} mp_respawn {(on ? "on" : "off")}");
+                    });
+                }
+                break;
             case "aggro_toggle":
                 // mp_enable_aggro on|off (WO-17): the real, always-available
                 // toggle Phase B agreed on. Decided locally, per player -- it
