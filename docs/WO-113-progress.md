@@ -19,7 +19,7 @@ there. `<game>` = the Modding Tools install root; `<repo>` = this repository.
 | 6 — multiplayer | done | pipe 0x0C–0x0F/0x88/0x91–0x93; wire 0x3E–0x43; mirrors; heartbeat re-announce; disconnect clears |
 | 7 — toggle, presets, marker, runbook, predictions, catalogue | done | `mp_respawn`; clean on / legacy off; `WO113-BUILD` (Lua + native); §4 below; findings §1, §7 |
 | 8 — solo smoke, 11 items | 10 pass, 1 not run | findings §6; items 8–10 with the maintainer; item 10: no quest brawl in the save |
-| end gate | see §5 | |
+| end gate | **done** | §5: fresh-clone build green, `KCDMP-Setup-0.27.0.exe`, pak and privacy checks clean, no GitHub Release |
 
 ### Method notes
 
@@ -124,4 +124,71 @@ Mine:
 
 ## 5. End gate
 
-(filled below as it runs)
+* **Version 0.27.0**, named by the maintainer when asked. `rollback/0.26.5`
+  (annotated, on `774fc39`) tagged and pushed **before** `VERSION` moved;
+  `VERSION`, README badge, release notes and the rebuilt tracked pak
+  committed and pushed (`5aada66`) before the build.
+* **Built from a fresh clone of `origin/main` at `5aada66`** with
+  `tools\Build-Installer.ps1`, green on the first run (exit 0)
+  (observed): relay round-trip 26/26, agent unit tests 174/174, sixteen
+  synthetic suites (GhostInterp 35, NpcSmooth 48, WO-100.5 33, WO-102 196,
+  WO-104 92, WO-108 96, WO-110 85, **WO-113 23**, WO-84 72, WO-86 47, WO-90
+  70, WO-94 101, WO-95 32, WO-96 160, WO-98 50, WO-99 39), static checks
+  7/7 and 6/6, native plugin rebuilt, payload smoke
+  `RELAY-SMOKE ok id=0 protocol=v7 release=0.27.0 rtt_ms=15` with no
+  assembly-load line, install manifest 1,024 entries, Inno Setup compile 39 s.
+  * Noise, not failures: WO-100.5's trailing `RESULT: 0 passed, 0 failed` is
+    the driver's own tally for a scenario that prints its own results (its
+    gate reads the scenario's 33/0; unchanged since WO-102); the deps.json
+    coherence check's 14-row WARN is informational by design (the smoke
+    decides).
+
+| artifact | size | sha256 |
+|---|---|---|
+| `release\KCDMP-Setup-0.27.0.exe` | 100,655,252 B | `9c00c9620c881784584b0f181c4ce90d2cdc04b2d9e95d1431c863478689184a` |
+| `kdcmp\Data\kdcmp.pak` (built in the clone; not byte-deterministic) | 888,410 B | `6d98b59993000b286ec1a0126453c98f8321f4f594578da5be247d3561ffccbb` |
+| `KCDMP.dll` | 511,488 B | `d5118f5a1480b5d7e56ac86006f59beca9ddb891d3f6c28bcaa9e4e816a4f765` |
+| `KcdMpClient.exe` | 151,552 B | `01e15f132cdc32cbba87ee1b10b3a671050122bc2345f12eccd4369daea3395f` |
+| `KcdMpServer.exe` | 151,552 B | `19ba88de9ca4f2cb73a9fc023f96f5bd74be6b8755b8ed3d6416442f4c45b271` |
+
+* **Pak content check** (code-verified): `Scripts/Startup/kdcmp.lua` from
+  the built pak carries `WO113-BUILD`, `KCD2MP_SetRespawn`, `mp_respawn`,
+  `knockdown=disengage-stopfight`, `black_hold_s=6`,
+  `grave_model=conciliation_cross_d`, `wake=nearest-hangoverSpot-100m+`
+  and `grave_expiry_game_days=3`; `Libs/Tables/rpg/buff__kcdmp.xml` has
+  both rows (`kcdmp_death_guard` `imm=1,upr=1` …`0a13`,
+  `kcdmp_knockout_guard` `imm=1` …`0a14`, both `is_persistent="false"`);
+  the manifest's MOD row carries the pak's sha256. Against the committed
+  pak: four entries byte-identical; `kdcmp.lua` differs only in line
+  endings (the clone's `core.autocrlf` checkout adds one CR to each of its
+  13,532 lines — the whole 888,410 vs 874,878 B gap; LF-normalised it is
+  byte-identical).
+* **Privacy sweep** (code-verified): all 1,024 files in the release folder,
+  read as UTF-8 and as UTF-16LE, for the Windows user name, the personal
+  mail address parts, `duckdns`, `nip.io`, the repository owner, the
+  maintainer's other handles (Steam persona, Discord name — never written
+  here), private-range IPv4 literals, repository paths and any
+  `<drive>:\Users\…` path. Every hit benign:
+  * the launcher's placeholder `myserver.duckdns.org` (WO-55 UI copy,
+    public source);
+  * the launcher's links to this project's own GitHub Issues and Releases
+    pages (the public repository URL);
+  * 54 hits on `10.0.0.0` / `10.1.0.0` assembly-version strings (.NET and
+    third-party assemblies, deps.json) and one private-range example
+    address in a comment of the master server's `appsettings.json` (public
+    source since WO-35);
+  * NAudio's third-party PDB build paths (six assemblies). No first-party
+    binary carries a user-profile path.
+* The 42 files WO-113 committed (`774fc39..5aada66`), swept the same way:
+  only the repository owner inside the pre-existing public repository URLs
+  (README, the `kdcmp.lua` header, so the pak) — occurrence counts
+  unchanged by WO-113. This section was swept after it was written.
+* **Not run:** a live smoke of the fresh-clone DLL (the game was closed by
+  the end gate; the live runs above used working-tree builds). The last
+  native change, `cb65945` (the 4× snap retry), has not been seen finding
+  ground live (findings §8).
+* **Cleanup:** the Debug relay and agent stopped;
+  `<game>/kcdmp-respawn-test.txt` absent; `<game>/kcdmp-concept.txt` holds
+  its WO-97 line (77 B). The Setup exe stays in the session scratchpad's
+  fresh clone; nothing was installed from it.
+* No GitHub Release.
