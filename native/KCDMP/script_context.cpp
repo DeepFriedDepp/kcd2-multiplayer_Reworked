@@ -801,6 +801,29 @@ bool apply_isolation(const unsigned char guid[16], bool on) {
     return good == total;
 }
 
+int set_soul_context(void* soul, const char* name, bool on) {
+    if (!g_isolationArmed || !soul || !name) return -1;
+    Chain c{};
+    bool permanent = false;
+    if (!resolve_chain(&c, &permanent)) {
+        if (permanent) disarm("chain integrity check failed");
+        return -1;
+    }
+    uint64_t wuid = 0;
+    if (!read_u64(soul, kOffSoulWuid, &wuid) || wuid == 0) return -1;
+    const void* node = lookup_node(c, name, /*verbose=*/false);
+    if (!node) { logf("SCTX: context \"%s\" unresolved on this build", name); return -1; }
+    bool has = false;
+    if (!call_has_entity_context(c.mgr, wuid, node, &has)) { disarm("HasEntityContext faulted"); return -1; }
+    if (has == on) return 0;   // refcounted store: never stack a second count
+    if (!call_set_entity_context(c.mgr, on, wuid, node)) { disarm("SetEntityContext faulted"); return -1; }
+    bool after = !on;
+    if (!call_has_entity_context(c.mgr, wuid, node, &after)) { disarm("HasEntityContext faulted after a write"); return -1; }
+    logf("SCTX: %s \"%s\" on wuid=0x%016llX -> readback=%s", on ? "set" : "clear", name,
+         static_cast<unsigned long long>(wuid), after ? "true" : "false");
+    return after == on ? 1 : -1;
+}
+
 void probe_contexts_watch() {
     char path[MAX_PATH]{};
     if (!config_path(path, sizeof(path))) return;

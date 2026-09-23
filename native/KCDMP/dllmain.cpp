@@ -10,6 +10,7 @@
 #include "mannequin_read.h"
 #include "combat_write.h"
 #include "pipe_server.h"
+#include "respawn.h"
 #include "script_context.h"
 
 #include <windows.h>
@@ -126,6 +127,10 @@ DWORD WINAPI plugin_main(LPVOID) {
         // DLL -- same opt-in convention. Read-only unless its line 2 says
         // "write", and even then it undoes its own write.
         kcdmp::sctx::probe_contexts();
+        // WO-113: death without Game Over. Resolves every anchor (fail
+        // closed per piece), installs the I_GameOver::Start guard, logs
+        // WO113-BUILD. The guard itself only arms in a session.
+        kcdmp::respawn::install();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");
@@ -169,6 +174,8 @@ DWORD WINAPI plugin_main(LPVOID) {
     // ONE-SHOT rather than periodic -- a write that repeats at the tick rate
     // is a hook, not a probe. Idle until kcdmp-combatwrite.txt names a command.
     kcdmp::main_thread::post_repeating(&kcdmp::combatwrite::write_watch);
+    // WO-113: the death guard's per-frame tick (rate-limits itself).
+    kcdmp::main_thread::post_repeating(&kcdmp::respawn::tick);
 
     kcdmp::pipe::start();
     return 0;

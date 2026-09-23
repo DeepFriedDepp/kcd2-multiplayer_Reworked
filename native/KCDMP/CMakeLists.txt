@@ -14,6 +14,14 @@
     combat_write.cpp
     local_state.cpp
     npc_scan.cpp
+    anchors.cpp
+    engine.cpp
+    buffs.cpp
+    gameover_hook.cpp
+    hangover.cpp
+    respawn.cpp
+    respawn_actions.cpp
+    punishment.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
