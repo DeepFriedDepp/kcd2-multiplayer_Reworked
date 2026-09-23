@@ -11957,7 +11957,7 @@ local ok, err = pcall(function()
     -- WO-113 build marker. The respawn policy is native; the DLL logs its own
     -- WO113-BUILD line (every anchor, every piece armed or not) in
     -- kcdmp-native.log. mp_preset_legacy = mp_respawn off (vanilla death).
-    mp_log(string.format("WO113-BUILD respawn=%s knockdown_rule=unarmed-recent-attacker-only knockdown=game-knockout grave=all-but-quest-items grave_model=conciliation_cross_d grave_expiry_game_days=3 wake=nearest-hangoverSpot-100m+ -- guard only in a session (mp_preset_legacy = off)",
+    mp_log(string.format("WO113-BUILD respawn=%s knockdown_rule=unarmed-recent-attacker-only knockdown=disengage-stopfight black_hold_s=6 grave=all-but-quest-items grave_model=conciliation_cross_d grave_expiry_game_days=3 wake=nearest-hangoverSpot-100m+ -- guard only in a session (mp_preset_legacy = off)",
         KCD2MP.respawnEnabled and "on" or "off"))
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")

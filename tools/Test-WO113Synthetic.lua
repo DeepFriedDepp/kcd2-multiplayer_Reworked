@@ -102,8 +102,8 @@ end
 check("a: respawn ships ON", KCD2MP.respawnEnabled == true, tostring(KCD2MP.respawnEnabled))
 check("a: WO113-BUILD logged once at load", logCount("WO113-BUILD respawn=on ") == 1, lastLog("WO113-BUILD"))
 local b = lastLog("WO113-BUILD") or ""
-check("a: marker names the knockdown rule and the game knockout",
-      string.find(b, "knockdown_rule=unarmed-recent-attacker-only knockdown=game-knockout", 1, true) ~= nil, b)
+check("a: marker names the knockdown rule, the StopFight disengage and the black hold",
+      string.find(b, "knockdown_rule=unarmed-recent-attacker-only knockdown=disengage-stopfight black_hold_s=6", 1, true) ~= nil, b)
 check("a: marker names the grave and the 100 m wake rule",
       string.find(b, "grave=all-but-quest-items grave_model=conciliation_cross_d grave_expiry_game_days=3 wake=nearest-hangoverSpot-100m+", 1, true) ~= nil, b)
 
