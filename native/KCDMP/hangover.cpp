@@ -337,7 +337,15 @@ bool snap_to_ground(const float in[3], float out[3]) {
     if (!call_gi(g_getGameIface, &gi) || !gi || !rd(gi, kGiXGen, &X) || !X || !v0(X, kXWorld, &A) || !A) return false;
     void* q = nullptr;
     float a = 0, b = 0;
-    return nav_query(A, &q, &a, &b) && nav_project(q, a, b, in, out);
+    if (!nav_query(A, &q, &a, &b)) return false;
+    if (nav_project(q, a, b, in, out)) return true;
+    // Observed: a death sampled a little off the mesh (a knock-back, a slope)
+    // found nothing within the world config's own ranges. One wider search;
+    // the 3 m acceptance rule still holds.
+    const bool wide = nav_project(q, a * 4.0f, b * 4.0f, in, out);
+    logf("HANGOVER: ground snap at (%.1f, %.1f, %.1f): nothing within ranges %.2f/%.2f; 4x ranges %s",
+         in[0], in[1], in[2], a, b, wide ? "found the ground" : "found nothing either");
+    return wide;
 }
 
 bool resolve() {
