@@ -38,6 +38,11 @@ bool resnap_player();
 // wh_rpg_ExcludePlayerFromTargeting for the knockdown wake-up.
 bool exclude_from_targeting(bool on);
 
+// The game's own StopFight for the skirmish the player is in (what quests
+// use to end a fight): every soul of that skirmish is told to stop.
+bool stop_fight_available();
+bool stop_fight(void* playerSoul);
+
 // wh_rpg_DisablePlayerFallDamage while the wake teleport lands. Observed: a
 // hit reaction arms the fall tracker, and a teleport to a lower spot then
 // lands as a fatal fall ~0.8 s later. Off gives back the value from before.

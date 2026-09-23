@@ -795,6 +795,8 @@ void resolve_hud() {
 // public
 // ===========================================================================
 
+namespace { void resolve_stopfight(); }   // defined with the StopFight piece below
+
 void resolve() {
     if (g_resolved) return;
     g_resolved = true;
@@ -808,6 +810,7 @@ void resolve() {
     resolve_reconcile();
     resolve_area();
     resolve_bleeding();
+    resolve_stopfight();
     resolve_hud();
 }
 
@@ -1332,6 +1335,67 @@ int mirror_clear(uint8_t owner) {
     }
     if (n) logf("MP-GRAVE %d mirror(s) of owner %u cleared", n, static_cast<unsigned>(owner));
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// StopFight: wh::rpgmodule::StopFight(const Souls&), the concept function the
+// quests use to end a fight -- "Sends StopFight message to all souls from all
+// skirmishes that are identified by input souls." (RPGModule, code-verified:
+// for each element it takes the skirmish manager, the soul id from the
+// element's vtbl[0] -- C_Soul's returns this+0x40 -- and the soul's skirmish,
+// then messages every soul of every skirmish found). Found through its RTTR
+// registration, the one function referencing the name string: the name is
+// stored with `mov [rbp-0x80],rax` and the next `lea rax,[rip+fn]` is the
+// function. Accepted only when that function takes the skirmish's iteration
+// lock (`lock inc dword [rdi+0xDC]`), as the disassembled one does.
+// ---------------------------------------------------------------------------
+namespace {
+using StopFightFn = void (*)(const void* souls);
+void* g_stopFight = nullptr;
+
+bool call_stop_fight(void* fn, const void* souls) {
+    __try { reinterpret_cast<StopFightFn>(fn)(souls); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void resolve_stopfight() {
+    HMODULE rpg = GetModuleHandleA("RPGModule.dll");
+    const char* why = nullptr;
+    const uint8_t* reg = rpg ? anchor::function_by_string(rpg, "wh::rpgmodule::StopFight") : nullptr;
+    if (!reg) why = "the RTTR registration of wh::rpgmodule::StopFight was not found (or not unique)";
+    const uint8_t* fn = nullptr;
+    if (!why) {
+        static const uint8_t kStoreName[] = {0x48, 0x89, 0x45, 0x80};   // mov [rbp-0x80], rax
+        static const uint8_t kLeaRax[] = {0x48, 0x8D, 0x05};           // lea rax, [rip+disp32]
+        const uint8_t* m = anchor::function_find_sequence(rpg, reg, kStoreName, sizeof(kStoreName), kLeaRax, sizeof(kLeaRax), 3);
+        if (m) fn = static_cast<const uint8_t*>(anchor::rip_target(m + sizeof(kStoreName), 3, 7));
+        if (!fn) why = "the function pointer next to the name was not found";
+    }
+    if (!why) {
+        anchor::Range r{};
+        static const uint8_t kSkirmishLock[] = {0xF0, 0xFF, 0x87, 0xDC, 0x00, 0x00, 0x00};   // lock inc dword [rdi+0xDC]
+        if (!anchor::function_range(rpg, fn, &r) || r.begin != fn)
+            why = "the lifted pointer is not the start of a function";
+        else if (!anchor::function_has_bytes(rpg, fn, kSkirmishLock, sizeof(kSkirmishLock)))
+            why = "the lifted function does not take a skirmish lock (not the disassembled StopFight)";
+    }
+    if (why) { logf("ACTIONS: stop-fight NOT armed -- %s", why); return; }
+    g_stopFight = const_cast<uint8_t*>(fn);
+    char d[96];
+    anchor::describe(fn, d, sizeof(d));
+    logf("ACTIONS: stop-fight armed (wh::rpgmodule::StopFight = %s, by its RTTR registration)", d);
+}
+} // namespace
+
+bool stop_fight_available() { return g_stopFight != nullptr; }
+
+bool stop_fight(void* playerSoul) {
+    if (!g_stopFight || !playerSoul) return false;
+    // A Souls collection is read as {begin, end}: one element, the C_Soul
+    // primary (whose vtbl[0] is the soul id the skirmish manager is keyed by).
+    void* arr[1] = { playerSoul };
+    void* vec[3] = { &arr[0], &arr[1], &arr[1] };
+    return call_stop_fight(g_stopFight, vec);
 }
 
 bool reconcile_available() { return g_reconcileArmed; }

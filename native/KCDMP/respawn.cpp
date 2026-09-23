@@ -30,14 +30,19 @@ constexpr const char* kGuardGuidText    = "4b43444d-7113-4d67-b1a5-9e2f6d8c0a13"
 constexpr const char* kFallbackGuidText = "6f706644-e28a-41a9-9674-5f19dea03bf1";   // death_protection_cutscene
 
 // --- the knockdown ----------------------------------------------------------------
-// The guard's upr=1 is unconsciousness protection (the shipped
-// unconsciousness_protection rows carry upr=1 and nothing else). Under it a
-// fistfight can never end: the game resolves a fight only when the loser is
-// really unconscious. Observed with the first build: knocked down, woke at
-// once in front of the NPC, who stayed hostile and drew an axe. A knockdown
-// therefore swaps to an immortal-only guard, puts the player into the game's
-// own knockout (the non-persistent unconscious buff), and wakes them where
-// they fell when it ends -- the fight resolves the vanilla way meanwhile.
+// Two ways to end the fight, chosen by g_knockMode:
+//  * Disengage (shipped): fade out, restore, the game's own StopFight for the
+//    player's skirmish (what quests use to end a fight), a short targeting
+//    exclusion, wake where the player fell. No unconsciousness, so none of
+//    the vanilla knockout's aftermath (robbery, arrest, time skip) -- the
+//    WO's rule. Observed without StopFight: the NPC stayed hostile after the
+//    wake and drew an axe.
+//  * GameKnockout (fallback, test command `knockmode knockout`): the game's
+//    own knockout. The guard's upr=1 is unconsciousness protection (the
+//    shipped unconsciousness_protection rows carry upr=1 and nothing else),
+//    so this swaps to an immortal-only guard and applies the non-persistent
+//    unconscious buff. Observed: the skirmish ends the vanilla way -- and the
+//    NPC's own aftermath (a pay-to-make-it-right dialogue) follows.
 constexpr const char* kKoGuardGuidText  = "4b43444d-7113-4d67-b1a5-9e2f6d8c0a14";   // kcdmp_knockout_guard (imm=1)
 constexpr const char* kKoGuardFallback  = "89739dbc-fb20-4a28-8b70-986ab9b5f79a";   // player_immortalityOnly_nonPersistent
 constexpr const char* kUnconsciousNp    = "f8d60fe4-e2c1-420a-946a-213e1cd09265";   // unconscious_nonpersistend (Cpp:Unconscious)
@@ -104,6 +109,10 @@ constexpr float kFadeOutS         = 0.8f;
 constexpr float kFadeInS          = 1.2f;
 constexpr DWORD kFadeTimeoutMs    = 2500;
 constexpr DWORD kSettleMs         = 700;
+// The screen stays black this long after the act (grave, teleport, restore)
+// before the fade-in: the maintainer found an instant wake jarring and asked
+// for a 5-10 s hold, for deaths and knockdowns alike.
+constexpr DWORD kBlackHoldMs      = 6000;
 constexpr DWORD kKnockdownImmuneMs = 8000;    // targeting exclusion after a knockdown
 constexpr float kExecutionMinDist = 450.0f;   // m from the execution spot, when the area test cannot answer
 // A death respawn skips every spot this close to where the player died
@@ -144,8 +153,10 @@ unsigned char g_koGuid[16]{};                 // the knockdown guard in use
 unsigned char g_koFallbackGuid[16]{};
 unsigned char g_unconsciousGuid[16]{};
 bool   g_koContextSet = false;                // we set kNoShenanigans (only then do we clear it)
+enum class KnockMode { Disengage, GameKnockout };
+KnockMode g_knockMode = KnockMode::Disengage;
 
-enum class Phase { Idle, FadeOut, Act, Settle, FadeIn, KnockedOut };
+enum class Phase { Idle, FadeOut, Act, Settle, Hold, FadeIn, KnockedOut };
 struct Exec {
     Phase phase = Phase::Idle;
     Kind  kind = Kind::Death;
@@ -157,6 +168,7 @@ struct Exec {
     bool  fallbackDone = false;   // the goto-shaped teleport after ExecuteTeleportImpl did not move us
     DWORD immuneUntil = 0;
     bool  koSeen = false;         // IsUnconscious read true at least once during the knockout
+    DWORD actAt = 0;              // when the act ran (the black hold counts from here)
 } g_x;
 
 // Execution rule: the nearest spot NOT inside any settlement / crime district.
@@ -384,7 +396,7 @@ void start(Kind k, int gameOverId) {
          g_x.deathPos[0], g_x.deathPos[1], g_x.deathPos[2],
          gameOverId >= 0 ? " (from a swallowed Game Over)" : "");
     if (g_ev.downed) g_ev.downed(true, k);
-    if (k == Kind::Knockdown) {
+    if (k == Kind::Knockdown && g_knockMode == KnockMode::GameKnockout) {
         // No fade of ours: the game's knockout presents itself, and while any
         // fader is up the game puts perk_player_fader_protection (upr=1) on
         // the player, which would refuse the knockout.
@@ -463,6 +475,23 @@ void knock_out(void* soul) {
     g_x.phase = Phase::KnockedOut;
 }
 
+// The shipped knockdown: restore, end the fight with the game's own
+// StopFight, a short targeting exclusion, and wake where the player fell.
+void disengage(void* soul) {
+    clear_and_restore(soul, Kind::Knockdown);
+    const bool stopped = actions::stop_fight(buffs::as_c_soul(soul));
+    const bool ex = actions::exclude_from_targeting(true);
+    g_immuneUntil = GetTickCount() + kKnockdownImmuneMs;
+    logf("MP-RESPAWN knockdown: wake in place; StopFight %s; targeting exclusion %s for %lu ms",
+         stopped ? "sent to the player's skirmish" : (actions::stop_fight_available() ? "FAULTED" : "NOT armed"),
+         ex ? "ON" : "UNAVAILABLE", static_cast<unsigned long>(kKnockdownImmuneMs));
+    actions::hud_message("You were knocked out.");
+    g_x.haveWake = false;
+    g_x.phase = Phase::Settle;
+    g_x.t0 = GetTickCount();
+    g_x.actAt = g_x.t0;
+}
+
 void step_knocked_out(DWORD now) {
     void* soul = rttr::read_player_soul();
     bool unc = false;
@@ -482,7 +511,11 @@ void step_act() {
     void* soul = rttr::read_player_soul();
     if (!soul) { logf("MP-RESPAWN act: player soul unreadable -- abandoning the sequence"); g_x.phase = Phase::FadeIn; return; }
     const Kind k = g_x.kind;
-    if (k == Kind::Knockdown) { knock_out(soul); return; }
+    if (k == Kind::Knockdown) {
+        if (g_knockMode == KnockMode::GameKnockout) { knock_out(soul); return; }
+        disengage(soul);
+        return;
+    }
 
     bool graveMade = false;
     if (k == Kind::Death || k == Kind::Execution) {
@@ -561,6 +594,7 @@ void step_act() {
     else actions::hud_message(k == Kind::Execution ? "You were executed." : "You died.");
     g_x.phase = Phase::Settle;
     g_x.t0 = GetTickCount();
+    g_x.actAt = g_x.t0;
 }
 
 void step_executor(DWORD now) {
@@ -599,6 +633,11 @@ void step_executor(DWORD now) {
                     logf("MP-RESPAWN at the wake spot (%.1f m off) -- ground re-snap %s", off,
                          actions::resnap_player() ? "ran" : "unavailable");
                 }
+                g_x.phase = Phase::Hold;
+            }
+            return;
+        case Phase::Hold:
+            if (now - g_x.actAt >= kBlackHoldMs) {
                 actions::fade_in(kFadeInS);
                 g_x.phase = Phase::FadeIn;
                 g_x.t0 = now;
@@ -611,12 +650,13 @@ void step_executor(DWORD now) {
                  p[0], p[1], p[2], static_cast<unsigned long>(now - g_seqStartedAt));
             if (g_ev.downed) g_ev.downed(false, g_x.kind);
             if (g_ev.respawned) g_ev.respawned(p[0], p[1], p[2], g_x.kind);
-            if (g_x.kind != Kind::Knockdown) {
-                // The killer may still be near the wake spot and still angry
-                // (NPCs do not forget a fight): a short window to walk away.
+            {
+                // The killer may still be near and still angry (NPCs do not
+                // forget a fight): a short window to walk away, counted from
+                // the wake -- not from the act, which the black hold follows.
                 const bool ex = actions::exclude_from_targeting(true);
                 g_immuneUntil = now + kKnockdownImmuneMs;
-                logf("MP-RESPAWN targeting exclusion %s for %lu ms after the respawn", ex ? "ON" : "UNAVAILABLE",
+                logf("MP-RESPAWN targeting exclusion %s for %lu ms after the wake", ex ? "ON" : "UNAVAILABLE",
                      static_cast<unsigned long>(kKnockdownImmuneMs));
             }
             g_x.phase = Phase::Idle;
@@ -665,6 +705,7 @@ DWORD g_testCheckedAt = 0;
 void run_test_command(const char* line) {
     int id = -1;
     char text[200]{};
+    float sx = 0, sy = 0, sz = 0;
     if (std::sscanf(line, "gameover %d", &id) == 1) {
         void* gi = engine::game_iface(); void* pm = nullptr; void* go = nullptr;
         void* vt = nullptr; void* start = nullptr;
@@ -689,6 +730,17 @@ void run_test_command(const char* line) {
         logf("MP-RESPAWN-TEST hud \"%s\" -> %s", text, actions::hud_message(text) ? "logged" : "NOT available");
     } else if (std::sscanf(line, "gravemodel %199s", text) == 1) {
         actions::set_grave_model(text);
+    } else if (std::sscanf(line, "snaptest %f %f %f", &sx, &sy, &sz) == 3) {
+        const float in[3] = {sx, sy, sz};
+        float out[3]{};
+        const bool ok = hangover::snap_to_ground(in, out);
+        logf("MP-RESPAWN-TEST snaptest (%.2f, %.2f, %.2f) -> %s (%.2f, %.2f, %.2f)", sx, sy, sz,
+             ok ? "ground" : "NO ground", out[0], out[1], out[2]);
+    } else if (std::strncmp(line, "knockmode ", 10) == 0) {
+        const char* m = line + 10;
+        if (std::strncmp(m, "knockout", 8) == 0) g_knockMode = KnockMode::GameKnockout;
+        else if (std::strncmp(m, "disengage", 9) == 0) g_knockMode = KnockMode::Disengage;
+        logf("MP-RESPAWN-TEST knockmode -> %s", g_knockMode == KnockMode::Disengage ? "disengage (StopFight)" : "game knockout");
     } else if (std::strncmp(line, "mapdump", 7) == 0) {
         actions::map_dump();
     } else if (std::sscanf(line, "marktype %i", &id) == 1) {
@@ -783,13 +835,14 @@ void install() {
     actions::resolve();
     const bool punish = punishment::resolve();
     logf("WO113-BUILD respawn=%s guard=%s c2=%s spots=%s fade=%s teleport=%s graves=%s reconcile=%s settlement_test=%s "
-         "punishment_reset=%s knockdown=game-knockout(%lus) floor=%.1f knockdown_hp=%.0f "
+         "punishment_reset=%s knockdown=%s stop_fight=%s floor=%.1f knockdown_hp=%.0f "
          "hostile_radius_m=%.0f recent_hit_s=%.0f expiry_game_days=3 -- guard only in a session",
          g_enabled.load() ? "on" : "off", g_armed ? "armed" : "NOT-ARMED", c2 ? "installed" : "NOT-INSTALLED",
          spots ? "on" : "OFF", actions::fade_available() ? "on" : "OFF", actions::teleport_available() ? "on" : "OFF",
          actions::graves_available() ? "on" : "OFF", actions::reconcile_available() ? "on" : "OFF",
          actions::area_available() ? "on" : "OFF", punish ? "on" : "OFF",
-         static_cast<unsigned long>(kKnockoutMs / 1000),
+         g_knockMode == KnockMode::Disengage ? "disengage" : "game-knockout",
+         actions::stop_fight_available() ? "on" : "OFF",
          kFloor, kKnockdownHealth, kHostileRadius, kRecentHitS);
 }
 
