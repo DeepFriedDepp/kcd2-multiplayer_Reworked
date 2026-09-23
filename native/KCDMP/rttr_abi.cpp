@@ -2245,4 +2245,254 @@ void probe_attribution() {
                      : "attribution did NOT register from a bare TakeDamage");
 }
 
+// ---------------------------------------------------------------------------
+// WO-113: soul reads and writes for the death guard (respawn.cpp).
+//
+// Main thread only, like everything that touches a soul. Nothing here caches a
+// soul pointer: the player's soul is re-read from SoulList.PlayerSoul on every
+// call, because a save load rebuilds it at a new address and a stale pointer
+// handed to the buff manager is a use-after-free inside the game (WO-99's
+// g_player lesson, applied before the fact instead of after).
+//
+// The RTTR entry points themselves ARE cached (they are CrySystem exports and
+// cannot move while the process lives) -- resolve() walks the whole export
+// table, which is fine once a second but not ten times a frame.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const Api* cached_api() {
+    static Api api{};
+    static bool ok = false;
+    if (!ok) ok = resolve(api);
+    return ok ? &api : nullptr;
+}
+
+bool type_named(const Api& api, const char* name, Type* out) {
+    const std::string_view sv{name};
+    bool valid = false;
+    return call_get_by_name(api.get_by_name, out, &sv) &&
+           call_is_valid(api.type_is_valid, out, &valid) && valid;
+}
+
+bool method_named(const Api& api, const Type& t, const char* name, Method* out) {
+    const std::string_view sv{name};
+    bool valid = false;
+    return call_get_method(api.get_method, &t, out, &sv) &&
+           call_method_is_valid(api.method_is_valid, out, &valid) && valid;
+}
+
+// SoulState enum value by name ("health", "stamina", "hunger", "exhaust").
+bool soul_state_value(const Api& api, const char* name, uint64_t* out, Type* stateType) {
+    if (!type_named(api, "wh::rpgmodule::SoulState", stateType)) return false;
+    Enumeration en{};
+    if (!call_get_enumeration(api.get_enumeration, stateType, &en)) return false;
+    const std::string_view sv{name};
+    Variant v{};
+    if (!call_name_to_value(api.name_to_value, &en, &v, &sv)) return false;
+    bool valid = false;
+    call_variant_valid(api.variant_is_valid, &v, &valid);
+    uint64_t raw = 0;
+    std::memcpy(&raw, v.data, sizeof(raw));
+    call_variant_dtor(api.variant_dtor, &v);
+    if (!valid) return false;
+    *out = raw;
+    return true;
+}
+
+// A reflected bool property of `obj` as `typeName`. False when the property
+// does not exist on this build (invalid variant) -- never "false" by default.
+bool bool_property(const Api& api, const char* typeName, const void* obj, const char* prop, bool* out) {
+    Type t{};
+    if (!type_named(api, typeName, &t)) return false;
+    InstanceBuf inst{};
+    inst.build(g_layout, t, obj);
+    const std::string_view pn{prop};
+    Variant v{};
+    if (!call_get_property_value(api.get_property_value, &t, &v, &pn, inst.bytes)) return false;
+    bool valid = false;
+    call_variant_valid(api.variant_is_valid, &v, &valid);
+    bool b = false;
+    std::memcpy(&b, v.data, sizeof(b));
+    call_variant_dtor(api.variant_dtor, &v);
+    if (!valid) return false;
+    *out = b;
+    return true;
+}
+
+} // namespace
+
+void* read_player_soul() {
+    const Api* api = cached_api();
+    if (!api || !g_walked) return nullptr;
+    void* root = nullptr;
+    if (!call_game_interface(api->game_interface, &root) || !plausible_pointer(root)) return nullptr;
+    void* rpg = read_object_property(*api, "wh::shared::GameInterface", root, "RPGModule", g_layout);
+    if (!plausible_pointer(rpg)) return nullptr;
+    void* souls = read_object_property(*api, "wh::rpgmodule::RPGModule", rpg, "SoulList", g_layout);
+    if (!plausible_pointer(souls)) return nullptr;
+    void* player = read_object_property(*api, "wh::rpgmodule::SoulList", souls, "PlayerSoul", g_layout);
+    return plausible_pointer(player) ? player : nullptr;
+}
+
+void* rpg_module() {
+    const Api* api = cached_api();
+    if (!api) return nullptr;
+    void* root = nullptr;
+    if (!call_game_interface(api->game_interface, &root) || !plausible_pointer(root)) return nullptr;
+    void* rpg = read_object_property(*api, "wh::shared::GameInterface", root, "RPGModule", g_layout);
+    return plausible_pointer(rpg) ? rpg : nullptr;
+}
+
+bool soul_state(void* soul, const char* state, float* out) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul) || !out) return false;
+    Type tState{}, tSoul{};
+    uint64_t sv = 0;
+    if (!soul_state_value(*api, state, &sv, &tState)) return false;
+    if (!type_named(*api, "wh::rpgmodule::Soul", &tSoul)) return false;
+    Method m{};
+    if (!method_named(*api, tSoul, "GetState", &m)) return false;
+    alignas(8) unsigned char arg[32];
+    build_argument(arg, &sv, tState);
+    InstanceBuf inst{};
+    inst.build(g_layout, tSoul, soul);
+    Variant res{};
+    if (!call_invoke1(api->invoke1, &m, &res, inst.bytes, arg)) return false;
+    bool valid = false;
+    call_variant_valid(api->variant_is_valid, &res, &valid);
+    float v = 0.0f;
+    std::memcpy(&v, res.data, sizeof(v));
+    call_variant_dtor(api->variant_dtor, &res);
+    if (!valid || !std::isfinite(v)) return false;
+    *out = v;
+    return true;
+}
+
+bool soul_set_state(void* soul, const char* state, float value) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul)) return false;
+    Type tState{}, tSoul{}, tFloat{};
+    uint64_t sv = 0;
+    if (!soul_state_value(*api, state, &sv, &tState)) return false;
+    if (!type_named(*api, "wh::rpgmodule::Soul", &tSoul)) return false;
+    if (!type_named(*api, "float", &tFloat)) return false;
+    Method m{};
+    if (!method_named(*api, tSoul, "SetState", &m)) return false;
+    float fv = value;
+    alignas(8) unsigned char a0[32], a1[32];
+    build_argument(a0, &sv, tState);
+    build_argument(a1, &fv, tFloat);
+    InstanceBuf inst{};
+    inst.build(g_layout, tSoul, soul);
+    Variant res{};
+    if (!call_invoke2(api->invoke2, &m, &res, inst.bytes, a0, a1)) return false;
+    bool valid = false;
+    call_variant_valid(api->variant_is_valid, &res, &valid);
+    call_variant_dtor(api->variant_dtor, &res);
+    return valid;
+}
+
+bool soul_bool(void* soul, const char* prop, bool* out) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul) || !out) return false;
+    return bool_property(*api, "wh::rpgmodule::Soul", soul, prop, out);
+}
+
+bool combat_bool(void* soul, const char* prop, bool* out) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul) || !out) return false;
+    void* combat = read_object_property(*api, "wh::rpgmodule::Soul", soul, "CombatSoul", g_layout);
+    if (!plausible_pointer(combat)) return false;
+    return bool_property(*api, "wh::rpgmodule::CombatSoul", combat, prop, out);
+}
+
+bool combat_history(void* victim, void* attacker, float seconds, bool* out) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(victim) || !plausible_pointer(attacker) || !out) return false;
+    void* combat = read_object_property(*api, "wh::rpgmodule::Soul", victim, "CombatSoul", g_layout);
+    if (!plausible_pointer(combat)) return false;
+    Type tCs{}, tFloat{}, tSoulPtr{};
+    if (!type_named(*api, "wh::rpgmodule::CombatSoul", &tCs)) return false;
+    if (!type_named(*api, "float", &tFloat)) return false;
+    if (!type_named(*api, "wh::rpgmodule::I_Soul*", &tSoulPtr)) return false;
+    Method m{};
+    if (!method_named(*api, tCs, "HasCombatHistoryWithSoul", &m)) return false;
+    void* who = attacker;
+    float maxTime = seconds;
+    alignas(8) unsigned char a0[32], a1[32];
+    build_argument(a0, &who, tSoulPtr);
+    build_argument(a1, &maxTime, tFloat);
+    InstanceBuf inst{};
+    inst.build(g_layout, tCs, combat);
+    Variant res{};
+    if (!call_invoke2(api->invoke2, &m, &res, inst.bytes, a0, a1)) return false;
+    bool valid = false;
+    call_variant_valid(api->variant_is_valid, &res, &valid);
+    bool b = false;
+    std::memcpy(&b, res.data, sizeof(b));
+    call_variant_dtor(api->variant_dtor, &res);
+    if (!valid) return false;
+    *out = b;
+    return true;
+}
+
+bool soul_position(void* soul, float out[3]) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul) || !out) return false;
+    Type tSoul{};
+    if (!type_named(*api, "wh::rpgmodule::Soul", &tSoul)) return false;
+    return read_vec3(*api, tSoul, soul, "Position", g_layout, out) &&
+           std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+}
+
+int for_each_soul(bool (*visit)(void* soul, void* ctx), void* ctx) {
+    const Api* api = cached_api();
+    if (!api || !g_walked || !visit) return 0;
+    void* root = nullptr;
+    if (!call_game_interface(api->game_interface, &root) || !plausible_pointer(root)) return 0;
+    void* rpg = read_object_property(*api, "wh::shared::GameInterface", root, "RPGModule", g_layout);
+    void* souls = plausible_pointer(rpg)
+        ? read_object_property(*api, "wh::rpgmodule::RPGModule", rpg, "SoulList", g_layout) : nullptr;
+    if (!plausible_pointer(souls)) return 0;
+
+    Type t_sl{};
+    if (!type_named(*api, "wh::rpgmodule::SoulList", &t_sl)) return 0;
+    InstanceBuf inst{};
+    inst.build(g_layout, t_sl, souls);
+    const std::string_view prop{"SoulsByGuid"};
+    Variant map_v{};
+    if (!call_get_property_value(api->get_property_value, &t_sl, &map_v, &prop, inst.bytes)) return 0;
+    alignas(16) unsigned char view[kViewBufBytes]{};
+    if (!call_create_view(api->create_assoc_view, &map_v, view)) {
+        call_variant_dtor(api->variant_dtor, &map_v);
+        return 0;
+    }
+    alignas(16) unsigned char it[kIterBufBytes]{}, it_end[kIterBufBytes]{};
+    call_view_begin(api->view_begin, view, it);
+    call_view_end(api->view_end, view, it_end);
+    alignas(16) unsigned char pr[kPairBufBytes]{};
+    int visited = 0;
+    for (int n = 0; n < 8000; ++n) {
+        bool more = false;
+        if (!call_iter_ne(api->iter_not_equal, it, it_end, &more) || !more) break;
+        if (call_iter_deref(api->iter_deref, it, pr)) {
+            void* va = nullptr;
+            std::memcpy(&va, reinterpret_cast<Variant*>(pr + sizeof(Variant))->data, sizeof(va));
+            void* soul = nullptr;
+            if (plausible_pointer(va)) std::memcpy(&soul, va, sizeof(soul));
+            if (plausible_pointer(soul)) {
+                ++visited;
+                if (visit(soul, ctx)) break;
+            }
+        }
+        if (!call_iter_inc(api->iter_preinc, it)) break;
+    }
+    call_void1(reinterpret_cast<void(*)(void*)>(api->iter_dtor), it);
+    call_void1(reinterpret_cast<void(*)(void*)>(api->iter_dtor), it_end);
+    call_void1(reinterpret_cast<void(*)(void*)>(api->view_dtor), view);
+    call_variant_dtor(api->variant_dtor, &map_v);
+    return visited;
+}
+
 } // namespace kcdmp::rttr

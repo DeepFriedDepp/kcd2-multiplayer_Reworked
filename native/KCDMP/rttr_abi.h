@@ -427,4 +427,44 @@ bool set_ghost_faction_hostile(const unsigned char ghost_guid[16], bool hostile)
 // without that file. Implemented in combat_playanim.cpp.
 void probe_play_anim();
 
+// ---------------------------------------------------------------------------
+// WO-113: the death guard's soul access (respawn.cpp). Main thread only.
+// None of these cache a soul pointer; every false means "could not read on
+// this build / this frame", never a default value.
+// ---------------------------------------------------------------------------
+
+/// SoulList.PlayerSoul, read fresh through GameInterface -> RPGModule ->
+/// SoulList on every call (a save load moves it). Null when unreadable.
+void* read_player_soul();
+
+/// GameInterface.RPGModule (the C_RPGModule instance), read fresh.
+void* rpg_module();
+
+/// Soul::GetState(<name>) -- "health", "stamina", "hunger", "exhaust".
+bool soul_state(void* soul, const char* state, float* out);
+
+/// Soul::SetState(<name>, value). True only when the invoke returned a valid
+/// variant (a signature mismatch is an invalid variant, not a fault).
+bool soul_set_state(void* soul, const char* state, float value);
+
+/// A reflected bool property on the soul ("IsDead", "IsBleeding",
+/// "IsStarving"). False when the property does not exist.
+bool soul_bool(void* soul, const char* prop, bool* out);
+
+/// A reflected bool property on the soul's CombatSoul ("HasWeaponInHand",
+/// "IsUnarmed", "HasMeleeWeapon").
+bool combat_bool(void* soul, const char* prop, bool* out);
+
+/// victim.CombatSoul.HasCombatHistoryWithSoul(attacker, seconds): did
+/// `attacker` hit `victim` within the last `seconds` (the victim records its
+/// attackers; WO-113 finding, RPGModule's own combat_history tests).
+bool combat_history(void* victim, void* attacker, float seconds, bool* out);
+
+/// Soul.Position (world, metres).
+bool soul_position(void* soul, float out[3]);
+
+/// Walk SoulList.SoulsByGuid; `visit` returns true to stop. Returns the
+/// number of souls visited.
+int for_each_soul(bool (*visit)(void* soul, void* ctx), void* ctx);
+
 } // namespace kcdmp::rttr
