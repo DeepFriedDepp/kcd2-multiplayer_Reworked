@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<database xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="barbora" xsi:noNamespaceSchemaLocation="../database.xsd">
+	<buffs version="1">
+		<!-- WO-113: the KCD2-MP death guard. A copy of the shipped death_protection_cutscene
+		     (imm=1 floors health at ImmortalHealthMin, upr=1 is unconsciousness protection) under a
+		     mod-owned id no game script can remove. NOT persistent: never written into a save,
+		     so it cannot outlive an uninstall. Applied and removed natively by KCDMP.dll, and only
+		     while a multiplayer session is live. -->
+		<buff buff_class_id="15" buff_exclusivity_id="1" buff_id="4b43444d-7113-4d67-b1a5-9e2f6d8c0a13" buff_lifetime_id="0" buff_name="kcdmp_death_guard" buff_params="imm=1,upr=1" duration="-1" icon_id="0" implementation="Cpp:Constant" is_persistent="false" />
+		<!-- WO-113: the knockdown guard. imm=1 only: upr=1 is unconsciousness protection, and a
+		     fistfight only ends when the loser is really unconscious. KCDMP.dll swaps the death
+		     guard for this one while it holds the player in the game's own knockout, then swaps
+		     back. NOT persistent, like the death guard. -->
+		<buff buff_class_id="15" buff_exclusivity_id="1" buff_id="4b43444d-7113-4d67-b1a5-9e2f6d8c0a14" buff_lifetime_id="0" buff_name="kcdmp_knockout_guard" buff_params="imm=1" duration="-1" icon_id="0" implementation="Cpp:Constant" is_persistent="false" />
+	</buffs>
+</database>

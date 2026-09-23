@@ -2197,6 +2197,38 @@ function KCD2MP_EnableAggro(arg)
     return true
 end
 
+-- ===== WO-113: death without Game Over =====
+-- The whole policy is native (KCDMP.dll respawn.cpp): the death-guard buff,
+-- the downed detector, knockdown vs death, the grave, the respawn at a
+-- blackout wake-up spot, the Game Over guard. Lua owns only this console
+-- toggle and forwards it the WO-27 state-mirror way (KCD2MP_EmitEvent ->
+-- agent -> pipe 0x0D); the DLL keeps its own copy. Default on. Off = vanilla
+-- death, exactly: the guard buff is removed and every Game Over passes.
+-- The guard is also only ever active while connected to a relay.
+KCD2MP.respawnEnabled = true
+function KCD2MP_SetRespawn(arg)
+    local s = tostring(arg or ""):lower()
+    if s == "" or s == "nil" then
+        mp_log(string.format("MP-RESPAWN-TOGGLE mp_respawn=%s (usage: mp_respawn on|off)",
+            KCD2MP.respawnEnabled and "on" or "off"))
+        return true
+    end
+    local was = KCD2MP.respawnEnabled
+    if s:find("on") then KCD2MP.respawnEnabled = true
+    elseif s:find("off") then KCD2MP.respawnEnabled = false
+    else
+        mp_log("mp_respawn: expected 'on' or 'off', got '" .. s .. "'")
+        return false
+    end
+    KCD2MP_EmitEvent("respawn_toggle", KCD2MP.respawnEnabled and "on" or "off")
+    mp_log(string.format("MP-RESPAWN-TOGGLE set=%s was=%s -- %s", KCD2MP.respawnEnabled and "on" or "off",
+        was and "on" or "off",
+        KCD2MP.respawnEnabled and "death floors at 1 hp, then grave + respawn (in a session)"
+                               or "vanilla death and Game Over"))
+    KCD2MP_ShowInteractionMsg("Respawn: " .. (KCD2MP.respawnEnabled and "ON" or "OFF (vanilla death)"))
+    return true
+end
+
 -- ===== NPC sync (WO-32) =====
 --
 -- One player's world dictating what nearby hand-placed NPCs are doing in
@@ -3743,10 +3775,14 @@ end
 KCD2MP._presets = {
     -- WO-110: `legacy` is the 0.26.4 build (was 0.26.3 in WO-108); `clean` is
     -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
+    -- WO-113: `respawn` -- clean = death without Game Over (the new build),
+    -- legacy = vanilla death (the 0.26.5 behaviour).
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true },
+               npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true,
+               respawn = true },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
-               npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false },
+               npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false,
+               respawn = false },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -3778,6 +3814,7 @@ function KCD2MP_ApplyPreset(which)
     set("npc_track_max",   w.npcTrackMax,                P.npc_track_max,   function() KCD2MP_SetNpcTrackMax(P.npc_track_max) end)                          -- WO-110 R3
     set("cull_radius_m",   w.cullRadius,                 P.cull_radius_m,   function() KCD2MP_SetCullRadius(P.cull_radius_m) end)                           -- WO-110 2.4
     set("npc_senderclock", KCD2MP.npcSenderClock,        P.npc_senderclock, function() KCD2MP_SetNpcSenderClock(P.npc_senderclock and "on" or "off") end)    -- WO-110 R6
+    set("respawn",         KCD2MP.respawnEnabled,        P.respawn,         function() KCD2MP_SetRespawn(P.respawn and "on" or "off") end)                 -- WO-113
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -11884,6 +11921,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_horse_adopt",     'KCD2MP_SetHorseAdopt(%line)', "WO-40: adopt real world horses for ghosts (default on). off = proxy horses only -- use if the game crashes when a peer mounts")
     System.AddCCommand("mp_weather",         'KCD2MP_WeatherCmd(%line)', "WO-40: bare = report rain intensity; mp_weather <profile> = blend to a time_of_day profile locally (probe, not broadcast)")
     System.AddCCommand("mp_enable_aggro",    'KCD2MP_EnableAggro(%line)', "WO-17: opt-in NPC aggro on ghosts, this client only: mp_enable_aggro on|off")
+    System.AddCCommand("mp_respawn",         'KCD2MP_SetRespawn(%line)',  "WO-113: death without Game Over in a session: mp_respawn on|off (default on; off = vanilla death); bare = report")
     System.AddCCommand("mp_debug_hud",       'KCD2MP_DebugHud(%line)', "WO-50: toggle the CryEngine debug HUD (r_DisplayInfo), off by default in release: mp_debug_hud on|off")
 
     -- NPC sync (WO-32)
@@ -11916,6 +11954,11 @@ local ok, err = pcall(function()
     mp_log(string.format("WO110-BUILD npc_read_native=%s npc_track_max=%d cull_radius_m=%.0f npc_senderclock=%s -- 0.26.5 defaults (mp_preset_legacy = 0.26.4)",
         KCD2MP.wo1025.readNative and "on" or "off", KCD2MP.wo1025.npcTrackMax or 0, KCD2MP.wo1025.cullRadius or 0,
         KCD2MP.npcSenderClock and "on" or "off"))
+    -- WO-113 build marker. The respawn policy is native; the DLL logs its own
+    -- WO113-BUILD line (every anchor, every piece armed or not) in
+    -- kcdmp-native.log. mp_preset_legacy = mp_respawn off (vanilla death).
+    mp_log(string.format("WO113-BUILD respawn=%s knockdown_rule=unarmed-recent-attacker-only knockdown=game-knockout grave=all-but-quest-items grave_model=conciliation_cross_d grave_expiry_game_days=3 wake=nearest-hangoverSpot-100m+ -- guard only in a session (mp_preset_legacy = off)",
+        KCD2MP.respawnEnabled and "on" or "off"))
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")

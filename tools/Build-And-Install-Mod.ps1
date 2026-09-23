@@ -44,6 +44,7 @@ $Manifest = Join-Path $RepoRoot 'kdcmp\mod.manifest'
 $Files = @(
     'Scripts\Startup\kdcmp.lua',
     'Libs\Tables\item\clothing_preset__kdcmp.xml',
+    'Libs\Tables\rpg\buff__kcdmp.xml',   # WO-113: the death-guard buff row
     'Libs\Config\keybindSuperactions.xml',
     'Libs\Config\defaultProfile.xml'
 )
