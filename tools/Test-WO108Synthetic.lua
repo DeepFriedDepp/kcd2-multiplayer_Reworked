@@ -291,8 +291,9 @@ do
               tostring(KCD2MP.npcYield.enabled), tostring(KCD2MP.wo1025.resumeDwellS), tostring(KCD2MP.wo1025.readNative), tostring(lastLog("WO103-READNATIVE") or lastLog("MP-NPCREAD"))))
     check("g: legacy re-applies the shared values too (puppet rate, radius)", KCD2MP.npcPuppetTickMs == 50 and KCD2MP.wo1025.authorityRadius == 300)
     local nLegacy = logCount("MP-PRESET name=legacy set=")
-    check("g: every value logs one MP-PRESET line (19)", nLegacy == 19, tostring(nLegacy))   -- WO-110: + npc_track_max, cull_radius_m, npc_senderclock
-    check("g: applied line says authority_model=untouched", logCount("MP-PRESET applied name=legacy values=19 authority_model=untouched") == 1, lastLog("MP-PRESET applied"))
+    check("g: every value logs one MP-PRESET line (20)", nLegacy == 20, tostring(nLegacy))   -- WO-110: + npc_track_max, cull_radius_m, npc_senderclock; WO-113: + respawn
+    check("g: applied line says authority_model=untouched", logCount("MP-PRESET applied name=legacy values=20 authority_model=untouched") == 1, lastLog("MP-PRESET applied"))
+    check("g: legacy -> vanilla death (WO-113 respawn off)", KCD2MP.respawnEnabled == false)
     check("g: legacy -> 0.26.4 arrival-time stamps", KCD2MP.npcSenderClock == false)
     check("g: legacy -> 0.26.4 cull radius 30", KCD2MP.wo1025.cullRadius == 30)
     check("g: legacy -> 0.26.4 track cap 40", KCD2MP.wo1025.npcTrackMax == 40 and logCount("[KCD2-MP-EVT] v1 ") >= 1)
@@ -301,7 +302,8 @@ do
     KCD2MP_ApplyPreset("clean")
     check("g: clean -> lever on, replicas off, yield off, dwell 10",
           KCD2MP.wo102.authorityPause == true and KCD2MP.npcReplica.enabled == false and KCD2MP.npcYield.enabled == false and KCD2MP.wo1025.resumeDwellS == 10.0)
-    check("g: clean logs 19 values too", logCount("MP-PRESET name=clean set=") == 19)
+    check("g: clean logs 20 values too", logCount("MP-PRESET name=clean set=") == 20)
+    check("g: clean -> respawn on (WO-113 default)", KCD2MP.respawnEnabled == true)
     check("g: clean -> sender clock on", KCD2MP.npcSenderClock == true)
     check("g: clean -> cull radius 60", KCD2MP.wo1025.cullRadius == 60)
     check("g: clean -> track cap 200", KCD2MP.wo1025.npcTrackMax == 200)

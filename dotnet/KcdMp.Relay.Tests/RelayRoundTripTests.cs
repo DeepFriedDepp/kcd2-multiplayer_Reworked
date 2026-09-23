@@ -507,4 +507,116 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.Equal(a.Id, down[0]);
         for (int i = 0; i < len; i++) Assert.Equal((byte)(0x40 + i), down[1 + i]);
     }
+
+    // ---- WO-113: death without Game Over -- three sender facts -------------
+    // 0x3E/0x40/0x42 are relayed verbatim with the source ghost id prepended,
+    // exact length only, to the OTHER peers only. The bodies below are built
+    // exactly as GameBridge builds them.
+
+    private static byte[] Frame(byte type, byte[] body)
+    {
+        var pkt = new byte[3 + body.Length];
+        pkt[0] = type;
+        BinaryPrimitives.WriteUInt16LittleEndian(pkt.AsSpan(1), (ushort)body.Length);
+        body.CopyTo(pkt, 3);
+        return pkt;
+    }
+
+    private static byte[] RespawnedBody(float x, float y, float z, byte reason)
+    {
+        var b = new byte[Protocol.PlayerRespawnedUpPayloadLen];
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(0), x);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(4), y);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(8), z);
+        b[12] = reason;
+        return b;
+    }
+
+    private static byte[] GraveAddBody(ulong id, float x, float y, float z)
+    {
+        var b = new byte[Protocol.GraveAddUpPayloadLen];
+        BinaryPrimitives.WriteUInt64LittleEndian(b.AsSpan(0), id);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(8), x);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(12), y);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(16), z);
+        return b;
+    }
+
+    [Theory]
+    [InlineData(Protocol.RespawnReasonDeath)]
+    [InlineData(Protocol.RespawnReasonKnockdown)]
+    [InlineData(Protocol.RespawnReasonExecution)]
+    public async Task Player_respawned_crosses_the_relay_with_the_source_id(byte reason)
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        await a.SendRawAsync(Frame(Protocol.PlayerRespawnedUp, RespawnedBody(2473.3f, 1726.1f, 91.1f, reason)));
+
+        var down = await b.ReadUntilAsync(Protocol.PlayerRespawnedDown, Wait);
+        Assert.Equal(Protocol.PlayerRespawnedDownPayloadLen, down.Length);
+        Assert.Equal(a.Id, down[0]);
+        Assert.Equal(2473.3f, BinaryPrimitives.ReadSingleLittleEndian(down.AsSpan(1)));
+        Assert.Equal(1726.1f, BinaryPrimitives.ReadSingleLittleEndian(down.AsSpan(5)));
+        Assert.Equal(91.1f, BinaryPrimitives.ReadSingleLittleEndian(down.AsSpan(9)));
+        Assert.Equal(reason, down[13]);
+    }
+
+    [Fact]
+    public async Task Grave_add_and_remove_cross_the_relay_with_the_64_bit_id_intact()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+        const ulong id = 0xA75277F948715E53;   // a real grave id from the WO-113 smoke
+
+        await a.SendRawAsync(Frame(Protocol.GraveAddUp, GraveAddBody(id, 2325.2f, 2052.7f, 110.0f)));
+        var add = await b.ReadUntilAsync(Protocol.GraveAddDown, Wait);
+        Assert.Equal(Protocol.GraveAddDownPayloadLen, add.Length);
+        Assert.Equal(a.Id, add[0]);
+        Assert.Equal(id, BinaryPrimitives.ReadUInt64LittleEndian(add.AsSpan(1)));
+        Assert.Equal(2325.2f, BinaryPrimitives.ReadSingleLittleEndian(add.AsSpan(9)));
+        Assert.Equal(2052.7f, BinaryPrimitives.ReadSingleLittleEndian(add.AsSpan(13)));
+        Assert.Equal(110.0f, BinaryPrimitives.ReadSingleLittleEndian(add.AsSpan(17)));
+
+        var rm = new byte[Protocol.GraveRemoveUpPayloadLen];
+        BinaryPrimitives.WriteUInt64LittleEndian(rm, id);
+        await a.SendRawAsync(Frame(Protocol.GraveRemoveUp, rm));
+        var gone = await b.ReadUntilAsync(Protocol.GraveRemoveDown, Wait);
+        Assert.Equal(Protocol.GraveRemoveDownPayloadLen, gone.Length);
+        Assert.Equal(a.Id, gone[0]);
+        Assert.Equal(id, BinaryPrimitives.ReadUInt64LittleEndian(gone.AsSpan(1)));
+    }
+
+    [Theory]
+    [InlineData(Protocol.PlayerRespawnedUp, Protocol.PlayerRespawnedUpPayloadLen - 1, Protocol.PlayerRespawnedDown)]
+    [InlineData(Protocol.PlayerRespawnedUp, Protocol.PlayerRespawnedUpPayloadLen + 1, Protocol.PlayerRespawnedDown)]
+    [InlineData(Protocol.GraveAddUp, Protocol.GraveAddUpPayloadLen - 1, Protocol.GraveAddDown)]
+    [InlineData(Protocol.GraveRemoveUp, Protocol.GraveRemoveUpPayloadLen + 1, Protocol.GraveRemoveDown)]
+    public async Task Wrong_length_wo113_fact_is_dropped_and_framing_survives(byte upType, int len, byte downType)
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        await a.SendRawAsync(Frame(upType, new byte[len]));
+        Assert.True(await b.NoneOfAsync(downType, Quiet));
+
+        // The stream is still framed: the next valid fact arrives intact.
+        await a.SendRawAsync(Frame(Protocol.PlayerRespawnedUp, RespawnedBody(1f, 2f, 3f, Protocol.RespawnReasonDeath)));
+        var down = await b.ReadUntilAsync(Protocol.PlayerRespawnedDown, Wait);
+        Assert.Equal(a.Id, down[0]);
+        Assert.Equal(3f, BinaryPrimitives.ReadSingleLittleEndian(down.AsSpan(9)));
+    }
+
+    [Fact]
+    public async Task Sender_does_not_receive_its_own_grave_or_respawn()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        await a.SendRawAsync(Frame(Protocol.GraveAddUp, GraveAddBody(7, 1f, 2f, 3f)));
+        await a.SendRawAsync(Frame(Protocol.PlayerRespawnedUp, RespawnedBody(1f, 2f, 3f, Protocol.RespawnReasonDeath)));
+        await b.ReadUntilAsync(Protocol.PlayerRespawnedDown, Wait);   // both went out
+        Assert.True(await a.NoneOfAsync(Protocol.GraveAddDown, Quiet));
+        Assert.True(await a.NoneOfAsync(Protocol.PlayerRespawnedDown, Quiet));
+    }
 }
