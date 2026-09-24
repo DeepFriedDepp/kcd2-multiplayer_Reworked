@@ -125,4 +125,8 @@ bool in_settlement(const float pos[3], bool* inside);
 // One line in the HUD game log (what Lua Game.LogGameEvent does).
 bool hud_message(const char* text);
 
+// WO-118: an entity's XGenAI WUID (GUID -> WUID service, the way XGenAI's own
+// GetMyWUID resolves it -- the grave marker's route). 0 when unavailable.
+uint64_t entity_wuid(void* ent);
+
 } // namespace kcdmp::actions

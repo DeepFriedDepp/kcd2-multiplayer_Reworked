@@ -22,6 +22,9 @@
     respawn.cpp
     respawn_actions.cpp
     punishment.cpp
+    npc_drive.cpp
+    npc_trace.cpp
+    inline_hook.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

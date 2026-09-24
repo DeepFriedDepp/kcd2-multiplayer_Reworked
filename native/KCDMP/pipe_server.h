@@ -100,8 +100,34 @@
 //                        WO-113: every grave this player still owns, for the
 //                        agent's on-connect re-announce.
 //
+//     0x10 NpcSamples   [count:1]{[src:1][nameLen:1][name][x:4f][y:4f][z:4f][rot:4f]
+//                        [flags:1][seq:2][senderMs:4][arrivalQpc:8]}*count   (<= 4096)
+//                        WO-118: every inbound NPC sample the agent handed Lua,
+//                        for the native per-frame writer (npc_drive.h). Queued
+//                        on the pipe thread, no main-thread hop; Result ok.
+//     0x11 NpcBind      [on:1][eid:4][wuid:8][ax:4f][ay:4f][az:4f][delayMs:2]
+//                        [nameLen:1][name]
+//                        WO-118: Lua's decision to (un)bind one puppet. Verified
+//                        on the main thread (entity id, name, WUID, parent,
+//                        living body) before any write; Result reason = the
+//                        npcdrive::Reason code.
+//     0x12 NpcHold      [ms:2][nameLen:1][name]
+//                        WO-118: no writes for this puppet for ms (a swing).
+//     0x13 NpcConfig    [nativeOn:1][senderClockOn:1]
+//                        WO-118: mp_npc_native_write / mp_npc_senderclock.
+//     0x14 NpcStatus    []                           -> replies 0x89
+//     0x15 NpcTrace     [seconds:2][nameLen:1][name]  (seconds 0 = stop)
+//                        WO-118 Phase 5: mp_npc_trace (npc_trace.h).
+//
 //   DLL -> agent
 //     0x81 Result       [ok:1][seq:1]            (per applied command)
+//     0x89 NpcStatus    [ok:1][seq:1][armed:1][nativeOn:1][bound:2][writing:2]
+//                       [framesWritten:4][writes:4][drops:4][samples:4]   (24)
+//                        WO-118 reply to 0x14 (the agent's 1 Hz heartbeat).
+//     0x94 NpcDropped   [reason:1][nameLen:1][name]      (unsolicited)
+//                        WO-118: the native writer stopped a bound puppet on
+//                        its own (entity gone, silence, fault, pipe closed).
+//     0x95 NpcTraceDone [rows:4][pathLen:1][path]        (unsolicited)
 //     0x88 GraveList    [ok:1][seq:1][count:1] { [graveId:8][x:4f][y:4f][z:4f] }*count
 //                        WO-113 reply to 0x0F; at most 40 graves.
 //     0x91 LocalDowned  [on:1][kind:1]                   (unsolicited, 2)
@@ -210,6 +236,16 @@ constexpr uint8_t kBodyState          = 0x85;   // WO-100.5 Phase 2
 constexpr uint8_t kLocalState         = 0x86;   // WO-102 Phase 1
 constexpr uint8_t kNpcScanResult      = 0x87;   // WO-102.5 Phase 2
 constexpr uint8_t kLocalHit           = 0x90;
+constexpr uint8_t kNpcSamples         = 0x10;   // WO-118
+constexpr uint8_t kNpcBind            = 0x11;   // WO-118
+constexpr uint8_t kNpcHold            = 0x12;   // WO-118
+constexpr uint8_t kNpcConfig          = 0x13;   // WO-118
+constexpr uint8_t kNpcStatus          = 0x14;   // WO-118
+constexpr uint8_t kNpcTrace           = 0x15;   // WO-118
+constexpr uint8_t kNpcStatusReply     = 0x89;   // WO-118
+constexpr uint8_t kNpcDropped         = 0x94;   // WO-118, unsolicited
+constexpr uint8_t kNpcTraceDone       = 0x95;   // WO-118, unsolicited
+constexpr int     kNpcSamplesMaxLen   = 4096;
 
 constexpr int kGuidLen                  = 16;
 constexpr int kApplyDamageLen           = kGuidLen + 4 + 4 + 1;

@@ -1436,4 +1436,6 @@ bool hud_message(const char* text) {
     return fcall_void(g_gameEventLog, log, static_cast<const void*>(ev));
 }
 
+uint64_t entity_wuid(void* ent) { return ent ? wuid_of_entity(ent) : 0; }
+
 } // namespace kcdmp::actions

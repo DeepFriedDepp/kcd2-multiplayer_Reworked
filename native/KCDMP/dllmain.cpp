@@ -8,6 +8,7 @@
 #include "log.h"
 #include "main_thread.h"
 #include "mannequin_read.h"
+#include "npc_drive.h"
 #include "combat_write.h"
 #include "pipe_server.h"
 #include "respawn.h"
@@ -131,6 +132,9 @@ DWORD WINAPI plugin_main(LPVOID) {
         // closed per piece), installs the I_GameOver::Start guard, logs
         // WO113-BUILD. The guard itself only arms in a session.
         kcdmp::respawn::install();
+        // WO-118: the native per-frame puppet write. Anchors fail closed
+        // (WO118-NATIVE native_write=DISARMED): Lua then writes as before.
+        kcdmp::npcdrive::install();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");

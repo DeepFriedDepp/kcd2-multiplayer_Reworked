@@ -10,6 +10,8 @@
 #include "concept_read.h"
 #include "respawn.h"
 #include "respawn_actions.h"
+#include "npc_drive.h"
+#include "npc_trace.h"
 #include "log.h"
 
 #include <windows.h>
@@ -175,6 +177,28 @@ void send_local_grave(bool add, uint64_t id, float x, float y, float z) {
     send_unsolicited(kLocalGrave, body, sizeof(body), "LocalGrave");
 }
 
+// WO-118: the native writer dropped a puppet on its own (main thread).
+void send_npc_dropped(uint8_t reason, const char* name) {
+    BYTE body[2 + 63]{};
+    const size_t n = name ? std::strlen(name) : 0;
+    if (n == 0 || n > 63) return;
+    body[0] = reason;
+    body[1] = static_cast<BYTE>(n);
+    std::memcpy(body + 2, name, n);
+    send_unsolicited(kNpcDropped, body, static_cast<uint16_t>(2 + n), "NpcDropped");
+}
+
+// WO-118 Phase 5: a trace CSV was written (main thread).
+void send_trace_done(uint32_t rows, const char* path) {
+    BYTE body[4 + 1 + 255]{};
+    size_t n = path ? std::strlen(path) : 0;
+    if (n > 255) n = 255;
+    std::memcpy(body, &rows, 4);
+    body[4] = static_cast<BYTE>(n);
+    if (n) std::memcpy(body + 5, path, n);
+    send_unsolicited(kNpcTraceDone, body, static_cast<uint16_t>(5 + n), "NpcTraceDone");
+}
+
 void on_grave_add(uint64_t id, float x, float y, float z) { send_local_grave(true, id, x, y, z); }
 void on_grave_remove(uint64_t id) { send_local_grave(false, id, 0, 0, 0); }
 
@@ -317,6 +341,22 @@ void send_result(HANDLE h, bool ok, uint8_t seq, uint8_t reason = 0) {
     LeaveCriticalSection(&g_write_lock);
 }
 
+// WO-118: 0x89, the heartbeat's answer. Atomics only -- no main-thread hop.
+void send_npc_status(HANDLE h, uint8_t seq) {
+    const npcdrive::Status st = npcdrive::status();
+    BYTE body[24]{};
+    body[0] = 1; body[1] = seq; body[2] = st.armed; body[3] = st.nativeOn;
+    std::memcpy(body + 4, &st.bound, 2);
+    std::memcpy(body + 6, &st.writing, 2);
+    std::memcpy(body + 8, &st.framesWritten, 4);
+    std::memcpy(body + 12, &st.writes, 4);
+    std::memcpy(body + 16, &st.drops, 4);
+    std::memcpy(body + 20, &st.samples, 4);
+    EnterCriticalSection(&g_write_lock);
+    send_frame(h, kNpcStatusReply, body, sizeof(body));
+    LeaveCriticalSection(&g_write_lock);
+}
+
 // WO-76 (docs/WO-75-audit-findings.md s1/s2; PR #1 merge message): run_sync
 // deliberately waits UNBOUNDED once a queued task has started -- returning
 // early there would invalidate references the caller's own lambda captured,
@@ -401,12 +441,13 @@ void serve(HANDLE h) {
         const uint16_t len  = static_cast<uint16_t>(head[1] | (head[2] << 8));
 
         // Bound the payload before allocating: the pipe is local, but a
-        // malformed length should not turn into a huge allocation.
-        if (len > 1024) {
+        // malformed length should not turn into a huge allocation. WO-118:
+        // the sample batch alone may run to kNpcSamplesMaxLen.
+        if (len > 1024 && !(type == kNpcSamples && len <= kNpcSamplesMaxLen)) {
             logf("PIPE: payload of %u bytes is out of range; dropping the connection", len);
             break;
         }
-        BYTE body[1024];
+        BYTE body[kNpcSamplesMaxLen];
         if (len && !read_all(h, body, len)) break;
 
         const uint8_t seq = g_seq++;
@@ -699,6 +740,58 @@ void serve(HANDLE h) {
                 break;
             }
 
+            // WO-118: the native per-frame writer (npc_drive.h). Samples,
+            // holds, config and status never wait for a frame; only a bind
+            // (engine reads) is marshalled onto the main thread.
+            case kNpcSamples: {
+                const uint8_t r = npcdrive::on_samples(body, len);
+                if (r != npcdrive::kOk) logf("PIPE: NpcSamples refused (%s, %u bytes)", npcdrive::reason_name(r), len);
+                send_result(h, r == npcdrive::kOk, seq, r);
+                break;
+            }
+            case kNpcHold: {
+                const uint8_t r = npcdrive::on_hold(body, len);
+                send_result(h, r == npcdrive::kOk, seq, r);
+                break;
+            }
+            case kNpcConfig: {
+                const uint8_t r = npcdrive::on_config(body, len);
+                send_result(h, r == npcdrive::kOk, seq, r);
+                break;
+            }
+            case kNpcStatus:
+                send_npc_status(h, seq);
+                break;
+            case kNpcBind: {
+                npcdrive::BindRequest req{};
+                if (!npcdrive::parse_bind(body, len, &req)) {
+                    logf("PIPE: NpcBind malformed (%u bytes)", len);
+                    send_result(h, false, seq, npcdrive::kBadRequest);
+                    break;
+                }
+                uint8_t r = npcdrive::kFault;
+                bool faulted = false;
+                const bool ran = run_sync_bounded<uint8_t>(
+                    [req](uint8_t& out) { out = npcdrive::bind_main(req); }, "NpcBind", r, &faulted);
+                if (!ran) r = faulted ? static_cast<uint8_t>(npcdrive::kFault) : static_cast<uint8_t>(npcdrive::kDisarmed);
+                send_result(h, ran && r == npcdrive::kOk, seq, r);
+                break;
+            }
+            case kNpcTrace: {
+                if (len < 4 || body[2] == 0 || static_cast<size_t>(3 + body[2]) != len || body[2] > 63) {
+                    send_result(h, false, seq, 2);
+                    break;
+                }
+                uint16_t secs = 0;
+                std::memcpy(&secs, body, 2);
+                char name[64]{};
+                std::memcpy(name, body + 3, body[2]);
+                const uint8_t r = npctrace::request(name, secs);
+                logf("PIPE: NpcTrace %s %us -> %s", name, secs, r == 0 ? "queued" : "refused");
+                send_result(h, r == 0, seq, r);
+                break;
+            }
+
             case kConceptProbe: {
                 if (len > kConceptProbeMaxLen) {
                     logf("PIPE: ConceptProbe path too long (%u > %d)", len, kConceptProbeMaxLen);
@@ -748,6 +841,8 @@ void serve(HANDLE h) {
 
     g_connected = false;
     logf("PIPE: agent disconnected");
+    // WO-118: no agent, no stream -- every native binding is dropped.
+    npcdrive::on_pipe_closed();
     // WO-113: no agent, no session -- the death guard stands down (vanilla).
     respawn::set_session(false, "pipe closed");
 }
@@ -819,6 +914,10 @@ bool start() {
     ev.grave_add = &on_grave_add;
     ev.grave_remove = &on_grave_remove;
     respawn::set_events(ev);
+
+    // WO-118: the native writer's and the trace's unsolicited frames.
+    npcdrive::set_drop_callback(&send_npc_dropped);
+    npctrace::set_done_callback(&send_trace_done);
 
     // The injected plugin has process lifetime. Detaching keeps DLL teardown
     // free of a blocking join under the Windows loader lock.
