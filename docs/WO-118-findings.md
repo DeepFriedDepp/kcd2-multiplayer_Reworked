@@ -1,6 +1,6 @@
-# WO-118 — findings: the jitter build
+# WO-118 — findings: the jitter build (0.28.0)
 
-Session 2026-09-23, solo, against the running Modding Tools build, a local
+Session 2026-09-23 (end gate 2026-09-24), solo, against the running Modding Tools build, a local
 relay and a synthetic authority peer (`tools/wo118`). Four game launches, one
 throwaway save. Progress, gaps and side effects: `docs/WO-118-progress.md`.
 Field page: `docs/WO-118-runbook.md`. Read first: `docs/WO-116-movement-layer.md`
@@ -391,9 +391,13 @@ Fresh clone of `origin/main` at `66ebace`, built with `tools\Build-Installer.ps1
 | 4 seated, legacy | 58 mm median offset, 62 mm max deviation; 615/616 frames moving; flying 616/616 (the sawtooth) |
 
 **GATE GREEN.** The same build under jitter (`noise_batch.py` P1, P2): 0 frozen
-frames, speed sd 0.02 m/s. The version bump that follows changes `VERSION` and the
-README badge only (neither the pak nor the DLL carries the version); the gate is
-re-run on the bumped build (`docs/WO-118-progress.md` §5).
+frames, speed sd 0.02 m/s.
+
+**And on the released 0.28.0 build** (fresh clone at `c15b605`, its own pak, DLL,
+relay and agent; `docs/WO-118-progress.md` §5): walker native 0/469 frozen, speed
+sd 0.012 m/s, render − written 0.000 mm; seated native 0.0 mm, 0 moving frames;
+walker legacy 75.3 % frozen; seated legacy 61 mm sawtooth, 615/616 moving —
+**GATE GREEN**; P1/P2 0 frozen, speed sd 0.03 m/s. (observed)
 
 ---
 

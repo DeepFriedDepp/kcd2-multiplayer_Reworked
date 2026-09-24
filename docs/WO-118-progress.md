@@ -18,7 +18,7 @@ Session 2026-09-23, solo. Findings: `docs/WO-118-findings.md`. Field page:
 | 5 — `mp_npc_trace` CSV gate | **done** | green three times this WO; `tools/wo118/phase5_gate.py` (§3.7); shipped-build run §5 below |
 | 6 — cost at 40 and 80; network noise | **done** | noise found the sender-clock headroom defect, fixed (92023cc, §3.8); cost §3.9; 80 needed a 200 ms emit (§3.10) |
 | 7 — presets, WO118-BUILD, runbook, predictions | **done** | toggles in both presets (4781c86, cfea218); runbook; predictions in findings §1 |
-| end gate | see §5 | the version is the maintainer's call |
+| end gate | **done** | §5: 0.28.0 (named by the maintainer), fresh-clone build green, pak and privacy checks clean, Phase 5 gate green on the shipped build, no GitHub Release |
 
 ## 2. Live sessions
 
@@ -47,7 +47,8 @@ to `<scratch>` before every relaunch.
 `cfea218` detach · `eb0436c` CombatRole fix · `9aefa8f` lag frames / restarts /
 parented · `bd26225` 1 ms stamps · `6258502` ghost · `4d92c14` cost line ·
 `92023cc` jitter allowance · `a1c5b5f` `path=legacy` · `f299310` pak ·
-`704845a` `tools/wo118` · docs. Nothing reverted.
+`704845a` `tools/wo118` · `66ebace`, `2324dcf` docs · `1c353aa` VERSION 0.28.0 ·
+`c15b605` release notes. Nothing reverted.
 
 ## 4. Gaps, side effects, stated plainly
 
@@ -123,7 +124,54 @@ else ran first so the bump is the only step left):
   `<install>\Mods\kdcmp\Data\` as `Build-And-Install-Mod.ps1` does; the DLL was
   injected from the session scratchpad).
 
-**After the maintainer names the version:** `VERSION` + README badge commit,
-release notes `docs/releases/RELEASE-NOTES-<version>.md`, push, a new fresh
-clone, `Build-Installer.ps1`, pak check, privacy sweep, the Phase 5 gate once
-more, then this section records the final artifacts.
+**The release: 0.28.0**, named by the maintainer when asked (after everything
+above had run).
+
+* `VERSION` 0.28.0 and the README badge (`1c353aa`), release notes
+  `docs/releases/RELEASE-NOTES-0.28.0.md` (`c15b605`), pushed; `rollback/0.27.0`
+  was already on `origin`.
+* **Built from a fresh clone of `origin/main` at `c15b605`** with
+  `tools\Build-Installer.ps1`, green on the first run (exit 0) (observed): relay
+  round-trip 26/26, agent unit tests 181/181, the same seventeen synthetic suites
+  all green (WO-118 85/0), static checks 7/7 and 6/6, native plugin rebuilt,
+  payload smoke `RELAY-SMOKE ok id=0 protocol=v7 release=0.28.0 rtt_ms=16`,
+  install manifest 1,024 entries, Inno Setup compile.
+
+| artifact | size | sha256 |
+|---|---|---|
+| `release\KCDMP-Setup-0.28.0.exe` | 100,753,156 B | `d99c5b9db3fa8f6855b93edfbb3485d9f2675abdd668dee6c64b393c1f9975b5` |
+| `kdcmp\Data\kdcmp.pak` (built in the clone; not byte-deterministic) | 909,095 B | `d6830a856db0c56c1b0e55965b2397036ae0a08c0e84c8de81f81606422b07df` |
+| `KCDMP.dll` | 582,144 B | `ad2ec95f9211dc6be3d9ee250ab0b86ea8129b0b8b991544aa741dab368f5de1` |
+| `KcdMpClient.exe` | 151,552 B | `1d1c8a596fb126b81a1d3e5da682f2784313815160f74022576ae3681ee56ebb` |
+| `KcdMpServer.exe` | 151,552 B | `574ed2208137544009376486c993e9e41a35ff78b1c320953d6e08777e142c79` |
+
+* **Pak content check** (code-verified): the same fifteen WO-118 markers
+  present; four entries byte-identical to the committed pak, `kdcmp.lua`
+  identical after LF normalisation (13,879 CRs, the clone's `core.autocrlf`);
+  the manifest's MOD row carries the built pak's sha256.
+* **Privacy sweep** (code-verified): all 1,024 release files, UTF-8 and UTF-16LE,
+  same terms as above: the same benign set only (NAudio's six third-party PDB
+  paths; the launcher's public repository link and `myserver.duckdns.org`
+  placeholder; `10.0.0.0`/`10.1.0.0` assembly versions in 26 files; the
+  `appsettings.json` example address). The three files the bump added or
+  changed (`VERSION`, `README.md`, the release notes): only the repository owner
+  inside the README's pre-existing public URLs.
+* **Phase 5 gate against the shipped build: GREEN** (observed) — the clone's pak
+  installed in `<install>\Mods\kdcmp\Data\`, the clone's `KCDMP.dll` injected, the
+  clone's `KcdMpServer.exe` and `KcdMpClient.exe` as relay and joiner (the relay
+  logged both clients on release 0.28.0):
+
+| step | result |
+|---|---|
+| 1 walker, native | 0 / 469 frozen; step 1.87 cm sd 0.29; speed sd 0.012 m/s; render − written 0.000 mm; flying 0/602 |
+| 2 seated, native + detach | 0.0 mm max deviation; 0 moving frames; flying 0/605 |
+| 3 walker, legacy | 75.3 % frozen (the stair-step) |
+| 4 seated, legacy | 58 mm median offset, 61 mm max deviation; 615/616 moving; flying 616/616 (the sawtooth) |
+
+  Jitter runs on the same build (`noise_batch.py` P1, P2): 0 frozen frames,
+  speed sd 0.03 m/s.
+* **Cleanup:** game, relay and agent stopped. The 0.28.0 pak stays installed in
+  the Modding Tools `Mods` folder (the release candidate, copied as
+  `Build-And-Install-Mod.ps1` does). The Setup exe stays in the session
+  scratchpad's fresh clone; nothing was installed through Setup.
+* **No GitHub Release.**
