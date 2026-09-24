@@ -978,6 +978,8 @@ public partial class GameBridge(ClientConfig config)
     // authority. Mirrored into the mod (KCD2MP_SetHitSensor) so the sampling
     // cost is skipped as well as the send.
     private bool _isDamageAuthority;
+    // WO-118: has this connection's first CombatRole been pushed into the mod?
+    private bool _combatRoleApplied;
 
     // WO-28 Phase 0. A save load destroys every ghost ENTITY in the world while
     // leaving KCD2MP.ghosts still holding a stale, non-nil Lua reference to it,
@@ -1363,6 +1365,7 @@ public partial class GameBridge(ClientConfig config)
         _lastPlayerStateSentUtc = DateTime.MinValue;
         _sentDeathForThisLife = false;
         _isDamageAuthority = false;
+        _combatRoleApplied = false;   // WO-118: the first role of this connection is always pushed
         // WO-86: per-stream dead-bit memory and the death dedupe are about
         // THIS connection's streams; a reconnect starts them over so the first
         // packet of every body is a "first packet" again (freeze-only rule).
@@ -4048,7 +4051,15 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private async Task ApplyCombatRoleAsync(bool isAuthority, CancellationToken ct)
     {
-        if (_isDamageAuthority == isAuthority) return;
+        // WO-118: the FIRST role of a connection is always pushed. A fresh agent
+        // starts at _isDamageAuthority == false, so a first "not the authority"
+        // used to be a no-op here -- and the game's Lua kept whatever an earlier
+        // agent (or an earlier relay where this machine WAS the authority) had
+        // set: no pause, no detach, and this joiner streaming NPCs as a second
+        // authority (observed solo, WO-118: hit_sensor_was=on after a restart).
+        bool first = !_combatRoleApplied;
+        _combatRoleApplied = true;
+        if (!first && _isDamageAuthority == isAuthority) return;
         _isDamageAuthority = isAuthority;
         Console.WriteLine(isAuthority
             ? "[role] this client now holds NPC->player damage authority"
