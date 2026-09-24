@@ -3964,7 +3964,13 @@ public partial class GameBridge(ClientConfig config)
         // (protocol v7) so the receiver renders on sender time.
         ushort seq;
         lock (_npcSeqOut) { _npcSeqOut.TryGetValue(npcName, out ushort s0); seq = unchecked((ushort)(s0 + 1)); _npcSeqOut[npcName] = seq; }
-        uint senderMs = unchecked((uint)Environment.TickCount64);
+        // WO-118: milliseconds since boot from the QPC (Stopwatch), not
+        // Environment.TickCount64 -- that one advances in ~15.6 ms system ticks,
+        // and the receiver's sender clock reproduced the quantization as
+        // segment-length noise (walker speed sd 0.23 m/s vs 0.04 m/s with 1 ms
+        // stamps, solo, docs/WO-118-findings.md). Same epoch semantics (boot),
+        // so a reconnecting agent keeps a continuous clock.
+        uint senderMs = unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency));
         var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags, seq, senderMs);
         if ((flags & Protocol.NpcStateFlagResync) != 0) _resyncEmitted++;
         try { await WritePacketAsync(stream, packet, ct); if (!asClaim) _stats.NpcStateOut++; }   // WO-110 Phase 6: a SENT packet, not a hand-off
