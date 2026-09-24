@@ -1,6 +1,6 @@
 -- WO-118 synthetic test, against the real kdcmp.lua under MoonSharp.
 --
---   (a) defaults: mp_npc_native_write ON; the WO118-BUILD
+--   (a) defaults: mp_npc_native_write ON, mp_npc_detach ON; the WO118-BUILD
 --       marker is logged at load; the npc_native_cfg event mirrors the
 --       defaults to the agent at load
 --   (b) no heartbeat -> no bind event is ever emitted and Lua writes the
@@ -19,7 +19,12 @@
 --   (h) a swing cue -> a native hold event with the one-shot's duration
 --   (i) mp_npc_native_write off -> cfg event, every puppet unbound, Lua
 --       writes; on -> binds again
---   (k) presets: clean = native on; legacy = native off; both log the row
+--   (j) detach: the pause at puppet start is followed by the two resets
+--       (Stance, Unstance) through the console; MP-DETACH carries the
+--       before->after state 0.6 s later; skipped (and logged) in dialogue and
+--       during a cutscene; mp_npc_detach off issues nothing
+--   (k) presets: clean = native on + detach on; legacy = native off +
+--       detach off; both log a row for each
 --   (l) mp_npc_trace: bare prints usage; a name emits npc_trace <name> <s>
 --       (default 10, clamped 1..120); stop emits <last> 0; the console
 --       commands are registered with the unquoted %line
@@ -102,8 +107,10 @@ end
 
 -- (a) defaults -- read BEFORE any scenario touches them.
 check("a: mp_npc_native_write ships ON", KCD2MP.npcNativeWrite == true)
-check("a: WO118-BUILD marker logged with the default",
-      logCount("WO118-BUILD") == 1 and (lastLog("WO118-BUILD") or ""):find("npc_native_write=on", 1, true) ~= nil, lastLog("WO118-BUILD"))
+check("a: mp_npc_detach ships ON", KCD2MP.npcDetach == true)
+check("a: WO118-BUILD marker logged with both defaults",
+      logCount("WO118-BUILD") == 1 and (lastLog("WO118-BUILD") or ""):find("npc_native_write=on", 1, true) ~= nil
+      and (lastLog("WO118-BUILD") or ""):find("npc_detach=on", 1, true) ~= nil, lastLog("WO118-BUILD"))
 check("a: the load mirrors the defaults to the agent (npc_native_cfg on on)", (evts("npc_native_cfg")[1] or "") == "on on", evts("npc_native_cfg")[1])
 check("a: no Lua errors at load", #ERRS == 0, ERRS[1])
 
@@ -141,8 +148,9 @@ local function reset()
     KCD2MP.npcReplica.enabled = false; KCD2MP._npcReplicas = {}
     KCD2MP.npcSmooth = true; KCD2MP.npcPuppetTickMs = 50
     KCD2MP.npcSenderClock = true; KCD2MP._senderClock = {}
-    KCD2MP.npcNativeWrite = true; KCD2MP.cutsceneActive = false
+    KCD2MP.npcNativeWrite = true; KCD2MP.npcDetach = true; KCD2MP.cutsceneActive = false
     KCD2MP._npcNative = { aliveAt = nil, armed = false, on = false, bound = 0, writing = 0, binds = 0, acks = 0, nacks = 0, holds = 0, unbinds = 0 }
+    KCD2MP._npcDetachStats = { issued = 0, skipped = 0, changed = 0, unchanged = 0 }
     KCD2MP.ghosts = {}
     ENTS = {}; SPHERE = {}; TIMERS = {}; ERRS = {}; CMDS = {}; STATE = {}
     clearLog()
@@ -296,15 +304,61 @@ do
     check("i: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
+-- ---------------------------------------------------------------- (j)
+do
+    reset(); NOW = 700
+    local e = mkEntity("j_seat", 70, 70, 0)
+    STATE.j_seat = "SittingIdle"
+    tick("j_seat", 70.5, 70, 0)
+    check("j: pause issued", cmdCount("wh_ai_PauseNPC j_seat") == 1, table.concat(CMDS, " | "))
+    check("j: Stance reset issued after the pause", cmdCount("wh_ai_NPCStateResetElement j_seat Stance") == 1)
+    check("j: Unstance reset issued", cmdCount("wh_ai_NPCStateResetElement j_seat Unstance") == 1)
+    local iP, iS = 0, 0
+    for i, c in ipairs(CMDS) do
+        if c == "wh_ai_PauseNPC j_seat" then iP = i end
+        if c == "wh_ai_NPCStateResetElement j_seat Stance" then iS = i end
+    end
+    check("j: the reset follows the pause", iP > 0 and iS > iP)
+    STATE.j_seat = "MotionIdle"
+    for i = 1, 14 do tick("j_seat", 70.5 + i * 0.01, 70, 0) end   -- 0.7 s
+    check("j: MP-DETACH carries before->after", logCount("MP-DETACH npc=j_seat stance=ok unstance=ok result=SittingIdle->MotionIdle changed=1 why=puppet-start") == 1, lastLog("MP-DETACH"))
+    check("j: one call per puppet start (not per tick)", cmdCount("wh_ai_NPCStateResetElement j_seat Stance") == 1)
+    -- dialogue
+    reset(); NOW = 710
+    local d = mkEntity("j_talk", 71, 71, 0)
+    d.inDialog = true
+    tick("j_talk", 71.2, 71, 0)
+    check("j: in dialogue -> no reset, logged skip", cmdCount("wh_ai_NPCStateResetElement j_talk") == 0 and logCount("MP-DETACH npc=j_talk stance=skipped unstance=skipped result=skipped-dialog") == 1, lastLog("MP-DETACH"))
+    -- cutscene
+    reset(); NOW = 720
+    mkEntity("j_cut", 72, 72, 0)
+    KCD2MP.cutsceneActive = true
+    tick("j_cut", 72.2, 72, 0)
+    check("j: cutscene -> no reset, logged skip", cmdCount("wh_ai_NPCStateResetElement j_cut") == 0 and logCount("result=skipped-cutscene") == 1, lastLog("MP-DETACH"))
+    -- toggle off
+    reset(); NOW = 730
+    mkEntity("j_off", 73, 73, 0)
+    KCD2MP_SetNpcDetach("off")
+    tick("j_off", 73.2, 73, 0)
+    check("j: mp_npc_detach off -> nothing issued", cmdCount("wh_ai_NPCStateResetElement") == 0 and cmdCount("wh_ai_PauseNPC j_off") == 1)
+    -- the authority never pauses, so never detaches
+    reset(); NOW = 740
+    mkEntity("j_auth", 74, 74, 0)
+    KCD2MP.hitSensorOn = true
+    tick("j_auth", 74.2, 74, 0)
+    check("j: the authority neither pauses nor detaches", cmdCount("wh_ai_NPCStateResetElement") == 0 and cmdCount("wh_ai_PauseNPC") == 0)
+    check("j: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
 -- ---------------------------------------------------------------- (k)
 do
     reset(); NOW = 800
     KCD2MP_ApplyPreset("legacy")
-    check("k: legacy = native off", KCD2MP.npcNativeWrite == false)
-    check("k: legacy logs the row", logCount("MP-PRESET name=legacy set=npc_native_write") == 1)
+    check("k: legacy = native off, detach off", KCD2MP.npcNativeWrite == false and KCD2MP.npcDetach == false)
+    check("k: legacy logs both rows", logCount("MP-PRESET name=legacy set=npc_native_write") == 1 and logCount("MP-PRESET name=legacy set=npc_detach") == 1)
     KCD2MP_ApplyPreset("clean")
-    check("k: clean = native on", KCD2MP.npcNativeWrite == true)
-    check("k: clean logs the row", logCount("MP-PRESET name=clean set=npc_native_write") == 1)
+    check("k: clean = native on, detach on", KCD2MP.npcNativeWrite == true and KCD2MP.npcDetach == true)
+    check("k: clean logs both rows", logCount("MP-PRESET name=clean set=npc_native_write") == 1 and logCount("MP-PRESET name=clean set=npc_detach") == 1)
     check("k: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
@@ -321,7 +375,7 @@ do
     check("l: stop -> last name, 0", evts("npc_trace")[3] == "ttkc_slama 0", evts("npc_trace")[3])
     KCD2MP_NpcTrace("bad;name")
     check("l: a non-entity name is refused", #evts("npc_trace") == 3)
-    for _, c in ipairs({ "mp_npc_native_write", "mp_npc_trace" }) do
+    for _, c in ipairs({ "mp_npc_native_write", "mp_npc_detach", "mp_npc_trace" }) do
         check("l: " .. c .. " registered with the unquoted %line",
               CCMDS[c] ~= nil and CCMDS[c].body:find("(%line)", 1, true) ~= nil and CCMDS[c].body:find('"%line"', 1, true) == nil, CCMDS[c] and CCMDS[c].body)
     end

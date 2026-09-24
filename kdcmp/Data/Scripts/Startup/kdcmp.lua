@@ -3007,6 +3007,77 @@ function KCD2MP_NpcTraceDone(rows, path)
     KCD2MP_ShowInteractionMsg("NPC trace: " .. tostring(rows) .. " frames written")
 end
 
+-- ===== WO-118 Phase 3: detach paused NPCs from their activity =====
+--
+-- WO-116 s1: an NPC paused while attached to an activity (a seat, an aligned
+-- lean, a workstation) is pulled toward its spot by ~4 % of the distance per
+-- 50 ms tick; 122 of 198 peer-test violations pointed straight back at the
+-- pause spot. The engine's own debug reset frees it instantly (no animation):
+-- wh_ai_NPCStateResetElement <npc> Stance|Unstance. Issued once per puppet
+-- start, right after the pause, through the console door (like the pause
+-- itself); skipped for an NPC in dialogue or during a cutscene on this
+-- machine. On release the brain re-seats the NPC on its own (WO-116: 4 of 5
+-- within 20 s) -- nothing is re-seated here.
+--
+--   MP-DETACH npc=<n> stance=ok|err:..|skipped unstance=.. result=<before>-><after>|skipped-<why> changed=0|1 why=<via>
+--   mp_npc_detach on|off   default ON (WO-118); mp_preset_legacy = off
+KCD2MP.npcDetach = true
+KCD2MP._npcDetachStats = { issued = 0, skipped = 0, changed = 0, unchanged = 0 }
+
+function KCD2MP_NpcDetach(name, p, why)
+    if not KCD2MP.npcDetach or not p then return end
+    local e = nil
+    pcall(function() e = System.GetEntityByName(name) end)
+    if not e then return end
+    local st = KCD2MP._npcDetachStats
+    local inDialog = false
+    if not pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end) then
+        KCD2MP_DialogGuardFailed(name, "detach")
+    end
+    if inDialog or KCD2MP.cutsceneActive then
+        st.skipped = st.skipped + 1
+        mp_log(string.format("MP-DETACH npc=%s stance=skipped unstance=skipped result=skipped-%s changed=0 why=%s",
+            tostring(name), inDialog and "dialog" or "cutscene", tostring(why)))
+        return
+    end
+    local before = "?"
+    pcall(function() if e.actor and e.actor.GetCurrentAnimationState then before = tostring(e.actor:GetCurrentAnimationState()) end end)
+    local ok1, err1 = pcall(System.ExecuteCommand, "wh_ai_NPCStateResetElement " .. tostring(name) .. " Stance")
+    local ok2, err2 = pcall(System.ExecuteCommand, "wh_ai_NPCStateResetElement " .. tostring(name) .. " Unstance")
+    st.issued = st.issued + 1
+    p.detach = { at = os.clock(), before = before, why = why,
+                 stance = ok1 and "ok" or ("err:" .. tostring(err1)),
+                 unstance = ok2 and "ok" or ("err:" .. tostring(err2)) }
+end
+
+-- From the puppet tick: the reset's result, read 0.6 s later (the engine
+-- applies it within 0.5 s, WO-116 s1).
+function KCD2MP_NpcDetachCheck(name, p, e)
+    local d = p.detach
+    if not d or (os.clock() - d.at) < 0.6 then return end
+    p.detach = nil
+    local after = "?"
+    pcall(function() if e.actor and e.actor.GetCurrentAnimationState then after = tostring(e.actor:GetCurrentAnimationState()) end end)
+    local st = KCD2MP._npcDetachStats
+    local changed = after ~= d.before
+    if changed then st.changed = st.changed + 1 else st.unchanged = st.unchanged + 1 end
+    mp_log(string.format("MP-DETACH npc=%s stance=%s unstance=%s result=%s->%s changed=%d why=%s",
+        tostring(name), d.stance, d.unstance, tostring(d.before), after, changed and 1 or 0, tostring(d.why)))
+end
+
+function KCD2MP_SetNpcDetach(arg)
+    local s = tostring(arg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "on" or s == "1" or s == "true" then KCD2MP.npcDetach = true
+    elseif s == "off" or s == "0" or s == "false" then KCD2MP.npcDetach = false
+    elseif s ~= "" and s ~= "%line" and s ~= "nil" then
+        mp_log("mp_npc_detach: expected on|off, got '" .. tostring(arg) .. "'")
+        return false
+    end
+    local st = KCD2MP._npcDetachStats
+    mp_log(string.format("MP-DETACH toggle=%s issued=%d skipped=%d changed=%d unchanged=%d",
+        KCD2MP.npcDetach and "on" or "off", st.issued, st.skipped, st.changed, st.unchanged))
+    return true
+end
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
@@ -3618,6 +3689,7 @@ local function mp_wo102_pause(name, p)
     mp_auth_log(name, "pause", p and p.owner or "?", "wh_ai_PauseNPC", 0)
     mp_pause_log(name, "pause", exec, "puppet-start", p and p.owner or "?", 0)
     if not ok then mp_log("WO102-PAUSE ExecuteCommand failed for " .. tostring(name) .. ": " .. tostring(err)) end
+    if ok then KCD2MP_NpcDetach(name, p, "puppet-start") end   -- WO-118 Phase 3
 end
 
 -- The unconditional resume: wh_ai_ResumeNPC now, forget the name.
@@ -3802,6 +3874,7 @@ local function mp_wo102_reconcile_pauses()
             KCD2MP._npcPauseExec[name] = exec
             mp_pause_log(name, "reassert", exec, "chain-dead-restart", (KCD2MP.npcPuppets[name] or {}).owner or "?",
                 now - (KCD2MP._npcPaused[name] or now))
+            if ok then KCD2MP_NpcDetach(name, KCD2MP.npcPuppets[name], "reassert") end   -- WO-118: a load re-seats NPCs
         end
         if #reassert > 0 then
             mp_log(string.format("MP-PAUSE reasserted %d pause(s) after a confirmed-dead chain restart (a save load forgets engine suspensions -- WO-108 Phase 0)", #reassert))
@@ -3961,14 +4034,15 @@ KCD2MP._presets = {
     -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
     -- WO-113: `respawn` -- clean = death without Game Over (the new build),
     -- legacy = vanilla death (the 0.26.5 behaviour).
-    -- WO-118: `npc_native_write` -- clean = the per-frame native write (the new
-    -- build), legacy = the 50 ms Lua write (the 0.27.0 behaviour).
+    -- WO-118: `npc_native_write` and `npc_detach` -- clean = the per-frame native
+    -- write and the activity detach (the new build), legacy = the 50 ms Lua
+    -- write with no detach (the 0.27.0 behaviour).
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true,
-               respawn = true,  npc_native_write = true },
+               respawn = true,  npc_native_write = true,  npc_detach = true },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false,
-               respawn = false, npc_native_write = false },
+               respawn = false, npc_native_write = false, npc_detach = false },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -4002,6 +4076,7 @@ function KCD2MP_ApplyPreset(which)
     set("npc_senderclock", KCD2MP.npcSenderClock,        P.npc_senderclock, function() KCD2MP_SetNpcSenderClock(P.npc_senderclock and "on" or "off") end)    -- WO-110 R6
     set("respawn",         KCD2MP.respawnEnabled,        P.respawn,         function() KCD2MP_SetRespawn(P.respawn and "on" or "off") end)                 -- WO-113
     set("npc_native_write", KCD2MP.npcNativeWrite,       P.npc_native_write, function() KCD2MP_SetNpcNativeWrite(P.npc_native_write and "on" or "off") end)  -- WO-118
+    set("npc_detach",      KCD2MP.npcDetach,             P.npc_detach,      function() KCD2MP_SetNpcDetach(P.npc_detach and "on" or "off") end)            -- WO-118
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -6065,6 +6140,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
 
             local e, isReplica = KCD2MP_NpcBody(name)
             if not e then return end
+            if p.detach then KCD2MP_NpcDetachCheck(name, p, e) end   -- WO-118 Phase 3: MP-DETACH result line
             -- WO-104: life state (dead/KO/hp) is read from the WORLD NPC -- the
             -- canonical local copy every by-name path still targets -- never
             -- from the replica body.
@@ -12168,13 +12244,14 @@ local ok, err = pcall(function()
     -- WO-118 build marker: every new default on one line. The DLL logs its own
     -- WO118-NATIVE line (armed, or DISARMED with the anchor that failed) in
     -- kcdmp-native.log. Missing = stale pak (memory/kcd2mp-lua-deploy-gotcha.md).
-    mp_log(string.format("WO118-BUILD npc_native_write=%s native_stale_s=%.1f native_retry_s=%.0f"
+    mp_log(string.format("WO118-BUILD npc_native_write=%s npc_detach=%s native_stale_s=%.1f native_retry_s=%.0f"
         .. " -- per-frame native write at the frame hook (ground collider kept), MP-NPCPULL + MP-NPCBIND in kcdmp-native.log,"
-        .. " mp_npc_trace <name> [s]; mp_puppet_rate is legacy-only (mp_preset_legacy = native off)",
-        KCD2MP.npcNativeWrite and "on" or "off",
+        .. " mp_npc_trace <name> [s]; mp_puppet_rate is legacy-only (mp_preset_legacy = native off, detach off)",
+        KCD2MP.npcNativeWrite and "on" or "off", KCD2MP.npcDetach and "on" or "off",
         TUNE.NPC_NATIVE_STALE_S, TUNE.NPC_NATIVE_RETRY_S))
     KCD2MP_NpcNativeCfgEmit()   -- the agent and the DLL mirror this Lua state's defaults (a restarted game resets them)
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
+    System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
