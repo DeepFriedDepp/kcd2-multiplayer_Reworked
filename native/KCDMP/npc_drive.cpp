@@ -76,6 +76,13 @@ constexpr double kNeedCapS      = 0.50;   // a longer gap is a moved-gated silen
 constexpr double kLateMaxS      = 0.30;   // the allowance never exceeds this
 constexpr double kLateSlew      = 0.10;   // the applied allowance moves at most 10 % of real time
 constexpr float  kSnapM2        = 25.0f;  // mp_npc_ring_push: an XY step over 5 m is a teleport
+// The shortest segment render() interpolates over. Ported from Lua as 50 ms,
+// harmless for 100 ms NPC streams -- but the peer's ghost streams every ~30 ms,
+// so each segment was stretched to 50 ms: the body crossed it at 60 % speed
+// and jumped the rest at the next sample (observed: a clean-link ghost's pace
+// alternating 0.85 / 2.1 m/s, sd 0.58 m/s). Only a guard against dividing by
+// ~0 now; a sender-stamped stream's segments are its real sample spacing.
+constexpr double kMinSegS       = 0.005;
 // Blend-in. Wherever the writer starts or resumes a body -- a bind, the end of
 // a swing hold, a body set down or unparented -- it takes the body's actual
 // pose and lets the offset to the stream decay, instead of snapping to the
@@ -392,7 +399,7 @@ bool render(const Stream& s, double renderAt, double delay, float out[4]) {
     double aAt = a->at;
     if (b->at - aAt > delay) aAt = b->at - delay;                          // clip a moved-gated silence to one delay
     double segDur = b->at - aAt;
-    if (segDur < 0.05) segDur = 0.05;
+    if (segDur < kMinSegS) segDur = kMinSegS;
     double t = (renderAt - aAt) / segDur;
     if (t < 0) t = 0; else if (t > 1) t = 1;
     const float tf = static_cast<float>(t);
