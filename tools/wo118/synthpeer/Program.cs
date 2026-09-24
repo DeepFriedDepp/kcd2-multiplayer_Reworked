@@ -11,6 +11,7 @@
 // usage: SynthPeer --plan plan.txt [--host 127.0.0.1] [--port 7778] [--name synth-host]
 //                  [--duration 60] [--emit-ms 100] [--delay-ms 0] [--jitter-ms 0]
 //                  [--spike-pct 0] [--spike-ms 0] [--seed 1] [--sender-clock qpc|tick]
+//                  [--ghost-sender-ms on|off]   (the ghost's Position carries its stamp, flag 0x08)
 //                  [--version-file path]   (default: the first VERSION found walking up from
 //                                           the working directory, then from this binary)
 // plan lines:
@@ -171,6 +172,8 @@ static class P
         // qpc = what the agent sends since WO-118 (1 ms QPC time); tick = the 15.6 ms
         // Environment.TickCount64 stamps of earlier agents.
         string senderClock = Arg(a, "--sender-clock", "qpc");
+        // The agent stamps every Position since the WO-118 follow-up; off = an older sender.
+        bool ghostSenderMs = Arg(a, "--ghost-sender-ms", "on") != "off";
         string versionFile = Arg(a, "--version-file", FindUp("VERSION"));
         string release = File.ReadAllText(versionFile).Trim();
 
@@ -253,10 +256,16 @@ static class P
             {
                 lastGhost = now;
                 var (gx, gy, gz, gyaw) = ghost.At(ts - streamT0);
-                var gp = new byte[3 + 17]; gp[0] = Protocol.Position; BinaryPrimitives.WriteUInt16LittleEndian(gp.AsSpan(1), 17);
+                int glen = Protocol.PositionPayloadLen + (ghostSenderMs ? Protocol.SenderMsLen : 0);
+                var gp = new byte[3 + glen]; gp[0] = Protocol.Position; BinaryPrimitives.WriteUInt16LittleEndian(gp.AsSpan(1), (ushort)glen);
                 BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(3), gx); BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(7), gy);
                 BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(11), gz); BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(15), gyaw);
-                gp[19] = 0;
+                gp[19] = ghostSenderMs ? Protocol.PositionFlagSenderMs : (byte)0;
+                // Stamped at the sample, before the injected delay: the jitter then
+                // shows as lateness against the stamp, exactly as on a real link.
+                if (ghostSenderMs)
+                    BinaryPrimitives.WriteUInt32LittleEndian(gp.AsSpan(20), senderClock == "tick" ? unchecked((uint)Environment.TickCount64)
+                        : unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency)));
                 double d = delayMs + rng.NextDouble() * jitterMs + (rng.NextDouble() * 100 < spikePct ? spikeMs : 0);
                 queue.Enqueue(gp, now + d);
             }

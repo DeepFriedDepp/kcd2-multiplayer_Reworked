@@ -6,7 +6,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import live, peer_trace
 
 PLAN = os.path.join(live.HERE, 'plans', 'plan.ghost.txt')
-RUNS = [('g0', []), ('g1', ['--delay-ms', '20', '--jitter-ms', '20']), ('g2', ['--delay-ms', '40', '--jitter-ms', '60'])]
+# The ghost's Position carries the sender's ms (flag 0x08) unless --ghost-sender-ms off:
+# g2off is g2 as an older sender sends it (the DLL renders it on arrival time).
+RUNS = [('g0', []), ('g1', ['--delay-ms', '20', '--jitter-ms', '20']), ('g2', ['--delay-ms', '40', '--jitter-ms', '60']),
+        ('g2off', ['--delay-ms', '40', '--jitter-ms', '60', '--ghost-sender-ms', 'off'])]
 out = open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(live.LOGS, 'ghost_batch.txt'), 'w')
 for i, (tag, synth) in enumerate(RUNS):
     out.write('#### %s synth=%s\n' % (tag, ' '.join(synth))); out.flush()
