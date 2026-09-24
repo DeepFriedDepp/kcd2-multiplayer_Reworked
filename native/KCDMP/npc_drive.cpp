@@ -76,6 +76,19 @@ constexpr double kNeedCapS      = 0.50;   // a longer gap is a moved-gated silen
 constexpr double kLateMaxS      = 0.30;   // the allowance never exceeds this
 constexpr double kLateSlew      = 0.10;   // the applied allowance moves at most 10 % of real time
 constexpr float  kSnapM2        = 25.0f;  // mp_npc_ring_push: an XY step over 5 m is a teleport
+// Blend-in. Wherever the writer starts or resumes a body -- a bind, the end of
+// a swing hold, a body set down or unparented -- it takes the body's actual
+// pose and lets the offset to the stream decay, instead of snapping to the
+// stream in one frame. Observed before: 77-134 cm one-frame steps at the end
+// of a 900 ms swing hold (a synthetic fighter circling through its swing), and
+// at puppet start a 55 cm jump or, when the seed dropped the stream's only
+// sample, a 50 cm slide two seconds later. Exponential for small offsets, and
+// never more than kBlendMaxMps on top of the stream's own speed for large ones
+// (a 1 m catch-up takes ~0.5 s and stays under ~5 cm/frame at 75 fps).
+constexpr float  kBlendTauS     = 0.08f;
+constexpr float  kBlendMaxMps   = 2.0f;
+constexpr float  kBlendMaxRadps = 6.0f;   // yaw catch-up cap
+constexpr float  kBlendDoneM    = 0.0005f;
 constexpr size_t kMaxBound      = 160;    // puppets written per frame, at most
 constexpr size_t kMaxStreams    = 512;
 constexpr size_t kMaxInbox      = 8192;
@@ -208,7 +221,6 @@ struct Stream {
     double      lastAcceptedAt = 0; // local clock of the last sample that entered the ring
     double      needQ = 0;          // ~95th percentile of (drain time - newest stamp), seconds
     bool        needInit = false;
-    bool        needSkip = false;   // the next sample follows a bind's synthetic seed: not a measurement
 };
 struct SenderClock { double curMin = 1e300, curStart = 0, prevMin = 1e300, lastSeen = 0; bool havePrev = false; bool init = false; };
 
@@ -221,6 +233,10 @@ struct Puppet {
     double   delay = 0.12;
     double   lateApplied = 0;       // the jitter allowance in use (slewed toward late_target)
     double   holdUntil = 0;
+    bool     blendPending = true;   // the next rendered frame starts from the body (bind, resume)
+    bool     blending = false;
+    float    off[3]{};              // body minus stream at the blend's start, decaying to zero
+    float    offRot = 0;
     bool     haveLast = false;
     float    last[3]{};
     bool     havePrev = false;      // the write before `last`
@@ -245,8 +261,8 @@ bool        g_announcedFault = false;
 // engine calls included), logged every kPullWindowS while anything is bound.
 struct CostWindow {
     double   start = 0;
-    uint64_t frames = 0, boundSum = 0, writingSum = 0;
-    double   sumUs = 0, maxUs = 0;
+    uint64_t frames = 0, boundSum = 0, writingSum = 0, blends = 0;
+    double   sumUs = 0, maxUs = 0, blendMaxCm = 0;
 } g_cost;
 
 double qpc_to_s(int64_t q) { return static_cast<double>(q) * g_qpcPeriod; }
@@ -325,7 +341,7 @@ void push_sample(const InSample& in, double now) {
     // streaming 95th percentile: up by q steps when above the estimate, down
     // by (1-q) otherwise. A rare spike above it still holds briefly --
     // covering a 250 ms spike would add 250 ms to the puppet's latency.
-    if (s.n > 0 && !s.needSkip) {
+    if (s.n > 0) {
         const double need = now - s.ring[s.n - 1].at;
         if (need > 0 && need < kNeedCapS) {
             if (!s.needInit) { s.needQ = need; s.needInit = true; }
@@ -333,7 +349,6 @@ void push_sample(const InSample& in, double now) {
             if (s.needQ < 0) s.needQ = 0;
         }
     }
-    s.needSkip = false;
     double nowPkt = now;
     if (in.arrivalQpc > 0) {
         const double a = qpc_to_s(in.arrivalQpc);
@@ -384,17 +399,6 @@ bool render(const Stream& s, double renderAt, double delay, float out[4]) {
     return true;
 }
 
-// The seed at bind: the body's current pose stamped one delay in the past, so
-// the first write continues from where Lua left the body (WO-77's seed).
-void seed(Stream& s, const float pos[3], float rot, double at) {
-    int keep = 0;
-    RingSample tmp[kRingDepth];
-    for (int i = 0; i < s.n; ++i) if (s.ring[i].at > at) tmp[keep++] = s.ring[i];
-    s.n = 0;
-    s.ring[s.n++] = RingSample{ pos[0], pos[1], pos[2], rot, at };
-    for (int i = 0; i < keep && s.n < kRingDepth; ++i) s.ring[s.n++] = tmp[i];
-}
-
 float yaw_of(void* e) {
     // Rotation from the world matrix: atan2(m10, m00) (npc_scan.cpp's read).
     float m00 = 1, m10 = 0;
@@ -402,6 +406,58 @@ float yaw_of(void* e) {
     rd_f(e, 0x58 + 0x10, &m10);
     const float y = std::atan2(m10, m00);
     return std::isfinite(y) ? y : 0.0f;
+}
+
+float wrap_pi(float a) {
+    const double twopi = 6.283185307179586;
+    return static_cast<float>(a - std::floor((a + 3.141592653589793) / twopi) * twopi);
+}
+
+// The body's pose becomes the start of a blend toward `pose` (the stream's).
+// Replaces the bind's seed (WO-77): the seed put the body into the ring one
+// delay in the past, so its first segment could be a few milliseconds long (a
+// jump) or drop the stream's only sample (a late slide on the next heartbeat).
+void blend_start(Puppet& p, void* e, const float pose[4]) {
+    p.blendPending = false;
+    p.blending = false;
+    float cur[3];
+    if (!read_pos(e, cur)) return;
+    const float ox = cur[0] - pose[0], oy = cur[1] - pose[1], oz = cur[2] - pose[2];
+    const float d2 = ox * ox + oy * oy + oz * oz;
+    if (d2 > kSnapM2) return;                                              // a teleport is never smoothed
+    const float orot = wrap_pi(yaw_of(e) - pose[3]);
+    if (d2 < kBlendDoneM * kBlendDoneM && std::fabs(orot) < kBlendDoneM) return;
+    p.off[0] = ox; p.off[1] = oy; p.off[2] = oz; p.offRot = orot;
+    p.blending = true;
+    ++g_cost.blends;
+    const double cm = std::sqrt(static_cast<double>(d2)) * 100.0;
+    if (cm > g_cost.blendMaxCm) g_cost.blendMaxCm = cm;
+}
+
+// One frame of the blend: shrink the offset, then add it to the stream pose.
+void blend_apply(Puppet& p, float pose[4], double dt) {
+    const float len = std::sqrt(p.off[0] * p.off[0] + p.off[1] * p.off[1] + p.off[2] * p.off[2]);
+    if (len > 0) {
+        float step = static_cast<float>(len * dt / kBlendTauS);
+        const float cap = static_cast<float>(kBlendMaxMps * dt);
+        if (step > cap) step = cap;
+        const float k = step >= len ? 0.0f : (len - step) / len;
+        p.off[0] *= k; p.off[1] *= k; p.off[2] *= k;
+    }
+    const float ar = std::fabs(p.offRot);
+    if (ar > 0) {
+        float step = static_cast<float>(ar * dt / kBlendTauS);
+        const float cap = static_cast<float>(kBlendMaxRadps * dt);
+        if (step > cap) step = cap;
+        p.offRot = step >= ar ? 0.0f : p.offRot * (ar - step) / ar;
+    }
+    pose[0] += p.off[0]; pose[1] += p.off[1]; pose[2] += p.off[2];
+    pose[3] = wrap_pi(pose[3] + p.offRot);
+    const float left = std::sqrt(p.off[0] * p.off[0] + p.off[1] * p.off[1] + p.off[2] * p.off[2]);
+    if (left < kBlendDoneM && std::fabs(p.offRot) < kBlendDoneM) {
+        p.blending = false;
+        p.off[0] = p.off[1] = p.off[2] = 0; p.offRot = 0;
+    }
 }
 
 void pull_flush(Puppet& p, double now) {
@@ -733,16 +789,15 @@ uint8_t bind_main(const BindRequest& req) {
     std::memcpy(p.anchor, req.anchor, sizeof(p.anchor));
     p.delay = (req.delayMs >= 20 && req.delayMs <= 2000) ? req.delayMs / 1000.0 : 0.12;
     p.winStart = now;
-    float cur[3]{};
-    if (read_pos(e, cur)) {
+    {
         Stream& s = g_streams[key];
         if (s.name.empty()) s.name = req.name;
         s.haveSeq = false;   // a bind is a fresh puppet on the Lua side too (its seq accounting starts over)
+        if (now - s.lastAcceptedAt > kSeqRestartS) s.n = 0;   // samples from an earlier stream are not this one
         p.lateApplied = late_target(s, p.delay);   // no slew at a bind: nothing has been rendered yet
-        seed(s, cur, yaw_of(e), now - p.delay - p.lateApplied);
-        s.needSkip = true;
         s.lastSampleAt = s.lastSampleAt > 0 ? s.lastSampleAt : now;
     }
+    p.blendPending = true;   // the first write starts from the body, not from the stream (blend_start)
     g_statBound.store(static_cast<uint16_t>(g_bound.size()));
     logf("MP-NPCBIND npc=%s result=ok%s eid=0x%X wuid=%016llX lua_wuid=%016llX anchor=(%.2f,%.2f,%.2f) delay_ms=%u jitter_allow_ms=%.0f bound=%zu",
          req.name, rebind ? " rebind=1" : "", req.eid, static_cast<unsigned long long>(nativeWuid),
@@ -830,6 +885,7 @@ void tick() {
             // one-shot owns the body for its hold. Neither is a pull.
             p.haveLast = false;
             p.havePrev = false;
+            p.blendPending = true;   // it resumes from wherever the engine or the one-shot leaves the body
             ++it;
             continue;
         }
@@ -842,6 +898,8 @@ void tick() {
         else p.lateApplied = target;
         float pose[4];
         if (!render(s, now - p.delay - p.lateApplied, p.delay + p.lateApplied, pose)) { ++it; continue; }
+        if (p.blendPending) blend_start(p, e, pose);
+        if (p.blending) blend_apply(p, pose, dt);
         bool wrote = false;
         if (!write_one(p, e, pose, &wrote)) {
             if (!g_announcedFault) { g_announcedFault = true; logf("MP-NPCWRITE npc=%s engine call FAULTED", p.name.c_str()); }
@@ -867,9 +925,10 @@ void tick() {
         if (us > g_cost.maxUs) g_cost.maxUs = us;
         if (now - g_cost.start >= kPullWindowS) {
             const double n = static_cast<double>(g_cost.frames);
-            logf("MP-NPCWRITE-COST window_s=%.1f frames=%llu bound_mean=%.1f writing_mean=%.1f tick_us_mean=%.1f tick_us_max=%.1f",
+            logf("MP-NPCWRITE-COST window_s=%.1f frames=%llu bound_mean=%.1f writing_mean=%.1f tick_us_mean=%.1f tick_us_max=%.1f blends=%llu blend_max_cm=%.1f",
                  now - g_cost.start, static_cast<unsigned long long>(g_cost.frames), g_cost.boundSum / n,
-                 g_cost.writingSum / n, g_cost.sumUs / n, g_cost.maxUs);
+                 g_cost.writingSum / n, g_cost.sumUs / n, g_cost.maxUs, static_cast<unsigned long long>(g_cost.blends),
+                 g_cost.blendMaxCm);
             g_cost = CostWindow{};
         }
     }
