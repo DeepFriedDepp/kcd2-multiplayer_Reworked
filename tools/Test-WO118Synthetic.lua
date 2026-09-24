@@ -5,7 +5,10 @@
 --       defaults to the agent at load
 --   (b) no heartbeat -> no bind event is ever emitted and Lua writes the
 --       puppet (SetWorldPos every tick), exactly the 0.27.0 path
---   (c) heartbeat alive -> ONE bind event with the documented fields
+--   (c) heartbeat alive -> ONE bind event with the documented fields; the
+--       fresh puppet is not written while that first bind is in flight
+--   (c2) no answer within 1 s -> Lua writes it; the late ack still hands it over
+--   (c3) a refusal -> Lua writes at once, and a later retry never holds it again
 --       (name, on, eid hex, wuid hex, anchor x/y/z, delay ms); Lua keeps
 --       writing until the DLL acknowledges
 --   (d) ack ok -> Lua stops writing positions for that puppet (no
@@ -173,6 +176,36 @@ local function tick(name, sx, sy, sz, flags)
 end
 local function alive() KCD2MP_NpcNativeAlive(1, 1, 0, 0) end
 
+-- ---------------------------------------------------------------- (c2) (c3)
+do
+    reset(); NOW = 250
+    local e = mkEntity("c2_npc", 25, 25, 1)
+    alive()
+    for i = 1, 19 do alive(); tick("c2_npc", 25 + i * 0.07, 25, 1) end   -- 0.95 s, no answer
+    check("c2: silent for 0.95 s while the bind is unanswered", #e.writes == 0, #e.writes)
+    for i = 1, 4 do alive(); tick("c2_npc", 26.4 + i * 0.07, 25, 1) end
+    check("c2: no answer after 1 s -> Lua writes it", #e.writes >= 2, #e.writes)
+    KCD2MP_NpcNativeAck("c2_npc", 1, "ok")
+    local w = #e.writes
+    for i = 1, 5 do alive(); tick("c2_npc", 26.7 + i * 0.07, 25, 1) end
+    check("c2: the late ack still hands it to the DLL", KCD2MP.npcPuppets.c2_npc.nativeOwned == true and #e.writes == w, #e.writes - w)
+
+    reset(); NOW = 280
+    local r = mkEntity("c3_npc", 28, 28, 1)
+    alive()
+    for i = 1, 4 do alive(); tick("c3_npc", 28 + i * 0.07, 28, 1) end
+    check("c3: silent while the first bind is in flight", #r.writes == 0, #r.writes)
+    KCD2MP_NpcNativeAck("c3_npc", 0, "not-living")
+    alive(); tick("c3_npc", 28.4, 28, 1)
+    check("c3: a refusal -> Lua writes at once", #r.writes == 1, #r.writes)
+    for i = 1, 205 do alive(); tick("c3_npc", 28.4 + (i % 20) * 0.07, 28, 1) end   -- past the 10 s retry
+    local nb = 0
+    for _, v in ipairs(evts("npc_native")) do if v:find("c3_npc on ", 1, true) then nb = nb + 1 end end
+    check("c3: the retry is offered", nb == 2, nb)
+    check("c3: and Lua kept writing through it (no hold on a body Lua already writes)", #r.writes >= 205, #r.writes)
+    check("c3: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
 -- ---------------------------------------------------------------- (b)
 do
     reset(); NOW = 100
@@ -198,8 +231,9 @@ do
           f[1] == "c_npc" and f[2] == "on" and f[3] == string.format("%016X", NEXTID) and f[4] == "05000000000001DC"
           and tonumber(f[5]) == 20 and tonumber(f[6]) == 20 and tonumber(f[8]) == 120 and #f == 8, ev[1])
     local w0 = #e.writes
+    check("c: the first tick sends the bind and writes nothing", w0 == 0, w0)
     for i = 1, 5 do alive(); tick("c_npc", 20.1 + i * 0.07, 20, 1) end
-    check("c: Lua keeps writing until the ack", #e.writes >= w0 + 5, #e.writes - w0)
+    check("c: no Lua write while the first bind is in flight (the DLL blends from the body)", #e.writes == w0, #e.writes - w0)
     check("c: an unanswered bind is not re-sent inside 3 s", #evts("npc_native") == 1, #evts("npc_native"))
     KCD2MP_NpcNativeAck("c_npc", 1, "ok")
     check("d: ack -> the puppet is native-owned", KCD2MP.npcPuppets.c_npc.nativeOwned == true)

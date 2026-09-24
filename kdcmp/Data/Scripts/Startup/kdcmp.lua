@@ -2861,6 +2861,7 @@ KCD2MP._npcNative = { aliveAt = nil, armed = false, on = false, bound = 0, writi
 TUNE.NPC_NATIVE_STALE_S  = 3.0   -- heartbeat age at which Lua writes every puppet itself again
 TUNE.NPC_NATIVE_RESEND_S = 3.0   -- an unanswered bind is re-sent after this long
 TUNE.NPC_NATIVE_RETRY_S  = 10.0  -- a refused or dropped puppet is offered again after this long
+TUNE.NPC_NATIVE_BIND_WAIT_S = 1.0 -- a fresh puppet waits this long for its first bind before Lua writes it
 
 function KCD2MP_NpcNativeHealthy()
     local n = KCD2MP._npcNative
@@ -6629,10 +6630,20 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- the LEGACY path's instruments: a native puppet has no Lua write to
             -- measure against and is measured by the DLL's MP-NPCPULL instead.
             KCD2MP_NpcNativeSync(name, p, e, KCD2MP_NpcNativeHealthy() and not isReplica, "tick")
-            if p.nativeOwned then
+            -- A fresh puppet's first bind is in flight for one agent round trip
+            -- (~50-200 ms). Writing it meanwhile drew the WO-77 seed slide at
+            -- 50 ms steps -- 41-64 cm per write before the DLL took over
+            -- (observed, puppet-start traces) -- so it stays where it stands
+            -- (paused) and the DLL's first write blends from there. A refusal,
+            -- or no answer within NPC_NATIVE_BIND_WAIT_S, hands it to Lua for
+            -- good: later retries never hold a body Lua is already writing.
+            local bindPending = p.nativeSent and not p.nativeOwned and not p.luaWrote
+                and (os.clock() - (p.nativeSentAt or 0)) < TUNE.NPC_NATIVE_BIND_WAIT_S
+            if p.nativeOwned or bindPending then
                 p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
             else
                 e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
+                p.luaWrote = true
                 p.lastWroteX, p.lastWroteY, p.lastWroteZ = p.cx, p.cy, p.cz   -- WO-110 R14: Z too, for MP-NPCZ
                 pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
             end
