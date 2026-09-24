@@ -57,7 +57,9 @@ constexpr uint32_t kUnusedInt       = 0x80000000u;
 
 constexpr double kSilenceS      = 4.0;    // Lua releases a puppet at 3 s; the DLL stops a hair later on its own
 constexpr double kStreamForgetS = 15.0;   // an unbound stream entry is forgotten after this much silence
-constexpr int    kRingDepth     = 3;      // TUNE.NPC_SMOOTH_RING
+constexpr int    kRingDepth     = 8;      // Lua keeps 3 (enough at 100 ms samples); a faster stream (a ghost, ~30 Hz) needs delay/period + 2
+constexpr double kClockResetS   = 5.0;    // a source silent this long gets a fresh offset estimate (a reconnect reuses relay ids)
+constexpr double kSeqRestartS   = 2.0;    // a stream silent this long may restart its sequence (a sender restart)
 constexpr float  kSnapM2        = 25.0f;  // mp_npc_ring_push: an XY step over 5 m is a teleport
 constexpr size_t kMaxBound      = 160;    // puppets written per frame, at most
 constexpr size_t kMaxStreams    = 512;
@@ -187,9 +189,10 @@ struct Stream {
     uint16_t    lastSeq = 0;
     uint8_t     flags = 0;
     uint8_t     src = 0;
-    double      lastSampleAt = 0;   // local clock of the last accepted sample
+    double      lastSampleAt = 0;   // local clock of the last sample (accepted or not)
+    double      lastAcceptedAt = 0; // local clock of the last sample that entered the ring
 };
-struct SenderClock { double curMin = 1e300, curStart = 0, prevMin = 1e300; bool havePrev = false; bool init = false; };
+struct SenderClock { double curMin = 1e300, curStart = 0, prevMin = 1e300, lastSeen = 0; bool havePrev = false; bool init = false; };
 
 struct Puppet {
     std::string key, name;
@@ -201,12 +204,14 @@ struct Puppet {
     double   holdUntil = 0;
     bool     haveLast = false;
     float    last[3]{};
+    bool     havePrev = false;      // the write before `last`
+    float    prev[3]{};
     float    lastRot = 0;
     uint64_t writes = 0;
     uint32_t frameNo = 0;
     // MP-NPCPULL window
     double   winStart = 0;
-    uint32_t winFrames = 0, winMoved = 0, winFlyChecks = 0, winFlying = 0, cosN = 0;
+    uint32_t winFrames = 0, winMoved = 0, winFlyChecks = 0, winFlying = 0, cosN = 0, winLag = 0;
     double   sumCm = 0, maxCm = 0, sumDzCm = 0, cosSum = 0;
 };
 
@@ -237,7 +242,12 @@ double sender_stamp(uint8_t src, uint32_t senderMs, double nowPkt) {
     if (!g_senderClock.load(std::memory_order_relaxed) || senderMs == 0) return nowPkt;
     const double senderS = senderMs / 1000.0;
     SenderClock& sc = g_clocks[src];
-    if (!sc.init) { sc = SenderClock{}; sc.init = true; sc.curStart = nowPkt; }
+    // A source silent for kClockResetS starts over: the relay hands a
+    // reconnecting peer the same id, and the old minimum (possibly from a
+    // faster link, or another clock epoch) would shrink the render buffer for
+    // up to a minute. Observed solo, WO-118 s6 (the first noise runs).
+    if (!sc.init || nowPkt - sc.lastSeen > kClockResetS) { sc = SenderClock{}; sc.init = true; sc.curStart = nowPkt; }
+    sc.lastSeen = nowPkt;
     const double off = nowPkt - senderS;
     if (off < sc.curMin) sc.curMin = off;
     if (nowPkt - sc.curStart > 30.0) { sc.prevMin = sc.curMin; sc.havePrev = true; sc.curMin = off; sc.curStart = nowPkt; }
@@ -260,6 +270,11 @@ void push_sample(const InSample& in, double now) {
     Stream& s = it->second;
     // WO-110 R6 sequence accounting: a duplicate or an older sample (two
     // flushes reordered) proves the stream alive but never re-enters the ring.
+    // A stream silent for kSeqRestartS is a restarted sender (its per-NPC seq
+    // starts over): without this a stream back inside the 15 s forget window
+    // was rejected as "older" until its seq passed the old one -- a bound,
+    // frozen puppet (observed solo, WO-118: writes=1 after a peer restart).
+    if (s.haveSeq && now - s.lastAcceptedAt > kSeqRestartS) s.haveSeq = false;
     bool seqOk = true;
     if (s.haveSeq) {
         const uint16_t d = static_cast<uint16_t>(in.seq - s.lastSeq);
@@ -268,7 +283,7 @@ void push_sample(const InSample& in, double now) {
     s.lastSampleAt = now;
     s.src = in.src;
     if (!seqOk) return;
-    s.haveSeq = true; s.lastSeq = in.seq;
+    s.haveSeq = true; s.lastSeq = in.seq; s.lastAcceptedAt = now;
     s.flags = in.flags;
     double nowPkt = now;
     if (in.arrivalQpc > 0) {
@@ -344,12 +359,12 @@ void pull_flush(Puppet& p, double now) {
     if (p.winFrames > 0 && p.maxCm >= kPullFloorCm) {
         const float ax = p.anchor[0] - p.last[0], ay = p.anchor[1] - p.last[1];
         logf("MP-NPCPULL npc=%s mean_cm=%.2f max_cm=%.2f frames=%u moved_frames=%u toward_anchor_cos=%.2f anchor_m=%.1f "
-             "dz_mean_cm=%.2f flying=%u/%u window_s=%.0f",
+             "dz_mean_cm=%.2f lag_frames=%u flying=%u/%u window_s=%.0f",
              p.name.c_str(), p.sumCm / p.winFrames, p.maxCm, p.winFrames, p.winMoved,
              p.cosN ? p.cosSum / p.cosN : 0.0, std::sqrt(ax * ax + ay * ay),
-             p.sumDzCm / p.winFrames, p.winFlying, p.winFlyChecks, now - p.winStart);
+             p.sumDzCm / p.winFrames, p.winLag, p.winFlying, p.winFlyChecks, now - p.winStart);
     }
-    p.winStart = now; p.winFrames = p.winMoved = p.winFlyChecks = p.winFlying = p.cosN = 0;
+    p.winStart = now; p.winFrames = p.winMoved = p.winFlyChecks = p.winFlying = p.cosN = p.winLag = 0;
     p.sumCm = p.maxCm = p.sumDzCm = p.cosSum = 0;
 }
 
@@ -360,7 +375,20 @@ bool write_one(Puppet& p, void* e, const float pose[4], bool* wrote) {
     const bool haveCur = read_pos(e, cur);
 
     // Phase 4: how far did the ENGINE move the body since our last write?
-    if (p.haveLast && haveCur) {
+    // One case is not a pull: the physics body lags a write that was queued
+    // while physics stepped, and its write-back restores the write BEFORE the
+    // last one exactly (observed: hook(n) == written(n-2) to 0.00 cm on every
+    // such frame of a walker). Counted as lag_frames, kept out of the pull.
+    bool lag = false;
+    if (p.haveLast && p.havePrev && haveCur) {
+        const float lx = cur[0] - p.prev[0], ly = cur[1] - p.prev[1], lz = cur[2] - p.prev[2];
+        const float mx = cur[0] - p.last[0], my = cur[1] - p.last[1], mz = cur[2] - p.last[2];
+        lag = (lx * lx + ly * ly + lz * lz) < 0.002f * 0.002f && (mx * mx + my * my + mz * mz) > 0.001f * 0.001f;
+    }
+    if (lag) {
+        ++p.winFrames;
+        ++p.winLag;
+    } else if (p.haveLast && haveCur) {
         const float dx = cur[0] - p.last[0], dy = cur[1] - p.last[1], dz = cur[2] - p.last[2];
         const double cm = std::sqrt(static_cast<double>(dx) * dx + static_cast<double>(dy) * dy + static_cast<double>(dz) * dz) * 100.0;
         ++p.winFrames;
@@ -404,6 +432,7 @@ bool write_one(Puppet& p, void* e, const float pose[4], bool* wrote) {
     void* prs = vslot(e, kEntSetPosRotScale);
     if (!prs || !call_prs(prs, e, pose, q, scale)) return false;
 
+    if (p.haveLast) { p.prev[0] = p.last[0]; p.prev[1] = p.last[1]; p.prev[2] = p.last[2]; p.havePrev = true; }
     p.last[0] = pose[0]; p.last[1] = pose[1]; p.last[2] = pose[2]; p.lastRot = pose[3];
     p.haveLast = true;
     ++p.writes;
@@ -659,6 +688,7 @@ uint8_t bind_main(const BindRequest& req) {
     if (read_pos(e, cur)) {
         Stream& s = g_streams[key];
         if (s.name.empty()) s.name = req.name;
+        s.haveSeq = false;   // a bind is a fresh puppet on the Lua side too (its seq accounting starts over)
         seed(s, cur, yaw_of(e), now - p.delay);
         s.lastSampleAt = s.lastSampleAt > 0 ? s.lastSampleAt : now;
     }
@@ -702,6 +732,7 @@ void tick() {
         if (it != g_bound.end()) {
             it->second.holdUntil = now + h.ms / 1000.0;
             it->second.haveLast = false;
+            it->second.havePrev = false;
         }
     }
     if (g_dropAll.exchange(false)) {
@@ -735,10 +766,15 @@ void tick() {
             continue;
         }
         const Stream& s = sIt->second;
-        if ((s.flags & (0x01 | 0x02 | 0x10)) != 0 || now < p.holdUntil) {
+        // A body that became parented after the bind (a rider mounting, a body
+        // picked up) has LOCAL coordinates: never written until it is free.
+        void* parent = nullptr;
+        const bool parented = get_parent(e, &parent) && parent != nullptr;
+        if ((s.flags & (0x01 | 0x02 | 0x10)) != 0 || now < p.holdUntil || parented) {
             // Dead / unconscious / carried stay on Lua's own behaviour; a swing
             // one-shot owns the body for its hold. Neither is a pull.
             p.haveLast = false;
+            p.havePrev = false;
             ++it;
             continue;
         }
