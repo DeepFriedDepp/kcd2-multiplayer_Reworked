@@ -221,6 +221,14 @@ SenderClock g_clocks[256];
 double      g_lastPrune = 0;
 bool        g_announcedFault = false;
 
+// MP-NPCWRITE-COST window: the writer's own time per frame (the whole tick,
+// engine calls included), logged every kPullWindowS while anything is bound.
+struct CostWindow {
+    double   start = 0;
+    uint64_t frames = 0, boundSum = 0, writingSum = 0;
+    double   sumUs = 0, maxUs = 0;
+} g_cost;
+
 double qpc_to_s(int64_t q) { return static_cast<double>(q) * g_qpcPeriod; }
 
 void notify_drop(uint8_t reason, const std::string& name) {
@@ -794,6 +802,23 @@ void tick() {
     g_statWriting.store(writing);
     g_statBound.store(static_cast<uint16_t>(g_bound.size()));
     if (writing) g_statFrames.fetch_add(1, std::memory_order_relaxed);
+
+    if (!g_bound.empty() || g_cost.frames) {
+        const double us = (now_s() - now) * 1e6;
+        if (!g_cost.frames) g_cost.start = now;
+        ++g_cost.frames;
+        g_cost.boundSum += g_bound.size();
+        g_cost.writingSum += writing;
+        g_cost.sumUs += us;
+        if (us > g_cost.maxUs) g_cost.maxUs = us;
+        if (now - g_cost.start >= kPullWindowS) {
+            const double n = static_cast<double>(g_cost.frames);
+            logf("MP-NPCWRITE-COST window_s=%.1f frames=%llu bound_mean=%.1f writing_mean=%.1f tick_us_mean=%.1f tick_us_max=%.1f",
+                 now - g_cost.start, static_cast<unsigned long long>(g_cost.frames), g_cost.boundSum / n,
+                 g_cost.writingSum / n, g_cost.sumUs / n, g_cost.maxUs);
+            g_cost = CostWindow{};
+        }
+    }
 
     if (now - g_lastPrune > 5.0) {
         g_lastPrune = now;
