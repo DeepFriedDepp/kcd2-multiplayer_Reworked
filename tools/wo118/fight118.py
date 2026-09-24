@@ -29,9 +29,19 @@ while i < len(rows):
             drift = math.dist((a['written_x'], a['written_y']), (b['hook_x'], b['hook_y'])) * 100
             snap = math.dist((b['hook_x'], b['hook_y']), (b['written_x'], b['written_y'])) * 100
             dzs = (b['written_z'] - b['hook_z']) * 100
-            runs.append((j - i, (rows[j]['t_ms'] - rows[i]['t_ms']), drift, snap, dzs))
+            # what the viewer sees for the second after the resume: the largest
+            # render step from one frame to the next (a blend shows as a short
+            # run of larger-than-walking steps, a snap as one big one)
+            k, post = j, 0.0
+            while k < len(rows) and rows[k]['t_ms'] - rows[j]['t_ms'] <= 1000:
+                if k > 0:
+                    post = max(post, math.dist((rows[k]['render_x'], rows[k]['render_y']), (rows[k - 1]['render_x'], rows[k - 1]['render_y'])) * 100)
+                k += 1
+            runs.append((j - i, (rows[j]['t_ms'] - rows[i]['t_ms']), drift, snap, dzs, post))
         i = j
     else:
         i += 1
-for n, ms, drift, snap, dzs in runs:
-    print('   hold: %3d frames %4.0f ms  engine carried the body %.1f cm; resume step %.1f cm (dz %+.1f cm)' % (n, ms, drift, snap, dzs))
+for n, ms, drift, snap, dzs, post in runs:
+    print('   hold: %3d frames %4.0f ms  engine carried the body %.1f cm; resume step %.1f cm (dz %+.1f cm); largest render step in the next 1 s %.1f cm' % (n, ms, drift, snap, dzs, post))
+if runs:
+    print('   worst over %d holds: resume step %.1f cm, render step after resume %.1f cm/frame' % (len(runs), max(r[3] for r in runs), max(r[5] for r in runs)))
