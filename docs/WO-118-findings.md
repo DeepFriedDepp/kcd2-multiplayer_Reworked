@@ -203,6 +203,9 @@ body; the joiner's `MP-NPCPULL` for it will show `moved_frames` high with
   timing residual (max 6.6 ms). The real stream is ~30 ms (`MP-POSCADENCE
   path=native p50_ms=30`). A sender stamp on 0x01 needs a protocol change (the
   relay's exact-length gate, WO-101); not done in a jitter-only build.
+  **Corrected after 0.28.0 (§9):** the clean-link part was never arrival
+  timing — the DLL stretched every 30 ms ghost segment to a 50 ms floor.
+  Both are fixed (the floor, and a sender stamp on the position frame).
 * bFlying reads 1 on every ghost frame, native or legacy (inconclusive: the
   ghost's body is spawned differently; nothing sinks or falls).
 
@@ -332,7 +335,7 @@ Walking movers (4 m ping-pong lines), frame time from traces, writer time from
 * The trace itself writes its CSV on the main thread at the end: one 1.8–6.9 ms
   tick (`tick_us_max`) per trace.
 
-### 3.10 The agent's ingress ceiling (observed; pre-existing, not fixed)
+### 3.10 The agent's ingress ceiling (observed; pre-existing; fixed after 0.28.0, §9)
 
 * The agent's relay reader is one serial loop. Each NpcState packet is decoded,
   queued for the DLL (non-blocking), **and** pushed to Lua through the batched
@@ -428,14 +431,17 @@ walker legacy 75.3 % frozen; seated legacy 61 mm sawtooth, 615/616 moving —
   hook's **exit** too (later than the probe's entry write), including with the
   ground collider kept.
 * The Lua detectors are legacy-path instruments from this build on (§3.6).
+* After 0.28.0: the ghost's clean-link pace wobble (§3.4) was the DLL's 50 ms
+  segment floor, not arrival timing — a sender stamp alone left it at
+  sd 0.58 m/s; lowering the floor took it to 0.02 (§9).
 
 ---
 
 ## 7. Open, carried forward
 
-1. **Agent ingress** (§3.10): read-side stamping and a DLL feed independent of
-   the Lua push; latest-per-NPC Lua pushes for native puppets.
-2. **Ghost sender time**: a sender-ms field on the position frame (protocol).
+1. ~~**Agent ingress** (§3.10).~~ Done after 0.28.0 (§9).
+2. ~~**Ghost sender time**.~~ Done after 0.28.0 (§9), with the real clean-link
+   cause (a 50 ms segment floor).
 3. ~~**Blend out of a swing hold** instead of stepping (§3.3).~~ Done after
    0.28.0 (§8).
 4. ~~**The detach hop** (5–73 cm once).~~ Done after 0.28.0 (§8): not
@@ -493,4 +499,78 @@ maintainer's).
   return); noise P0/P1 0 frozen, speed sd 0.02 m/s; ghost batch unchanged
   (0 frozen; pace sd 0.62/0.79/1.06 m/s). Synthetic: the WO-118 suite 94/94
   (three new scenarios for the rule), every other suite green.
+
+---
+
+## 9. Follow-up after 0.28.0 (2026-09-24): the agent's ingress and the ghost's sender clock
+
+Solo, `tools/wo118`, working-tree builds (agent, relay, pak, DLL); commits
+`c78f9e3` … `3302ac6`. **Not in 0.28.0** — on `main` for the next release (its
+version is the maintainer's). Protocol stays v7 (the maintainer's call).
+
+**The agent's ingress (§3.10)** — three pieces:
+
+* The relay reader only reads, stamps and feeds: every frame is stamped the
+  moment its bytes are in, NpcState and Ghost samples go to the DLL right
+  there, and the frame goes through a channel to the old handlers (`40099a2`).
+* For a puppet the DLL writes, Lua gets the latest sample at most every
+  200 ms — at once on any flags (dead, KO, drawn, swing cue, carried,
+  resync) or health change; the pending latest is flushed when due or when the
+  puppet stops being the DLL's; full rate when the native write is off or the
+  DLL drops it (`03dd36d`, `NpcLuaCoalescer`, 6 unit tests).
+* Lua renders such a puppet's gait 0.24 s behind with a 0.12 s grace, so the
+  lower rate reads true speeds instead of run/idle flicker, and its sequence
+  jumps are not counted as gaps (`c230b43`; synthetic (o) failed on the old
+  Lua: run,run,idle,…).
+
+Observed:
+
+| load | before (0.28.0) | now |
+|---|---|---|
+| 40 walkers, game minimized (25 fps) | ~9 of 37 written per frame; the traced puppet written 46/206 frames; ~233 of 367 samples/s reach the DLL | **37.0 of 37.0**; the traced puppet written 203/203 and 206/206 frames; every sample reaches the DLL (~372/s); Lua gets ~204 pushes/s; no heartbeat lapse |
+| 80 walkers at 10 Hz, foreground (77 fps) | 10–14 of 70 written; the traced puppet written 67/604 frames; backlog ~2 s after 30 s | **69.0 of 69.0**; the traced puppet written 621/621 frames; every sample reaches the DLL (~752/s); Lua gets ~427 pushes/s; frame time 12.9 ms on and off; writer 463–482 µs/frame |
+
+**The ghost's sender clock (§3.4)** — four pieces:
+
+* Position/Ghost carry the sender's ms behind flag 0x08 after the optional
+  body state: lengths 17/21/22/26 up, 18/22/23/27 down; the relay's gate takes
+  the four from one list (`c78f9e3`; RelayRoundTripTests 30/30).
+* The agent stamps every Position with 1 ms QPC time and passes a Ghost's
+  stamp to the DLL (`3cf24a9`).
+* The DLL's `render()` no longer floors a segment at 50 ms (`fee8993`) — the
+  real clean-link cause: every 30 ms ghost segment was stretched, the body
+  crossing it at 60 % speed and jumping the rest (per-frame speed alternating
+  0.85 / 2.1 m/s).
+* The DLL orders samples by the sender's clock: the ghost has no sender
+  sequence, so a reordered sample used to drag the render back (`04186e5`).
+
+| ghost run (30 ms stream) | 0.28.0 | stamp only | stamp + floor | + sender order |
+|---|---|---|---|---|
+| clean | 0 frozen, sd 0.56 | sd 0.58 | **sd 0.02** | sd 0.02 |
+| 20 ± 20 ms jitter | 0 frozen, sd 0.76 | sd 0.59 | sd 0.02 | **sd 0.02** |
+| 40 + 0–60 ms jitter | 0 frozen, sd 1.04 | 1 frozen, sd 0.53 | 2 frozen, sd 0.16 | **0 frozen, sd 0.04** |
+| the same without the stamp | — | sd 1.16 | sd 0.88 | sd 0.99, 3 frozen |
+
+Under 40 + 0–60 ms jitter the stamped ghost still starves for a single frame
+now and then: 1–2 per 8 s run, 570 of 571 frames written in the last (that one
+outside the scored stretch, hence 0 frozen). The DLL holds the body for that
+frame; the synthetic ghost, flagged flying, then drops 17–37 cm in the engine's
+next physics step and the next hook puts it back before render — the rendered
+height is the same in every frame. 0.28.0 had no such hold at that jitter (it
+rendered on arrival time) but a pace sd of 1.04 m/s.
+
+**Regression** (observed): Phase 5 gate GREEN on every new DLL (walker native
+0 frozen, seated 0.0 mm; the legacy stair-step 75 % and sawtooth return);
+noise P1/P2 0 frozen, speed sd 0.02 m/s. Agent tests 187/187; relay 30/30;
+every synthetic suite green (WO-118 99/99).
+
+**Not fixed, stated plainly:**
+
+* The game's REST server refuses an overlapping request with 503: one batch
+  (9 statements, a heartbeat first) in ~10 minutes of heavy load. Serializing
+  the agent's requests was tried and made it worse — the queue waited past the
+  0.8 s timeout (36 batches lost, Lua unbound its puppets) — and was not
+  committed.
+* A ghost from an older sender (no stamp) still renders on arrival time; the
+  release check keeps such pairs apart anyway.
 

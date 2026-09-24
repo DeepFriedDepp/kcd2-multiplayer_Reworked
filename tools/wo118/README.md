@@ -39,8 +39,8 @@ with `GATE GREEN` or `GATE RED` and restores both toggles on.
 | script | what |
 |---|---|
 | `noise_batch.py` | one walker with delay/jitter/spikes injected after the sender stamp; sender clock on/off; old tick stamps |
-| `ghost_batch.py` | the peer's ghost (`kcd2mp_0`) at the pos-native cadence, clean and jittered |
-| `scale_run.py <tag> <N> [r]` | N walking puppets, frame time native on/off/on + `MP-NPCWRITE-COST`; `EMIT_MS=200` keeps 80 inside the agent's ingress |
+| `ghost_batch.py` | the peer's ghost (`kcd2mp_0`) at the pos-native cadence, clean and jittered, sender-stamped like a current agent; `g2off` is the jittered run without the stamp (`--ghost-sender-ms off`) |
+| `scale_run.py <tag> <N> [r]` | N walking puppets, frame time native on/off/on + `MP-NPCWRITE-COST`; `MINIMIZE=1` for the background-limited case; `EMIT_MS` sets the peer's emit period (100) |
 | `peer_trace.py` + `slope118.py` / `fight118.py` | sinking on a slope (`plans/plan.slope*.txt`) and in a fight (`plans/plan.fight.txt`); `fight118.py` also reports each swing hold's resume step and the largest render step in the second after it |
 | `peer_trace.py` + `start118.py` | a puppet start (pause, detach, bind) frame by frame: plan `start 1.5` + `hold <npc> …` at or near its spot, trace armed before the stream starts; every rendered movement is a start-up artifact |
 | `jitter118.py <csv> line x0 y0 ux uy len` / `hold x y` | per-trace analysis |

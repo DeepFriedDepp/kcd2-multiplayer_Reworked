@@ -77,7 +77,7 @@ flicker? Does anything sink?**
 | `kcd.log` | `MP-DETACH npc= result=<before>-><after> changed=` | a puppet freed from its activity (or `skipped-dialog`) |
 | | `MP-NPCWRITE npc= native=bound\|refused\|dropped` | the mod's side of each bind |
 | | `MP-NPCWRITE native=healthy … (heartbeat)` | the DLL heartbeat came back after a > 3 s gap |
-| agent console | `MP-NPCWRITE-STATUS armed= on= bound= writing= …` | every 10 s: how many puppets the DLL holds and writes |
+| agent console | `MP-NPCWRITE-STATUS armed= on= bound= writing= … lua_bound= lua_pushed= lua_coalesced=` | every 10 s: how many puppets the DLL holds and writes; after 0.28.0 also the puppets whose Lua pushes are thinned (`lua_bound`), the pushes sent to Lua (`lua_pushed`) and the samples held back on arrival (`lua_coalesced` — the latest held one is still sent when due, and then counts as pushed too) |
 
 `MP-NPCZ`, `MP-AUTHORITY-VIOLATION`, `MP-NPCFIGHT` now end in `path=legacy`:
 they only measure the old Lua write.
