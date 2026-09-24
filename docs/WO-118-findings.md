@@ -571,6 +571,12 @@ every synthetic suite green (WO-118 99/99).
   the agent's requests was tried and made it worse — the queue waited past the
   0.8 s timeout (36 batches lost, Lua unbound its puppets) — and was not
   committed.
-* A ghost from an older sender (no stamp) still renders on arrival time; the
-  release check keeps such pairs apart anyway.
+* Until the maintainer sets the next version, a build from `main` still calls
+  itself 0.28.0, so the relay's release check lets it pair with a 0.28.0
+  install (code-verified) — and they cannot see each other move: a 0.28.0
+  relay's exact-length gate drops the stamped positions (21/26 bytes), a 0.28.0
+  agent drops the stamped ghost frames (22/27), silently, as in WO-101. The
+  next version bump closes it (the relay refuses a release mismatch); until
+  then both machines and the relay run the same build. An unstamped ghost from
+  an older sender, where one gets through, renders on arrival time.
 

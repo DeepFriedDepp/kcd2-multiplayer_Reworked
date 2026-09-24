@@ -2,6 +2,11 @@
 
 **Both machines must run this build.** The relay refuses anything else, with a
 clear message on both sides (`Relay runs KCD2-MP <x>, this machine runs <y>`).
+One exception: a build from `main` after 0.28.0 still calls itself 0.28.0 until
+the next version is set, so the relay cannot tell it from a 0.28.0 install — and
+the two cannot see each other move (the older side drops the newer position
+frames; findings §9). Install the same build on both machines and run that
+build's relay.
 
 **Before the session: copy the host's save to the joiner.** The host saves,
 closes the game, and copies that save file from `<saves>\playline1\` to the same
@@ -13,8 +18,9 @@ headers into chat or tickets.
 launch rotates `kcd.log` into `logbackups\`, which keeps one file.
 
 **Keep the game window in front** on the joiner. KCD2 drops to ~26 fps when its
-window is not focused, and at that rate the agent cannot feed a crowd of walking
-NPCs (findings §3.10): puppets start to step and lag. Alt-tab briefly.
+window is not focused, and at that rate a 0.28.0 agent cannot feed a crowd of
+walking NPCs (findings §3.10; fixed on `main` after 0.28.0, §9): puppets start
+to step and lag. Alt-tab briefly.
 
 ---
 
