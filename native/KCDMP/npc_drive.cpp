@@ -84,9 +84,12 @@ constexpr float  kSnapM2        = 25.0f;  // mp_npc_ring_push: an XY step over 5
 // at puppet start a 55 cm jump or, when the seed dropped the stream's only
 // sample, a 50 cm slide two seconds later. Exponential for small offsets, and
 // never more than kBlendMaxMps on top of the stream's own speed for large ones
-// (a 1 m catch-up takes ~0.5 s and stays under ~5 cm/frame at 75 fps).
+// (a 1 m catch-up takes ~0.5 s and stays under ~5 cm/frame at 75 fps) -- unless
+// that would take longer than kBlendMaxS: a puppet starting metres from its
+// stream glided 3 m for 1.5 s at the flat cap (observed, the gate's walker).
 constexpr float  kBlendTauS     = 0.08f;
 constexpr float  kBlendMaxMps   = 2.0f;
+constexpr float  kBlendMaxS     = 0.75f;
 constexpr float  kBlendMaxRadps = 6.0f;   // yaw catch-up cap
 constexpr float  kBlendDoneM    = 0.0005f;
 constexpr size_t kMaxBound      = 160;    // puppets written per frame, at most
@@ -237,6 +240,7 @@ struct Puppet {
     bool     blending = false;
     float    off[3]{};              // body minus stream at the blend's start, decaying to zero
     float    offRot = 0;
+    float    blendMps = 0;          // this blend's catch-up cap: kBlendMaxMps, or faster for a large offset
     bool     haveLast = false;
     float    last[3]{};
     bool     havePrev = false;      // the write before `last`
@@ -428,9 +432,11 @@ void blend_start(Puppet& p, void* e, const float pose[4]) {
     const float orot = wrap_pi(yaw_of(e) - pose[3]);
     if (d2 < kBlendDoneM * kBlendDoneM && std::fabs(orot) < kBlendDoneM) return;
     p.off[0] = ox; p.off[1] = oy; p.off[2] = oz; p.offRot = orot;
+    const float len = std::sqrt(d2);
+    p.blendMps = len / kBlendMaxS > kBlendMaxMps ? len / kBlendMaxS : kBlendMaxMps;
     p.blending = true;
     ++g_cost.blends;
-    const double cm = std::sqrt(static_cast<double>(d2)) * 100.0;
+    const double cm = static_cast<double>(len) * 100.0;
     if (cm > g_cost.blendMaxCm) g_cost.blendMaxCm = cm;
 }
 
@@ -439,7 +445,7 @@ void blend_apply(Puppet& p, float pose[4], double dt) {
     const float len = std::sqrt(p.off[0] * p.off[0] + p.off[1] * p.off[1] + p.off[2] * p.off[2]);
     if (len > 0) {
         float step = static_cast<float>(len * dt / kBlendTauS);
-        const float cap = static_cast<float>(kBlendMaxMps * dt);
+        const float cap = static_cast<float>(p.blendMps * dt);
         if (step > cap) step = cap;
         const float k = step >= len ? 0.0f : (len - step) / len;
         p.off[0] *= k; p.off[1] *= k; p.off[2] *= k;
