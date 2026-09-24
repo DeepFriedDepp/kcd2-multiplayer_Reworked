@@ -3977,7 +3977,7 @@ local function mp_wo102_violation(name, p, kind, distM, fx, fy)
     local tkey = tostring(name) .. "|" .. kind
     if (now - (KCD2MP._authViolationAt[tkey] or -1e9)) >= 10.0 then
         KCD2MP._authViolationAt[tkey] = now
-        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s pause_issued=%d pause_exec=%s n=%d body=%s anchor_m=%.2f cos=%.2f",
+        mp_log(string.format("MP-AUTHORITY-VIOLATION npc=%s kind=%s dist_m=%.2f owner=%s pause_issued=%d pause_exec=%s n=%d body=%s anchor_m=%.2f cos=%.2f path=legacy",
             tostring(name), kind, distM or 0, tostring(p and p.owner or "?"),
             KCD2MP._npcPaused[name] and 1 or 0, tostring(KCD2MP._npcPauseExec[name] or "none"),
             KCD2MP._authViolationN[name],
@@ -6131,7 +6131,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
         -- any puppet read back more than 5 cm off its written Z.
         local zs = KCD2MP._npcZStats
         if zs and zs.n > 0 then
-            mp_log(string.format("MP-NPCZ-SUMMARY n=%d mean_abs=%.3f max_abs=%.3f sink_n=%d float_n=%d rate_ms=%d",
+            mp_log(string.format("MP-NPCZ-SUMMARY n=%d mean_abs=%.3f max_abs=%.3f sink_n=%d float_n=%d rate_ms=%d path=legacy",
                 zs.n, zs.sumAbs / zs.n, zs.maxAbs, zs.sinkN, zs.floatN, KCD2MP.npcPuppetTickMs or 50))
             zs.n, zs.sumAbs, zs.maxAbs, zs.sinkN, zs.floatN = 0, 0, 0, 0, 0
         end
@@ -6378,7 +6378,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                             if fz < 0 then zs.sinkN = zs.sinkN + 1 else zs.floatN = zs.floatN + 1 end
                             if (now - (p.zLogAt or -1e9)) >= 2.0 then
                                 p.zLogAt = now
-                                mp_log(string.format("MP-NPCZ npc=%s wrote=%.3f read=%.3f delta=%.3f xy_delta=%.3f rate_ms=%d pause_issued=%d anim=%s",
+                                mp_log(string.format("MP-NPCZ npc=%s wrote=%.3f read=%.3f delta=%.3f xy_delta=%.3f rate_ms=%d pause_issued=%d anim=%s path=legacy",
                                     name, p.lastWroteZ, ap.z, fz, math.sqrt(fx*fx + fy*fy), KCD2MP.npcPuppetTickMs or 50,
                                     KCD2MP._npcPaused[name] and 1 or 0, tostring(p.animTag)))
                             end
@@ -6438,7 +6438,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                         fw.n = fw.n + 1; fw.sum = fw.sum + fdist
                         if fdist > fw.max then fw.max = fdist end
                         if (now - fw.since) >= 10.0 then
-                            mp_log(string.format("MP-NPCFIGHT npc=%s n=%d mean_m=%.2f max_m=%.2f window_s=%.0f total=%d authority=peer",
+                            mp_log(string.format("MP-NPCFIGHT npc=%s n=%d mean_m=%.2f max_m=%.2f window_s=%.0f total=%d authority=peer path=legacy",
                                 name, fw.n, fw.sum / fw.n, fw.max, now - fw.since, p.fightN))
                             p.fightWin = { n = 0, sum = 0, max = 0, since = now }
                         end

@@ -290,6 +290,7 @@ do
     check("f: MP-NPCZ fires on a >5 cm read-back difference", logCount("MP-NPCZ npc=f_a") == 1, lastLog("MP-NPCZ"))
     local l = lastLog("MP-NPCZ npc=f_a") or ""
     check("f: the line carries wrote/read/delta with a negative (sinking) delta", l:find("wrote=20.000", 1, true) and l:find("read=19.880", 1, true) and l:find("delta=-0.120", 1, true), l)
+    check("f: labelled as the legacy path's instrument (WO-118 Phase 4)", l:find("path=legacy", 1, true) ~= nil, l)
     -- throttled: 10 more ticks inside 2 s add no line
     for i = 1, 10 do tick("f_a", 0, 0, 20) end
     check("f: throttled to one line per 2 s per puppet", logCount("MP-NPCZ npc=f_a") == 1, tostring(logCount("MP-NPCZ npc=f_a")))
