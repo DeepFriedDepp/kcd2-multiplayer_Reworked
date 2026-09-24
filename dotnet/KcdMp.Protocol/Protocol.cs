@@ -923,6 +923,44 @@ public static partial class Protocol
     /// <summary>WO-100.5: Ghost (0x02) payload length when body state rides along.</summary>
     public const int GhostPayloadLenV2 = GhostPayloadLen + BodyStateLen;         // 23
 
+    /// <summary>
+    /// WO-118 follow-up: Position/Ghost flags bit: the packet carries the
+    /// sender's clock -- a u32 LE millisecond stamp (1 ms QPC time, the same
+    /// clock as the NpcState stamp, bd26225) -- AFTER the body-state bytes when
+    /// both ride along. A receiver places the sample on the sender's timeline
+    /// (the DLL's per-source sender clock and need tracker) instead of on its
+    /// arrival time, which is what made a peer's ghost wobble in pace:
+    /// speed sd 0.56-1.04 m/s against 0.01-0.02 for sender-stamped NPC streams
+    /// (docs/WO-118-findings.md s3.4). Additive in the WO-100.5 shape and the
+    /// protocol stays v7 (the maintainer's call): the release check already
+    /// refuses a mixed pair at the handshake, so no receiver ever meets a
+    /// length it does not know.
+    /// </summary>
+    public const byte PositionFlagSenderMs = 0x08;
+
+    /// <summary>WO-118 follow-up: bytes appended when <see cref="PositionFlagSenderMs"/> is set.</summary>
+    public const int SenderMsLen = 4;
+
+    /// <summary>WO-118 follow-up: the largest Position payload -- body state and sender ms (26).</summary>
+    public const int PositionPayloadLenMax = PositionPayloadLen + BodyStateLen + SenderMsLen;
+
+    /// <summary>WO-118 follow-up: the largest Ghost payload -- body state and sender ms (27).</summary>
+    public const int GhostPayloadLenMax = GhostPayloadLen + BodyStateLen + SenderMsLen;
+
+    /// <summary>
+    /// Every Position (0x01) payload length the relay accepts: 17 (bare, and
+    /// every STALE heartbeat of an old sender), 21 (+ sender ms), 22 (+ body
+    /// state), 26 (both). Exact lengths, never a range (WO-101).
+    /// </summary>
+    public static bool IsPositionPayloadLen(int len) =>
+        len == PositionPayloadLen || len == PositionPayloadLen + SenderMsLen
+        || len == PositionPayloadLenV2 || len == PositionPayloadLenMax;
+
+    /// <summary>Every Ghost (0x02) payload length an agent accepts: 18, 22, 23, 27.</summary>
+    public static bool IsGhostPayloadLen(int len) =>
+        len == GhostPayloadLen || len == GhostPayloadLen + SenderMsLen
+        || len == GhostPayloadLenV2 || len == GhostPayloadLenMax;
+
     /// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
     public const int VoiceFrameLen = 640;
 

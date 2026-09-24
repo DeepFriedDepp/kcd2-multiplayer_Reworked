@@ -318,6 +318,98 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.True(await a.NoneOfAsync(Protocol.Ghost, Quiet));
     }
 
+    // ---- WO-118 follow-up: the sender's ms behind flag 0x08 ----------------
+
+    [Fact]
+    public async Task Sender_ms_position_arrives_with_its_stamp()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        var pkt = PositionCodec.BuildPosition(2326.14f, 2050.21f, 109.06f, 0.25f, isRiding: false, stale: false,
+            body: null, senderMs: 3_000_000_123u);
+        Assert.Equal(3 + Protocol.PositionPayloadLen + Protocol.SenderMsLen, pkt.Length);   // 21
+        await a.SendRawAsync(pkt);
+
+        var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
+        Assert.Equal(Protocol.GhostPayloadLen + Protocol.SenderMsLen, ghost.Length);          // 22
+        Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
+        Assert.Equal(a.Id, g.GhostId);
+        Assert.Equal((2326.14f, 2050.21f, 109.06f, 0.25f), (g.X, g.Y, g.Z, g.RotZ));
+        Assert.Equal(3_000_000_123u, g.SenderMs);
+        Assert.Null(g.Body);
+        Assert.False(g.BodyStateShort);
+    }
+
+    [Fact]
+    public async Task Sender_ms_after_body_state_both_arrive_intact()
+    {
+        // The live shape: every native sample carries a body, and now a stamp
+        // behind it. 26 up, 27 down -- the length WO-101's gate never saw.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        var body = new BodyState(BodyPace.Walk, BodyDir.Forward, BodyStance.Upright, 98);
+        var pkt = PositionCodec.BuildPosition(10f, 20f, 30f, -1.5f, isRiding: true, stale: false, body, senderMs: 42u);
+        Assert.Equal(3 + Protocol.PositionPayloadLenMax, pkt.Length);                          // 26
+        await a.SendRawAsync(pkt);
+
+        var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
+        Assert.Equal(Protocol.GhostPayloadLenMax, ghost.Length);                               // 27
+        Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
+        Assert.Equal(body, g.Body);
+        Assert.Equal(42u, g.SenderMs);
+        Assert.True(g.IsRiding);
+        Assert.False(g.BodyStateShort);
+    }
+
+    [Fact]
+    public async Task Every_accepted_length_round_trips()
+    {
+        // All four shapes through one pair of peers, one at a time (the relay
+        // keeps only the latest queued position per sender, so back-to-back
+        // positions may legitimately arrive as the last one only).
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        var body = new BodyState(BodyPace.Run, BodyDir.Backward, BodyStance.Stealth, 7);
+        var lens = new List<int>();
+        for (int i = 1; i <= 4; i++)
+        {
+            await a.SendRawAsync(PositionCodec.BuildPosition(i, 0f, 0f, 0f, false, false,
+                i is 3 or 4 ? body : null, i is 2 or 4 ? (uint)i : null));
+            var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
+            lens.Add(ghost.Length);
+            Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
+            Assert.Equal((float)i, g.X);
+            Assert.Equal(i is 2 or 4 ? (uint)i : 0u, g.SenderMs);
+            Assert.Equal(i is 3 or 4 ? body : null, g.Body);
+        }
+        Assert.Equal(new[] { 18, 22, 23, 27 }, lens);
+    }
+
+    [Fact]
+    public void Decoder_never_reads_a_flag_without_its_bytes()
+    {
+        // Flags promising tails the length does not hold: no sender ms is
+        // invented, and a body bit without room is the counted bug case.
+        var g18 = new byte[Protocol.GhostPayloadLen];
+        g18[17] = Protocol.PositionFlagSenderMs;
+        Assert.True(PositionCodec.TryDecodeGhost(g18, out var a));
+        Assert.Equal(0u, a.SenderMs);
+
+        var g22 = new byte[Protocol.GhostPayloadLen + Protocol.SenderMsLen];
+        g22[17] = (byte)(Protocol.PositionFlagSenderMs | Protocol.PositionFlagBodyState);
+        BinaryPrimitives.WriteUInt32LittleEndian(g22.AsSpan(18), 77u);
+        Assert.True(PositionCodec.TryDecodeGhost(g22, out var b));
+        Assert.True(b.BodyStateShort);    // body bit, 4 bytes of room: not a body
+        Assert.Equal(77u, b.SenderMs);   // the four bytes are the stamp
+
+        Assert.False(PositionCodec.TryDecodeGhost(new byte[Protocol.GhostPayloadLen + 1], out _));
+        Assert.True(Protocol.IsPositionPayloadLen(21) && Protocol.IsPositionPayloadLen(26));
+        Assert.False(Protocol.IsPositionPayloadLen(20) || Protocol.IsPositionPayloadLen(27));
+    }
+
     // ---- Action channel 0x3B -> 0x3C -------------------------------------
 
     [Fact]

@@ -205,12 +205,14 @@ public class ClientSession
             _broadcastService.BroadcastCombatRole();
 
             // --- Position receive loop ---
-            // Two exact lengths, not one: 17 (pre-WO-100.5, and every STALE
-            // heartbeat) or 22 (WO-100.5 body state behind flag 0x04). WO-101:
-            // in 0.23.1 this gate took only 17, so every live sample -- all of
-            // which carried a body -- was skipped below with no log line, and
-            // only the 17-byte heartbeats crossed. docs/WO-101-findings.md S0.
-            var posPayload = new byte[Protocol.PositionPayloadLenV2];
+            // Four exact lengths, never a range: 17, 21 (WO-118 follow-up
+            // sender ms behind flag 0x08), 22 (WO-100.5 body state behind flag
+            // 0x04), 26 (both). WO-101: in 0.23.1 this gate took only 17, so
+            // every live sample -- all of which carried a body -- was skipped
+            // below with no log line, and only the 17-byte heartbeats crossed.
+            // docs/WO-101-findings.md S0. Protocol.IsPositionPayloadLen is the
+            // one list; RelayRoundTripTests puts every length through it.
+            var posPayload = new byte[Protocol.PositionPayloadLenMax];
             while (true)
             {
                 // WO-102.5 Phase 4: only the wait for the NEXT message is
@@ -662,8 +664,7 @@ public class ClientSession
                     continue;
                 }
 
-                if (type != Protocol.Position
-                    || (payloadLen != Protocol.PositionPayloadLen && payloadLen != Protocol.PositionPayloadLenV2))
+                if (type != Protocol.Position || !Protocol.IsPositionPayloadLen(payloadLen))
                 {
                     // Skip unknown/malformed packet. WO-110 R9: counted by type
                     // -- a known type landing here failed one of the exact-
@@ -685,10 +686,11 @@ public class ClientSession
                 float z    = ReadFloat(posPayload, 8);
                 float rotZ = ReadFloat(posPayload, 12);
                 byte  flags = posPayload[16];
-                // WO-101: everything after the flags byte is the body-state
-                // tail -- 5 bytes on a V2 packet, none on a 17-byte one --
-                // forwarded verbatim. The relay does not interpret it, exactly
-                // as it does not interpret a CombatEvent v2's [sid:2].
+                // WO-101: everything after the flags byte is the tail -- body
+                // state (5) and/or the sender's ms (4, WO-118 follow-up), none
+                // on a 17-byte packet -- forwarded verbatim. The relay does not
+                // interpret it, exactly as it does not interpret a CombatEvent
+                // v2's [sid:2].
                 var tail = posPayload.AsSpan(Protocol.PositionPayloadLen, payloadLen - Protocol.PositionPayloadLen).ToArray();
 
                 // WO-81: diagnostic-only cache of this session's last reported
@@ -713,9 +715,10 @@ public class ClientSession
 
     /// <summary>
     /// Thread-safe: enqueue a Ghost packet to be sent to this client.
-    /// <paramref name="tail"/> is the sender's body-state bytes (WO-100.5),
-    /// appended verbatim after the flags byte -- empty for a 17-byte Position,
-    /// so the Ghost is 18 or 23 bytes and never anything else (WO-101).
+    /// <paramref name="tail"/> is the sender's body-state and/or sender-ms
+    /// bytes (WO-100.5, WO-118 follow-up), appended verbatim after the flags
+    /// byte -- empty for a 17-byte Position, so the Ghost is 18, 22, 23 or 27
+    /// bytes and never anything else (WO-101).
     /// </summary>
     public void EnqueueGhost(byte ghostId, float x, float y, float z, float rotZ, byte flags, byte[] tail)
     {

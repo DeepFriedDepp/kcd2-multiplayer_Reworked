@@ -4131,8 +4131,7 @@ public partial class GameBridge(ClientConfig config)
                     long t2 = BinaryPrimitives.ReadInt64LittleEndian(payload.AsSpan(16));
                     OnClockSample(t0, t1, t2, t3);
                 }
-                else if (type == Protocol.Ghost
-                         && (payloadLen == Protocol.GhostPayloadLen || payloadLen == Protocol.GhostPayloadLenV2))
+                else if (type == Protocol.Ghost && Protocol.IsGhostPayloadLen(payloadLen))
                 {
                     // Ghost: [ghostId:1][x:4f][y:4f][z:4f][rotZ:4f][flags:1]
                     // WO-100.5 Phase 2 appends [pace:1][dir:1][stance:1][animSpeedCenti:2].
