@@ -86,6 +86,9 @@ public partial class GameBridge(ClientConfig config)
     private long _nativeHeartbeats;
     private long _nativeBindsOk, _nativeBindsRefused, _nativeDrops, _nativeHolds;
     private static readonly TimeSpan NativeHeartbeatInterval = TimeSpan.FromSeconds(1);
+    // WO-118 Phase 2b: the ghost stream has no seq/sender stamp on the wire; the
+    // feed numbers each ghost's samples here and the DLL stamps arrival time.
+    private readonly ConcurrentDictionary<byte, ushort> _ghostNativeSeq = new();
 
     // --- WO-100.5 Phase 2: the local body-state read ------------------------
     //
@@ -4135,6 +4138,7 @@ public partial class GameBridge(ClientConfig config)
                     // WO-100.5 Phase 2 appends [pace:1][dir:1][stance:1][animSpeedCenti:2].
                     // WO-101: decoded by PositionCodec, shared with the relay
                     // round-trip gate; the length was already gated above.
+                    long gArrival = Stopwatch.GetTimestamp();   // WO-118 Phase 2b: the DLL renders ghosts on this clock
                     PositionCodec.TryDecodeGhost(payload.AsSpan(0, payloadLen), out var gs);
                     byte ghostId   = gs.GhostId;
                     float x        = gs.X;
@@ -4143,6 +4147,14 @@ public partial class GameBridge(ClientConfig config)
                     float rotZ     = gs.RotZ;
                     bool  isRiding = gs.IsRiding;
                     bool  isStale  = gs.IsStale;   // WO-99 Phase 1
+
+                    // WO-118 Phase 2b: the same sample to the native writer. The
+                    // ghost body is "kcd2mp_<id>" (KCD2MP_SpawnGhost); riding is
+                    // passed as the carried bit so the DLL leaves a rider to the
+                    // horse (the mod unbinds a riding ghost as well).
+                    ushort gSeq = _ghostNativeSeq.AddOrUpdate(ghostId, 1, (_, v) => unchecked((ushort)(v + 1)));
+                    _nativeFeed.Enqueue(new NativeNpcSample(ghostId, "kcd2mp_" + ghostId, x, y, z, rotZ,
+                        isRiding ? (byte)0x10 : (byte)0, gSeq, 0u, gArrival));
 
                     // Both conditions, not just the flag: a sender that sets
                     // the bit but sends a short packet is a bug we must not
@@ -4809,6 +4821,9 @@ public partial class GameBridge(ClientConfig config)
                         // precondition wait, the reason vocabulary and the
                         // queue bound. The fire-and-forget task this replaced
                         // had none of the four.
+                        // WO-118: the native writer holds the ghost for the swing,
+                        // before the swing is queued (the Lua hold below is late).
+                        _ = _combat.NpcHoldAsync("kcd2mp_" + ceSource, 900, ct);
                         EnsureSwingInbox(ct).TryEnqueue(new SwingInbox.Entry(
                             ceSource.ToString(), ceSid, rsid,
                             GhostGeneration(ceSource.ToString()), fragSpec, DateTime.UtcNow));

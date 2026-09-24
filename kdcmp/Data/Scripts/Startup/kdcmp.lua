@@ -2891,6 +2891,12 @@ function KCD2MP_NpcNativeAck(name, ok, reason)
     ok = (tonumber(ok) or 0) == 1
     if ok then n.acks = n.acks + 1 else n.nacks = n.nacks + 1 end
     local p = KCD2MP.npcPuppets[name]
+    if not p then
+        -- WO-118 Phase 2b: a ghost body ("kcd2mp_<id>") carries the same fields on its istate.
+        local gid = string.match(tostring(name), "^kcd2mp_(.+)$")
+        local g = gid and KCD2MP.ghosts and KCD2MP.ghosts[gid]
+        p = g and g.istate
+    end
     if not p then return end
     if ok and p.nativeSent then
         p.nativeOwned = true
@@ -2944,6 +2950,42 @@ function KCD2MP_NpcNativeHold(name, seconds)
     if not (p and (p.nativeOwned or p.nativeSent)) then return end
     KCD2MP._npcNative.holds = KCD2MP._npcNative.holds + 1
     KCD2MP_EmitEvent("npc_native_hold", string.format("%s %d", name, math.floor((seconds or 1) * 1000 + 0.5)))
+end
+
+-- WO-118 Phase 2b: the peer's ghost on the same native writer. WO-116 s14's
+-- tool on a ghost showed today's 20 ms Lua interp leaving every other frame
+-- unwritten (50 % frozen, docs/WO-118-findings.md), so the ghost body is bound
+-- like a puppet: the agent feeds each ghost position to the DLL (arrival-time
+-- stamped: the player stream carries no sender clock), the DLL writes it every
+-- frame 100 ms behind, and this file keeps everything else (animation from the
+-- rendered speed, riding, the corpse freeze, labels). A riding, mounted or
+-- frozen ghost is never bound; a one-shot holds the writer for its window.
+TUNE.GHOST_NATIVE_DELAY_MS = 100   -- ~3.5 samples of the ~30 Hz player stream; the ring holds 8
+function KCD2MP_GhostNativeSync(id, ghost, want)
+    local st = ghost and ghost.istate
+    if not st then return end
+    local name = "kcd2mp_" .. tostring(id)
+    local now = os.clock()
+    if want then
+        local e = ghost.entity
+        if st.nativeOwned or not e then return end
+        if st.nativeSent and (now - (st.nativeSentAt or 0)) < TUNE.NPC_NATIVE_RESEND_S then return end
+        if st.nativeRetryAt and now < st.nativeRetryAt then return end
+        local hexid = string.match(tostring(e.id), "(%x+)%s*$")
+        if not hexid then return end
+        local wuid = "?"
+        pcall(function()
+            if e.soul and e.soul.GetId then wuid = string.match(tostring(e.soul:GetId()), "(%x+)%s*$") or "?" end
+        end)
+        st.nativeSent, st.nativeSentAt, st.nativeRetryAt = true, now, nil
+        KCD2MP._npcNative.binds = KCD2MP._npcNative.binds + 1
+        KCD2MP_EmitEvent("npc_native", string.format("%s on %s %s %.3f %.3f %.3f %d", name, hexid, wuid,
+            st.cx or 0, st.cy or 0, st.cz or 0, TUNE.GHOST_NATIVE_DELAY_MS))
+    elseif st.nativeSent or st.nativeOwned then
+        st.nativeSent, st.nativeOwned = nil, false
+        KCD2MP._npcNative.unbinds = KCD2MP._npcNative.unbinds + 1
+        KCD2MP_EmitEvent("npc_native", name .. " off ghost")
+    end
 end
 
 function KCD2MP_NpcNativeCfgEmit()
@@ -9198,12 +9240,23 @@ function KCD2MP_InterpTick(arg, gen)
             -- blocks. istate keeps integrating underneath, exactly like the
             -- frozen case, so the ghost catches up the moment the window ends.
             local oneShot = istate.oneShotUntil and os.clock() < istate.oneShotUntil
+            -- WO-118 Phase 2b: the native per-frame write owns the body while bound.
+            KCD2MP_GhostNativeSync(id, ghost, KCD2MP.npcNativeWrite and KCD2MP_NpcNativeHealthy()
+                and not frozen and not istate.isRiding and not istate.nativeMounted)
+            if oneShot and istate.nativeOwned and istate.nativeHoldFor ~= istate.oneShotUntil then
+                istate.nativeHoldFor = istate.oneShotUntil
+                KCD2MP._npcNative.holds = KCD2MP._npcNative.holds + 1
+                KCD2MP_EmitEvent("npc_native_hold", string.format("kcd2mp_%s %d", tostring(id),
+                    math.floor((istate.oneShotUntil - os.clock()) * 1000 + 0.5)))
+            end
             if frozen then
                 local wp = nil
                 pcall(function() wp = ghost.entity:GetWorldPos(SCRATCH.INTERPTICK_WP_SCRATCH) end)
                 if wp then x, y, sz = wp.x, wp.y, wp.z end
             elseif oneShot then
                 -- no position/angle writes; the one-shot owns the body
+            elseif istate.nativeOwned then
+                -- WO-118 Phase 2b: KCDMP.dll writes this ghost every frame at its frame hook
             elseif not istate.nativeMounted then
                 local _, err = pcall(function()
                     ghost.entity:SetWorldPos({x=x, y=y, z=sz})

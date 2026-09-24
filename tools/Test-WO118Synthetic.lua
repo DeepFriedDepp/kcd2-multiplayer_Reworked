@@ -29,6 +29,9 @@
 --       (default 10, clamped 1..120); stop emits <last> 0; the console
 --       commands are registered with the unquoted %line
 --   (m) silence release, diverge release and a reload each send the unbind
+--   (n) Phase 2b: the peer's ghost binds like a puppet (kcd2mp_<id>, delay
+--       100 ms), stops its Lua write when owned, sends a hold for a one-shot,
+--       unbinds while riding, and a drop hands it back
 --
 -- What this proves: the Lua half behaves as documented. What it does NOT
 -- prove: anything about the DLL, the engine or a second machine.
@@ -64,6 +67,7 @@ XGenAIModule = mkstub()
 player = { id = 1, GetName = function(self) return "Dude" end,
            GetWorldPos = function() return { x = 0, y = 0, z = 0 } end,
            GetWorldAngles = function() return { x = 0, y = 0, z = 0 } end,
+           GetLinkedParent = function() return nil end,
            actor = { GetHealth = function() return 100 end, IsDead = function() return false end } }
 
 local rawpcall = pcall
@@ -405,6 +409,54 @@ do
     ev = evts("npc_native")
     check("m: a reload unbinds every puppet", (ev[#ev] or ""):find("m_rel off reload", 1, true) ~= nil, ev[#ev])
     check("m: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (n)
+-- WO-118 Phase 2b: the peer's ghost on the native writer. A ghost built
+-- directly (as Test-GhostInterpSynthetic does: the spawn path is engine).
+do
+    reset(); NOW = 1200
+    KCD2MP.ghosts = {}; KCD2MP.labelCache = {}; KCD2MP.ghostDead = {}; KCD2MP.ghostHealth = {}; KCD2MP.ghostInMenu = {}
+    KCD2MP._chainLeakSeen = {}; KCD2MP._chainProbe = {}
+    KCD2MP.interpRunning = true; KCD2MP._interpAliveAt = NOW; KCD2MP.interpGen = KCD2MP.interpGen or 1
+    local e = mkEntity("kcd2mp_7", 90, 90, 0)
+    local ist = { px = 90, py = 90, pz = 0, pr = 0, tx = 90, ty = 90, tz = 0, tr = 0, cx = 90, cy = 90, cz = 0, cr = 0,
+                  alpha = 1.0, alphaStep = 0.25, vx = 0, vy = 0, vz = 0, lastPacketX = 90, lastPacketY = 90,
+                  ticksSincePacket = 0, packetCount = 0, animTag = "idle", smoothedSpeed = 0,
+                  prevCx = 90, prevCy = 90, speedDropTicks = 0, spawnedAtClock = NOW }
+    KCD2MP.ghosts["7"] = { entity = e, entityId = e.id, istate = ist }
+    local function gtick(x, riding)
+        NOW = NOW + 0.03
+        KCD2MP_UpdateGhost("7", x, 90, 0, 0, riding == true)
+        KCD2MP_InterpTick("ext")
+    end
+    for i = 1, 5 do gtick(90 + i * 0.04) end
+    check("n: no heartbeat -> no ghost bind, Lua writes", #evts("npc_native") == 0 and #e.writes >= 5, #e.writes)
+    alive(); gtick(90.3)
+    local ev = evts("npc_native")
+    check("n: healthy -> ghost bind event for kcd2mp_7 with the ghost delay",
+          #ev == 1 and ev[1]:find("^kcd2mp_7 on ") ~= nil and ev[1]:find(" 100$") ~= nil, ev[1])
+    KCD2MP_NpcNativeAck("kcd2mp_7", 1, "ok")
+    check("n: the ack lands on the ghost's istate", ist.nativeOwned == true)
+    local w = #e.writes
+    for i = 1, 6 do alive(); gtick(90.3 + i * 0.04) end
+    check("n: owned ghost -> Lua writes no position", #e.writes == w, #e.writes - w)
+    ist.oneShotUntil = NOW + 0.9
+    alive(); gtick(90.6)
+    local hv = evts("npc_native_hold")
+    check("n: a one-shot on an owned ghost sends a native hold", #hv == 1 and hv[1]:find("^kcd2mp_7 %d+$") ~= nil, hv[1])
+    alive(); gtick(90.62)
+    check("n: one hold per one-shot window", #evts("npc_native_hold") == 1)
+    ist.oneShotUntil = nil
+    alive(); gtick(90.7, true)
+    ev = evts("npc_native")
+    check("n: a riding ghost unbinds", (ev[#ev] or ""):find("kcd2mp_7 off ghost", 1, true) ~= nil and ist.nativeOwned == false, ev[#ev])
+    alive(); gtick(90.8, false)
+    ev = evts("npc_native")
+    check("n: dismounted -> bound again", (ev[#ev] or ""):find("^kcd2mp_7 on ") ~= nil, ev[#ev])
+    KCD2MP_NpcNativeAck("kcd2mp_7", 0, "entity-gone")
+    check("n: a drop hands the ghost back to Lua", ist.nativeOwned == false and ist.nativeRetryAt ~= nil)
+    check("n: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- Summary, in the shared driver's contract (Test-NpcSmoothSynthetic.ps1 reads
