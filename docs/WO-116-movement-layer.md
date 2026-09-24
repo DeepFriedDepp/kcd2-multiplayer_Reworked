@@ -63,8 +63,22 @@ the pull (0.0000 m). That is a short-term fix for today's overwrite path
 regardless of the rest. (observed, §1)
 
 **Ranking (§4):** R1 the movement-request route ranks first on criteria 1–5
-and 7, partial on 6. The fallback (a late per-frame transform write) is
-designed in §9 and not needed as the primary path.
+and 7, partial on 6. ~~The fallback (a late per-frame transform write) is
+designed in §9 and not needed as the primary path.~~ **Corrected by the
+same-day follow-up (§14): the late per-frame write is the direct fix for the
+jitter and comes first; R1 is the later fix for gait, turns and activities.**
+
+**Follow-up (§14): the jitter is the write's rate and moment, not its
+thread.** Per-frame render-time traces, one NPC each, solo:
+
+| | today's puppet (Lua, 50 ms) | Lua forced to every frame | DLL, every frame, at its frame hook |
+|---|---|---|---|
+| walking NPC, 1.4 m/s | **0, 0, 0, 76 mm** repeating — 75 % of frames frozen | 19 mm every frame (sd 0.8 mm) | 19 mm every frame (sd 0.8 mm) |
+| seated NPC held 3 m off its seat | **0 → 42 → 83 → 123 mm** toward the seat, snap, repeat | 42 / 0 / 42 / 0 mm flicker | **0 mm, every frame** |
+
+(observed) The Lua write runs on the right thread (main) but lands early in
+the frame and at 20 Hz; the DLL's existing frame hook already sits after the
+engine's per-NPC movement and before render.
 
 ---
 
@@ -513,15 +527,18 @@ authority, the leash, the claim model, name/WUID identity.
 
 ---
 
-## 9. Fallback — a native per-frame transform write
+## 9. The native per-frame transform write — the direct jitter fix
 
-Design only; not needed if R1 lands.
+Written as a fallback; **promoted by §14**: it is the fix for the reported
+jitter, and it comes before R1.
 
-* **Where:** after `CharacterManager::SyncAllAnimations` (+4.72 ms) and before
-  `CSystem::Render` (+4.94 ms), on the main thread — e.g. a hook at
-  `CSystem::Render` entry (`0x20bdd0`). All animation jobs are joined there;
-  the frame hook (+3.61 ms) is too early (the animated character re-bases
-  after it). (observed order)
+* **Where:** the DLL's existing frame hook (`C_ModulesManager::Update`,
+  +3.61 ms, main thread) — after the engine's per-NPC movement pass and
+  before the animation sync and render. **Observed in §14 to hold the body
+  exactly** (0 mm at render every frame). ~~The frame hook is too early (the
+  animated character re-bases after it)~~ — that was an inference and it
+  was wrong. A later point (after `SyncAllAnimations`, before `CSystem::Render`)
+  exists but was not needed.
 * **Threads:** animation runs on 8 job workers (`CommandBufferExecute`), its
   finish step on main + workers; physics steps on its own thread and writes
   back at the next frame's event pump. Write only from main, only after the
@@ -529,12 +546,14 @@ Design only; not needed if R1 lands.
 * **How:** the entity write with the transform flags Lua cannot pass
   (WO-105 §17.1: ignore-physics / user) and a living-entity position change
   with `bRecalcBounds` bit 32, so the ground collider is kept.
-* **Seats:** R6 before suspending, or the alignment solver pulls the body
-  back between writes (§1).
+* **Seats:** with a late per-frame write the seat pull is invisible (§14:
+  the engine pulls the body 3.3 cm toward the seat before each write; the
+  renderer never sees it). R6 before suspending still stops the fight
+  underneath (physics and collision follow our position instead of lagging it).
 * **Animation:** still wrong — the engine's AI fragment stays idle under
   writes (§5.4). Whether `human:SetAnimMotionParam` or queuing the move
   fragment directly fixes that was not tested (inconclusive); without it the
-  fallback keeps mannequin legs.
+  per-frame write keeps mannequin legs. That is R1's job.
 
 ---
 
@@ -550,6 +569,13 @@ Design only; not needed if R1 lands.
 | R5 NPC-state requests for sit / stand / work (RE + probe + wiring) | 3–5 |
 | synthetic suites, solo live gates (the §5 runs as regressions), one two-player run | 2–3 |
 | **total** | **≈ 13–16**, splittable: (a) follow + speed + snap + reset ≈ 7; (b) activities ≈ 4–6; (c) order relay later ≈ 2 |
+
+**Do first (added by §14):** the per-frame native write (§9) — agent → DLL
+pipe for NPC samples, the snapshot-interpolation ring ported to the DLL,
+a native write per puppet per frame from the frame hook, Lua keeps only
+toggles and policy; plus the R6 reset at puppet start. ≈ 3–4 days, and it
+fixes the jitter on its own. The table above then follows for gait and
+activities.
 
 ---
 
@@ -633,3 +659,84 @@ type, `+0x58` start, `+0x64` flags, `+0x80` target) · `+0x10` segment list ·
 `C_MovementTask` (0x2B0 B, one per NPC, keyed by soul WUID): `+0x08` `I_NPC*` ·
 `+0x10` current request id (−1 none) · `+0x18` path request · `+0x160` speed ·
 `+0x16C` logical speed · `+0x2A0` cancel flag. (code-verified)
+
+---
+
+## 14. Follow-up — per-frame render traces: the write's rate and moment
+
+Run the same day at the maintainer's request, after a note from the
+OblivionMP developer (julkiewicz): jitter usually means the overrides land at
+the wrong point of the frame or on the wrong thread; receive at network rate,
+interpolate, apply every frame exactly before the value is used. Solo, fresh
+process, `quicksave032`, no agent.
+
+**Method.** A third research probe DLL hooked two main-thread points: the
+DLL's own frame hook (`C_ModulesManager::Update` entry, +3.6 ms) and
+`CSystem::Render` entry (+4.9 ms). For one tracked NPC it logged, **every
+frame**, the entity's world position at the hook and at render (read from the
+entity's world matrix; cross-checked once against the engine's
+`GetWorldPos`: identical). Optionally it wrote the position every frame at
+the hook with `IEntity::SetPos` (vtable 0x138, **no flags** — the same
+unflagged write Lua's `SetWorldPos` makes, so only rate and moment differ).
+Three writers on the same line, same NPC:
+
+* **today** — the mod's own puppet path, `KCD2MP_ApplyNpcState` at 100 ms,
+  its 50 ms Lua tick, interpolation-behind ring, walk loop;
+* **Lua every frame** — the same, with `npcPuppetTickMs = 10`;
+* **DLL every frame** — the probe's write at the frame hook.
+
+**Walking NPC** (`ttkc_slama`, suspended mid-walk, no seat), a clear 10 m
+line at 1.4 m/s, ~74 fps, ~420 frames scored each (observed):
+
+| writer | per-frame step at render | frozen frames | per-frame speed | pattern |
+|---|---|---|---|---|
+| today (Lua, 50 ms) | mean 1.88 cm, sd 3.28, max 7.78 | **315 / 419 (75 %)** | 1.33 m/s, **sd 2.32** | `0 0 0 75 0 0 0 76 0 0 0 78 …` mm |
+| Lua every frame | mean 1.91 cm, sd 0.08 | 0 | 1.40, sd 0.06 | `19 18 19 20 18 18 21 …` |
+| DLL every frame | mean 1.90 cm, sd 0.08 | 0 | 1.40, sd 0.01 | `19 20 19 19 18 19 20 …` |
+
+**Seated NPC** (`ttkc_woman_2`, suspended in her seat), held 3 m from the
+seat on a clear point, ~70–72 fps (observed):
+
+| writer | rendered offset toward the seat, per frame | frames that move |
+|---|---|---|
+| today (Lua, 50 ms) | **0 → 42 → 83 → 123 mm, snap, repeat** (mean 6.2 cm) | 432 / 432 |
+| Lua every frame | **42 / 0 / 42 / 0 mm** (mean 2.1 cm) | 435 / 435 |
+| DLL every frame | **0 mm** | 0 / 417 |
+
+At the DLL's hook, before its write, the engine had already pulled the
+body 3.3 cm toward the seat each frame (10.2 cm at 28 fps in a run taken while
+the game window was unfocused); the renderer never saw it. (observed)
+
+**What it shows.**
+
+* **Rate.** A 50 ms Lua tick against ~74 fps leaves three of four rendered
+  frames unwritten. On a free NPC that is a stair-step (frozen, frozen,
+  frozen, jump); on a seated NPC the engine's pull shows in the unwritten
+  frames as a sawtooth. This is the jitter the testers saw. (observed)
+* **Moment.** Writing every frame from Lua fixes the free NPC but not the
+  seated one: the Lua write lands early in the frame, and on alternate
+  frames the engine's own update (the physics write-back, on the frames
+  physics stepped — inferred from the 1-on/1-off pattern; stock order puts
+  the script update before the physics event pump, WO-105 §16) replaces it
+  before render. The same write at the DLL's frame hook — after the engine's
+  NPC movement, before render — holds exactly. (observed; the mechanism for
+  the alternation inferred)
+* **Thread.** Not the problem: Lua runs on main, which is where entity
+  positions are set. The OblivionMP failure mode ("overrides landing at
+  random times relative to the game's update") is reproduced here by the
+  *phase and rate* of a main-thread script timer.
+* **Engine fight underneath.** The late write wins at render, but the
+  engine still acts in between: the seated body is pulled 3.3 cm per frame
+  before each write, and on the walker the physics body lags ~0.9 cm per
+  frame. Invisible on screen; it matters for collisions and ground contact —
+  hence the R6 reset for seats and the bit-32 write (§9) in the
+  implementation.
+
+**Caveats.** Solo, a locally generated stream (no network timing noise —
+the DLL port must keep the WO-110 sender-clock ring), constant Z (sinking not
+examined), one walking and one seated NPC, the DLL writer ran without the walk
+loop (position only — gait is unchanged by this fix). The first DLL seat run
+happened at 28 fps (window unfocused) and was repeated at matched frame rate.
+
+**Artefacts** (in `<scratch>`, not committed): the probe source, both
+per-frame CSVs per run, the probe log, the session `kcd.log`.

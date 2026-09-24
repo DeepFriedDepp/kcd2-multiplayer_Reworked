@@ -61,6 +61,22 @@ re-added.
 
 Every NPC suspended or reset was resumed before the end (§6).
 
+**Session 3 (follow-up, same day, fresh process):** `quicksave032`, ratio 1,
+guard; probe v3 (two hooks: the frame hook and `CSystem::Render` entry)
+logged one NPC's position every frame at the hook and at render.
+
+| # | run | result |
+|---|---|---|
+| B | walker, DLL writes every frame at the frame hook | 19 mm per frame, sd 0.8 mm, 0 frozen frames |
+| A | same line, the mod's puppet (Lua, 50 ms) | `0 0 0 76` mm stair-step, 75 % of frames frozen, speed sd 2.32 m/s |
+| A′ | same, Lua tick forced to every frame (`npcPuppetTickMs = 10`) | 19 mm per frame, sd 0.8 mm |
+| BS | seated, DLL holds 3 m off the seat | 0 mm at render — but 28 fps (window unfocused); repeated as BS2 |
+| AS | seated, the mod's puppet (Lua, 50 ms) | sawtooth 0 → 123 mm toward the seat every 4 frames |
+| AS′ | seated, Lua every frame | 42 / 0 mm flicker |
+| BS2 | seated, DLL every frame, matched fps | 0 mm at render, every frame |
+
+Findings §14.
+
 ## 3. Static work
 
 * **Ghidra 12.1.3 headless, Java post-scripts** (PyGhidra unavailable, as
@@ -91,9 +107,9 @@ Every NPC suspended or reset was resumed before the end (§6).
 ## 4. The probe DLL (research only)
 
 * Built with the VS Build Tools toolchain from one `.cpp` in `<scratch>`,
-  injected with the project's `KCDMP_LauncherInjector --pid --dll`. Two
-  versions, two file names (a second `LoadLibrary` of the same name is a
-  no-op).
+  injected with the project's `KCDMP_LauncherInjector --pid --dll`. Three
+  versions, three file names (a second `LoadLibrary` of the same name is a
+  no-op); v3 (session 3) had only two hooks and a per-frame position trace.
 * Inline hooks, each checked against its expected first bytes (a mismatch
   skips the hook), patched with every other thread suspended; a
   register-preserving thunk (rcx/rdx/r8/r9 and xmm0–3) counts calls per
@@ -158,4 +174,7 @@ Every NPC suspended or reset was resumed before the end (§6).
   session logs and both probe logs are in `<scratch>`.
 * The probe DLLs, their logs, the Ghidra projects and every probe script
   stay in `<scratch>` only.
-* The game was quit with `System.Quit()` at the end.
+* The game was quit with `System.Quit()` at the end of each session.
+* Session 3: `ttkc_slama` and `ttkc_woman_2` were suspended, streamed and
+  resumed; `npcPuppetTickMs` was set to 10 for one run and restored to 50.
+  `kcd.log` rotated once more (the relaunch); copies in `<scratch>`.
