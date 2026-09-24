@@ -222,3 +222,70 @@ public sealed class NativeNpcFeed
 
     public static long Now() => Stopwatch.GetTimestamp();
 }
+
+/// <summary>
+/// WO-118 follow-up: which NpcState samples go to Lua, for puppets the DLL
+/// writes. Always for an unbound puppet; for a bound one the latest sample at
+/// most every interval, and at once whenever its flags or its health (to the
+/// 0.1 Lua is sent) changed. A skipped sample waits as the pending latest and
+/// <see cref="TakeDue"/> hands it out when due -- at once when its puppet is no
+/// longer bound (Lua writes it again and must start from the latest).
+/// Single-threaded by design: GameBridge calls it from its frame processor only.
+/// </summary>
+public sealed class NpcLuaCoalescer(long intervalTicks)
+{
+    private sealed class State { public long LastPushAt; public byte LastFlags; public float LastHp; public string? Pending; }
+    private readonly Dictionary<string, State> _st = new(StringComparer.Ordinal);
+
+    public long Pushed { get; private set; }
+    public long Coalesced { get; private set; }
+    public int Tracked => _st.Count;
+
+    public void Clear() => _st.Clear();
+
+    /// <summary>True when <paramref name="lua"/> should be sent now.</summary>
+    public bool Offer(string npc, bool bound, byte flags, float hp, long now, string lua)
+    {
+        if (!bound)
+        {
+            _st.Remove(npc);   // anything pending is older than this sample
+            Pushed++;
+            return true;
+        }
+        float hp1 = MathF.Round(hp, 1);
+        if (!_st.TryGetValue(npc, out var st))
+        {
+            _st[npc] = new State { LastPushAt = now, LastFlags = flags, LastHp = hp1 };
+            Pushed++;
+            return true;
+        }
+        if (flags != st.LastFlags || hp1 != st.LastHp || now - st.LastPushAt >= intervalTicks)
+        {
+            st.LastPushAt = now; st.LastFlags = flags; st.LastHp = hp1; st.Pending = null;
+            Pushed++;
+            return true;
+        }
+        st.Pending = lua;
+        Coalesced++;
+        return false;
+    }
+
+    /// <summary>The pending pushes due at <paramref name="now"/>, oldest decision first; null when none.</summary>
+    public List<string>? TakeDue(Func<string, bool> isBound, long now)
+    {
+        List<string>? due = null, gone = null;
+        foreach (var (npc, st) in _st)
+        {
+            bool bound = isBound(npc);
+            if (st.Pending is string lua && (!bound || now - st.LastPushAt >= intervalTicks))
+            {
+                (due ??= new()).Add(lua);
+                st.Pending = null; st.LastPushAt = now;
+                Pushed++;
+            }
+            if (!bound) (gone ??= new()).Add(npc);
+        }
+        if (gone is not null) foreach (var n in gone) _st.Remove(n);
+        return due;
+    }
+}

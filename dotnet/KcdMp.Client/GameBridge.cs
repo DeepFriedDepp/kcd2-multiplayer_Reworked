@@ -82,6 +82,19 @@ public partial class GameBridge(ClientConfig config)
     private NativeNpcFeed? _nativeFeedObj;
     private NativeNpcFeed _nativeFeed => _nativeFeedObj ??= new NativeNpcFeed(_combat);
     private volatile bool _nativeWriteOn = true;      // mirror of mp_npc_native_write
+    // WO-118 follow-up: Lua push coalescing for puppets the DLL writes. The
+    // bound set holds the names the DLL acknowledged and has not dropped (bind
+    // acks, 0x94 drops, Lua's own unbinds; emptied when the native write goes
+    // off) -- touched from the event, pipe and processor threads. The per-NPC
+    // push state below it is the processor's alone.
+    private readonly ConcurrentDictionary<string, byte> _nativeBound = new(StringComparer.Ordinal);
+    // At most one Lua push per bound NPC per 200 ms (flags or health changes go
+    // at once). kdcmp.lua renders a native puppet's gait TUNE.NPC_NATIVE_LUA_DELAY_S
+    // behind (1.2 x this), so its ring never runs dry at the lower rate.
+    private readonly NpcLuaCoalescer _npcLua = new(Stopwatch.Frequency / 5);
+    private static readonly TimeSpan NativeLuaFlushTick = TimeSpan.FromMilliseconds(50);
+    private const int FlushTickType = -1;   // an InFrame that is not a relay frame: flush due Lua pushes
+    private bool NpcNativeBound(string npc) => _nativeWriteOn && _nativeBound.ContainsKey(npc);
     private volatile bool _nativeSenderClock = true;  // mirror of mp_npc_senderclock (native side)
     private int _nativeHeartbeatBusy;
     private long _nativeHeartbeats;
@@ -4116,6 +4129,21 @@ public partial class GameBridge(ClientConfig config)
     {
         var frames = Channel.CreateUnbounded<InFrame>(new UnboundedChannelOptions { SingleReader = true });
         var processor = ProcessFramesAsync(frames.Reader, ct);
+        // The coalescer's clock: a pending Lua push must go out once it is due
+        // even when no further frame for that NPC arrives (a puppet that just
+        // stopped). Through the channel, so the push state stays single-threaded.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(NativeLuaFlushTick, ct);
+                    if (!frames.Writer.TryWrite(new InFrame(FlushTickType, Array.Empty<byte>(), 0))) break;
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
         var header = new byte[3];
         try
         {
@@ -4175,15 +4203,30 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>
+    /// WO-118 follow-up: the coalescer's flush tick (<see cref="NpcLuaCoalescer.TakeDue"/>).
+    /// Lua keeps gait, weapons and policy for a native puppet, none of which
+    /// needs 10 Hz positions, and every push it no longer gets is a slot in the
+    /// ExecuteString budget the socket used to wait on.
+    /// </summary>
+    private async Task FlushDueNpcLuaPushesAsync()
+    {
+        if (_npcLua.Tracked == 0) return;
+        var due = _npcLua.TakeDue(NpcNativeBound, Stopwatch.GetTimestamp());
+        if (due is not null) foreach (var lua in due) await ExecLuaAsync(lua);
+    }
+
+    /// <summary>
     /// Every relay frame, in arrival order: the single receive loop's handlers,
     /// unchanged except that the native feed has already happened on the reader.
     /// </summary>
     private async Task ProcessFramesAsync(ChannelReader<InFrame> frames, CancellationToken ct)
     {
+        _npcLua.Clear();   // nothing pending from a previous connection
         try
         {
             await foreach (var frame in frames.ReadAllAsync(ct))
             {
+                if (frame.Type == FlushTickType) { await FlushDueNpcLuaPushesAsync(); continue; }
                 int type       = frame.Type;
                 var payload    = frame.Payload;
                 int payloadLen = payload.Length;
@@ -4682,9 +4725,11 @@ public partial class GameBridge(ClientConfig config)
                                 _ = _combat.NpcHoldAsync(npcName, 900, ct);
                             }
 
-                            await ExecLuaAsync(string.Format(CultureInfo.InvariantCulture,
+                            string npcLua = string.Format(CultureInfo.InvariantCulture,
                                 "if KCD2MP_ApplyNpcState then KCD2MP_ApplyNpcState(\"{0}\",{1:F3},{2:F3},{3:F3},{4:F4},{5:F1},{6},{7},{8},{9}) end",
-                                npcName, nx, ny, nz, nrot, nhp, nflags, nsrc, nseq, nSenderMs));   // WO-102 Phase 2: source id = the stream's owner (MP-AUTHORITY); WO-110 R6: seq + sender ms
+                                npcName, nx, ny, nz, nrot, nhp, nflags, nsrc, nseq, nSenderMs);   // WO-102 Phase 2: source id = the stream's owner (MP-AUTHORITY); WO-110 R6: seq + sender ms
+                            if (_npcLua.Offer(npcName, NpcNativeBound(npcName), nflags, nhp, frame.Arrival, npcLua))   // WO-118 follow-up
+                                await ExecLuaAsync(npcLua);
 
                             if (nDead && nSeen && !nWasDead)
                                 await ApplyRemoteNpcDeathAsync(npcName, null, nsrc, "0x27 dead transition", ct);
@@ -6030,6 +6075,7 @@ public partial class GameBridge(ClientConfig config)
                 _nativeWriteOn = p[0].Equals("on", StringComparison.OrdinalIgnoreCase);
                 if (p.Length > 1) _nativeSenderClock = p[1].Equals("on", StringComparison.OrdinalIgnoreCase);
                 _nativeFeed.Enabled = _nativeWriteOn;
+                if (!_nativeWriteOn) _nativeBound.Clear();   // WO-118 follow-up: every puppet back to full-rate Lua
                 Console.WriteLine($"[npcwrite] mp_npc_native_write {(_nativeWriteOn ? "on" : "off")} senderclock={(_nativeSenderClock ? "on" : "off")} -> DLL");
                 bool on = _nativeWriteOn, sc = _nativeSenderClock;
                 _ = Task.Run(async () =>
@@ -6075,6 +6121,7 @@ public partial class GameBridge(ClientConfig config)
                 string npc = p[0];
                 if (p[1] == "off")
                 {
+                    _nativeBound.TryRemove(npc, out _);   // WO-118 follow-up: Lua writes it: full rate again
                     _ = _combat.NpcBindAsync(false, 0, 0, 0, 0, 0, 0, npc);
                     return;
                 }
@@ -6093,6 +6140,7 @@ public partial class GameBridge(ClientConfig config)
                 {
                     var (ok, reason) = await _combat.NpcBindAsync(true, eid, wuid, ax, ay, az, delayMs, npc);
                     if (ok) Interlocked.Increment(ref _nativeBindsOk); else Interlocked.Increment(ref _nativeBindsRefused);
+                    if (ok) _nativeBound[npc] = 1; else _nativeBound.TryRemove(npc, out _);   // WO-118 follow-up
                     string tag = NativeNpcCodec.ReasonTag(reason);
                     if (!ok) Console.WriteLine($"[npcwrite] bind {npc} eid=0x{eid:X} refused: {tag}");
                     await ExecLuaAsync($"if KCD2MP_NpcNativeAck then KCD2MP_NpcNativeAck(\"{npc}\", {(ok ? 1 : 0)}, \"{tag}\") end");
@@ -6105,6 +6153,7 @@ public partial class GameBridge(ClientConfig config)
     private async Task OnNativeNpcDroppedAsync(byte reason, string npc)
     {
         Interlocked.Increment(ref _nativeDrops);
+        _nativeBound.TryRemove(npc, out _);   // WO-118 follow-up: Lua writes it again: full rate
         if (!NpcNamePattern.IsMatch(npc)) return;
         string tag = NativeNpcCodec.ReasonTag(reason);
         Console.WriteLine($"[npcwrite] DLL stopped writing {npc}: {tag} -- Lua writes it again");
@@ -6135,7 +6184,7 @@ public partial class GameBridge(ClientConfig config)
                 $"if KCD2MP_NpcNativeAlive then KCD2MP_NpcNativeAlive({(s.Armed ? 1 : 0)}, {(s.NativeOn ? 1 : 0)}, {s.Bound}, {s.Writing}) end"));
             if ((++_nativeHeartbeats % 10) == 0)
                 Console.WriteLine(FormattableString.Invariant(
-                    $"MP-NPCWRITE-STATUS armed={(s.Armed ? 1 : 0)} on={(s.NativeOn ? 1 : 0)} bound={s.Bound} writing={s.Writing} frames={s.FramesWritten} writes={s.Writes} drops={s.Drops} samples={s.Samples} feed_enqueued={Interlocked.Read(ref _nativeFeed.Enqueued)} feed_sent={Interlocked.Read(ref _nativeFeed.Sent)} feed_batches={Interlocked.Read(ref _nativeFeed.Batches)} feed_failed={Interlocked.Read(ref _nativeFeed.FailedBatches)} binds_ok={Interlocked.Read(ref _nativeBindsOk)} binds_refused={Interlocked.Read(ref _nativeBindsRefused)} dll_drops_seen={Interlocked.Read(ref _nativeDrops)} holds={Interlocked.Read(ref _nativeHolds)}"));
+                    $"MP-NPCWRITE-STATUS armed={(s.Armed ? 1 : 0)} on={(s.NativeOn ? 1 : 0)} bound={s.Bound} writing={s.Writing} frames={s.FramesWritten} writes={s.Writes} drops={s.Drops} samples={s.Samples} feed_enqueued={Interlocked.Read(ref _nativeFeed.Enqueued)} feed_sent={Interlocked.Read(ref _nativeFeed.Sent)} feed_batches={Interlocked.Read(ref _nativeFeed.Batches)} feed_failed={Interlocked.Read(ref _nativeFeed.FailedBatches)} binds_ok={Interlocked.Read(ref _nativeBindsOk)} binds_refused={Interlocked.Read(ref _nativeBindsRefused)} dll_drops_seen={Interlocked.Read(ref _nativeDrops)} holds={Interlocked.Read(ref _nativeHolds)} lua_bound={_nativeBound.Count} lua_pushed={_npcLua.Pushed} lua_coalesced={_npcLua.Coalesced}"));
         }
         catch { }
         finally { Interlocked.Exchange(ref _nativeHeartbeatBusy, 0); }
