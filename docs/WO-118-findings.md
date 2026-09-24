@@ -1,0 +1,424 @@
+# WO-118 — findings: the jitter build
+
+Session 2026-09-23, solo, against the running Modding Tools build, a local
+relay and a synthetic authority peer (`tools/wo118`). Four game launches, one
+throwaway save. Progress, gaps and side effects: `docs/WO-118-progress.md`.
+Field page: `docs/WO-118-runbook.md`. Read first: `docs/WO-116-movement-layer.md`
+§14 (the jitter root cause), `docs/WO-110-findings.md`.
+
+Evidence marks: (observed) / (code-verified) / (synthetic) / (inconclusive).
+"The call succeeded" is never used as "the thing happened": every live row
+below was read back from the renderer's own position (`mp_npc_trace`, one CSV
+row per frame at `CSystem::Render`) or from the engine's log.
+**Nothing here ran two-player.** "Observed" means observed solo, with the
+synthetic peer as the authority and this machine as the joiner. Paths:
+`<install>` (the Modding Tools install), `<saves>`, `<scratch>`.
+
+---
+
+## 0. Answer first
+
+* **The native per-frame write works and ships on.** KCDMP.dll writes every
+  bound puppet at its frame hook (after the NPC movement pass, before anim sync
+  and render): `CLivingEntity::SetParams(pe_params_pos, bRecalcBounds 0x21)`,
+  then an unflagged `IEntity::SetPosRotScale`. Render equals written to
+  0.000 mm on every traced frame; bFlying 0 on NPCs; 1.24 million writes,
+  0 faults. (observed)
+* **Phase 5 gate green** on this build (§4): walker 0 frozen frames (legacy
+  75 %), seated 0.0 mm at render (legacy 65–136 mm sawtooth). (observed)
+* **Detach ships on.** Stance/Unstance after the pause frees a paused NPC from
+  its activity: 16 NPCs, 13 activities, pull 0.0000 at 1 m, 3 m and after the
+  walk-away (30 m for five of them). Over the whole WO 68 NPCs in 75 animation
+  states (activities and their transitions) detached with `changed=1`; 12
+  detaches were skipped because the NPC was in a conversation (`IsInDialog`).
+  Cost: a one-frame hop of 5–73 cm, away from the spot, at the detach moment.
+  (observed)
+* **The sender clock needed a jitter allowance — found and fixed in-WO.** With
+  the fixed 120 ms delay, 40 ms + 0–60 ms jitter froze 14.8 % of frames **with**
+  the sender clock and 3.4 % without it. The DLL now measures, per stream, how
+  late the next sample becomes renderable and moves the render time back by its
+  95th percentile (slewed at 10 %): 0 frozen frames, speed sd 0.01–0.02 m/s
+  under the same jitter and 250 ms spikes. (synthetic, §3.8)
+* **Cost ~6.6 µs per written puppet per frame**: 0.25 ms at 37, 0.41 ms at 61,
+  0.45 ms at 70. Frame time native on vs off: no difference beyond run-to-run
+  noise at 40, 64 and 80 streamed puppets. (observed, §3.9)
+* **Ghost (2b): legacy 50 % frozen frames → native 0 %.** Speed wobble remains
+  (sd 0.56 m/s clean, 1.04 m/s at 60 ms jitter): the position frame carries no
+  sender time. A sender stamp is a protocol change; not done. (observed, §3.4)
+* **New limit, pre-existing, not fixed: the agent's ingress** (§3.10). Every NPC
+  sample is also pushed to Lua over the game's REST console, inside the agent's
+  serial receive loop: ~680 samples/s at 75 fps, ~233/s at 25 fps. Above it the
+  backlog grows and every puppet steps at the sample rate — native and legacy
+  alike. 40 walking NPCs fit at 75 fps and **do not fit with the joiner's window
+  unfocused** (the game's background limiter). (observed)
+* **No sinking.** Slope (~8°, 1.64 m over 12 m): render Z − floor +0.04 cm, the
+  engine moved the body 0.00 cm, bFlying 0/1242. Fight (drawn + a swing cue
+  every 2.5 s): Z exact, bFlying 0/1399. (observed, §3.3)
+* **Two pre-existing agent defects found and fixed on the way**: a fresh agent
+  never pushed its first CombatRole (stale damage authority, §3.12); NPC sender
+  stamps were 15.6 ms-quantized (§3.13). (observed)
+
+---
+
+## 1. Predictions — committed 2026-09-23, before the two-player session on this build
+
+Same rules as WO-110 §1: both players on this build through the launcher, the
+joiner loads a copy of the host's save, a town crowd, runbook followed, both
+game windows focused unless a row says otherwise. "Joiner" = the machine whose
+kcd.log says `MP-AUTHORITY-OWNER … authority=peer`.
+
+| # | prediction | P |
+|---|---|---|
+| P1 | The joiner reports walking streamed NPCs **smooth** (no stutter, no stand-and-dash) at defaults | **0.60** |
+| P1a | The joiner agent's `MP-NPCWRITE-STATUS` shows `writing` ≈ `bound` while NPCs walk | 0.80 |
+| P1b | `mp_npc_native_write off` brings the stutter back, visibly (the A/B works in the field) | 0.85 |
+| P1c | Someone notices a seated/working NPC hop once when it becomes a puppet (the detach moment, 5–70 cm) | 0.35 |
+| P2 | NPCs the host moves away from a seat or workstation stay where the stream puts them on the joiner — no slide back, no sawtooth | **0.80** |
+| P3 | No sinking report for puppets | 0.65 |
+| P4 | The peer's avatar never freezes mid-walk, and its pace visibly wobbles on a real internet link | 0.55 |
+| P5 | Every joiner `MP-NPCBIND … result=refused` is `reason=not-living` (no name or WUID mismatch) | 0.90 |
+| P6 | No `MP-NPCWRITE DISARMED` and no `engine call FAULTED` on either machine | 0.95 |
+| P7 | Joiner `MP-NPCWRITE-COST … tick_us_mean` stays below 500 | 0.90 |
+| P8 | Joiner `MP-NPCBIND … jitter_allow_ms` is mostly 0–60 on the real link | 0.70 |
+| P9 | If the joiner alt-tabs for > 10 s near ≥ 25 walking NPCs, puppets step and lag for a while after returning (§3.10) | 0.50 |
+| P10 | After a save reload on either machine, no puppet stays frozen more than 5 s once its stream resumes | 0.70 |
+
+**Top failure modes, ranked, with the line that identifies each:**
+
+1. **Ingress backlog (§3.10).** Joiner agent console:
+   `MP-NPCWRITE-STATUS … bound=<B> writing=<W>` with W ≪ B for more than 10 s.
+   Native log: `MP-NPCPULL … max_cm=50–110 moved_frames=5–10` (the walk
+   animation drifting between late samples) and `jitter_allow_ms` near 300.
+   kcd.log: `MP-NPCWRITE native=healthy … (heartbeat)` repeating (each one = the
+   heartbeat lapsed > 3 s). Field fix: keep the game window in front; fewer
+   walking NPCs in range (`mp_cull_radius 30` on the host).
+2. **Host emitter gaps.** A menu, dialogue or cutscene on the **host** suspends
+   its emitter chain (WO-78): joiner puppets hold, then catch up.
+   `MP-NPCWRITE npc=… event=drop reason=silence` after 4 s of silence.
+3. **Swing resume step (inherited, §3.3).** In a fight an NPC snaps up to ~1 m
+   when a 900 ms swing hold ends, if the host moved it meanwhile.
+4. **Ghost pace wobble (§3.4).** No log line; the trace shows it
+   (`mp_npc_trace kcd2mp_<id> 10`, speed sd).
+5. **Bind churn.** kcd.log `MP-NPCWRITE npc=<n> native=refused|dropped reason=…
+   -- Lua writes it (retry in 10s)` cycling for one NPC.
+6. **Detach hop.** `MP-DETACH npc=<n> … changed=1` at the moment of the hop.
+
+**What would show the per-frame-write diagnosis wrong:** a walker that still
+stair-steps on the joiner **while** its `MP-NPCBIND` is `ok`, the status line
+reads `writing≈bound` and there is no backlog. Then something else writes that
+body; the joiner's `MP-NPCPULL` for it will show `moved_frames` high with
+`lag_frames` low (the engine or a script moving it between our writes).
+
+---
+
+## 2. What shipped
+
+| piece | commits | default / toggle | presets (clean / legacy) | evidence |
+|---|---|---|---|---|
+| Native per-frame writer (frame hook, anchors, ring, WUID check, per-frame write, MP-NPCPULL, trace) | d1164e4, 9aefa8f | `mp_npc_native_write on` | on / off | observed |
+| Jitter allowance (per-stream need, p95, slewed) | 92023cc | always on inside the writer | — | synthetic |
+| Writer cost line `MP-NPCWRITE-COST` | 4d92c14 | always | — | observed |
+| Agent feed: every NPC sample to the DLL; bind/hold/config/trace/status; heartbeat | af18b09 | follows the toggle | — | observed |
+| 1 ms QPC sender stamps | bd26225 | always | — | observed |
+| Lua: bind, fallback on a stale heartbeat, holds for swings/takedowns, `WO118-BUILD`, commands | 4781c86 | — | rows for both toggles | synthetic + observed |
+| Detach (Stance/Unstance after the pause; skipped in dialogue/cutscene) | cfea218 | `mp_npc_detach on` | on / off | observed |
+| Peer ghost on the native writer | 6258502 | follows `mp_npc_native_write` | — | observed |
+| First CombatRole always pushed (bug fix) | eb0436c | — | — | observed |
+| Lua detectors labelled `path=legacy` | a1c5b5f | — | — | synthetic |
+| Pak rebuilt | f299310 | — | — | code-verified |
+| `tools/wo118` gate harness (not shipped) | 704845a | — | — | observed |
+
+`mp_preset_legacy` = today's 50 ms Lua path with no detach (both toggles off);
+`mp_preset_clean` = both on. `mp_puppet_rate` only applies on the legacy path.
+
+---
+
+## 3. Findings
+
+### 3.1 Phase 0 — addresses by anchor, fail-closed (observed, code-verified)
+
+* Resolved at every launch (4 launches, 4 injections this WO) from RTTI vftables
+  (`.?AVCEntity@@`, `.?AVCLivingEntity@@`) plus the instruction bytes each slot
+  must contain: `SetPosRotScale` = CryEntitySystem.dll+0x90AA0,
+  `CLivingEntity::SetParams` = CryPhysics.dll+0x9C900 (slots 0x168 / 0x20;
+  `GetParent` 0xD8, `GetScale` 0x160, `GetPhysics` 0x278, `GetStatus` 0x30).
+  `WO118-NATIVE native_write=armed` every time.
+* Any mismatch → `native_write=DISARMED`, nothing bound, Lua writes as before.
+  Any engine fault inside the write → `MP-NPCWRITE DISARMED`, every puppet
+  dropped back to Lua. Never triggered this WO (code-verified path; 0 faults in
+  1.24 M writes).
+* The transform-flag set on this build is CE3's (no IGNORE_PHYSICS): the
+  physics write keeps the ground collider with bit 32; the entity write that
+  follows is then a zero-length move for the physics proxy (WO-116 §14).
+
+### 3.2 Phase 1 — samples, ring, identity (observed)
+
+* 906 binds across four sessions, **0 WUID mismatches** (`wuid=` = `lua_wuid=`
+  on every line). The only refusal: `not-living` — ~10 NPCs without a living
+  physics body (three `rvacka_apprentice_*`, far `tzda_*`/`ttro_*`), retried
+  every 10 s, left on the Lua path.
+* Sender-clock stamping ported from Lua (rolling two-window minimum offset),
+  Z interpolated on the segment, > 5 m XY step snaps, a moved-gated silence is
+  clipped to one delay. Two stale-state traps found live and fixed (9aefa8f,
+  §6): a restarted stream's sequence (2 s silence → restart) and a
+  reconnecting source's clock (5 s silence → fresh offset).
+
+### 3.3 Phase 2 — the per-frame write; sinking (observed)
+
+* Walker: 0 frozen frames in every clean-link native trace (hundreds of frames
+  each; under injected jitter see §3.8);
+  render = written to 0.000 mm; the engine moved the body 0.00 cm between
+  render(n−1) and hook(n). Step sd 0.28–0.37 cm is frame pacing
+  (corr(step, dt) = 0.94, dt sd 2.5 ms at 13–14 ms); per-frame speed sd
+  0.01–0.02 m/s.
+* Physics lag, not pull: the physics body lags a queued write by one frame, so
+  at the hook it equals the write from two frames earlier (0.00 cm, every such
+  frame). Counted as `lag_frames`, never as pull (9aefa8f).
+* **Slope** (a real 12 m path, 108.0 → 106.4 m, ~8°, 25 floor points, 18 s of
+  passes): render Z − floor mean +0.04 cm, sd 2.1 cm (the plan's 0.5 m point
+  spacing across two floor steps); hook(n+1) = written(n) in Z to 0.000 cm;
+  bFlying 0/1242. Legacy on the same path: Z +0.50 cm, bFlying 0, 54.7 %
+  frozen frames.
+* **Fight** (`fight` mover: circling 1.2 m/s, drawn flag, a swing cue every
+  2.5 s, on a flat floor): render Z = floor on every frame including the held
+  ones; bFlying 0/1399. Six 900 ms holds: the engine left the body still
+  (0.0 cm) and the write resumed with a 76–127 cm step — the synthetic fighter
+  kept circling through its swing. **Inherited, not new**: the legacy path gives
+  a puppet "no writes at all" during a one-shot window and catches up after
+  (WO-39/WO-40); the native hold keeps that exactly. A real swinging NPC barely
+  moves. Blending out of a hold is a follow-up (§7).
+* Lua keeps puppet start/release, pause, locomotion, weapon draw, swing cues and
+  death; dead, unconscious and carried bodies stay on Lua's own behaviour (the
+  DLL skips flags 0x01/0x02/0x10 and parented bodies every frame).
+  (code-verified, synthetic scenarios in `tools/Test-WO118Synthetic.lua`)
+
+### 3.4 Phase 2b — the peer's ghost (observed, synthetic)
+
+* Traced first, as ordered: the legacy Lua path left **50.1 %** of frames
+  frozen → moved to the native writer. Native: 0 frozen frames in every trace,
+  render = written.
+* Pace wobble: speed sd 0.56 m/s clean, 0.76 at 20 ± 20 ms jitter, 1.04 at
+  40 + 0–60 ms (70 fps). The position frame (0x01) carries no sender time, so
+  the ghost renders on arrival time; a linear fit to a clean run left a 3.4 ms
+  timing residual (max 6.6 ms). The real stream is ~30 ms (`MP-POSCADENCE
+  path=native p50_ms=30`). A sender stamp on 0x01 needs a protocol change (the
+  relay's exact-length gate, WO-101); not done in a jitter-only build.
+* bFlying reads 1 on every ghost frame, native or legacy (inconclusive: the
+  ghost's body is spawned differently; nothing sinks or falls).
+
+### 3.5 Phase 3 — detach per activity (observed)
+
+`MP-DETACH … stance=ok unstance=ok result=<before>-><after> changed=1` for every
+row. Holds at 1 m and 3 m and the hold at the end of the walk-away: no
+`MP-NPCPULL` line (max < 1 mm) except the single detach-moment frame. Walking
+phases logged one-step maxima (1.9–2.5 cm, cos 1.00): the physics-lag artifact,
+reclassified by 9aefa8f (walkers log no pull line since).
+
+| NPC | activity at puppet start | walk-away | pull 1 m / 3 m / end | detach hop |
+|---|---|---|---|---|
+| ttkc_man_5 | Guard (guard spot) | 30 m | 0 / 0 / 0 | — |
+| ttkc_man_31 | WoodChopping_loop | 30 m | 0 / 0 / 0 | — |
+| ttkc_woodworker | CarpenterOut | 30 m | 0 / 0 / 0 | — |
+| ttkc_man_19 | Placing (field worker) | 30 m | 0 / 0 / 0 | 6.6 cm |
+| ttkc_bailiffSon | MotionMovement | 30 m | 0 / 0 / 0 | 73.3 cm |
+| ttkc_man_30 | MotionMovement | 20 m | 0 / 0 / 0 | — |
+| ttkc_scribe | TranscribingLoop | 6 m | 0 / 0 / 0 | — |
+| ttkc_man_16 | SittingIdle (dice player) | 6 m | 0 / 0 / 0 | — |
+| ttkc_man_7 | Lying (bed) | 6 m | 0 / 0 / 0 | — |
+| ttkc_man_11 | SellerLoop_VAR | 6 m | 0 / 0 / 0 | 7.4 cm |
+| ttkc_woman_2 | Bartender_TakeAndTapStein | 6 m | 0 / 0 / 0 | — |
+| ttkc_woman_3 | HousekeeperFirewoodIn | 6 m | 0 / 0 / 0 | — |
+| ttkc_inkeeper | SittingIdle | 3 m | 0 / 0 / 0 | — |
+| ttkc_bartosek | Leaning_Back_Loop | 3 m | 0 / 0 / 0 | — |
+| ttkc_emerich | SellerLoop | 3 m | 0 / 0 / 0 | 5.0 cm |
+| ttkc_man_32 | Leaning_Back_Loop | 3 m | 0 / 0 / 0 | — |
+
+* Over the WO (mostly the scale runs, which puppet the whole village): 68 NPCs
+  in 75 distinct states detached `changed=1` — among them LumberJackSaw
+  (sawyer), Carpenter, Weeding, Well, SweepingFloor, PrayKneeling, Cooking,
+  Embroidery, Beggar, the Housekeeper* family (milking, spindle, basket
+  weaving, feeding hens), the Bartender* family, Guest_EatingIn_Left, the
+  WaitingStand* family, Scribe_TableListeningLoop, CampSnoozeLoop and the
+  WoodChopping_* chain. `changed=0` only for NPCs already in motion
+  (IdleToMove) and the three not-living apprentices (`<unknown>`).
+* 12 `result=skipped-dialog` (ambient NPC conversations: `human:IsInDialog()`
+  true). Twice an NPC was detached in `IngameDialogPose_In` — the transition into
+  a conversation, `IsInDialog` still false. No cutscene skip occurred (none
+  played).
+* Without detach (native write alone) a seated NPC renders 0 mm but its body is
+  pulled 2.2 cm/frame toward the seat (cos 1.00) between writes; with detach the
+  pull is 0 and the body grounded.
+* Not tested: the dice minigame mid-game.
+
+### 3.6 Phase 4 — MP-NPCPULL (observed)
+
+* `MP-NPCPULL npc= mean_cm= max_cm= frames= moved_frames= toward_anchor_cos=
+  anchor_m= dz_mean_cm= lag_frames= flying=x/y jitter_allow_ms= window_s=` —
+  every 10 s per puppet, only when the engine moved the body ≥ 1 mm since our
+  write. In the scale runs it flagged exactly three things: Z settling where
+  the synthetic plan held a constant Z over uneven ground (dz_mean ±1–2.5 cm,
+  some bFlying frames — a plan artifact; real streams carry the owner's Z), the
+  one-frame hops at bind/detach, and drift under the ingress backlog (§3.10).
+* The Lua detectors (`MP-AUTHORITY-VIOLATION`, `MP-NPCZ`, `MP-NPCZ-SUMMARY`,
+  `MP-NPCFIGHT`) run only inside the puppet tick's `lastWrote` block, which a
+  native puppet clears. Kept, and now labelled `path=legacy` (a1c5b5f).
+
+### 3.7 Phase 5 — the trace gate (observed)
+
+| run | walker native | seated native + detach | walker legacy | seated legacy |
+|---|---|---|---|---|
+| session 1 | 0/390–446 frozen, speed sd 0.05 m/s | 0.0 mm, 0 moving frames, grounded | 75.6 % frozen, strip `0 0 0 87 …` | 136 mm sawtooth, 543/543 moving, airborne |
+| session 4, scratch harness | 0/443, speed sd 0.022 | 0.0 mm, 0 moving | 75.3 % | 65 mm, 565/566 moving, airborne |
+| session 4, `tools/wo118` | 0/443, speed sd 0.024 | 0.0 mm, 0 moving | 75.3 % | 83 mm, 572/573 moving, airborne |
+
+The WO's "step sd ≈ 0.1 cm" is not met literally (0.32–0.37 cm): the step per
+frame follows the frame time. The pacing-normalised figure, speed sd × mean
+frame time, is 0.02 m/s × 14 ms ≈ 0.03 cm.
+
+### 3.8 Phase 6 — network noise: the sender clock needed a jitter allowance (synthetic)
+
+One walker through the local relay; the peer injects delay/jitter/spikes after
+its sender stamp. 8 s traces, runs ≥ 12 s apart. Frozen % / per-frame speed sd.
+
+| run | link | receiver | fixed 120 ms delay | lateness allowance¹ | shipped (need tracker) |
+|---|---|---|---|---|---|
+| P0 | clean | sender clock | 0 % / 0.01 | 0 % / 0.24 (26 fps) | 0 % / 0.02 |
+| P1 | 40 ms + 0–60 ms | sender clock | **14.8 % / 1.23** | 0 % / 0.16 (26 fps) | **0 % / 0.02** |
+| P2 | P1 + 3 % × 250 ms spikes | sender clock | **15.0 % / 1.26** | 0 % / 0.15 (26 fps) | **0 % / 0.01** |
+| P3 | P2, 15.6 ms tick stamps | sender clock | 21.1 % / 1.50 | 0 % / 0.17 (26 fps) | 0 % / 0.08 |
+| P4 | P2 | arrival time | 3.4 % / 0.46 | 3.0 % / 0.43 | 0 % / 0.37 |
+| P5 | clean | arrival time | 0 % / 0.01 | 0 % / 0.03 | 0 % / 0.02 |
+
+¹ an intermediate build that covered network lateness only; it missed the
+drain frame (one-frame underruns at 26 fps) and arrival-stamped streams.
+
+* **Why.** The sender clock places a sample at its sender time plus the link's
+  *fastest* latency. The fixed delay (1.2 × the emit period) leaves ~20 ms —
+  any later packet, a sender timer firing late, the agent's feed or the frame
+  the drain waits for eats it, and the ring runs dry: a held frame, then a
+  catch-up step. Arrival stamps hide this (the lateness is in the stamp) at the
+  cost of pace noise.
+* **The fix (92023cc).** Per stream, at the drain: need = now − the newest
+  sample's stamp, i.e. how long after the newest stamp the next sample became
+  renderable. A streaming 95th percentile (4 ms steps); gaps > 0.5 s are
+  moved-gated silences, not counted. Render time moves back by
+  (need − delay), 0–300 ms, slewed at 10 % of real time so a change never shows
+  as a step. `jitter_allow_ms` in `MP-NPCBIND`/`MP-NPCPULL`: 0 on a clean link,
+  18–80 ms under this jitter.
+
+### 3.9 Phase 6 — cost at 40 and 80 puppets (observed)
+
+Walking movers (4 m ping-pong lines), frame time from traces, writer time from
+`MP-NPCWRITE-COST`. Window focused except where noted.
+
+| streamed (bound / written) | emit | writer µs/frame mean (max) | frame ms native on | frame ms native off |
+|---|---|---|---|---|
+| none (baseline) | — | — | 13.48 | — |
+| 40 (37 / 37) | 100 ms | 235–253 (411) | 13.51, 13.20 | 13.29 |
+| 40 (37 / 37), repeat | 100 ms | 229–250 (414) | 13.98, 14.13 | 14.06 |
+| 64 (61 / 61) | 100 ms | 404–407 (582) | 13.17, 13.17 | 13.14 |
+| 80 (70 / 70) | 200 ms | 452–456 (819) | 14.11, 14.15 | 14.10 |
+| 80 (70–71 / 10–14) | 100 ms | 115–149 | 13.27, 13.27 | 13.39 |
+| 40 (37 / ~9), **minimized** | 100 ms | 88–121 | 39.1, 39.2 (26 fps) | 39.6 |
+
+* ~6.6 µs per written puppet per frame, linear (0.25 ms → 0.41 → 0.45 ms);
+  ≈ 3 % of a 13.5 ms frame at 70. The on/off difference is inside run-to-run
+  noise at every size (±0.3 ms).
+* 80 at 100 ms emit could not be fed (§3.10): only 10–14 of 70 written per
+  frame. 200 ms emit keeps 80 inside the ingress and the allowance adapts to
+  the slower stream (the traced puppet was written every frame).
+* 10 of 80 refused `not-living` (fail-closed, Lua path).
+* The trace itself writes its CSV on the main thread at the end: one 1.8–6.9 ms
+  tick (`tick_us_max`) per trace.
+
+### 3.10 The agent's ingress ceiling (observed; pre-existing, not fixed)
+
+* The agent's relay reader is one serial loop. Each NpcState packet is decoded,
+  queued for the DLL (non-blocking), **and** pushed to Lua through the batched
+  REST `ExecuteString`, whose flush awaits the game. Measured at the DLL:
+  ~680 samples/s forwarded at 75 fps (727 emitted), ~233/s at 25 fps (367
+  emitted, window minimized).
+* Past the ceiling the TCP backlog grows (~2 s after 30 s at 80 × 10 Hz). The
+  arrival stamp is taken after the backlog, so every sample looks late: the
+  allowance hits its 300 ms cap and each puppet is written once per arriving
+  sample and held in between (a stair-step at the sample rate), with the walk
+  animation drifting the body between writes (`MP-NPCPULL max_cm≈105`). Lua's
+  heartbeat rides the same queue and lapses > 3 s (`native=healthy` re-logged),
+  so Lua briefly unbinds and rebinds. The legacy path reads the same stale
+  queue: no better.
+* In practice the owner emits only walking NPCs at 10 Hz (still ones every 2 s),
+  so a town rarely streams more than 10–20 walkers — inside the ceiling at any
+  frame rate. The risk is a crowd plus an unfocused joiner (P9).
+* Fix, for a later WO: feed the DLL straight from the socket read (stamp at
+  read, independent of Lua), and push Lua only the latest sample per NPC
+  (native puppets need Lua for gait, flags and policy, not for positions).
+
+### 3.11 The game's background frame limiter (methodology, observed)
+
+KCD2 runs at ~26 fps (39 ms frames) whenever its window is not in front —
+reproduced by minimizing (40.4 ms) and undone by bringing it forward (14.1 ms).
+Several runs this WO landed at 26 fps before this was understood; every row
+above carries its frame rate, and `tools/wo118` now focuses the window first.
+
+### 3.12 A fresh agent never pushed its first CombatRole (observed, fixed eb0436c)
+
+Lua kept `hitSensorOn=on` from an earlier agent: a fresh agent's first
+CombatRole (false) compared equal to its own default and was never pushed. Now
+the first role of every connection is pushed; verified live (`hit_sensor_was=on`
+→ `HIT_SENSOR off` at once). Affects any session where an agent restarts under
+a running game.
+
+### 3.13 Sender stamps were 15.6 ms-quantized (observed, fixed bd26225)
+
+The agent stamped NpcState with `Environment.TickCount64` (15.6 ms steps): a
+clean-link walker showed speed sd 0.23 m/s from the stamps alone (0.04 m/s with
+1 ms QPC stamps). P3 above shows the old stamps under noise.
+
+---
+
+## 4. Phase 5 gate against the shipped build
+
+Filled at the end gate from a fresh-clone build (DLL and pak from the clone):
+see `docs/WO-118-progress.md` §5.
+
+---
+
+## 5. Not done, inconclusive, stated plainly
+
+* **Nothing two-player.** Every number is solo with a synthetic authority on
+  loopback; the network noise is injected, not real.
+* **80 walking puppets at the real 10 Hz** could not be fed (§3.10); cost at 80
+  was measured at 200 ms emit, where all 70 bound puppets were written.
+* **Ghost pace** stays on arrival time (§3.4).
+* **The dice minigame mid-game** was not tested with detach.
+* **bFlying on the ghost** reads 1 always (inconclusive).
+* **A reload with puppets bound** was not traced this WO (the WO-110 §3.4
+  post-reload write fight was not re-run against the native path).
+* **The slope** found near the village was ~8°; nothing steeper was reachable
+  with a clean floor profile.
+
+---
+
+## 6. Corrections this WO makes to the record
+
+* The sender clock (WO-110 R6) was believed to make jittery links smoother. With
+  the fixed 1.2 × delay it made them freeze **more** (14.8 % vs 3.4 %); it needs
+  the allowance (§3.8). The legacy Lua path still has the fixed delay.
+* NPC sender stamps were never 1 ms: they were 15.6 ms steps until bd26225.
+* WO-116 §14's "DLL write at the frame hook = 0 mm" holds for the write at the
+  hook's **exit** too (later than the probe's entry write), including with the
+  ground collider kept.
+* The Lua detectors are legacy-path instruments from this build on (§3.6).
+
+---
+
+## 7. Open, carried forward
+
+1. **Agent ingress** (§3.10): read-side stamping and a DLL feed independent of
+   the Lua push; latest-per-NPC Lua pushes for native puppets.
+2. **Ghost sender time**: a sender-ms field on the position frame (protocol).
+3. **Blend out of a swing hold** instead of stepping (§3.3).
+4. **The detach hop** (5–73 cm once): seed the write from the body after
+   Unstance, or detach before the first write.
+5. **Legacy path** keeps the fixed delay and the 50 ms write; it is the A/B only.
+6. Two-player verification of P1–P10.
