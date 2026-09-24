@@ -32,6 +32,8 @@
 --       (default 10, clamped 1..120); stop emits <last> 0; the console
 --       commands are registered with the unquoted %line
 --   (m) silence release, diverge release and a reload each send the unbind
+--   (o) follow-up: a native puppet fed at 5 Hz (the agent's coalescing) keeps a
+--       steady walk gait, and its sequence jumps are not counted as gaps
 --   (n) Phase 2b: the peer's ghost binds like a puppet (kcd2mp_<id>, delay
 --       100 ms), stops its Lua write when owned, sends a hold for a one-shot,
 --       unbinds while riding, and a drop hands it back
@@ -204,6 +206,43 @@ do
     check("c3: the retry is offered", nb == 2, nb)
     check("c3: and Lua kept writing through it (no hold on a body Lua already writes)", #r.writes >= 205, #r.writes)
     check("c3: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (o)
+do
+    reset(); NOW = 900
+    local e = mkEntity("o_npc", 50, 50, 0)
+    alive()
+    tick("o_npc", 50, 50, 0)
+    KCD2MP_NpcNativeAck("o_npc", 1, "ok")
+    check("o: native-owned (precondition)", KCD2MP.npcPuppets.o_npc.nativeOwned == true)
+    local gaps0 = (KCD2MP.npcPacketStats and KCD2MP.npcPacketStats.seqGaps) or 0
+    -- The coalescer's real cadence: a push once 200 ms are up, on the next
+    -- 100 ms stream sample or the 50 ms flush tick -- 200-300 ms apart -- for
+    -- a brisk 1.6 m/s walk (today's 120 ms clip would read it as a run).
+    local gapsMs, gi, nextAt = { 200, 250, 300, 200, 250, 200, 300, 250 }, 1, NOW + 0.2
+    local tags, other, x = 0, {}, 50
+    for i = 1, 100 do                       -- 5 s of 50 ms ticks
+        NOW = NOW + 0.05
+        x = x + 1.6 * 0.05
+        if NOW >= nextAt - 1e-6 then
+            SEQ = SEQ + 3; packet("o_npc", x, 50, 0)   -- the agent skipped the samples in between
+            nextAt = nextAt + gapsMs[gi] / 1000; gi = gi % #gapsMs + 1
+        end
+        alive()
+        KCD2MP.npcPuppetRunning = true
+        KCD2MP_NpcPuppetTick("ext")
+        if i > 24 then
+            local t = KCD2MP.npcPuppets.o_npc.animTag
+            if t == "walk" then tags = tags + 1 else other[#other + 1] = tostring(t) end
+        end
+    end
+    check("o: a coalesced native puppet keeps walking (no run, no idle flicker)", #other == 0, table.concat(other, ","))
+    check("o: coalesced sequence jumps are not counted as gaps",
+          ((KCD2MP.npcPacketStats and KCD2MP.npcPacketStats.seqGaps) or 0) == gaps0,
+          ((KCD2MP.npcPacketStats and KCD2MP.npcPacketStats.seqGaps) or 0) - gaps0)
+    check("o: Lua still writes no position", #e.writes == 0, #e.writes)
+    check("o: no Lua errors", #ERRS == 0, ERRS[1])
 end
 
 -- ---------------------------------------------------------------- (b)

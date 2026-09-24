@@ -2581,6 +2581,16 @@ TUNE.NPC_SMOOTH_RING = 3
 -- 120 ms delay would flick walk->idle->walk for one tick, which is exactly
 -- the churn Step 1 exists to remove.
 TUNE.NPC_SMOOTH_ANIM_GRACE_S = 0.06
+-- WO-118 follow-up: a puppet KCDMP.dll writes gets its samples from the agent
+-- at most every 200 ms (GameBridge's NpcLuaCoalescer; flag and health changes
+-- at once) -- in practice 200-300 ms apart. Lua renders it only for the gait,
+-- and at the 10 Hz delay above every such segment would be clipped (a 1.6 m/s
+-- walk read as a 3.3 m/s run) and every gap would outlast the grace (idle
+-- flicker). So a native puppet's gait renders 1.2 x the push interval behind,
+-- with a longer grace: true segment speeds, and a stop still reads as a stop.
+-- The DLL renders the body 120 ms behind, so the gait trails it by ~0.12 s.
+TUNE.NPC_NATIVE_LUA_DELAY_S = 0.24
+TUNE.NPC_NATIVE_ANIM_GRACE_S = 0.12
 
 -- Copy of the ghost path's calcAnimTag hysteresis bands (kdcmp.lua ANIMS.ANIM_UP /
 -- ANIMS.ANIM_DOWN + calcAnimTag), stance-free. Deliberately a COPY, not a shared
@@ -2642,7 +2652,8 @@ local function mp_npc_smooth_render(p, now)
     local ring = p.ring
     local n = ring and #ring or 0
     if n == 0 then return nil end
-    local delay = KCD2MP_NpcSmoothDelayS()
+    local delay = p.nativeOwned and TUNE.NPC_NATIVE_LUA_DELAY_S or KCD2MP_NpcSmoothDelayS()
+    local grace = p.nativeOwned and TUNE.NPC_NATIVE_ANIM_GRACE_S or TUNE.NPC_SMOOTH_ANIM_GRACE_S
     local renderAt = now - delay
     local a, b
     if renderAt >= ring[n].at then
@@ -2659,7 +2670,7 @@ local function mp_npc_smooth_render(p, now)
         p.cx, p.cy, p.cz, p.cr = a.x, a.y, a.z, a.rot
         -- Holding. A late packet (jitter) is indistinguishable from a stop
         -- for the first TUNE.NPC_SMOOTH_ANIM_GRACE_S; after that it is a stop.
-        if a == ring[n] and (renderAt - a.at) <= TUNE.NPC_SMOOTH_ANIM_GRACE_S then
+        if a == ring[n] and (renderAt - a.at) <= grace then
             spd = p.segSpd or 0
         else
             spd = 0
@@ -5941,7 +5952,7 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src, seq, senderMs)
         local s = KCD2MP.npcPacketStats
         if d == 0 then s.seqDup = (s.seqDup or 0) + 1; seqOk = false
         elseif d > 32768 then s.seqBehind = (s.seqBehind or 0) + 1; seqOk = false
-        elseif d > 1 then s.seqGaps = (s.seqGaps or 0) + (d - 1) end
+        elseif d > 1 and not p.nativeOwned then s.seqGaps = (s.seqGaps or 0) + (d - 1) end   -- a native puppet's are the agent's coalescing
     end
     if seq and seqOk then p.lastSeq = seq end
     local stampAt = mp_sender_stamp(src, tonumber(senderMs), nowPkt)
