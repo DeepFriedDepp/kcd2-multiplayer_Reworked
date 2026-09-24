@@ -229,6 +229,8 @@ struct Stream {
     uint8_t     src = 0;
     double      lastSampleAt = 0;   // local clock of the last sample (accepted or not)
     double      lastAcceptedAt = 0; // local clock of the last sample that entered the ring
+    bool        haveSenderMs = false;
+    uint32_t    lastSenderMs = 0;   // the newest accepted sample's sender stamp
     double      needQ = 0;          // ~95th percentile of (drain time - newest stamp), seconds
     bool        needInit = false;
 };
@@ -336,16 +338,26 @@ void push_sample(const InSample& in, double now) {
     // starts over): without this a stream back inside the 15 s forget window
     // was rejected as "older" until its seq passed the old one -- a bound,
     // frozen puppet (observed solo, WO-118: writes=1 after a peer restart).
-    if (s.haveSeq && now - s.lastAcceptedAt > kSeqRestartS) s.haveSeq = false;
+    if (s.haveSeq && now - s.lastAcceptedAt > kSeqRestartS) { s.haveSeq = false; s.haveSenderMs = false; }
     bool seqOk = true;
     if (s.haveSeq) {
         const uint16_t d = static_cast<uint16_t>(in.seq - s.lastSeq);
         if (d == 0 || d > 32768) seqOk = false;
     }
+    // Order by the sender's own clock as well: a peer's ghost has no sender
+    // sequence (the agent numbers its samples on arrival), so a sample that is
+    // not newer than the last accepted one on the SENDER's clock is out of
+    // order and never enters the ring -- a reordered 30 ms ghost sample used to
+    // drag the render back (synthetic: 2 frozen frames, pace sd 0.16 m/s under
+    // 0-60 ms jitter). Compared on the stamp, not on the mapped time, which
+    // shifts whenever the clock's minimum offset improves.
+    const bool stamped = in.senderMs != 0 && g_senderClock.load(std::memory_order_relaxed);
+    if (seqOk && stamped && s.haveSenderMs && static_cast<int32_t>(in.senderMs - s.lastSenderMs) <= 0) seqOk = false;
     s.lastSampleAt = now;
     s.src = in.src;
     if (!seqOk) return;
     s.haveSeq = true; s.lastSeq = in.seq; s.lastAcceptedAt = now;
+    if (stamped) { s.haveSenderMs = true; s.lastSenderMs = in.senderMs; }
     s.flags = in.flags;
     // The need, measured before this sample joins the ring: how long after the
     // newest sample's stamp the next one actually became renderable. A
@@ -806,6 +818,7 @@ uint8_t bind_main(const BindRequest& req) {
         Stream& s = g_streams[key];
         if (s.name.empty()) s.name = req.name;
         s.haveSeq = false;   // a bind is a fresh puppet on the Lua side too (its seq accounting starts over)
+        s.haveSenderMs = false;
         if (now - s.lastAcceptedAt > kSeqRestartS) s.n = 0;   // samples from an earlier stream are not this one
         p.lateApplied = late_target(s, p.delay);   // no slew at a bind: nothing has been rendered yet
         s.lastSampleAt = s.lastSampleAt > 0 ? s.lastSampleAt : now;
