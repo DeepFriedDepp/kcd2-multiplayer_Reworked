@@ -57,9 +57,24 @@ constexpr uint32_t kUnusedInt       = 0x80000000u;
 
 constexpr double kSilenceS      = 4.0;    // Lua releases a puppet at 3 s; the DLL stops a hair later on its own
 constexpr double kStreamForgetS = 15.0;   // an unbound stream entry is forgotten after this much silence
-constexpr int    kRingDepth     = 8;      // Lua keeps 3 (enough at 100 ms samples); a faster stream (a ghost, ~30 Hz) needs delay/period + 2
+constexpr int    kRingDepth     = 16;     // Lua keeps 3 (enough at 100 ms samples); a faster stream (a ghost, ~30 Hz) needs (delay + allowance)/period + 2
 constexpr double kClockResetS   = 5.0;    // a source silent this long gets a fresh offset estimate (a reconnect reuses relay ids)
 constexpr double kSeqRestartS   = 2.0;    // a stream silent this long may restart its sequence (a sender restart)
+// Jitter allowance. The render needs, at every frame, a sample stamped at or
+// after (now - delay); the fixed delay (1.2 x the emit period) leaves ~20 ms
+// for everything that makes the NEXT sample reach the ring later than one
+// period after the newest one: arrival jitter (the sender clock places a
+// sample at the link's FASTEST latency), a sender whose timer fires late, the
+// agent's feed, and the frame the drain waits for. Past it the ring runs dry:
+// a held frame, then a catch-up step. Observed solo, WO-118 s6: 40 ms delay +
+// 0-60 ms jitter gave 15 % frozen frames with the sender clock on; at 26 fps a
+// clean link still dropped one frame in ~20. So the need is measured where it
+// bites -- at the drain, (now - the newest sample's stamp) -- per stream.
+constexpr double kNeedQ         = 0.95;   // the delay covers this quantile of the need
+constexpr double kNeedStepS     = 0.004;  // the quantile tracker's step per sample
+constexpr double kNeedCapS      = 0.50;   // a longer gap is a moved-gated silence, not jitter
+constexpr double kLateMaxS      = 0.30;   // the allowance never exceeds this
+constexpr double kLateSlew      = 0.10;   // the applied allowance moves at most 10 % of real time
 constexpr float  kSnapM2        = 25.0f;  // mp_npc_ring_push: an XY step over 5 m is a teleport
 constexpr size_t kMaxBound      = 160;    // puppets written per frame, at most
 constexpr size_t kMaxStreams    = 512;
@@ -191,6 +206,9 @@ struct Stream {
     uint8_t     src = 0;
     double      lastSampleAt = 0;   // local clock of the last sample (accepted or not)
     double      lastAcceptedAt = 0; // local clock of the last sample that entered the ring
+    double      needQ = 0;          // ~95th percentile of (drain time - newest stamp), seconds
+    bool        needInit = false;
+    bool        needSkip = false;   // the next sample follows a bind's synthetic seed: not a measurement
 };
 struct SenderClock { double curMin = 1e300, curStart = 0, prevMin = 1e300, lastSeen = 0; bool havePrev = false; bool init = false; };
 
@@ -201,6 +219,7 @@ struct Puppet {
     uint64_t wuid = 0;
     float    anchor[3]{};
     double   delay = 0.12;
+    double   lateApplied = 0;       // the jitter allowance in use (slewed toward late_target)
     double   holdUntil = 0;
     bool     haveLast = false;
     float    last[3]{};
@@ -219,6 +238,7 @@ std::unordered_map<std::string, Stream> g_streams;
 std::unordered_map<std::string, Puppet> g_bound;
 SenderClock g_clocks[256];
 double      g_lastPrune = 0;
+double      g_lastTickAt = 0;
 bool        g_announcedFault = false;
 
 // MP-NPCWRITE-COST window: the writer's own time per frame (the whole tick,
@@ -267,6 +287,13 @@ double sender_stamp(uint8_t src, uint32_t senderMs, double nowPkt) {
     return at;
 }
 
+// What the render delay should add for this stream right now.
+double late_target(const Stream& s, double delay) {
+    if (!s.needInit) return 0.0;
+    const double extra = s.needQ - delay;
+    return extra <= 0 ? 0.0 : (extra > kLateMaxS ? kLateMaxS : extra);
+}
+
 void push_sample(const InSample& in, double now) {
     const std::string key = lower(in.name);
     auto it = g_streams.find(key);
@@ -293,6 +320,20 @@ void push_sample(const InSample& in, double now) {
     if (!seqOk) return;
     s.haveSeq = true; s.lastSeq = in.seq; s.lastAcceptedAt = now;
     s.flags = in.flags;
+    // The need, measured before this sample joins the ring: how long after the
+    // newest sample's stamp the next one actually became renderable. A
+    // streaming 95th percentile: up by q steps when above the estimate, down
+    // by (1-q) otherwise. A rare spike above it still holds briefly --
+    // covering a 250 ms spike would add 250 ms to the puppet's latency.
+    if (s.n > 0 && !s.needSkip) {
+        const double need = now - s.ring[s.n - 1].at;
+        if (need > 0 && need < kNeedCapS) {
+            if (!s.needInit) { s.needQ = need; s.needInit = true; }
+            else s.needQ += need > s.needQ ? kNeedStepS * kNeedQ : -kNeedStepS * (1.0 - kNeedQ);
+            if (s.needQ < 0) s.needQ = 0;
+        }
+    }
+    s.needSkip = false;
     double nowPkt = now;
     if (in.arrivalQpc > 0) {
         const double a = qpc_to_s(in.arrivalQpc);
@@ -367,10 +408,10 @@ void pull_flush(Puppet& p, double now) {
     if (p.winFrames > 0 && p.maxCm >= kPullFloorCm) {
         const float ax = p.anchor[0] - p.last[0], ay = p.anchor[1] - p.last[1];
         logf("MP-NPCPULL npc=%s mean_cm=%.2f max_cm=%.2f frames=%u moved_frames=%u toward_anchor_cos=%.2f anchor_m=%.1f "
-             "dz_mean_cm=%.2f lag_frames=%u flying=%u/%u window_s=%.0f",
+             "dz_mean_cm=%.2f lag_frames=%u flying=%u/%u jitter_allow_ms=%.0f window_s=%.0f",
              p.name.c_str(), p.sumCm / p.winFrames, p.maxCm, p.winFrames, p.winMoved,
              p.cosN ? p.cosSum / p.cosN : 0.0, std::sqrt(ax * ax + ay * ay),
-             p.sumDzCm / p.winFrames, p.winLag, p.winFlying, p.winFlyChecks, now - p.winStart);
+             p.sumDzCm / p.winFrames, p.winLag, p.winFlying, p.winFlyChecks, p.lateApplied * 1000.0, now - p.winStart);
     }
     p.winStart = now; p.winFrames = p.winMoved = p.winFlyChecks = p.winFlying = p.cosN = p.winLag = 0;
     p.sumCm = p.maxCm = p.sumDzCm = p.cosSum = 0;
@@ -697,13 +738,16 @@ uint8_t bind_main(const BindRequest& req) {
         Stream& s = g_streams[key];
         if (s.name.empty()) s.name = req.name;
         s.haveSeq = false;   // a bind is a fresh puppet on the Lua side too (its seq accounting starts over)
-        seed(s, cur, yaw_of(e), now - p.delay);
+        p.lateApplied = late_target(s, p.delay);   // no slew at a bind: nothing has been rendered yet
+        seed(s, cur, yaw_of(e), now - p.delay - p.lateApplied);
+        s.needSkip = true;
         s.lastSampleAt = s.lastSampleAt > 0 ? s.lastSampleAt : now;
     }
     g_statBound.store(static_cast<uint16_t>(g_bound.size()));
-    logf("MP-NPCBIND npc=%s result=ok%s eid=0x%X wuid=%016llX lua_wuid=%016llX anchor=(%.2f,%.2f,%.2f) delay_ms=%u bound=%zu",
+    logf("MP-NPCBIND npc=%s result=ok%s eid=0x%X wuid=%016llX lua_wuid=%016llX anchor=(%.2f,%.2f,%.2f) delay_ms=%u jitter_allow_ms=%.0f bound=%zu",
          req.name, rebind ? " rebind=1" : "", req.eid, static_cast<unsigned long long>(nativeWuid),
-         static_cast<unsigned long long>(req.wuid), req.anchor[0], req.anchor[1], req.anchor[2], req.delayMs, g_bound.size());
+         static_cast<unsigned long long>(req.wuid), req.anchor[0], req.anchor[1], req.anchor[2], req.delayMs,
+         p.lateApplied * 1000.0, g_bound.size());
     return kOk;
 }
 
@@ -726,6 +770,9 @@ void tick() {
     npctrace::frame_begin(now);
 
     if (!g_armed.load(std::memory_order_relaxed)) { npctrace::frame_end(); return; }
+    double dt = (g_lastTickAt > 0 && now > g_lastTickAt) ? now - g_lastTickAt : 0.0;
+    if (dt > 0.1) dt = 0.1;   // a hitch (a load, a menu) is not a reason to slew further
+    g_lastTickAt = now;
 
     std::vector<InSample> samples;
     std::vector<InHold> holds;
@@ -786,8 +833,15 @@ void tick() {
             ++it;
             continue;
         }
+        // The jitter allowance, slewed: the render clock never runs more than
+        // kLateSlew faster or slower than real time, so a change in the link's
+        // lateness shows as a 10 % pace change for a moment, never a step.
+        const double target = late_target(s, p.delay), maxStep = kLateSlew * dt;
+        if (target > p.lateApplied + maxStep) p.lateApplied += maxStep;
+        else if (target < p.lateApplied - maxStep) p.lateApplied -= maxStep;
+        else p.lateApplied = target;
         float pose[4];
-        if (!render(s, now - p.delay, p.delay, pose)) { ++it; continue; }
+        if (!render(s, now - p.delay - p.lateApplied, p.delay + p.lateApplied, pose)) { ++it; continue; }
         bool wrote = false;
         if (!write_one(p, e, pose, &wrote)) {
             if (!g_announcedFault) { g_announcedFault = true; logf("MP-NPCWRITE npc=%s engine call FAULTED", p.name.c_str()); }
