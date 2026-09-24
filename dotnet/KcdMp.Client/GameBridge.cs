@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
 
 namespace KcdMp.Client;
 
@@ -4097,18 +4098,93 @@ public partial class GameBridge(ClientConfig config)
     // Receive loop – server pushes Ghost and Name packets to us
     // -------------------------------------------------------------------------
 
+    /// <summary>One relay frame, stamped the moment its last byte was read.</summary>
+    private readonly record struct InFrame(int Type, byte[] Payload, long Arrival);
+
+    /// <summary>
+    /// WO-118 follow-up: the relay reader. It only reads, stamps and feeds:
+    /// every frame is stamped the moment its bytes are in, NpcState and Ghost
+    /// samples go to KCDMP.dll's writer right there (<see cref="FeedNativeAtRead"/>),
+    /// and the frame is handed to <see cref="ProcessFramesAsync"/>, which owns
+    /// everything else -- the Lua pushes included. Before, one serial loop did
+    /// both, so a Lua batch waiting on the game stalled the socket: past ~680
+    /// samples/s at 75 fps (~233/s with the game in the background) the TCP
+    /// backlog grew, every arrival stamp included it, and every puppet was
+    /// written once per late sample (docs/WO-118-findings.md s3.10).
+    /// A processor that dies ends the reader too, as the single loop did.
+    /// </summary>
     private async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken ct)
     {
+        var frames = Channel.CreateUnbounded<InFrame>(new UnboundedChannelOptions { SingleReader = true });
+        var processor = ProcessFramesAsync(frames.Reader, ct);
         var header = new byte[3];
         try
         {
-            while (!ct.IsCancellationRequested)
+            while (!ct.IsCancellationRequested && !processor.IsCompleted)
             {
                 await ReadExactAsync(stream, header, ct);
                 int type       = header[0];
                 int payloadLen = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(1));
                 var payload    = new byte[payloadLen];
                 await ReadExactAsync(stream, payload, ct);
+                long arrival   = Stopwatch.GetTimestamp();
+                FeedNativeAtRead(type, payload, arrival);
+                frames.Writer.TryWrite(new InFrame(type, payload, arrival));
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) when (ex is IOException or SocketException or EndOfStreamException) { }
+        finally { frames.Writer.TryComplete(); }
+        await processor;
+    }
+
+    /// <summary>
+    /// WO-118 follow-up: the per-frame native feed, on the reader. The same
+    /// decode and name rules as the processor's handlers (which drop what this
+    /// drops, and count it); anything malformed is simply not fed.
+    /// </summary>
+    private void FeedNativeAtRead(int type, byte[] payload, long arrival)
+    {
+        if (type == Protocol.NpcStateDown
+            && payload.Length >= 1 + 1 + 1 + Protocol.NpcStateFixedTail
+            && payload.Length <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
+        {
+            int nameLen = payload[1];
+            if (payload.Length != 2 + nameLen + Protocol.NpcStateFixedTail) return;
+            string npcName = Encoding.UTF8.GetString(payload, 2, nameLen);
+            if (!NpcNamePattern.IsMatch(npcName)) return;
+            int o = 2 + nameLen;
+            _nativeFeed.Enqueue(new NativeNpcSample(payload[0], npcName,
+                ReadFloat(payload, o), ReadFloat(payload, o + 4), ReadFloat(payload, o + 8), ReadFloat(payload, o + 12),
+                payload[o + Protocol.NpcStateFlagsOffset],
+                BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(o + Protocol.NpcStateSeqOffset)),
+                BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(o + Protocol.NpcStateSenderMsOffset)),
+                arrival));
+        }
+        else if (type == Protocol.Ghost && PositionCodec.TryDecodeGhost(payload, out var gs))
+        {
+            // The ghost body is "kcd2mp_<id>" (KCD2MP_SpawnGhost); riding is
+            // passed as the carried bit so the DLL leaves a rider to the horse
+            // (the mod unbinds a riding ghost as well).
+            ushort gSeq = _ghostNativeSeq.AddOrUpdate(gs.GhostId, 1, (_, v) => unchecked((ushort)(v + 1)));
+            _nativeFeed.Enqueue(new NativeNpcSample(gs.GhostId, "kcd2mp_" + gs.GhostId, gs.X, gs.Y, gs.Z, gs.RotZ,
+                gs.IsRiding ? (byte)0x10 : (byte)0, gSeq, 0u, arrival));
+        }
+    }
+
+    /// <summary>
+    /// Every relay frame, in arrival order: the single receive loop's handlers,
+    /// unchanged except that the native feed has already happened on the reader.
+    /// </summary>
+    private async Task ProcessFramesAsync(ChannelReader<InFrame> frames, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var frame in frames.ReadAllAsync(ct))
+            {
+                int type       = frame.Type;
+                var payload    = frame.Payload;
+                int payloadLen = payload.Length;
 
                 if (type == Protocol.Pong && payloadLen == 8)
                 {
@@ -4137,7 +4213,6 @@ public partial class GameBridge(ClientConfig config)
                     // WO-100.5 Phase 2 appends [pace:1][dir:1][stance:1][animSpeedCenti:2].
                     // WO-101: decoded by PositionCodec, shared with the relay
                     // round-trip gate; the length was already gated above.
-                    long gArrival = Stopwatch.GetTimestamp();   // WO-118 Phase 2b: the DLL renders ghosts on this clock
                     PositionCodec.TryDecodeGhost(payload.AsSpan(0, payloadLen), out var gs);
                     byte ghostId   = gs.GhostId;
                     float x        = gs.X;
@@ -4147,13 +4222,8 @@ public partial class GameBridge(ClientConfig config)
                     bool  isRiding = gs.IsRiding;
                     bool  isStale  = gs.IsStale;   // WO-99 Phase 1
 
-                    // WO-118 Phase 2b: the same sample to the native writer. The
-                    // ghost body is "kcd2mp_<id>" (KCD2MP_SpawnGhost); riding is
-                    // passed as the carried bit so the DLL leaves a rider to the
-                    // horse (the mod unbinds a riding ghost as well).
-                    ushort gSeq = _ghostNativeSeq.AddOrUpdate(ghostId, 1, (_, v) => unchecked((ushort)(v + 1)));
-                    _nativeFeed.Enqueue(new NativeNpcSample(ghostId, "kcd2mp_" + ghostId, x, y, z, rotZ,
-                        isRiding ? (byte)0x10 : (byte)0, gSeq, 0u, gArrival));
+                    // WO-118 Phase 2b: the native writer already has this sample --
+                    // fed at the socket read (FeedNativeAtRead, WO-118 follow-up).
 
                     // Both conditions, not just the flag: a sender that sets
                     // the bit but sends a short packet is a bug we must not
@@ -4530,7 +4600,6 @@ public partial class GameBridge(ClientConfig config)
                          && payloadLen >= 1 + 1 + 1 + Protocol.NpcStateFixedTail
                          && payloadLen <= 1 + 1 + Protocol.MaxNpcNameLen + Protocol.NpcStateFixedTail)
                 {
-                    long nArrival = Stopwatch.GetTimestamp();   // WO-118: the DLL renders on this clock
                     // NPC sync (WO-32): [sourceGhostId:1][nameLen:1][name][x][y][z][rotZ][health][flags]
                     // The name is validated before interpolation -- it crosses
                     // into a Lua string literal and relay data must not be able
@@ -4601,8 +4670,8 @@ public partial class GameBridge(ClientConfig config)
                                 Console.WriteLine($"[npcdeath] in: 0x27 from ghost {nsrc} says '{npcName}' is ALIVE again (hp={nhp:F1}) -- was dead on this stream; a reload on their side?");
                             }
 
-                            // WO-118 Phase 1: the same sample to the native writer.
-                            _nativeFeed.Enqueue(new NativeNpcSample(nsrc, npcName, nx, ny, nz, nrot, nflags, nseq, nSenderMs, nArrival));
+                            // WO-118 Phase 1: the native writer already has this sample --
+                            // fed at the socket read (FeedNativeAtRead, WO-118 follow-up).
                             if (npcSwingNative)
                             {
                                 // The Lua hold below (KCD2MP_NpcNativeSwingHold, 0.9 s) has a native twin:
