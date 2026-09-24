@@ -30,3 +30,6 @@ kcdmp-native.log
 
 # The launcher's own log, written next to the repo root when it runs
 kcd_launcher.log
+
+# WO-120 probe reports (curate before committing anything from them)
+wo120-probe-*.txt

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WO-120: Steam as an optional pipe between a remote agent and the relay.
+
+    Binds the Steamworks flat API by P/Invoke against the steam_api64.dll the
+    game itself ships (Bin\Win64Shared, identical in retail and the Modding
+    Tools build). Nothing from Valve's SDK is redistributed by this repo; see
+    SteamLibraryLocator. Nothing here is referenced by the TCP path.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>KcdMp.Steam</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The WO-120 Phase 0 probe drives the raw APIs (messages, legacy) the product never uses. -->
+    <InternalsVisibleTo Include="KcdMpSteamProbe" />
+  </ItemGroup>
+
+</Project>

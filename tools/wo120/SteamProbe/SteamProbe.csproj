@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WO-120 Phase 0: can Steam carry our traffic between two machines on two
+    different internet connections? Double-click, pick host or join, send the
+    report file back. See tools/wo120/README.md.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>KcdMpSteamProbe</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\dotnet\KcdMp.Steam\KcdMp.Steam.csproj" />
+  </ItemGroup>
+
+</Project>
