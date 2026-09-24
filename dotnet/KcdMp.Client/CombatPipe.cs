@@ -41,6 +41,15 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte MirrorGrave       = 0x0E;   // WO-113
     private const byte ListGraves        = 0x0F;   // WO-113
     private const byte GraveListReply    = 0x88;   // WO-113
+    private const byte NpcSamples        = 0x10;   // WO-118
+    private const byte NpcBind           = 0x11;   // WO-118
+    private const byte NpcHold           = 0x12;   // WO-118
+    private const byte NpcConfig         = 0x13;   // WO-118
+    private const byte NpcStatus         = 0x14;   // WO-118
+    private const byte NpcTrace          = 0x15;   // WO-118
+    private const byte NpcStatusReply    = 0x89;   // WO-118
+    private const byte NpcDropped        = 0x94;   // WO-118, unsolicited
+    private const byte NpcTraceDone      = 0x95;   // WO-118, unsolicited
 
     private const int GuidLen = 16;
 
@@ -60,6 +69,12 @@ public sealed class CombatPipe : IAsyncDisposable
 
     /// <summary>WO-113: a grave was made (add=true) or is gone (looted empty / expired).</summary>
     public Func<bool, ulong, float, float, float, Task>? OnLocalGrave { get; set; }
+
+    /// <summary>WO-118: the DLL's native writer stopped a bound puppet on its own (reason, name).</summary>
+    public Func<byte, string, Task>? OnNpcDropped { get; set; }
+
+    /// <summary>WO-118 Phase 5: a trace CSV was written (rows, path; rows 0 = nothing recorded).</summary>
+    public Func<uint, string, Task>? OnNpcTraceDone { get; set; }
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private NamedPipeClientStream? _pipe;
@@ -295,6 +310,42 @@ public sealed class CombatPipe : IAsyncDisposable
         return list;
     }
 
+    /// <summary>WO-118: one batch of inbound NPC samples for the native writer (0x10).</summary>
+    public Task<PipeResult> NpcSamplesAsync(byte[] payload, CancellationToken ct = default)
+        => SendForResultAsync(NpcSamples, payload, ct);
+
+    /// <summary>
+    /// WO-118: bind (or unbind) one puppet to the native writer. The DLL verifies
+    /// id, name, WUID, parent and living body on the game thread; the result's
+    /// raw reason byte is a <see cref="NativeNpcReason"/>.
+    /// </summary>
+    public async Task<(bool Ok, byte Reason)> NpcBindAsync(bool on, uint eid, ulong wuid, float ax, float ay, float az,
+                                                             ushort delayMs, string name, CancellationToken ct = default)
+    {
+        var (body, fail) = await SendAndAwaitAsync(NpcBind, NativeNpcCodec.BuildBind(on, eid, wuid, ax, ay, az, delayMs, name), Result, ct);
+        if (body is null) return (false, (byte)fail);
+        return (body[0] == 1, body.Length >= 3 ? body[2] : (byte)255);
+    }
+
+    /// <summary>WO-118: no native writes for this puppet for <paramref name="ms"/> (a swing one-shot owns it).</summary>
+    public Task<PipeResult> NpcHoldAsync(string name, ushort ms, CancellationToken ct = default)
+        => SendForResultAsync(NpcHold, NativeNpcCodec.BuildHold(name, ms), ct);
+
+    /// <summary>WO-118: mirror mp_npc_native_write and mp_npc_senderclock into the DLL.</summary>
+    public Task<PipeResult> NpcConfigAsync(bool nativeOn, bool senderClock, CancellationToken ct = default)
+        => SendForResultAsync(NpcConfig, [nativeOn ? (byte)1 : (byte)0, senderClock ? (byte)1 : (byte)0], ct);
+
+    /// <summary>WO-118: the writer's counters (the 1 Hz heartbeat). Null when absent or refused.</summary>
+    public async Task<NativeNpcStatus?> NpcStatusAsync(CancellationToken ct = default)
+    {
+        var (body, _) = await SendAndAwaitAsync(NpcStatus, [], NpcStatusReply, ct);
+        return NativeNpcCodec.TryParseStatus(body, out var st) ? st : null;
+    }
+
+    /// <summary>WO-118 Phase 5: start (seconds &gt; 0) or stop (0) a per-frame trace of one named entity.</summary>
+    public Task<PipeResult> NpcTraceAsync(string name, ushort seconds, CancellationToken ct = default)
+        => SendForResultAsync(NpcTrace, NativeNpcCodec.BuildTrace(name, seconds), ct);
+
     /// <summary>Round-trip check that the DLL is alive and pumping frames.</summary>
     public async Task<bool> PingAsync(CancellationToken ct = default)
     {
@@ -347,7 +398,10 @@ public sealed class CombatPipe : IAsyncDisposable
             while (_pipe?.IsConnected == true)
             {
                 var (type, body) = await ReadFrameAsync(CancellationToken.None);
-                Console.WriteLine($"[combat] pipe frame 0x{type:X2} ({body.Length} bytes)");
+                // WO-118: replies are logged by their callers; 0x81/0x86/0x89
+                // arrive at frame-feed and heartbeat rates and would flood.
+                if (type is not (Result or LocalStateReply or NpcStatusReply or BodyStateReply))
+                    Console.WriteLine($"[combat] pipe frame 0x{type:X2} ({body.Length} bytes)");
                 if (type == LocalHit && body.Length >= 24)
                 {
                     var   soul    = new Guid(body.AsSpan(0, 16));
@@ -396,6 +450,23 @@ public sealed class CombatPipe : IAsyncDisposable
                                     BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(17)));
                         }
                         catch (Exception ex) { Console.WriteLine($"[grave] local grave not handled: {ex.Message}"); }
+                    }
+                }
+                else if (type == NpcDropped && body.Length >= 2 && body.Length == 2 + body[1])
+                {
+                    // WO-118: unsolicited, never a reply.
+                    if (OnNpcDropped is { } h)
+                    {
+                        try { await h(body[0], System.Text.Encoding.UTF8.GetString(body, 2, body[1])); }
+                        catch (Exception ex) { Console.WriteLine($"[npcwrite] drop not handled: {ex.Message}"); }
+                    }
+                }
+                else if (type == NpcTraceDone && body.Length >= 5 && body.Length == 5 + body[4])
+                {
+                    if (OnNpcTraceDone is { } h)
+                    {
+                        try { await h(BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(0)), System.Text.Encoding.UTF8.GetString(body, 5, body[4])); }
+                        catch (Exception ex) { Console.WriteLine($"[npctrace] trace-done not handled: {ex.Message}"); }
                     }
                 }
                 else if (!_replies.Writer.TryWrite((type, body)))
@@ -611,6 +682,17 @@ public sealed class CombatPipe : IAsyncDisposable
                 try { reply = await _replies.Reader.ReadAsync(slice.Token); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { continue; }
 
+                // WO-118: a DLL older than this command answers 0x81 with
+                // reason UnknownCommand (WO-110 R12) instead of the typed reply.
+                // Waiting out the whole deadline for a frame that never comes
+                // held the gate for 5 s -- per heartbeat, for the 0x14 status.
+                if (reply.Type == Result && wantType != Result && reply.Body.Length >= 3
+                    && reply.Body[2] == (byte)PipeReason.UnknownCommand
+                    && (_expectedSeq is not byte ws || reply.Body[1] == ws))
+                {
+                    _expectedSeq = (byte)(reply.Body[1] + 1);
+                    return (null, PipeReason.UnknownCommand);
+                }
                 if (reply.Type != wantType || reply.Body.Length < 2)
                 {
                     StaleRepliesDropped++;   // wrong frame kind, or truncated: not ours
