@@ -70,14 +70,60 @@ parented · `bd26225` 1 ms stamps · `6258502` ghost · `4d92c14` cost line ·
 
 ## 5. End gate
 
-| step | status |
-|---|---|
-| push first | done (every commit pushed to `origin main`) |
-| build from a fresh clone | see below |
-| version named by the maintainer; rollback tagged before the bump | **waiting for the maintainer** |
-| all gates green | see below |
-| privacy sweep UTF-8 + UTF-16LE | see below |
-| pak content check | see below |
-| Phase 5 gate against the shipped build | see below |
-| release notes | drafted; filename takes the version |
-| no GitHub Release | none made |
+**Dress rehearsal before the bump** (the version is the maintainer's; everything
+else ran first so the bump is the only step left):
+
+* **Pushed first.** `rollback/0.27.0` (annotated) tagged on `ab51371` — the last
+  commit with 0.27.0 code and `VERSION`, docs-only on top of the 0.27.0 build
+  `5aada66` — and pushed **before** any bump.
+* **Built from a fresh clone of `origin/main` at `66ebace`** with
+  `tools\Build-Installer.ps1`, green on the first run (exit 0) (observed): relay
+  round-trip 26/26, agent unit tests 181/181, seventeen synthetic suites
+  (GhostInterp 35, NpcSmooth 48, WO-100.5 33, WO-102 196, WO-104 92, WO-108 96,
+  WO-110 86, WO-113 23, **WO-118 85**, WO-84 72, WO-86 47, WO-90 70, WO-94 101,
+  WO-95 32, WO-96 160, WO-98 50, WO-99 39), static checks 7/7 and 6/6, native
+  plugin rebuilt, payload smoke `RELAY-SMOKE ok id=0 protocol=v7 release=0.27.0
+  rtt_ms=25`, install manifest 1,024 entries, Inno Setup compile. (WO-100.5's
+  trailing `RESULT: 0 passed, 0 failed` is its driver's own tally, as before.)
+
+| artifact (pre-bump, not shipped) | size | sha256 |
+|---|---|---|
+| `release\KCDMP-Setup-0.27.0.exe` | 100,764,626 B | `92936e30e00b0d18505b1b9ddcf5c3bc87ab27727952912c4dd86c7cea193b58` |
+| `kdcmp\Data\kdcmp.pak` (built in the clone) | 909,095 B | `eb72b13eb0a9f93e27d0d2305585206eede1cd2587f17fb2addbd0a5a25d310b` |
+| `KCDMP.dll` | 582,144 B | `f4dc0763381520b02ac306cfe5870837917a4c78b57840cf9f867104f52d45b6` |
+| `KcdMpClient.exe` | 151,552 B | `12fe05d3517941170126636ecb9b5eda0cc07b94e8463d37983332b892b8fe8e` |
+| `KcdMpServer.exe` | 151,552 B | `1fdf45b2ec8029a251364cf96201e6821816af3f2aad233b4d631cad8e6ef309` |
+
+* **Pak content check** (code-verified): `Scripts/Startup/kdcmp.lua` from the
+  built pak carries `WO118-BUILD`, `KCD2MP_SetNpcNativeWrite`,
+  `mp_npc_native_write`, `KCD2MP_SetNpcDetach`, `mp_npc_detach`,
+  `KCD2MP_NpcDetach`, `mp_npc_trace`, `KCD2MP_NpcNativeAlive`,
+  `KCD2MP_NpcNativeSync`, `KCD2MP_GhostNativeSync`, `KCD2MP_NpcNativeHold`, the
+  preset rows and `path=legacy`; the manifest's MOD row carries the pak's
+  sha256. Against the committed pak: four entries byte-identical; `kdcmp.lua`
+  identical after LF normalisation (the clone's `core.autocrlf` checkout adds one
+  CR per line, 13,879).
+* **Privacy sweep** (code-verified): all 1,024 files in the release folder, read
+  as UTF-8 and UTF-16LE, for the Windows user name, the personal mail address
+  parts, `duckdns`, `nip.io`, the repository owner, private-range IPv4 literals,
+  repository paths and any `<drive>:\Users\…` path. Every hit benign and as
+  WO-113 recorded: NAudio's third-party PDB build paths (six assemblies, the
+  NAudio author's machine); the launcher's links to this project's public GitHub
+  Releases page and its `myserver.duckdns.org` placeholder; `10.0.0.0` /
+  `10.1.0.0` assembly-version strings (26 files) and one example address in the
+  master server's `appsettings.json`. No first-party binary carries a
+  user-profile path. The 47 files WO-118 committed (`ab51371..66ebace`), swept the
+  same way: only the repository owner inside a pre-existing public credit URL in
+  `kdcmp.lua` (1 occurrence before and after WO-118). Save files: none
+  committed; no save header quoted anywhere.
+* **Phase 5 gate against this build: GREEN** — clone's pak installed, clone's
+  DLL injected, clone's relay and agent (findings §4). Jitter runs P1/P2 on it:
+  0 frozen, speed sd 0.02 m/s.
+* No GitHub Release. Nothing installed through Setup (the pak was copied into
+  `<install>\Mods\kdcmp\Data\` as `Build-And-Install-Mod.ps1` does; the DLL was
+  injected from the session scratchpad).
+
+**After the maintainer names the version:** `VERSION` + README badge commit,
+release notes `docs/releases/RELEASE-NOTES-<version>.md`, push, a new fresh
+clone, `Build-Installer.ps1`, pak check, privacy sweep, the Phase 5 gate once
+more, then this section records the final artifacts.

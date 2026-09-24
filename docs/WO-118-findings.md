@@ -378,8 +378,22 @@ clean-link walker showed speed sd 0.23 m/s from the stamps alone (0.04 m/s with
 
 ## 4. Phase 5 gate against the shipped build
 
-Filled at the end gate from a fresh-clone build (DLL and pak from the clone):
-see `docs/WO-118-progress.md` §5.
+Fresh clone of `origin/main` at `66ebace`, built with `tools\Build-Installer.ps1`
+(green); the game relaunched with the clone's pak installed and the clone's
+`KCDMP.dll` injected; the clone's own relay and agent (`KcdMpServer.exe`,
+`KcdMpClient.exe`) as relay and joiner; `tools/wo118/phase5_gate.py`: (observed)
+
+| step | result |
+|---|---|
+| 1 walker, native | 0 / 478 frozen; step 1.84 cm sd 0.28; speed sd 0.020 m/s; render − written 0.000 mm; flying 0/611 |
+| 2 seated, native + detach | 0.0 mm max deviation; 0 moving frames; flying 0/616 |
+| 3 walker, legacy | 75.3 % frozen (the stair-step) |
+| 4 seated, legacy | 58 mm median offset, 62 mm max deviation; 615/616 frames moving; flying 616/616 (the sawtooth) |
+
+**GATE GREEN.** The same build under jitter (`noise_batch.py` P1, P2): 0 frozen
+frames, speed sd 0.02 m/s. The version bump that follows changes `VERSION` and the
+README badge only (neither the pak nor the DLL carries the version); the gate is
+re-run on the bumped build (`docs/WO-118-progress.md` §5).
 
 ---
 
