@@ -186,7 +186,7 @@ body; the joiner's `MP-NPCPULL` for it will show `moved_frames` high with
   kept circling through its swing. **Inherited, not new**: the legacy path gives
   a puppet "no writes at all" during a one-shot window and catches up after
   (WO-39/WO-40); the native hold keeps that exactly. A real swinging NPC barely
-  moves. **Fixed after 0.28.0** — the write blends out of a hold (§8).
+  moves. **Fixed in 0.28.3** — the write blends out of a hold (§8).
 * Lua keeps puppet start/release, pause, locomotion, weapon draw, swing cues and
   death; dead, unconscious and carried bodies stay on Lua's own behaviour (the
   DLL skips flags 0x01/0x02/0x10 and parented bodies every frame).
@@ -203,7 +203,7 @@ body; the joiner's `MP-NPCPULL` for it will show `moved_frames` high with
   timing residual (max 6.6 ms). The real stream is ~30 ms (`MP-POSCADENCE
   path=native p50_ms=30`). A sender stamp on 0x01 needs a protocol change (the
   relay's exact-length gate, WO-101); not done in a jitter-only build.
-  **Corrected after 0.28.0 (§9):** the clean-link part was never arrival
+  **Corrected in 0.28.3 (§9):** the clean-link part was never arrival
   timing — the DLL stretched every 30 ms ghost segment to a 50 ms floor.
   Both are fixed (the floor, and a sender stamp on the position frame).
 * bFlying reads 1 on every ghost frame, native or legacy (inconclusive: the
@@ -335,7 +335,7 @@ Walking movers (4 m ping-pong lines), frame time from traces, writer time from
 * The trace itself writes its CSV on the main thread at the end: one 1.8–6.9 ms
   tick (`tick_us_max`) per trace.
 
-### 3.10 The agent's ingress ceiling (observed; pre-existing; fixed after 0.28.0, §9)
+### 3.10 The agent's ingress ceiling (observed; pre-existing; fixed in 0.28.3, §9)
 
 * The agent's relay reader is one serial loop. Each NpcState packet is decoded,
   queued for the DLL (non-blocking), **and** pushed to Lua through the batched
@@ -439,12 +439,12 @@ walker legacy 75.3 % frozen; seated legacy 61 mm sawtooth, 615/616 moving —
 
 ## 7. Open, carried forward
 
-1. ~~**Agent ingress** (§3.10).~~ Done after 0.28.0 (§9).
-2. ~~**Ghost sender time**.~~ Done after 0.28.0 (§9), with the real clean-link
+1. ~~**Agent ingress** (§3.10).~~ Done in 0.28.3 (§9).
+2. ~~**Ghost sender time**.~~ Done in 0.28.3 (§9), with the real clean-link
    cause (a 50 ms segment floor).
-3. ~~**Blend out of a swing hold** instead of stepping (§3.3).~~ Done after
-   0.28.0 (§8).
-4. ~~**The detach hop** (5–73 cm once).~~ Done after 0.28.0 (§8): not
+3. ~~**Blend out of a swing hold** instead of stepping (§3.3).~~ Done in
+   0.28.3 (§8).
+4. ~~**The detach hop** (5–73 cm once).~~ Done in 0.28.3 (§8): not
    reproduced; the puppet-start steps it stood for are gone.
 5. **Legacy path** keeps the fixed delay and the 50 ms write; it is the A/B only.
 6. Two-player verification of P1–P10.
@@ -455,8 +455,7 @@ walker legacy 75.3 % frozen; seated legacy 61 mm sawtooth, 615/616 moving —
 
 Solo, the same harness (`tools/wo118`), fresh sessions on the 0.28.0 pak with
 working-tree DLLs; commits `c1548ad`, `cd98a9f`, `7c1652a`, `6e01d55`, `2c5dd91`.
-**Not in 0.28.0** — on `main` for the next release (its version is the
-maintainer's).
+**Shipped in 0.28.3** (named by the maintainer).
 
 * **Swing hold resume** (observed). Before, on the 0.28.0 build: six 900 ms
   holds, each ending in a one-frame snap of 77–134 cm (the synthetic fighter
@@ -505,8 +504,8 @@ maintainer's).
 ## 9. Follow-up after 0.28.0 (2026-09-24): the agent's ingress and the ghost's sender clock
 
 Solo, `tools/wo118`, working-tree builds (agent, relay, pak, DLL); commits
-`c78f9e3` … `3302ac6`. **Not in 0.28.0** — on `main` for the next release (its
-version is the maintainer's). Protocol stays v7 (the maintainer's call).
+`c78f9e3` … `3302ac6`. **Shipped in 0.28.3** (named by the maintainer).
+Protocol stays v7 (the maintainer's call).
 
 **The agent's ingress (§3.10)** — three pieces:
 
@@ -571,12 +570,11 @@ every synthetic suite green (WO-118 99/99).
   the agent's requests was tried and made it worse — the queue waited past the
   0.8 s timeout (36 batches lost, Lua unbound its puppets) — and was not
   committed.
-* Until the maintainer sets the next version, a build from `main` still calls
-  itself 0.28.0, so the relay's release check lets it pair with a 0.28.0
-  install (code-verified) — and they cannot see each other move: a 0.28.0
-  relay's exact-length gate drops the stamped positions (21/26 bytes), a 0.28.0
-  agent drops the stamped ghost frames (22/27), silently, as in WO-101. The
-  next version bump closes it (the relay refuses a release mismatch); until
-  then both machines and the relay run the same build. An unstamped ghost from
-  an older sender, where one gets through, renders on arrival time.
+* Mixed builds (code-verified): a 0.28.0 relay's exact-length gate drops the
+  stamped positions (21/26 bytes) and a 0.28.0 agent drops the stamped ghost
+  frames (22/27), silently, as in WO-101. Until the bump a build from `main`
+  still called itself 0.28.0 and the release check let such a pair connect;
+  0.28.3 closes it — the relay refuses a release mismatch at the handshake, in
+  both directions. An unstamped ghost from a sender without a release field
+  (a synthetic peer) still renders on arrival time.
 

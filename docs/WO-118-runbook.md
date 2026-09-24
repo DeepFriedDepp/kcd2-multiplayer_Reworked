@@ -2,11 +2,9 @@
 
 **Both machines must run this build.** The relay refuses anything else, with a
 clear message on both sides (`Relay runs KCD2-MP <x>, this machine runs <y>`).
-One exception: a build from `main` after 0.28.0 still calls itself 0.28.0 until
-the next version is set, so the relay cannot tell it from a 0.28.0 install — and
-the two cannot see each other move (the older side drops the newer position
-frames; findings §9). Install the same build on both machines and run that
-build's relay.
+From 0.28.3 on that check matters more than ever: 0.28.0 cannot read 0.28.3's
+position frames (findings §9). A relay run on its own (a server) must be
+updated too.
 
 **Before the session: copy the host's save to the joiner.** The host saves,
 closes the game, and copies that save file from `<saves>\playline1\` to the same
@@ -18,9 +16,9 @@ headers into chat or tickets.
 launch rotates `kcd.log` into `logbackups\`, which keeps one file.
 
 **Keep the game window in front** on the joiner. KCD2 drops to ~26 fps when its
-window is not focused, and at that rate a 0.28.0 agent cannot feed a crowd of
-walking NPCs (findings §3.10; fixed on `main` after 0.28.0, §9): puppets start
-to step and lag. Alt-tab briefly.
+window is not focused. At that rate a 0.28.0 agent could not feed a crowd of
+walking NPCs (findings §3.10; fixed in 0.28.3, §9), and every number in this
+page assumes the window in front. Alt-tab briefly.
 
 ---
 
@@ -78,12 +76,12 @@ flicker? Does anything sink?**
 | | `MP-NPCBIND npc= result=ok … jitter_allow_ms=` / `result=refused reason=` | a puppet handed to the DLL (refusal `not-living` = no physics body, stays on Lua) |
 | | `MP-NPCWRITE npc= event=drop reason=` | the DLL let a puppet go (silence, entity gone, unbound, toggle off, pipe closed) |
 | | `MP-NPCPULL npc= mean_cm= … lag_frames= … jitter_allow_ms=` | every 10 s, only if the engine moved a puppet between our writes |
-| | `MP-NPCWRITE-COST … tick_us_mean= … blends= blend_max_cm=` | the writer's own time per frame, every 10 s while anything is bound; after 0.28.0 also how many bodies it blended in (starts, swing ends) and the largest starting offset |
+| | `MP-NPCWRITE-COST … tick_us_mean= … blends= blend_max_cm=` | the writer's own time per frame, every 10 s while anything is bound; from 0.28.3 also how many bodies it blended in (starts, swing ends) and the largest starting offset |
 | | `MP-NPCTRACE` | trace started / written |
 | `kcd.log` | `MP-DETACH npc= result=<before>-><after> changed=` | a puppet freed from its activity (or `skipped-dialog`) |
 | | `MP-NPCWRITE npc= native=bound\|refused\|dropped` | the mod's side of each bind |
 | | `MP-NPCWRITE native=healthy … (heartbeat)` | the DLL heartbeat came back after a > 3 s gap |
-| agent console | `MP-NPCWRITE-STATUS armed= on= bound= writing= … lua_bound= lua_pushed= lua_coalesced=` | every 10 s: how many puppets the DLL holds and writes; after 0.28.0 also the puppets whose Lua pushes are thinned (`lua_bound`), the pushes sent to Lua (`lua_pushed`) and the samples held back on arrival (`lua_coalesced` — the latest held one is still sent when due, and then counts as pushed too) |
+| agent console | `MP-NPCWRITE-STATUS armed= on= bound= writing= … lua_bound= lua_pushed= lua_coalesced=` | every 10 s: how many puppets the DLL holds and writes; from 0.28.3 also the puppets whose Lua pushes are thinned (`lua_bound`), the pushes sent to Lua (`lua_pushed`) and the samples held back on arrival (`lua_coalesced` — the latest held one is still sent when due, and then counts as pushed too) |
 
 `MP-NPCZ`, `MP-AUTHORITY-VIOLATION`, `MP-NPCFIGHT` now end in `path=legacy`:
 they only measure the old Lua write.
