@@ -72,7 +72,7 @@ flicker? Does anything sink?**
 | | `MP-NPCBIND npc= result=ok … jitter_allow_ms=` / `result=refused reason=` | a puppet handed to the DLL (refusal `not-living` = no physics body, stays on Lua) |
 | | `MP-NPCWRITE npc= event=drop reason=` | the DLL let a puppet go (silence, entity gone, unbound, toggle off, pipe closed) |
 | | `MP-NPCPULL npc= mean_cm= … lag_frames= … jitter_allow_ms=` | every 10 s, only if the engine moved a puppet between our writes |
-| | `MP-NPCWRITE-COST … tick_us_mean=` | the writer's own time per frame, every 10 s while anything is bound |
+| | `MP-NPCWRITE-COST … tick_us_mean= … blends= blend_max_cm=` | the writer's own time per frame, every 10 s while anything is bound; after 0.28.0 also how many bodies it blended in (starts, swing ends) and the largest starting offset |
 | | `MP-NPCTRACE` | trace started / written |
 | `kcd.log` | `MP-DETACH npc= result=<before>-><after> changed=` | a puppet freed from its activity (or `skipped-dialog`) |
 | | `MP-NPCWRITE npc= native=bound\|refused\|dropped` | the mod's side of each bind |

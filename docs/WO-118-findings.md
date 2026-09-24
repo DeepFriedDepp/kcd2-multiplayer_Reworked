@@ -186,7 +186,7 @@ body; the joiner's `MP-NPCPULL` for it will show `moved_frames` high with
   kept circling through its swing. **Inherited, not new**: the legacy path gives
   a puppet "no writes at all" during a one-shot window and catches up after
   (WO-39/WO-40); the native hold keeps that exactly. A real swinging NPC barely
-  moves. Blending out of a hold is a follow-up (§7).
+  moves. **Fixed after 0.28.0** — the write blends out of a hold (§8).
 * Lua keeps puppet start/release, pause, locomotion, weapon draw, swing cues and
   death; dead, unconscious and carried bodies stay on Lua's own behaviour (the
   DLL skips flags 0x01/0x02/0x10 and parented bodies every frame).
@@ -209,7 +209,8 @@ body; the joiner's `MP-NPCPULL` for it will show `moved_frames` high with
 ### 3.5 Phase 3 — detach per activity (observed)
 
 `MP-DETACH … stance=ok unstance=ok result=<before>-><after> changed=1` for every
-row. Holds at 1 m and 3 m and the hold at the end of the walk-away: no
+row. (The "detach hop" column did not reproduce after 0.28.0; the visible
+start-up steps were something else, now fixed — §8.) Holds at 1 m and 3 m and the hold at the end of the walk-away: no
 `MP-NPCPULL` line (max < 1 mm) except the single detach-moment frame. Walking
 phases logged one-step maxima (1.9–2.5 cm, cos 1.00): the physics-lag artifact,
 reclassified by 9aefa8f (walkers log no pull line since).
@@ -435,8 +436,61 @@ walker legacy 75.3 % frozen; seated legacy 61 mm sawtooth, 615/616 moving —
 1. **Agent ingress** (§3.10): read-side stamping and a DLL feed independent of
    the Lua push; latest-per-NPC Lua pushes for native puppets.
 2. **Ghost sender time**: a sender-ms field on the position frame (protocol).
-3. **Blend out of a swing hold** instead of stepping (§3.3).
-4. **The detach hop** (5–73 cm once): seed the write from the body after
-   Unstance, or detach before the first write.
+3. ~~**Blend out of a swing hold** instead of stepping (§3.3).~~ Done after
+   0.28.0 (§8).
+4. ~~**The detach hop** (5–73 cm once).~~ Done after 0.28.0 (§8): not
+   reproduced; the puppet-start steps it stood for are gone.
 5. **Legacy path** keeps the fixed delay and the 50 ms write; it is the A/B only.
 6. Two-player verification of P1–P10.
+
+---
+
+## 8. Follow-up after 0.28.0 (2026-09-24): no step at a swing's end or a puppet's start
+
+Solo, the same harness (`tools/wo118`), fresh sessions on the 0.28.0 pak with
+working-tree DLLs; commits `c1548ad`, `cd98a9f`, `7c1652a`, `6e01d55`, `2c5dd91`.
+**Not in 0.28.0** — on `main` for the next release (its version is the
+maintainer's).
+
+* **Swing hold resume** (observed). Before, on the 0.28.0 build: six 900 ms
+  holds, each ending in a one-frame snap of 77–134 cm (the synthetic fighter
+  circles through its swing). Now: the resume step is 2.6–3.7 cm, and the
+  catch-up peaks at 2.9–3.3 m/s (the stream's own speed + 2 m/s): ≤ 4.3 cm/frame
+  at the 13 ms mean frame, 4.9–6.0 cm on 18–21 ms frames. (A hitchy run with
+  35–41 ms frames showed up to 12.7 cm at the same speeds.)
+* **Puppet start** (observed, 5 activity NPCs: two sellers, a woodchopper, a
+  seated NPC, a waiting-stand NPC). The WO-118 "detach hop" did **not**
+  reproduce: holding each NPC at its own spot, the renderer never moved it more
+  than 0.02 cm, and the engine moved the body at most 0.53 cm when the reset
+  landed. From a 1 m offset (as WO-118's plans started) two real steps appeared
+  instead:
+  * the Lua path wrote the fresh puppet during the one agent round trip its
+    first bind takes, drawing its WO-77 seed slide at 50 ms steps — 41–64 cm per
+    write;
+  * the DLL's own seed (the body put into the ring one delay in the past) then
+    jumped 50–55 cm in one frame — or, when it dropped the stream's only sample,
+    left the body short and slid it 50 cm two seconds later on the next
+    heartbeat.
+
+  Now Lua holds a fresh puppet still until its first bind is answered (1 s at
+  most; a refusal hands it over at once; a retry never holds a body Lua already
+  writes), and the DLL's first write blends from the body. From 1 m: largest
+  render step 3.6–3.9 cm (3 NPCs), done in ~0.5 s. At the spot: 0.12 cm. From
+  3 m: done in 0.92 s. No `MP-NPCPULL` line at start any more.
+  * What produced WO-118's single-frame 5–73 cm pull lines stays
+    (inconclusive): today's 0.28.0 starts logged at most 0.21–0.53 cm. The
+    likely mechanism — Lua's slide still writing between the DLL's bind and the
+    ack reaching Lua — is what the new rule removes.
+* **Mechanism** (code-verified). Wherever the writer starts or resumes a body — a
+  bind, the end of a hold, a body set down or unparented — it takes the body's
+  pose and lets the offset to the stream decay: exponential (τ 80 ms), never
+  faster than max(2 m/s, starting offset / 0.75 s) on top of the stream's own
+  motion; yaw capped at 6 rad/s; more than 5 m still snaps. This replaces the
+  bind's seed, and a stale ring (stream silent > 2 s) is cleared at a bind.
+  `MP-NPCWRITE-COST` now ends in `blends= blend_max_cm=` (per 10 s window).
+* **Regression** (observed). Phase 5 gate GREEN three times on the new DLLs
+  (walker native 0 frozen; seated 0.0 mm; the legacy stair-step and sawtooth
+  return); noise P0/P1 0 frozen, speed sd 0.02 m/s; ghost batch unchanged
+  (0 frozen; pace sd 0.62/0.79/1.06 m/s). Synthetic: the WO-118 suite 94/94
+  (three new scenarios for the rule), every other suite green.
+
