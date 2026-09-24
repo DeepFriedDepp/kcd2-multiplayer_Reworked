@@ -3974,8 +3974,7 @@ public partial class GameBridge(ClientConfig config)
         // segment-length noise (walker speed sd 0.23 m/s vs 0.04 m/s with 1 ms
         // stamps, solo, docs/WO-118-findings.md). Same epoch semantics (boot),
         // so a reconnecting agent keeps a continuous clock.
-        uint senderMs = unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency));
-        var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags, seq, senderMs);
+        var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags, seq, SenderMsNow());
         if ((flags & Protocol.NpcStateFlagResync) != 0) _resyncEmitted++;
         try { await WritePacketAsync(stream, packet, ct); if (!asClaim) _stats.NpcStateOut++; }   // WO-110 Phase 6: a SENT packet, not a hand-off
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
@@ -4167,8 +4166,11 @@ public partial class GameBridge(ClientConfig config)
             // passed as the carried bit so the DLL leaves a rider to the horse
             // (the mod unbinds a riding ghost as well).
             ushort gSeq = _ghostNativeSeq.AddOrUpdate(gs.GhostId, 1, (_, v) => unchecked((ushort)(v + 1)));
+            // gs.SenderMs (0 from a sender without the stamp) puts the sample on
+            // the peer's clock: the DLL's sender_stamp and need tracker then treat
+            // the ghost exactly like a sender-stamped NPC stream.
             _nativeFeed.Enqueue(new NativeNpcSample(gs.GhostId, "kcd2mp_" + gs.GhostId, gs.X, gs.Y, gs.Z, gs.RotZ,
-                gs.IsRiding ? (byte)0x10 : (byte)0, gSeq, 0u, arrival));
+                gs.IsRiding ? (byte)0x10 : (byte)0, gSeq, gs.SenderMs, arrival));
         }
     }
 
@@ -6256,8 +6258,18 @@ public partial class GameBridge(ClientConfig config)
         // that never gets a reading is byte-for-byte what every previous
         // release sent. WO-101: the bytes come from PositionCodec so the relay
         // round-trip gate sends exactly what this method sends.
-        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, body));
+        // WO-118 follow-up: every packet carries the sender's clock, so the
+        // peer's native writer renders this ghost on our timeline, not on its
+        // arrival (flag 0x08; STALE heartbeats too -- same place, later time).
+        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, body, SenderMsNow()));
     }
+
+    /// <summary>
+    /// The sender stamp on every stream a peer renders natively (NpcState since
+    /// bd26225, Position since the WO-118 follow-up): 1 ms QPC time, not the
+    /// 15.6 ms Environment.TickCount64 steps that showed up as pace noise.
+    /// </summary>
+    private static uint SenderMsNow() => unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency));
 
     /// <summary>
     /// WO-102 Phase 1: the native sample for this tick, or null when the log
