@@ -2827,8 +2827,186 @@ function KCD2MP_SetNpcSenderClock(arg)
     local n = 0
     for _ in pairs(KCD2MP._senderClock) do n = n + 1 end
     mp_log(string.format("NPC-SENDERCLOCK %s (sources tracked=%d; off = the 0.26.4 arrival-time stamp)", KCD2MP.npcSenderClock and "on" or "off", n))
+    if KCD2MP_NpcNativeCfgEmit then KCD2MP_NpcNativeCfgEmit() end   -- WO-118: the native writer stamps on the same clock
     return true
 end
+
+-- ===== WO-118: the native per-frame puppet write =====
+--
+-- WO-116 s14 measured the reported jitter as the Lua write's RATE (a 50 ms
+-- timer leaves three of four rendered frames unwritten: the walker's
+-- "0 0 0 76 mm" stair-step) and MOMENT (a write early in the frame is undone
+-- on alternate frames: the seated "42/0 mm" flicker). KCDMP.dll now writes
+-- every bound puppet every frame at its frame hook, from the same samples, on
+-- the sender's clock, keeping the living body's ground collider (npc_drive.h).
+-- This file keeps the POLICY: which puppet is bound (alive, not a replica, not
+-- yielded), the pause lever, the detach, the locomotion loop, weapons, swing
+-- holds, death, release.
+--
+-- Fail closed three ways: (1) Lua asks for binds only while the agent's 1 Hz
+-- heartbeat says the writer is armed and on -- three seconds without one and
+-- Lua writes every puppet itself again; (2) Lua stops writing a puppet only
+-- after the DLL ACKNOWLEDGED its bind (identity checked natively: entity id,
+-- name, WUID, no parent, a living body); (3) the DLL's own drops (entity gone,
+-- silence, fault) come back as a nack and Lua takes that puppet over at once.
+--
+--   mp_npc_native_write on|off   default ON (WO-118); mp_preset_legacy = off
+--   events: npc_native <name> on <eidHex> <wuidHex|?> <ax> <ay> <az> <delayMs>
+--           npc_native <name> off <why>
+--           npc_native_hold <name> <ms>
+--           npc_native_cfg on|off on|off     (native write, sender clock)
+KCD2MP.npcNativeWrite = true
+KCD2MP._npcNative = { aliveAt = nil, armed = false, on = false, bound = 0, writing = 0,
+                      binds = 0, acks = 0, nacks = 0, holds = 0, unbinds = 0 }
+TUNE.NPC_NATIVE_STALE_S  = 3.0   -- heartbeat age at which Lua writes every puppet itself again
+TUNE.NPC_NATIVE_RESEND_S = 3.0   -- an unanswered bind is re-sent after this long
+TUNE.NPC_NATIVE_RETRY_S  = 10.0  -- a refused or dropped puppet is offered again after this long
+
+function KCD2MP_NpcNativeHealthy()
+    local n = KCD2MP._npcNative
+    return KCD2MP.npcNativeWrite and n.armed and n.on and n.aliveAt ~= nil
+        and (os.clock() - n.aliveAt) < TUNE.NPC_NATIVE_STALE_S
+end
+
+-- The agent's heartbeat (GameBridge.NativeHeartbeatAsync), once a second while
+-- the DLL pipe answers.
+function KCD2MP_NpcNativeAlive(armed, on, bound, writing)
+    local n = KCD2MP._npcNative
+    local was = KCD2MP_NpcNativeHealthy()
+    n.aliveAt = os.clock()
+    n.armed = (tonumber(armed) or 0) == 1
+    n.on = (tonumber(on) or 0) == 1
+    n.bound, n.writing = tonumber(bound) or 0, tonumber(writing) or 0
+    local healthy = KCD2MP_NpcNativeHealthy()
+    if healthy ~= was then
+        mp_log(string.format("MP-NPCWRITE native=%s armed=%d on=%d bound=%d (heartbeat)",
+            healthy and "healthy" or "unavailable", n.armed and 1 or 0, n.on and 1 or 0, n.bound))
+    end
+end
+
+-- The agent: the DLL's answer to a bind (ok=1), a refusal, or the writer's own
+-- drop (ok=0).
+function KCD2MP_NpcNativeAck(name, ok, reason)
+    local n = KCD2MP._npcNative
+    ok = (tonumber(ok) or 0) == 1
+    if ok then n.acks = n.acks + 1 else n.nacks = n.nacks + 1 end
+    local p = KCD2MP.npcPuppets[name]
+    if not p then return end
+    if ok and p.nativeSent then
+        p.nativeOwned = true
+        p.nativeRefused = nil
+        mp_log(string.format("MP-NPCWRITE npc=%s native=bound -- KCDMP.dll writes it every frame", tostring(name)))
+    elseif not ok then
+        local was = p.nativeOwned
+        p.nativeOwned, p.nativeSent = false, nil
+        p.nativeRefused = tostring(reason or "?")
+        p.nativeRetryAt = os.clock() + TUNE.NPC_NATIVE_RETRY_S
+        -- Lua writes the body again from this tick: no stale detector baseline.
+        p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
+        mp_log(string.format("MP-NPCWRITE npc=%s native=%s reason=%s -- Lua writes it (retry in %.0fs)",
+            tostring(name), was and "dropped" or "refused", tostring(reason), TUNE.NPC_NATIVE_RETRY_S))
+    end
+end
+
+-- Bind or unbind one puppet. Emits an event only on a change, and re-sends an
+-- unanswered bind. `e` is the body the puppet drives (unused for an unbind).
+function KCD2MP_NpcNativeSync(name, p, e, want, why)
+    local now = os.clock()
+    if want then
+        if p.nativeOwned or not e then return end
+        if p.nativeSent and (now - (p.nativeSentAt or 0)) < TUNE.NPC_NATIVE_RESEND_S then return end
+        if p.nativeRetryAt and now < p.nativeRetryAt then return end
+        local hexid = string.match(tostring(e.id), "(%x+)%s*$")
+        if not hexid then return end
+        local wuid = "?"
+        pcall(function()
+            if e.soul and e.soul.GetId then
+                local s = tostring(e.soul:GetId())
+                wuid = string.match(s, "(%x+)%s*$") or "?"
+            end
+        end)
+        p.nativeSent, p.nativeSentAt, p.nativeRetryAt = true, now, nil
+        KCD2MP._npcNative.binds = KCD2MP._npcNative.binds + 1
+        KCD2MP_EmitEvent("npc_native", string.format("%s on %s %s %.3f %.3f %.3f %d", name, hexid, wuid,
+            p.ax or p.cx or 0, p.ay or p.cy or 0, p.cz or 0, math.floor(KCD2MP_NpcSmoothDelayS() * 1000 + 0.5)))
+    elseif p.nativeSent or p.nativeOwned then
+        p.nativeSent, p.nativeOwned = nil, false
+        p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
+        KCD2MP._npcNative.unbinds = KCD2MP._npcNative.unbinds + 1
+        KCD2MP_EmitEvent("npc_native", name .. " off " .. tostring(why or "lua"))
+    end
+end
+
+-- A one-shot animation owns the body: the native writer holds too (WO-39's
+-- lesson -- a per-frame write stomps a swing exactly like the Lua one did).
+function KCD2MP_NpcNativeHold(name, seconds)
+    local p = KCD2MP.npcPuppets[name]
+    if not (p and (p.nativeOwned or p.nativeSent)) then return end
+    KCD2MP._npcNative.holds = KCD2MP._npcNative.holds + 1
+    KCD2MP_EmitEvent("npc_native_hold", string.format("%s %d", name, math.floor((seconds or 1) * 1000 + 0.5)))
+end
+
+function KCD2MP_NpcNativeCfgEmit()
+    KCD2MP_EmitEvent("npc_native_cfg", (KCD2MP.npcNativeWrite and "on" or "off") .. " " .. (KCD2MP.npcSenderClock and "on" or "off"))
+end
+
+function KCD2MP_SetNpcNativeWrite(arg)
+    local s = tostring(arg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "on" or s == "1" or s == "true" then KCD2MP.npcNativeWrite = true
+    elseif s == "off" or s == "0" or s == "false" then KCD2MP.npcNativeWrite = false
+    elseif s ~= "" and s ~= "%line" and s ~= "nil" then
+        mp_log("mp_npc_native_write: expected on|off, got '" .. tostring(arg) .. "'")
+        return false
+    end
+    if not KCD2MP.npcNativeWrite then
+        for _, p in pairs(KCD2MP.npcPuppets or {}) do
+            if p.nativeSent or p.nativeOwned then
+                p.nativeSent, p.nativeOwned = nil, false
+                p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
+            end
+        end
+    end
+    KCD2MP_NpcNativeCfgEmit()
+    local n = KCD2MP._npcNative
+    mp_log(string.format("MP-NPCWRITE native_write=%s healthy=%s armed=%d bound=%d binds=%d acks=%d nacks=%d holds=%d unbinds=%d"
+        .. " (off = the 50 ms Lua path; mp_puppet_rate applies only there)",
+        KCD2MP.npcNativeWrite and "on" or "off", KCD2MP_NpcNativeHealthy() and "yes" or "no",
+        n.armed and 1 or 0, n.bound, n.binds, n.acks, n.nacks, n.holds, n.unbinds))
+    return true
+end
+
+-- WO-118 Phase 5: mp_npc_trace <name> [seconds] -- the per-frame trace
+-- (npc_trace.h). Any named entity: a puppet, a ghost, anything.
+KCD2MP._npcTraceLast = nil
+function KCD2MP_NpcTrace(arg)
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "" or s == "%line" or s == "nil" then
+        mp_log("MP-NPCTRACE usage: mp_npc_trace <entityName> [seconds, default 10, max 120] | mp_npc_trace stop"
+            .. " -- position every frame at the DLL's frame hook and at render, CSV in the game folder")
+        return false
+    end
+    local name, secs = string.match(s, "^(%S+)%s*(%S*)$")
+    if not name then mp_log("MP-NPCTRACE rejected '" .. s .. "'"); return false end
+    if name == "stop" then
+        if KCD2MP._npcTraceLast then KCD2MP_EmitEvent("npc_trace", KCD2MP._npcTraceLast .. " 0") end
+        mp_log("MP-NPCTRACE stop requested npc=" .. tostring(KCD2MP._npcTraceLast))
+        return true
+    end
+    if not string.match(name, "^[%w_]+$") then mp_log("MP-NPCTRACE rejected name '" .. name .. "'"); return false end
+    local n = tonumber(secs) or 10
+    if n < 1 then n = 1 elseif n > 120 then n = 120 end
+    KCD2MP._npcTraceLast = name
+    KCD2MP_EmitEvent("npc_trace", string.format("%s %d", name, n))
+    mp_log(string.format("MP-NPCTRACE requested npc=%s seconds=%d native_write=%s (CSV in the game folder when done)",
+        name, n, KCD2MP.npcNativeWrite and "on" or "off"))
+    return true
+end
+
+function KCD2MP_NpcTraceDone(rows, path)
+    mp_log(string.format("MP-NPCTRACE done rows=%s path=%s", tostring(rows), tostring(path)))
+    KCD2MP_ShowInteractionMsg("NPC trace: " .. tostring(rows) .. " frames written")
+end
+
 
 KCD2MP.npcPuppets        = {} -- name -> {tx,ty,tz,tr,hp,dead,cx,cy,cz,cr,lastPacketAt,animTag}
 KCD2MP.npcOversized      = {} -- name -> item class GUID whose draw must go through DrawFromInventory (WO-49)
@@ -3524,10 +3702,12 @@ function KCD2MP_OnChainDeadRestart(key)
     end
     KCD2MP._pauseStats.forgot = (KCD2MP._pauseStats.forgot or 0) + dwells
     local puppets = 0
-    for _, p in pairs(KCD2MP.npcPuppets or {}) do
+    for pname, p in pairs(KCD2MP.npcPuppets or {}) do
         puppets = puppets + 1
         p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
         p.yieldStreak, p.farHits = 0, nil
+        if KCD2MP_NpcNativeSync then KCD2MP_NpcNativeSync(pname, p, nil, false, "reload") end   -- WO-118
+        p.nativeRetryAt = nil
     end
     mp_log(string.format("MP-RELOAD-RESET chain=%s death_seen_cleared=%d dwells_forgotten=%d puppets_reset=%d n=%d",
         tostring(key), deaths, dwells, puppets, KCD2MP._reloadResetN))
@@ -3605,7 +3785,11 @@ local function mp_wo102_reconcile_pauses()
         KCD2MP._pauseStats.gap = KCD2MP._pauseStats.gap + 1
         mp_log(string.format("MP-PAUSE-GAP npc=%s reason=%s age_s=%.1f -- paused but not being written; resuming (WO-108 coverage-gap detector)",
             tostring(name), reason, age or 0))
-        if reason == "no-writes" then KCD2MP.npcPuppets[name] = nil end
+        if reason == "no-writes" then
+            local gp = KCD2MP.npcPuppets[name]
+            if gp then KCD2MP_NpcNativeSync(name, gp, nil, false, "pause-gap") end   -- WO-118
+            KCD2MP.npcPuppets[name] = nil
+        end
         mp_wo102_resume(name, reason == "untracked" and "reconcile" or "gap-no-writes")
         mp_log("WO102-AUTHORITY reconcile: resumed " .. tostring(name) .. " (paused but no longer a tracked puppet)")
     end
@@ -3777,12 +3961,14 @@ KCD2MP._presets = {
     -- the 0.26.5 defaults. Every WO-110 behaviour change has a row in both.
     -- WO-113: `respawn` -- clean = death without Game Over (the new build),
     -- legacy = vanilla death (the 0.26.5 behaviour).
+    -- WO-118: `npc_native_write` -- clean = the per-frame native write (the new
+    -- build), legacy = the 50 ms Lua write (the 0.27.0 behaviour).
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true,
-               respawn = true },
+               respawn = true,  npc_native_write = true },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false,
-               respawn = false },
+               respawn = false, npc_native_write = false },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -3815,12 +4001,13 @@ function KCD2MP_ApplyPreset(which)
     set("cull_radius_m",   w.cullRadius,                 P.cull_radius_m,   function() KCD2MP_SetCullRadius(P.cull_radius_m) end)                           -- WO-110 2.4
     set("npc_senderclock", KCD2MP.npcSenderClock,        P.npc_senderclock, function() KCD2MP_SetNpcSenderClock(P.npc_senderclock and "on" or "off") end)    -- WO-110 R6
     set("respawn",         KCD2MP.respawnEnabled,        P.respawn,         function() KCD2MP_SetRespawn(P.respawn and "on" or "off") end)                 -- WO-113
+    set("npc_native_write", KCD2MP.npcNativeWrite,       P.npc_native_write, function() KCD2MP_SetNpcNativeWrite(P.npc_native_write and "on" or "off") end)  -- WO-118
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
         which, n, KCD2MP.wo102.authorityHost and "on" or "off", KCD2MP.wo102.posNative and "on" or "off",
         KCD2MP.wo102.npcScanNative and "on" or "off"))
-    KCD2MP_ShowInteractionMsg("Preset applied: " .. which .. (which == "clean" and " (0.26.5 defaults)" or " (0.26.4 defaults)"))
+    KCD2MP_ShowInteractionMsg("Preset applied: " .. which .. (which == "clean" and " (current defaults)" or " (previous-build values)"))
     if KCD2MP_Wo102Status then pcall(KCD2MP_Wo102Status) end
     return true
 end
@@ -5867,6 +6054,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             -- schedule the moment we stop writing (observed live, WO-32).
             if (now - (p.lastPacketAt or 0)) > KCD2MP.npcSync.releaseS then
                 KCD2MP_NpcReplicaDemote(name, "silence")   -- WO-104: the NPC returns before the puppet is dropped
+                KCD2MP_NpcNativeSync(name, p, nil, false, "silence")   -- WO-118
                 KCD2MP.npcPuppets[name] = nil
                 mp_log("NPC-SYNC release " .. name .. " (stream silent)")
                 mp_auth_log(name, "release", p.owner == nil and "?" or p.owner, "silence", now - (p.ownerSince or now))   -- WO-102
@@ -5949,6 +6137,8 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             end
 
             if p.dead or p.ko or locallyDead or locallyKo or remoteDead then
+                -- WO-118: dead, unconscious and carried bodies keep this Lua behaviour.
+                KCD2MP_NpcNativeSync(name, p, e, false, "down")
                 -- WO-86, the safeguard. Body-follow below exists for ONE case:
                 -- the stream's owner is manipulating a body that is down in
                 -- THEIR world too (their packet carries the dead/KO bit). When
@@ -6212,6 +6402,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                                 -- WO-94: a release inside a catch-up window is the "dragged NPC state" hazard (WO-92 s6.4 hazard 3).
                                 if KCD2MP_QuestHazard then KCD2MP_QuestHazard("npc-dragged", string.format("%s released by the divergence rule (%.1fm from our write)", name, math.sqrt(f2))) end
                                 KCD2MP_NpcReplicaDemote(name, "diverge")   -- WO-104
+                                KCD2MP_NpcNativeSync(name, p, nil, false, "diverge")   -- WO-118
                                 KCD2MP.npcPuppets[name] = nil
                                 KCD2MP._npcDivergeUntil[name] = now + TUNE.MP_NPC_DIVERGE_COOLDOWN_S
                                 KCD2MP._npcDivergeN = (KCD2MP._npcDivergeN or 0) + 1
@@ -6265,6 +6456,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             if ((KCD2MP._npcReplicas or {})[name] ~= nil) ~= isReplica then return end
 
             if p.yielded then
+                KCD2MP_NpcNativeSync(name, p, nil, false, "yield")   -- WO-118
                 p.lastWroteX, p.lastWroteY = nil, nil
                 return
             end
@@ -6313,9 +6505,19 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             spd = math.sqrt(dx*dx + dy*dy) * 0.5 / 0.050
             end
 
-            e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
-            p.lastWroteX, p.lastWroteY, p.lastWroteZ = p.cx, p.cy, p.cz   -- WO-110 R14: Z too, for MP-NPCZ
-            pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
+            -- WO-118: a puppet the DLL acknowledged is written by KCDMP.dll every
+            -- frame at its frame hook; Lua keeps the gait, weapons and policy. The
+            -- Lua detectors below (MP-NPCFIGHT, MP-AUTHORITY-VIOLATION, MP-NPCZ) are
+            -- the LEGACY path's instruments: a native puppet has no Lua write to
+            -- measure against and is measured by the DLL's MP-NPCPULL instead.
+            KCD2MP_NpcNativeSync(name, p, e, KCD2MP_NpcNativeHealthy() and not isReplica, "tick")
+            if p.nativeOwned then
+                p.lastWroteX, p.lastWroteY, p.lastWroteZ = nil, nil, nil
+            else
+                e:SetWorldPos({x = p.cx, y = p.cy, z = p.cz})
+                p.lastWroteX, p.lastWroteY, p.lastWroteZ = p.cx, p.cy, p.cz   -- WO-110 R14: Z too, for MP-NPCZ
+                pcall(function() e:SetWorldAngles({x = 0, y = 0, z = p.cr}) end)
+            end
 
             -- Animation from rendered speed. Without this the NPC slides in
             -- its current activity pose (observed live: a seated NPC slid
@@ -8023,7 +8225,10 @@ function KCD2MP_NpcTakedownCue(name, e, x, y, z)
         local len = 0
         pcall(function() len = e:GetAnimationLength(0, KCD2MP._takedownVictimAnim) or 0 end)
         pcall(function() e:StartAnimation(0, KCD2MP._takedownVictimAnim, 0, 0.1, 1.0, false) end)
-        if p then p.oneShotUntil = os.clock() + math.min(len > 0 and len or 1.2, 2.5) end
+        if p then
+            p.oneShotUntil = os.clock() + math.min(len > 0 and len or 1.2, 2.5)
+            KCD2MP_NpcNativeHold(name, math.min(len > 0 and len or 1.2, 2.5))   -- WO-118
+        end
     end
     -- Master half on the nearest ghost within arm's reach.
     local best, bestD2 = nil, 6.25
@@ -8070,6 +8275,7 @@ function KCD2MP_PuppetSwingCue(name, p, e)
     pcall(function() e:StartAnimation(0, KCD2MP._swingAnim, 0, 0.08, ANIMS.SWING_ANIM_SPEED, false) end)
     local dur = (len > 0 and len or 0.8) / ANIMS.SWING_ANIM_SPEED
     p.oneShotUntil = os.clock() + math.min(dur, 1.5)
+    KCD2MP_NpcNativeHold(name, math.min(dur, 1.5))   -- WO-118: the native writer holds too
     p.animTag = "swing"   -- locomotion re-asserts itself after the window
     mp_log("NPC-SYNC swing cue " .. name)
 end
@@ -11959,6 +12165,17 @@ local ok, err = pcall(function()
     -- kcdmp-native.log. mp_preset_legacy = mp_respawn off (vanilla death).
     mp_log(string.format("WO113-BUILD respawn=%s knockdown_rule=unarmed-recent-attacker-only knockdown=disengage-stopfight black_hold_s=6 grave=all-but-quest-items grave_model=conciliation_cross_d grave_expiry_game_days=3 wake=nearest-hangoverSpot-100m+ -- guard only in a session (mp_preset_legacy = off)",
         KCD2MP.respawnEnabled and "on" or "off"))
+    -- WO-118 build marker: every new default on one line. The DLL logs its own
+    -- WO118-NATIVE line (armed, or DISARMED with the anchor that failed) in
+    -- kcdmp-native.log. Missing = stale pak (memory/kcd2mp-lua-deploy-gotcha.md).
+    mp_log(string.format("WO118-BUILD npc_native_write=%s native_stale_s=%.1f native_retry_s=%.0f"
+        .. " -- per-frame native write at the frame hook (ground collider kept), MP-NPCPULL + MP-NPCBIND in kcdmp-native.log,"
+        .. " mp_npc_trace <name> [s]; mp_puppet_rate is legacy-only (mp_preset_legacy = native off)",
+        KCD2MP.npcNativeWrite and "on" or "off",
+        TUNE.NPC_NATIVE_STALE_S, TUNE.NPC_NATIVE_RETRY_S))
+    KCD2MP_NpcNativeCfgEmit()   -- the agent and the DLL mirror this Lua state's defaults (a restarted game resets them)
+    System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
+    System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")
     System.AddCCommand("mp_resync_npcs",         "KCD2MP_NpcResyncRequest()",                 "WO-102 Phase 6: push (owner) or ask for (non-owner) a one-shot NPC position/life-state resync of every NPC near any player; needs mp_authority_host_on")
     System.AddCCommand("mp_npc_scan_native_on",  'KCD2MP_Wo102Set("npc_scan_native", true)',  "WO-102.5 Phase 2: mp_npc_rescan sources candidates from the agent's native scan push instead of System.GetEntitiesInSphere. UNMEASURED -- run mp_npc_scan_compare first")
     System.AddCCommand("mp_npc_scan_native_off", 'KCD2MP_Wo102Set("npc_scan_native", false)', "WO-102.5 Phase 2: back to the Lua GetEntitiesInSphere enumerate")
@@ -11968,7 +12185,7 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_cull_off",        'KCD2MP_SetNpcCull("off")',                  "WO-102.5 Phase 3: stream every owned NPC regardless of distance")
     System.AddCCommand("mp_authority_radius",    'KCD2MP_SetAuthorityRadius(%line)',        "WO-102.5/WO-106: set the host-authority NPC ownership radius: mp_authority_radius <metres> (default 300, floor 10)")
     System.AddCCommand("mp_together_params",     'KCD2MP_SetTogetherParams(%line)',         "WO-102.5/WO-106: set the together/apart hysteresis band: mp_together_params <enterM> <exitM> <dwellS>, or 'on' for defaults (60 90 10)")
-    System.AddCCommand("mp_puppet_rate",         'KCD2MP_SetPuppetRate(%line)',              "WO-106 Phase 3 mitigation: set the puppet write/tick rate in ms, takes effect next tick, no reconnect needed: mp_puppet_rate <ms> (default 50, floor 10) -- lower it to test whether ground-collider sinking scales with write frequency")
+    System.AddCCommand("mp_puppet_rate",         'KCD2MP_SetPuppetRate(%line)',              "WO-106 Phase 3 mitigation: set the LEGACY puppet write/tick rate in ms (WO-118: only puppets Lua still writes -- mp_npc_native_write off or a refused bind): mp_puppet_rate <ms> (default 50, floor 10)")
     System.AddCCommand("mp_npc_read_native_on",  'KCD2MP_SetNpcReadNative("on")',              "WO-103 Phase 2: a tracked NPC's position/yaw comes from the agent's native scan push when fresh, falling back to the live e:GetWorldPos() read otherwise (default on)")
     System.AddCCommand("mp_npc_read_native_off", 'KCD2MP_SetNpcReadNative("off")',             "WO-103 Phase 2: always read position/yaw live off the entity, as before this WO")
     System.AddCCommand("mp_npc_read_compare",    "KCD2MP_NpcReadCompare()",                    "WO-103 Phase 2 known-answer check: diff the native push's position/yaw against a fresh live read for every currently-tracked name; a real mismatch fails mp_npc_read_native closed")

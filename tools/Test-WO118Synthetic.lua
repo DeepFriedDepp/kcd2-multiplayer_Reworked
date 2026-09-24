@@ -1,0 +1,360 @@
+-- WO-118 synthetic test, against the real kdcmp.lua under MoonSharp.
+--
+--   (a) defaults: mp_npc_native_write ON; the WO118-BUILD
+--       marker is logged at load; the npc_native_cfg event mirrors the
+--       defaults to the agent at load
+--   (b) no heartbeat -> no bind event is ever emitted and Lua writes the
+--       puppet (SetWorldPos every tick), exactly the 0.27.0 path
+--   (c) heartbeat alive -> ONE bind event with the documented fields
+--       (name, on, eid hex, wuid hex, anchor x/y/z, delay ms); Lua keeps
+--       writing until the DLL acknowledges
+--   (d) ack ok -> Lua stops writing positions for that puppet (no
+--       SetWorldPos, no lastWrote baseline) while the gait/policy tick runs
+--   (e) heartbeat stale (> 3 s) -> Lua writes the puppet again at once and
+--       emits the unbind; the bind returns when the heartbeat does
+--   (f) a nack (the DLL's own drop) -> Lua writes at once; the bind is
+--       re-offered only after 10 s
+--   (g) a dead / unconscious / carried stream -> unbind ("down"); Lua's own
+--       down-body behaviour applies
+--   (h) a swing cue -> a native hold event with the one-shot's duration
+--   (i) mp_npc_native_write off -> cfg event, every puppet unbound, Lua
+--       writes; on -> binds again
+--   (k) presets: clean = native on; legacy = native off; both log the row
+--   (l) mp_npc_trace: bare prints usage; a name emits npc_trace <name> <s>
+--       (default 10, clamped 1..120); stop emits <last> 0; the console
+--       commands are registered with the unquoted %line
+--   (m) silence release, diverge release and a reload each send the unbind
+--
+-- What this proves: the Lua half behaves as documented. What it does NOT
+-- prove: anything about the DLL, the engine or a second machine.
+--
+-- Part 1: engine stubs + a fake clock (the WO-110 driver's shape).
+
+NOW = 0
+os.clock = function() return NOW end
+LOG = {}; TIMERS = {}; ENTS = {}; ERRS = {}; TOASTS = {}; SPHERE = {}
+CMDS = {}; DRAWS = {}; SPAWNS = {}; CCMDS = {}
+
+local function mkstub()
+    return setmetatable({}, { __index = function(_, k) return function(...) return nil end end })
+end
+System = mkstub()
+System.LogAlways = function(s) LOG[#LOG + 1] = tostring(s) end
+System.GetCVar = function() return "0" end
+System.GetEntityByName = function(n) return ENTS[n] end
+System.GetEntitiesInSphere = function() return SPHERE end
+System.ExecuteCommand = function(s) CMDS[#CMDS + 1] = tostring(s) end
+System.DrawText = function(x, y, text, size) DRAWS[#DRAWS + 1] = { x = x, y = y, text = tostring(text) } end
+System.RemoveEntity = function(eid) for n, e in pairs(ENTS) do if e.id == eid then ENTS[n] = nil end end end
+System.AddCCommand = function(name, body, help) CCMDS[name] = { body = tostring(body), help = tostring(help or "") } end
+Script = mkstub()
+Script.SetTimer = function(ms, f) TIMERS[#TIMERS + 1] = { ms = ms, f = f, at = NOW } end
+Game = mkstub(); AI = mkstub(); Sound = mkstub(); Physics = mkstub(); Terrain = mkstub()
+UIAction = mkstub()
+UIAction.CallFunction = function(panel, inst, fn, text) TOASTS[#TOASTS + 1] = tostring(text) end
+WORLD_T = 1000
+Calendar = { GetWorldTime = function() return WORLD_T end, SetWorldTime = function(t) WORLD_T = t end }
+XGenAIModule = mkstub()
+
+player = { id = 1, GetName = function(self) return "Dude" end,
+           GetWorldPos = function() return { x = 0, y = 0, z = 0 } end,
+           GetWorldAngles = function() return { x = 0, y = 0, z = 0 } end,
+           actor = { GetHealth = function() return 100 end, IsDead = function() return false end } }
+
+local rawpcall = pcall
+pcall = function(f, ...)
+    local r = { rawpcall(f, ...) }
+    if not r[1] then ERRS[#ERRS + 1] = tostring(r[2]) end
+    return table.unpack(r)
+end
+
+-- @@KDCMP@@
+
+-- Part 2: scenarios.
+
+local RESULTS = {}
+local function check(name, ok, detail)
+    RESULTS[#RESULTS + 1] = (ok and "PASS  " or "FAIL  ") .. name .. (detail and ("  [" .. tostring(detail) .. "]") or "")
+end
+local function logCount(pat)
+    local n = 0
+    for _, l in ipairs(LOG) do if string.find(l, pat, 1, true) then n = n + 1 end end
+    return n
+end
+local function lastLog(pat)
+    for i = #LOG, 1, -1 do if string.find(LOG[i], pat, 1, true) then return LOG[i] end end
+    return nil
+end
+local function clearLog() LOG = {} end
+local function evts(name)
+    local out = {}
+    for _, l in ipairs(LOG) do
+        local a = l:match("%[KCD2%-MP%-EVT%] v1 %d+ " .. name:gsub("_", "%%_") .. " (.*)$")
+        if a then out[#out + 1] = a end
+    end
+    return out
+end
+local function cmdCount(pat)
+    local n = 0
+    for _, c in ipairs(CMDS) do if string.find(c, pat, 1, true) then n = n + 1 end end
+    return n
+end
+
+-- (a) defaults -- read BEFORE any scenario touches them.
+check("a: mp_npc_native_write ships ON", KCD2MP.npcNativeWrite == true)
+check("a: WO118-BUILD marker logged with the default",
+      logCount("WO118-BUILD") == 1 and (lastLog("WO118-BUILD") or ""):find("npc_native_write=on", 1, true) ~= nil, lastLog("WO118-BUILD"))
+check("a: the load mirrors the defaults to the agent (npc_native_cfg on on)", (evts("npc_native_cfg")[1] or "") == "on on", evts("npc_native_cfg")[1])
+check("a: no Lua errors at load", #ERRS == 0, ERRS[1])
+
+local NEXTID = 0x0E0000
+local STATE = {}
+local function mkEntity(name, x, y, z)
+    NEXTID = NEXTID + 1
+    local e = { class = "NPC", id = "userdata: " .. string.format("%016X", NEXTID), px = x or 0, py = y or 0, pz = z or 0, rz = 0, writes = {}, dead = false, hp = 100 }
+    e.GetName = function(self) return name end
+    e.GetWorldPos = function(self, t) t = t or {}; t.x, t.y, t.z = self.px, self.py, self.pz; return t end
+    e.GetWorldAngles = function(self, t) t = t or {}; t.x, t.y, t.z = 0, 0, self.rz; return t end
+    e.SetWorldPos = function(self, pos) self.px, self.py, self.pz = pos.x, pos.y, pos.z; self.writes[#self.writes + 1] = { x = pos.x, y = pos.y, z = pos.z, at = NOW } end
+    e.SetWorldAngles = function(self, a) self.rz = a.z end
+    e.StartAnimation = function() end
+    e.GetAnimationLength = function() return 0.8 end
+    e.SetFlags = function() end
+    e.actor = { IsDead = function() return e.dead end, IsUnconscious = function() return false end, GetHealth = function() return e.hp end,
+                GetCurrentAnimationState = function() return STATE[name] or "SittingIdle" end }
+    e.human = { IsWeaponDrawn = function() return false end, DrawWeapon = function() return true end, HolsterWeapon = function() return true end,
+                IsInDialog = function() return e.inDialog == true end }
+    e.soul = { GetId = function() return "userdata: 05000000000001DC" end }
+    ENTS[name] = e
+    return e
+end
+
+local function reset()
+    KCD2MP.wo102.authorityHost = true; KCD2MP.wo102.authorityPause = true
+    KCD2MP.hitSensorOn = false
+    KCD2MP.npcPuppets = {}; KCD2MP.npcTracked = {}
+    KCD2MP.npcPuppetRunning = false; KCD2MP._npcDivergeUntil = {}
+    KCD2MP._npcPaused = {}; KCD2MP._npcPauseExec = {}; KCD2MP._npcEverPaused = {}; KCD2MP._npcResumePending = {}
+    KCD2MP._authViolationAt = {}; KCD2MP._authViolationN = {}
+    KCD2MP._npcDeathRemote = {}; KCD2MP._npcDeathDiverged = {}; KCD2MP._npcDeathSeen = {}
+    KCD2MP.npcDiverge = true; KCD2MP.npcYield.enabled = false
+    KCD2MP.npcReplica.enabled = false; KCD2MP._npcReplicas = {}
+    KCD2MP.npcSmooth = true; KCD2MP.npcPuppetTickMs = 50
+    KCD2MP.npcSenderClock = true; KCD2MP._senderClock = {}
+    KCD2MP.npcNativeWrite = true; KCD2MP.cutsceneActive = false
+    KCD2MP._npcNative = { aliveAt = nil, armed = false, on = false, bound = 0, writing = 0, binds = 0, acks = 0, nacks = 0, holds = 0, unbinds = 0 }
+    KCD2MP.ghosts = {}
+    ENTS = {}; SPHERE = {}; TIMERS = {}; ERRS = {}; CMDS = {}; STATE = {}
+    clearLog()
+end
+
+local SEQ = 0
+local function packet(name, sx, sy, sz, flags)
+    SEQ = SEQ + 1
+    KCD2MP_ApplyNpcState(name, sx, sy, sz or 0, 0, 100, flags or 0, 1, SEQ % 65536, math.floor(NOW * 1000))
+end
+local function tick(name, sx, sy, sz, flags)
+    NOW = NOW + 0.05
+    packet(name, sx, sy, sz, flags)
+    KCD2MP.npcPuppetRunning = true
+    KCD2MP_NpcPuppetTick("ext")
+end
+local function alive() KCD2MP_NpcNativeAlive(1, 1, 0, 0) end
+
+-- ---------------------------------------------------------------- (b)
+do
+    reset(); NOW = 100
+    local e = mkEntity("b_npc", 10, 10, 0)
+    for i = 1, 20 do tick("b_npc", 10 + i * 0.07, 10, 0) end
+    check("b: no heartbeat -> no bind event", #evts("npc_native") == 0, #evts("npc_native"))
+    check("b: no heartbeat -> Lua writes every tick", #e.writes >= 19, #e.writes)
+    check("b: not healthy", KCD2MP_NpcNativeHealthy() ~= true)
+    check("b: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (c) (d)
+do
+    reset(); NOW = 200
+    local e = mkEntity("c_npc", 20, 20, 1)
+    alive()
+    tick("c_npc", 20.1, 20, 1)
+    local ev = evts("npc_native")
+    check("c: one bind event after the first healthy tick", #ev == 1, #ev)
+    local f = {}
+    for w in (ev[1] or ""):gmatch("%S+") do f[#f + 1] = w end
+    check("c: bind fields: name on eidHex wuidHex ax ay az delayMs",
+          f[1] == "c_npc" and f[2] == "on" and f[3] == string.format("%016X", NEXTID) and f[4] == "05000000000001DC"
+          and tonumber(f[5]) == 20 and tonumber(f[6]) == 20 and tonumber(f[8]) == 120 and #f == 8, ev[1])
+    local w0 = #e.writes
+    for i = 1, 5 do alive(); tick("c_npc", 20.1 + i * 0.07, 20, 1) end
+    check("c: Lua keeps writing until the ack", #e.writes >= w0 + 5, #e.writes - w0)
+    check("c: an unanswered bind is not re-sent inside 3 s", #evts("npc_native") == 1, #evts("npc_native"))
+    KCD2MP_NpcNativeAck("c_npc", 1, "ok")
+    check("d: ack -> the puppet is native-owned", KCD2MP.npcPuppets.c_npc.nativeOwned == true)
+    local w1 = #e.writes
+    for i = 1, 10 do alive(); tick("c_npc", 20.5 + i * 0.07, 20, 1) end
+    check("d: owned -> Lua writes no position", #e.writes == w1, #e.writes - w1)
+    check("d: owned -> no Lua detector baseline", KCD2MP.npcPuppets.c_npc.lastWroteX == nil)
+    check("d: the gait tick still runs (anim tag moves off idle)", KCD2MP.npcPuppets.c_npc.animTag ~= nil)
+    check("d: MP-NPCWRITE bound line", logCount("MP-NPCWRITE npc=c_npc native=bound") == 1)
+    check("d: no Lua errors", #ERRS == 0, ERRS[1])
+
+    -- (e) heartbeat stale
+    local wS = #e.writes
+    NOW = NOW + 3.5   -- no alive() for 3.5 s
+    tick("c_npc", 21.3, 20, 1)
+    check("e: stale heartbeat -> Lua writes again at once", #e.writes == wS + 1, #e.writes - wS)
+    check("e: stale heartbeat -> unbind event", (evts("npc_native")[#evts("npc_native")] or ""):find("c_npc off tick", 1, true) ~= nil, evts("npc_native")[#evts("npc_native")])
+    check("e: ownership cleared", KCD2MP.npcPuppets.c_npc.nativeOwned == false)
+    local nb = #evts("npc_native")
+    alive(); tick("c_npc", 21.4, 20, 1)
+    check("e: heartbeat back -> bind re-sent", #evts("npc_native") == nb + 1 and (evts("npc_native")[nb + 1] or ""):find("c_npc on ", 1, true) ~= nil, evts("npc_native")[nb + 1])
+    check("e: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (f)
+do
+    reset(); NOW = 300
+    local e = mkEntity("f_npc", 30, 30, 0)
+    alive(); tick("f_npc", 30.1, 30, 0)
+    KCD2MP_NpcNativeAck("f_npc", 1, "ok")
+    local w = #e.writes
+    alive(); tick("f_npc", 30.2, 30, 0)
+    check("f: owned (precondition)", #e.writes == w)
+    KCD2MP_NpcNativeAck("f_npc", 0, "entity-gone")
+    alive(); tick("f_npc", 30.3, 30, 0)
+    check("f: a drop -> Lua writes at once", #e.writes == w + 1, #e.writes - w)
+    check("f: the drop is logged with its reason", logCount("MP-NPCWRITE npc=f_npc native=dropped reason=entity-gone") == 1, lastLog("MP-NPCWRITE npc=f_npc"))
+    local nb = #evts("npc_native")
+    for i = 1, 20 do alive(); tick("f_npc", 30.3 + i * 0.05, 30, 0) end   -- 1 s later
+    check("f: no re-bind inside the 10 s retry window", #evts("npc_native") == nb, #evts("npc_native") - nb)
+    NOW = NOW + 10
+    alive(); tick("f_npc", 31.5, 30, 0)
+    check("f: re-offered after 10 s", #evts("npc_native") == nb + 1, #evts("npc_native") - nb)
+    check("f: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (g)
+do
+    reset(); NOW = 400
+    local e = mkEntity("g_npc", 40, 40, 0)
+    alive(); tick("g_npc", 40.1, 40, 0)
+    KCD2MP_NpcNativeAck("g_npc", 1, "ok")
+    alive(); tick("g_npc", 40.2, 40, 0, 1)   -- stream says dead
+    local ev = evts("npc_native")
+    check("g: a dead stream unbinds (down)", (ev[#ev] or ""):find("g_npc off down", 1, true) ~= nil, ev[#ev])
+    check("g: ownership cleared", KCD2MP.npcPuppets.g_npc.nativeOwned == false)
+    reset(); NOW = 410
+    local c = mkEntity("g_car", 41, 41, 0)
+    alive(); tick("g_car", 41.1, 41, 0)
+    KCD2MP_NpcNativeAck("g_car", 1, "ok")
+    alive(); tick("g_car", 41.2, 41, 0, 2 + 16)   -- unconscious + carried
+    ev = evts("npc_native")
+    check("g: an unconscious/carried stream unbinds too", (ev[#ev] or ""):find("g_car off down", 1, true) ~= nil, ev[#ev])
+    check("g: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (h)
+do
+    reset(); NOW = 500
+    local e = mkEntity("h_npc", 50, 50, 0)
+    alive(); tick("h_npc", 50.1, 50, 0)
+    KCD2MP_NpcNativeAck("h_npc", 1, "ok")
+    alive(); tick("h_npc", 50.2, 50, 0, 8)   -- swing cue
+    local hv = evts("npc_native_hold")
+    check("h: a swing cue sends a native hold", #hv == 1 and (hv[1] or ""):find("^h_npc %d+$") ~= nil, hv[1])
+    local ms = tonumber((hv[1] or ""):match("(%d+)$") or "0")
+    check("h: the hold covers the one-shot (0.8 s clip / speed, capped 1.5 s)", ms > 0 and ms <= 1500, ms)
+    reset(); NOW = 510
+    mkEntity("h_lua", 51, 51, 0)
+    tick("h_lua", 51.1, 51, 0)
+    tick("h_lua", 51.2, 51, 0, 8)
+    check("h: no hold event for a puppet Lua writes (no bind)", #evts("npc_native_hold") == 0)
+    check("h: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (i)
+do
+    reset(); NOW = 600
+    local e = mkEntity("i_npc", 60, 60, 0)
+    alive(); tick("i_npc", 60.1, 60, 0)
+    KCD2MP_NpcNativeAck("i_npc", 1, "ok")
+    KCD2MP_SetNpcNativeWrite("off")
+    check("i: off -> cfg event 'off on'", (evts("npc_native_cfg")[#evts("npc_native_cfg")] or "") == "off on", evts("npc_native_cfg")[#evts("npc_native_cfg")])
+    check("i: off -> the puppet is no longer owned", KCD2MP.npcPuppets.i_npc.nativeOwned == false)
+    local w = #e.writes
+    alive(); tick("i_npc", 60.2, 60, 0)
+    check("i: off -> Lua writes", #e.writes == w + 1)
+    local nb = #evts("npc_native")
+    for i = 1, 5 do alive(); tick("i_npc", 60.2 + i * 0.05, 60, 0) end
+    check("i: off -> no bind events", #evts("npc_native") == nb)
+    KCD2MP_SetNpcNativeWrite("on")
+    alive(); tick("i_npc", 60.6, 60, 0)
+    check("i: on -> bind again", #evts("npc_native") == nb + 1, #evts("npc_native") - nb)
+    KCD2MP_SetNpcNativeWrite(nil)
+    check("i: bare reports without changing", KCD2MP.npcNativeWrite == true and (lastLog("MP-NPCWRITE native_write=") or ""):find("native_write=on", 1, true) ~= nil)
+    check("i: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (k)
+do
+    reset(); NOW = 800
+    KCD2MP_ApplyPreset("legacy")
+    check("k: legacy = native off", KCD2MP.npcNativeWrite == false)
+    check("k: legacy logs the row", logCount("MP-PRESET name=legacy set=npc_native_write") == 1)
+    KCD2MP_ApplyPreset("clean")
+    check("k: clean = native on", KCD2MP.npcNativeWrite == true)
+    check("k: clean logs the row", logCount("MP-PRESET name=clean set=npc_native_write") == 1)
+    check("k: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (l)
+do
+    reset(); NOW = 900
+    KCD2MP_NpcTrace(nil)
+    check("l: bare prints usage, emits nothing", logCount("MP-NPCTRACE usage") == 1 and #evts("npc_trace") == 0)
+    KCD2MP_NpcTrace("ttkc_slama")
+    check("l: default 10 s", evts("npc_trace")[1] == "ttkc_slama 10", evts("npc_trace")[1])
+    KCD2MP_NpcTrace("ttkc_slama 500")
+    check("l: clamped to 120 s", evts("npc_trace")[2] == "ttkc_slama 120", evts("npc_trace")[2])
+    KCD2MP_NpcTrace("stop")
+    check("l: stop -> last name, 0", evts("npc_trace")[3] == "ttkc_slama 0", evts("npc_trace")[3])
+    KCD2MP_NpcTrace("bad;name")
+    check("l: a non-entity name is refused", #evts("npc_trace") == 3)
+    for _, c in ipairs({ "mp_npc_native_write", "mp_npc_trace" }) do
+        check("l: " .. c .. " registered with the unquoted %line",
+              CCMDS[c] ~= nil and CCMDS[c].body:find("(%line)", 1, true) ~= nil and CCMDS[c].body:find('"%line"', 1, true) == nil, CCMDS[c] and CCMDS[c].body)
+    end
+    KCD2MP_NpcTraceDone(417, "C:\\game\\kcdmp-trace-x.csv")
+    check("l: trace done is logged", logCount("MP-NPCTRACE done rows=417") == 1)
+    check("l: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- ---------------------------------------------------------------- (m)
+do
+    reset(); NOW = 1000
+    mkEntity("m_sil", 80, 80, 0)
+    alive(); tick("m_sil", 80.1, 80, 0)
+    KCD2MP_NpcNativeAck("m_sil", 1, "ok")
+    NOW = NOW + 3.2   -- stream silent past releaseS (3 s)
+    alive()
+    KCD2MP.npcPuppetRunning = true
+    KCD2MP_NpcPuppetTick("ext")
+    local ev = evts("npc_native")
+    check("m: silence release unbinds", (ev[#ev] or ""):find("m_sil off silence", 1, true) ~= nil, ev[#ev])
+    check("m: the puppet is gone", KCD2MP.npcPuppets.m_sil == nil)
+    reset(); NOW = 1100
+    mkEntity("m_rel", 81, 81, 0)
+    alive(); tick("m_rel", 81.1, 81, 0)
+    KCD2MP_NpcNativeAck("m_rel", 1, "ok")
+    KCD2MP_OnChainDeadRestart("npcsync")
+    ev = evts("npc_native")
+    check("m: a reload unbinds every puppet", (ev[#ev] or ""):find("m_rel off reload", 1, true) ~= nil, ev[#ev])
+    check("m: no Lua errors", #ERRS == 0, ERRS[1])
+end
+
+-- Summary, in the shared driver's contract (Test-NpcSmoothSynthetic.ps1 reads
+-- the global OUT).
+local pass, fail = 0, 0
+for _, r in ipairs(RESULTS) do if r:sub(1, 4) == "PASS" then pass = pass + 1 else fail = fail + 1 end end
+OUT = table.concat(RESULTS, "\n") .. string.format("\n%d passed, %d failed", pass, fail)

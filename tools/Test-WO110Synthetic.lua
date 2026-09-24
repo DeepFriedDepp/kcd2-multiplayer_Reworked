@@ -340,7 +340,8 @@ do
     KCD2MP_ApplyPreset("clean")
     check("h: clean = 0.26.5: read native OFF, cap 200, radius 60",
           KCD2MP.wo1025.readNative == false and KCD2MP.wo1025.npcTrackMax == 200 and KCD2MP.wo1025.cullRadius == 60)
-    check("h: the toast names the versions", (TOASTS[#TOASTS] or ""):find("0.26.5", 1, true) ~= nil or logCount("Preset applied: clean (0.26.5 defaults)") >= 1, TOASTS[#TOASTS])
+    -- WO-118: the preset message no longer names a release (it went stale at 0.27.0).
+    check("h: the preset message says which set", logCount("Preset applied: clean (current defaults)") >= 1, TOASTS[#TOASTS])
     check("h: authority model untouched", KCD2MP.wo102.authorityHost == true and KCD2MP.wo102.posNative == false and KCD2MP.wo102.npcScanNative == true)
     check("h: no Lua errors", #ERRS == 0, ERRS[1])
 end
