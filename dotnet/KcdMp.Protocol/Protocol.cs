@@ -738,7 +738,7 @@ namespace KcdMp.Wire;
 /// Protocol.Version stays 7 -- but the release-version check (0x3D) already
 /// refuses a mixed pair, and both machines must run the same build.
 ///
-/// Free type bytes for new features: 0x44 and up.
+/// Free type bytes for new features: 0x46 and up (0x44/0x45 are WO-121 PlayerHit, ProtocolV8.cs).
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -771,8 +771,14 @@ public static partial class Protocol
     /// v7 relay refuse each other at Handshake with a clear message on both
     /// sides, instead of silently dropping every NPC packet on a length check
     /// the way 0.23.1 did.
+    ///
+    /// Bumped to 8 in WO-121 (movement and combat, ProtocolV8.cs): the
+    /// Position/Ghost body state is replaced (flag 0x10, 12 bytes, which a v7
+    /// relay's exact-length gate would drop), the action channel gains
+    /// row-carrying events, and PlayerHit 0x44/0x45 is new. One bump for the
+    /// whole WO; a v7 agent and a v8 relay refuse each other at Handshake.
     /// </summary>
-    public const byte Version = 7;
+    public const byte Version = 8;
 
     // C→S
     public const byte Handshake      = 0x00;
@@ -941,25 +947,32 @@ public static partial class Protocol
     /// <summary>WO-118 follow-up: bytes appended when <see cref="PositionFlagSenderMs"/> is set.</summary>
     public const int SenderMsLen = 4;
 
-    /// <summary>WO-118 follow-up: the largest Position payload -- body state and sender ms (26).</summary>
-    public const int PositionPayloadLenMax = PositionPayloadLen + BodyStateLen + SenderMsLen;
+    /// <summary>The largest Position payload the relay accepts.</summary>
+    /// WO-121 (v8): the largest is now state block 2 + sender ms (33); the
+    /// relay sizes its read buffer from this, so it must always be the max.
+    public const int PositionPayloadLenMax = PositionPayloadLenV8Max;
 
-    /// <summary>WO-118 follow-up: the largest Ghost payload -- body state and sender ms (27).</summary>
-    public const int GhostPayloadLenMax = GhostPayloadLen + BodyStateLen + SenderMsLen;
+    /// <summary>The largest Ghost payload an agent accepts.</summary>
+    /// WO-121 (v8): state block 2 + sender ms (34).
+    public const int GhostPayloadLenMax = GhostPayloadLenV8Max;
 
     /// <summary>
     /// Every Position (0x01) payload length the relay accepts: 17 (bare, and
-    /// every STALE heartbeat of an old sender), 21 (+ sender ms), 22 (+ body
-    /// state), 26 (both). Exact lengths, never a range (WO-101).
+    /// every STALE heartbeat of an old sender), 21 (+ sender ms), 29 (+ body
+    /// state 2), 33 (both). Exact lengths, never a range (WO-101).
+    /// WO-121 (v8): the WO-100.5 body state (0x04, +5) is superseded by
+    /// BodyState2 (0x10, +12), so the set is 17, 21, 29, 33. A v8 relay drops a
+    /// 22- or 26-byte Position (counted, MP-RELAY-DROPS) -- only a v7 sender
+    /// builds one, and the handshake already refuses a v7 sender.
     /// </summary>
     public static bool IsPositionPayloadLen(int len) =>
         len == PositionPayloadLen || len == PositionPayloadLen + SenderMsLen
-        || len == PositionPayloadLenV2 || len == PositionPayloadLenMax;
+        || len == PositionPayloadLenV8 || len == PositionPayloadLenV8Max;
 
-    /// <summary>Every Ghost (0x02) payload length an agent accepts: 18, 22, 23, 27.</summary>
+    /// <summary>Every Ghost (0x02) payload length an agent accepts (v8): 18, 22, 30, 34.</summary>
     public static bool IsGhostPayloadLen(int len) =>
         len == GhostPayloadLen || len == GhostPayloadLen + SenderMsLen
-        || len == GhostPayloadLenV2 || len == GhostPayloadLenMax;
+        || len == GhostPayloadLenV8 || len == GhostPayloadLenV8Max;
 
     /// <summary>Exact voice frame length: 20 ms of 16 kHz mono 16-bit PCM.</summary>
     public const int VoiceFrameLen = 640;
@@ -1606,8 +1619,8 @@ public enum ActionKind : byte
 {
     /// <summary>An attack, carrying the accepted input from the combat model.</summary>
     Attack = 1,
-    /// <summary>Reserved: a jump. Not yet sent -- the airborne tags are not in the
-    /// global tag context on this build (WO-100 S1.5).</summary>
+    /// <summary>A jump. WO-121: sent at the commit (the state expansion's
+    /// RequestJump accepted it on the sender), payload <c>[senderMs:4]</c>.</summary>
     Jump = 2,
     /// <summary>Reserved: an emote.</summary>
     Emote = 3,
@@ -1629,6 +1642,22 @@ public enum ActionKind : byte
     /// <see cref="Protocol.NpcStateFlagResync"/>.
     /// </summary>
     NpcResync = 5,
+    /// <summary>WO-121: a block impulse (a one-shot block or perfect-block gesture), payload <see cref="RowEvent"/>.</summary>
+    BlockImpulse = 6,
+    /// <summary>WO-121: a dodge, payload <see cref="RowEvent"/> (the combat_action_dodge row).</summary>
+    Dodge = 7,
+    /// <summary>WO-121: ranged -- press = draw, commit = release, cancel. Reserved: not sent by 0.29 builds (Phase 7 parked).</summary>
+    Ranged = 8,
+    /// <summary>Reserved for the takedown WO (WO-119 s5.2).</summary>
+    Takedown = 9,
+    /// <summary>Reserved for the takedown WO (carry / put).</summary>
+    Carry = 10,
+    /// <summary>Reserved for the traversal WO (ladders, vaults).</summary>
+    Traverse = 11,
+    /// <summary>WO-121: a host-only session lever, payload <c>[key:1][value:1]</c> (<see cref="SessionSettingKey"/>). The relay forwards it only from the damage authority (the host).</summary>
+    SessionSetting = 12,
+    /// <summary>WO-121: the owner's NPC committed an attack row, payload <see cref="RowEvent"/> with the NPC's name. Replaces the WO-49 swing-cue flag as the NPC copy's swing.</summary>
+    NpcAttack = 13,
 }
 
 /// <summary>

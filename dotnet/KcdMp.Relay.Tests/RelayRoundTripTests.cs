@@ -226,39 +226,42 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         return (a, b);
     }
 
-    // ---- Position 0x01 -> Ghost 0x02 -------------------------------------
+    // ---- Position 0x01 -> Ghost 0x02 (protocol v8, WO-121) ----------------
+
+    private static readonly BodyState2 SampleState2 = new(
+        305, -12, BodyState2Bits.CombatMode | BodyState2Bits.BlockHeld, WireZone.UpperRight, WireGuardStance.Right,
+        WireZone.Head, 0, 0, 0);
 
     [Fact]
-    public async Task V2_position_with_body_state_arrives_intact()
+    public async Task V8_position_with_state2_arrives_intact()
     {
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
-        var body = new BodyState(BodyPace.Run, BodyDir.Forward, BodyStance.Upright, 12345);
-        var pkt = PositionCodec.BuildPosition(2340.12f, 2047.04f, 109.17f, 1.68f, isRiding: false, stale: false, body);
-        Assert.Equal(3 + Protocol.PositionPayloadLenV2, pkt.Length);   // this IS the 0.23.1 live packet
+        var pkt = PositionCodec.BuildPosition(2340.12f, 2047.04f, 109.17f, 1.68f, isRiding: false, stale: false, SampleState2);
+        Assert.Equal(3 + Protocol.PositionPayloadLenV8, pkt.Length);   // 29
         await a.SendRawAsync(pkt);
 
         var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
-        Assert.Equal(Protocol.GhostPayloadLenV2, ghost.Length);
+        Assert.Equal(Protocol.GhostPayloadLenV8, ghost.Length);        // 30
         Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
         Assert.Equal(a.Id, g.GhostId);
         Assert.Equal(2340.12f, g.X); Assert.Equal(2047.04f, g.Y); Assert.Equal(109.17f, g.Z);
         Assert.Equal(1.68f, g.RotZ);
         Assert.False(g.IsRiding); Assert.False(g.IsStale);
         Assert.False(g.BodyStateShort);
-        Assert.Equal(body, g.Body);   // pace, dir, stance, animSpeedCenti -- all five bytes
+        Assert.Equal(SampleState2, g.State2);   // all twelve bytes
+        Assert.Equal(BodyPace.Run, g.Body?.Pace);   // the legacy derivation for the Lua gait path
     }
 
     [Fact]
     public async Task Old_length_position_still_round_trips()
     {
-        // The negative: a pre-WO-100.5 sender, or a body-state miss, sends 17
-        // bytes. Mixed-version degradation is designed, so this must keep working.
+        // No state block this packet (change-gated), 17 bytes.
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
-        var pkt = PositionCodec.BuildPosition(1f, 2f, 3f, 0.5f, isRiding: true, stale: false, body: null);
+        var pkt = PositionCodec.BuildPosition(1f, 2f, 3f, 0.5f, isRiding: true, stale: false, state2: null);
         Assert.Equal(3 + Protocol.PositionPayloadLen, pkt.Length);
         await a.SendRawAsync(pkt);
 
@@ -268,29 +271,28 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.Equal(a.Id, g.GhostId);
         Assert.Equal((1f, 2f, 3f, 0.5f), (g.X, g.Y, g.Z, g.RotZ));
         Assert.True(g.IsRiding);
-        Assert.Null(g.Body);
+        Assert.Null(g.Body); Assert.Null(g.State2);
         Assert.False(g.BodyStateShort);
     }
 
     [Fact]
     public async Task Stale_heartbeat_round_trips_with_its_flag()
     {
-        // The one path that DID work in 0.23.1 (the STALE heartbeat is bodiless).
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
-        await a.SendRawAsync(PositionCodec.BuildPosition(9f, 8f, 7f, 0f, isRiding: false, stale: true, body: null));
+        await a.SendRawAsync(PositionCodec.BuildPosition(9f, 8f, 7f, 0f, isRiding: false, stale: true, state2: null));
         var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
         Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
         Assert.True(g.IsStale);
-        Assert.Null(g.Body);
+        Assert.Null(g.State2);
     }
 
     [Fact]
     public async Task Wrong_length_position_is_dropped_and_framing_survives()
     {
-        // 20 bytes is neither length. The relay must skip it AND stay in frame,
-        // so the valid packet right behind it still arrives -- and only that one.
+        // 20 bytes is no accepted length. The relay must skip it AND stay in
+        // frame, so the valid packet right behind it still arrives -- only that one.
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
@@ -307,18 +309,39 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
     }
 
     [Fact]
+    public async Task V7_body_state_position_is_dropped_by_a_v8_relay()
+    {
+        // WO-121: the WO-100.5 22/26-byte shapes are superseded. Only a v7
+        // sender builds them (and the handshake refuses one); a stray one is
+        // dropped whole and framing survives.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        foreach (int len in new[] { 22, 26 })
+        {
+            var old = new byte[3 + len];
+            old[0] = Protocol.Position;
+            BinaryPrimitives.WriteUInt16LittleEndian(old.AsSpan(1), (ushort)len);
+            old[3 + 16] = Protocol.PositionFlagBodyState;
+            await a.SendRawAsync(old);
+        }
+        await a.SendRawAsync(PositionCodec.BuildPosition(6f, 6f, 6f, 0f, false, false, null));
+        var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
+        Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
+        Assert.Equal(6f, g.X);
+        Assert.True(await b.NoneOfAsync(Protocol.Ghost, Quiet));
+    }
+
+    [Fact]
     public async Task Sender_does_not_receive_its_own_ghost()
     {
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
-        await a.SendRawAsync(PositionCodec.BuildPosition(1f, 1f, 1f, 0f, false, false,
-            new BodyState(BodyPace.Walk, BodyDir.Left, BodyStance.Stealth, 1)));
+        await a.SendRawAsync(PositionCodec.BuildPosition(1f, 1f, 1f, 0f, false, false, SampleState2));
         _ = await b.ReadUntilAsync(Protocol.Ghost, Wait);
         Assert.True(await a.NoneOfAsync(Protocol.Ghost, Quiet));
     }
-
-    // ---- WO-118 follow-up: the sender's ms behind flag 0x08 ----------------
 
     [Fact]
     public async Task Sender_ms_position_arrives_with_its_stamp()
@@ -327,7 +350,7 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         await using var _a = a; await using var _b = b;
 
         var pkt = PositionCodec.BuildPosition(2326.14f, 2050.21f, 109.06f, 0.25f, isRiding: false, stale: false,
-            body: null, senderMs: 3_000_000_123u);
+            state2: null, senderMs: 3_000_000_123u);
         Assert.Equal(3 + Protocol.PositionPayloadLen + Protocol.SenderMsLen, pkt.Length);   // 21
         await a.SendRawAsync(pkt);
 
@@ -337,77 +360,162 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.Equal(a.Id, g.GhostId);
         Assert.Equal((2326.14f, 2050.21f, 109.06f, 0.25f), (g.X, g.Y, g.Z, g.RotZ));
         Assert.Equal(3_000_000_123u, g.SenderMs);
-        Assert.Null(g.Body);
+        Assert.Null(g.State2);
         Assert.False(g.BodyStateShort);
     }
 
     [Fact]
-    public async Task Sender_ms_after_body_state_both_arrive_intact()
+    public async Task Sender_ms_after_state2_both_arrive_intact()
     {
-        // The live shape: every native sample carries a body, and now a stamp
-        // behind it. 26 up, 27 down -- the length WO-101's gate never saw.
+        // The live v8 shape: a state change and the stamp behind it. 33 up, 34 down.
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
-        var body = new BodyState(BodyPace.Walk, BodyDir.Forward, BodyStance.Upright, 98);
-        var pkt = PositionCodec.BuildPosition(10f, 20f, 30f, -1.5f, isRiding: true, stale: false, body, senderMs: 42u);
-        Assert.Equal(3 + Protocol.PositionPayloadLenMax, pkt.Length);                          // 26
+        var pkt = PositionCodec.BuildPosition(10f, 20f, 30f, -1.5f, isRiding: true, stale: false, SampleState2, senderMs: 42u);
+        Assert.Equal(3 + Protocol.PositionPayloadLenV8Max, pkt.Length);                          // 33
         await a.SendRawAsync(pkt);
 
         var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
-        Assert.Equal(Protocol.GhostPayloadLenMax, ghost.Length);                               // 27
+        Assert.Equal(Protocol.GhostPayloadLenV8Max, ghost.Length);                               // 34
         Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
-        Assert.Equal(body, g.Body);
+        Assert.Equal(SampleState2, g.State2);
         Assert.Equal(42u, g.SenderMs);
         Assert.True(g.IsRiding);
+        Assert.Equal(BodyStance.Horse, g.Body?.Stance);
         Assert.False(g.BodyStateShort);
     }
 
     [Fact]
     public async Task Every_accepted_length_round_trips()
     {
-        // All four shapes through one pair of peers, one at a time (the relay
-        // keeps only the latest queued position per sender, so back-to-back
-        // positions may legitimately arrive as the last one only).
+        // All four v8 shapes through one pair of peers, one at a time.
         var (a, b) = await TwoPeersAsync();
         await using var _a = a; await using var _b = b;
 
-        var body = new BodyState(BodyPace.Run, BodyDir.Backward, BodyStance.Stealth, 7);
         var lens = new List<int>();
         for (int i = 1; i <= 4; i++)
         {
             await a.SendRawAsync(PositionCodec.BuildPosition(i, 0f, 0f, 0f, false, false,
-                i is 3 or 4 ? body : null, i is 2 or 4 ? (uint)i : null));
+                i is 3 or 4 ? SampleState2 : null, i is 2 or 4 ? (uint)i : null));
             var ghost = await b.ReadUntilAsync(Protocol.Ghost, Wait);
             lens.Add(ghost.Length);
             Assert.True(PositionCodec.TryDecodeGhost(ghost, out var g));
             Assert.Equal((float)i, g.X);
             Assert.Equal(i is 2 or 4 ? (uint)i : 0u, g.SenderMs);
-            Assert.Equal(i is 3 or 4 ? body : null, g.Body);
+            Assert.Equal(i is 3 or 4 ? SampleState2 : null, g.State2);
         }
-        Assert.Equal(new[] { 18, 22, 23, 27 }, lens);
+        Assert.Equal(new[] { 18, 22, 30, 34 }, lens);
     }
 
     [Fact]
     public void Decoder_never_reads_a_flag_without_its_bytes()
     {
-        // Flags promising tails the length does not hold: no sender ms is
-        // invented, and a body bit without room is the counted bug case.
         var g18 = new byte[Protocol.GhostPayloadLen];
         g18[17] = Protocol.PositionFlagSenderMs;
         Assert.True(PositionCodec.TryDecodeGhost(g18, out var a));
         Assert.Equal(0u, a.SenderMs);
 
         var g22 = new byte[Protocol.GhostPayloadLen + Protocol.SenderMsLen];
-        g22[17] = (byte)(Protocol.PositionFlagSenderMs | Protocol.PositionFlagBodyState);
+        g22[17] = (byte)(Protocol.PositionFlagSenderMs | Protocol.PositionFlagBodyState2);
         BinaryPrimitives.WriteUInt32LittleEndian(g22.AsSpan(18), 77u);
         Assert.True(PositionCodec.TryDecodeGhost(g22, out var b));
-        Assert.True(b.BodyStateShort);    // body bit, 4 bytes of room: not a body
-        Assert.Equal(77u, b.SenderMs);   // the four bytes are the stamp
+        Assert.True(b.BodyStateShort);    // state bit, 4 bytes of room: not a state block
+        Assert.Null(b.State2);
+        Assert.Equal(77u, b.SenderMs);    // the four bytes are the stamp
 
         Assert.False(PositionCodec.TryDecodeGhost(new byte[Protocol.GhostPayloadLen + 1], out _));
-        Assert.True(Protocol.IsPositionPayloadLen(21) && Protocol.IsPositionPayloadLen(26));
-        Assert.False(Protocol.IsPositionPayloadLen(20) || Protocol.IsPositionPayloadLen(27));
+        Assert.False(PositionCodec.TryDecodeGhost(new byte[Protocol.GhostPayloadLen + 5], out _));   // a v7 23-byte ghost
+        Assert.True(Protocol.IsPositionPayloadLen(21) && Protocol.IsPositionPayloadLen(29) && Protocol.IsPositionPayloadLen(33));
+        Assert.False(Protocol.IsPositionPayloadLen(22) || Protocol.IsPositionPayloadLen(26) || Protocol.IsPositionPayloadLen(20));
+    }
+
+    [Fact]
+    public void State2_round_trips_every_field()
+    {
+        var st = new BodyState2(65535, -128, (BodyState2Bits)0x1F, WireZone.Lower, WireGuardStance.Left, WireZone.LowerLeft,
+                                255, short.MinValue, short.MaxValue);
+        var buf = new byte[BodyState2.Len];
+        st.Write(buf);
+        Assert.Equal(st, BodyState2.Read(buf));
+        // Legacy derivation bands (measured on Henry: walk ~1.5, run 3.05, sprint ~5.5 m/s).
+        Assert.Equal(BodyPace.None, (st with { SpeedCm = 5 }).ToLegacy(false).Pace);
+        Assert.Equal(BodyPace.Walk, (st with { SpeedCm = 150 }).ToLegacy(false).Pace);
+        Assert.Equal(BodyPace.Run, (st with { SpeedCm = 305 }).ToLegacy(false).Pace);
+        Assert.Equal(BodyPace.Sprint, (st with { SpeedCm = 550 }).ToLegacy(false).Pace);
+        Assert.Equal(BodyStance.Stealth, (st with { Bits = BodyState2Bits.Crouched }).ToLegacy(false).Stance);
+        Assert.Equal(BodyDir.Backward, (st with { SpeedCm = 150, MoveDir = -128 }).ToLegacy(false).Dir);
+        Assert.Equal(BodyDir.Forward, (st with { SpeedCm = 150, MoveDir = 3 }).ToLegacy(false).Dir);
+    }
+
+    // ---- WO-121: PlayerHit v8 (0x44 -> 0x45), routed to the victim alone ----
+
+    [Fact]
+    public async Task Player_hit_v8_reaches_the_victim_only_with_the_attackers_id()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        var hit = new PlayerHitV8(b.Id, 3.5f, 12.25f, PlayerHitV8.FlagUnarmed, 7);
+        await a.SendRawAsync(hit.BuildUp());
+        var down = await b.ReadUntilAsync(Protocol.PlayerHitV8Down, Wait);
+        Assert.True(PlayerHitV8.TryDecodeDown(down, out byte attacker, out var got));
+        Assert.Equal(a.Id, attacker);
+        Assert.Equal(hit, got);
+        Assert.True(got.Unarmed);
+        Assert.True(await a.NoneOfAsync(Protocol.PlayerHitV8Down, Quiet));
+    }
+
+    [Fact]
+    public async Task Player_hit_v8_on_oneself_or_wrong_length_goes_nowhere()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        await a.SendRawAsync(new PlayerHitV8(a.Id, 1f, 1f, 0, 0).BuildUp());          // aimed at itself
+        var bad = new byte[3 + 10]; bad[0] = Protocol.PlayerHitV8Up;
+        BinaryPrimitives.WriteUInt16LittleEndian(bad.AsSpan(1), 10);
+        bad[3] = b.Id;
+        await a.SendRawAsync(bad);                                                     // one byte short
+        await a.SendRawAsync(PositionCodec.BuildPosition(4f, 4f, 4f, 0f, false, false, null));
+        _ = await b.ReadUntilAsync(Protocol.Ghost, Wait);                              // framing survived
+        Assert.True(await b.NoneOfAsync(Protocol.PlayerHitV8Down, Quiet));
+        Assert.True(await a.NoneOfAsync(Protocol.PlayerHitV8Down, Quiet));
+    }
+
+    [Fact]
+    public async Task Session_setting_is_forwarded_only_from_the_host()
+    {
+        // WO-121: the friendly-fire lever is the host's. With two loopback
+        // peers the relay's authority is the lowest ready id (rule 2) -- a.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        var fromJoiner = new ActionOutbox().Build(ActionKind.SessionSetting, ActionPhase.Commit, new byte[] { SessionSettingKey.FriendlyFire, 0 });
+        await b.SendRawAsync(fromJoiner);
+        Assert.True(await a.NoneOfAsync(Protocol.ActionDown, Quiet));
+
+        var fromHost = new ActionOutbox().Build(ActionKind.SessionSetting, ActionPhase.Commit, new byte[] { SessionSettingKey.FriendlyFire, 1 });
+        await a.SendRawAsync(fromHost);
+        var down = await b.ReadUntilAsync(Protocol.ActionDown, Wait);
+        var got = new ActionInbox().Accept(down, out _);
+        Assert.NotNull(got);
+        Assert.Equal(ActionKind.SessionSetting, got!.Value.Kind);
+        Assert.Equal(new byte[] { SessionSettingKey.FriendlyFire, 1 }, got.Value.Payload);
+    }
+
+    [Fact]
+    public async Task V8_attack_event_carries_its_row_guid_through_the_relay()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+        var row = Guid.Parse("1a78ac7e-b10f-315b-bbed-6e688f3050eb");   // a live-captured short-sword slash row
+        var ev = new AttackEvent(123456u, 1, WireZone.UpperRight, 1, 0, row);
+        await a.SendRawAsync(new ActionOutbox().Build(ActionKind.Attack, ActionPhase.Commit, ev.ToBytes()));
+        var down = await b.ReadUntilAsync(Protocol.ActionDown, Wait);
+        var got = new ActionInbox().Accept(down, out _);
+        Assert.NotNull(got);
+        Assert.True(AttackEvent.TryFromBytes(got!.Value.Payload, out var back));
+        Assert.Equal(ev, back);
     }
 
     // ---- Action channel 0x3B -> 0x3C -------------------------------------

@@ -12,8 +12,10 @@ namespace KcdMp.Client;
 /// <param name="Frame">The DLL's main-thread frame counter when the read ran. Two reads on one frame are one sample.</param>
 /// <param name="Flags">bit 0: riding (the Mannequin Stance group reads <c>horse</c>).</param>
 /// <param name="Body">The body state read in the same frame, or null when that half refused.</param>
+/// <param name="State2">WO-121: the v8 state block read in the same frame, or null (an older DLL, or that half refused).</param>
 public readonly record struct LocalState(
-    ulong Frame, float X, float Y, float Z, float RotZ, byte Flags, LocalBodyState? Body)
+    ulong Frame, float X, float Y, float Z, float RotZ, byte Flags, LocalBodyState? Body,
+    KcdMp.Wire.BodyState2? State2 = null)
 {
     public bool IsRiding => (Flags & 0x01) != 0;
 }
@@ -51,10 +53,15 @@ public enum LocalStateRefuse : byte
 /// </code>
 /// The body block is byte-identical to the 0x85 BodyState reply's bytes 2..12
 /// so the two decoders cannot drift apart.
+///
+/// WO-121 appends <c>[haveState2:1][state2:12]</c> (53 bytes): the v8 state
+/// block (speed, move direction, combat mode, guard, block, crouch) read in
+/// the same frame. A 40-byte reply is still parsed (no State2).
 /// </summary>
 public static class LocalStateCodec
 {
     public const int Len = 40;
+    public const int LenV8 = Len + 1 + KcdMp.Wire.BodyState2.Len;
 
     public static bool TryParse(ReadOnlySpan<byte> body, out LocalState state, out LocalStateRefuse refuse)
     {
@@ -86,7 +93,10 @@ public static class LocalStateCodec
             // body[34] = unknownTags (counted by the caller), body[35] = haveCombat
             lb = new LocalBodyState(bs, body[35] == 1, (sbyte)body[36], (sbyte)body[37], (sbyte)body[38], body[39] != 0);
         }
-        state = new LocalState(frame, x, y, z, rotZ, flags, lb);
+        KcdMp.Wire.BodyState2? st2 = null;
+        if (body.Length >= LenV8 && body[Len] == 1)
+            st2 = KcdMp.Wire.BodyState2.Read(body[(Len + 1)..]);
+        state = new LocalState(frame, x, y, z, rotZ, flags, lb, st2);
         refuse = LocalStateRefuse.Ok;
         return true;
     }

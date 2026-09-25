@@ -33,9 +33,14 @@ public enum NativeNpcReason : byte
 public readonly record struct NativeNpcStatus(bool Armed, bool NativeOn, int Bound, int Writing,
                                               uint FramesWritten, uint Writes, uint Drops, uint Samples);
 
-/// <summary>One inbound NPC sample, as the agent hands it to the DLL.</summary>
+/// <summary>
+/// One inbound NPC sample, as the agent hands it to the DLL. WO-121:
+/// <see cref="State2"/> rides a peer's avatar sample (the v8 state block);
+/// the pipe marks it with flag <see cref="NativeNpcCodec.FlagState2"/>.
+/// </summary>
 public readonly record struct NativeNpcSample(byte Src, string Name, float X, float Y, float Z, float Rot,
-                                              byte Flags, ushort Seq, uint SenderMs, long ArrivalQpc);
+                                              byte Flags, ushort Seq, uint SenderMs, long ArrivalQpc,
+                                              KcdMp.Wire.BodyState2? State2 = null);
 
 /// <summary>
 /// WO-118: byte layouts of the agent -&gt; DLL frames 0x10-0x15 and the 0x89
@@ -58,15 +63,24 @@ public static class NativeNpcCodec
         _ => $"reason-{r}",
     };
 
+    /// <summary>
+    /// WO-121: pipe-only sample flag -- a 12-byte BodyState2 follows the
+    /// arrival stamp. Never a wire NPC flag (the wire's top bit is unused and
+    /// the agent masks it off inbound NpcState before feeding), so a peer
+    /// cannot make the DLL expect bytes that are not there.
+    /// </summary>
+    public const byte FlagState2 = 0x80;
+
     /// <summary>Bytes one sample takes inside a 0x10 body.</summary>
     public static int SampleSize(string name) => 2 + Encoding.UTF8.GetByteCount(name) + 16 + 1 + 2 + 4 + 8;
+    public static int SampleSize(in NativeNpcSample s) => SampleSize(s.Name) + (s.State2.HasValue ? KcdMp.Wire.BodyState2.Len : 0);
 
-    /// <summary>0x10: [count:1]{[src][nameLen][name][x][y][z][rot][flags][seq:2][senderMs:4][arrivalQpc:8]}*count.</summary>
+    /// <summary>0x10: [count:1]{[src][nameLen][name][x][y][z][rot][flags][seq:2][senderMs:4][arrivalQpc:8][state2:12 if flags&amp;0x80]}*count.</summary>
     public static byte[] BuildSamples(IReadOnlyList<NativeNpcSample> samples)
     {
         if (samples.Count is 0 or > 255) throw new ArgumentOutOfRangeException(nameof(samples));
         int len = 1;
-        foreach (var s in samples) len += SampleSize(s.Name);
+        foreach (var s in samples) len += SampleSize(s);
         if (len > MaxSamplesPayload) throw new ArgumentException($"0x10 body {len} B exceeds {MaxSamplesPayload}");
         var b = new byte[len];
         b[0] = (byte)samples.Count;
@@ -82,10 +96,11 @@ public static class NativeNpcCodec
             BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(o), s.Y); o += 4;
             BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(o), s.Z); o += 4;
             BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(o), s.Rot); o += 4;
-            b[o++] = s.Flags;
+            b[o++] = (byte)((s.Flags & ~FlagState2) | (s.State2.HasValue ? FlagState2 : 0));
             BinaryPrimitives.WriteUInt16LittleEndian(b.AsSpan(o), s.Seq); o += 2;
             BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(o), s.SenderMs); o += 4;
             BinaryPrimitives.WriteInt64LittleEndian(b.AsSpan(o), s.ArrivalQpc); o += 8;
+            if (s.State2 is KcdMp.Wire.BodyState2 st) { st.Write(b.AsSpan(o)); o += KcdMp.Wire.BodyState2.Len; }
         }
         return b;
     }
@@ -148,7 +163,7 @@ public static class NativeNpcCodec
         int len = 1;
         foreach (var s in pending)
         {
-            int sz = SampleSize(s.Name);
+            int sz = SampleSize(s);
             if (batch.Count == 255 || (batch.Count > 0 && len + sz > TargetSamplesPayload)) break;
             batch.Add(s);
             len += sz;

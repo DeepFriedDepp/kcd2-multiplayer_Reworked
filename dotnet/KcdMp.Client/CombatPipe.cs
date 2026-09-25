@@ -50,6 +50,17 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte NpcStatusReply    = 0x89;   // WO-118
     private const byte NpcDropped        = 0x94;   // WO-118, unsolicited
     private const byte NpcTraceDone      = 0x95;   // WO-118, unsolicited
+    // ---- WO-121: movement and combat ----
+    private const byte MotionConfig      = 0x16;   // [avatarGait][npcGait][avatarMoves][avatarCombat][npcRows]
+    private const byte AvatarEvent       = 0x17;   // [kind:1][eid:4]
+    private const byte HitsConfig        = 0x18;   // [ffOn][attributionOn][pvpHookOn]
+    private const byte AttributedDamage  = 0x19;   // [guid:16][stamina:4f][health:4f][flags:1][attackerEid:4]
+    private const byte ApplyPvpHit       = 0x1A;   // [stamina:4f][health:4f][flags:1][attackerGhost:1]
+    private const byte Wo121Status       = 0x1B;   // -> 0x8A
+    private const byte Wo121StatusReply  = 0x8A;
+    private const byte AttributedReply   = 0x8B;   // [ok][seq][steps][attackerWuid:8][victimWuid:8]
+    private const byte LocalAction       = 0x96;   // unsolicited, LocalActionFrame
+    private const byte PvpHitOut         = 0x97;   // unsolicited: [victimEid:4][stamina:4f][health:4f][flags][material]
 
     private const int GuidLen = 16;
 
@@ -69,6 +80,16 @@ public sealed class CombatPipe : IAsyncDisposable
 
     /// <summary>WO-113: a grave was made (add=true) or is gone (looted empty / expired).</summary>
     public Func<bool, ulong, float, float, float, Task>? OnLocalGrave { get; set; }
+
+    /// <summary>
+    /// WO-121: an action the local engine committed -- the player's own
+    /// (eid = 0), or an NPC's (eid and name set; the owner streams it as
+    /// NpcAttack). kind is <see cref="KcdMp.Wire.ActionKind"/>.
+    /// </summary>
+    public Func<LocalActionFrame, Task>? OnLocalAction { get; set; }
+
+    /// <summary>WO-121: the local player hit a peer's avatar: victim eid, stamina, health (what the hit took), flags, material.</summary>
+    public Func<uint, float, float, byte, byte, Task>? OnPvpHit { get; set; }
 
     /// <summary>WO-118: the DLL's native writer stopped a bound puppet on its own (reason, name).</summary>
     public Func<byte, string, Task>? OnNpcDropped { get; set; }
@@ -125,7 +146,9 @@ public sealed class CombatPipe : IAsyncDisposable
     /// own "this drop took it to zero" bit, once per soul; false from a
     /// pre-WO-86 DLL whose frame stops at 24 bytes).
     /// </summary>
-    public Func<Guid, float, float, bool, Task>? OnLocalHit { get; set; }
+    /// WO-121: the fifth argument -- the DLL saw the LOCAL PLAYER land this hit at
+    /// the combat-hit chokepoint (byte 25; false from an older DLL).
+    public Func<Guid, float, float, bool, bool, Task>? OnLocalHit { get; set; }
 
     public bool IsConnected => _pipe?.IsConnected == true;
 
@@ -346,6 +369,70 @@ public sealed class CombatPipe : IAsyncDisposable
     public Task<PipeResult> NpcTraceAsync(string name, ushort seconds, CancellationToken ct = default)
         => SendForResultAsync(NpcTrace, NativeNpcCodec.BuildTrace(name, seconds), ct);
 
+    /// <summary>WO-121: mirror the movement/combat toggles into the DLL (0x16).</summary>
+    public Task<PipeResult> MotionConfigAsync(bool avatarGait, bool npcGait, bool avatarMoves, bool avatarCombat, bool npcRows,
+                                              CancellationToken ct = default)
+        => SendForResultAsync(MotionConfig, [B(avatarGait), B(npcGait), B(avatarMoves), B(avatarCombat), B(npcRows)], ct);
+
+    /// <summary>WO-121: a one-shot on a native-written avatar (0x17): kind 1 = jump.</summary>
+    public Task<PipeResult> AvatarEventAsync(byte kind, uint eid, CancellationToken ct = default)
+    {
+        var p = new byte[5];
+        p[0] = kind;
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(1), eid);
+        return SendForResultAsync(AvatarEvent, p, ct);
+    }
+
+    /// <summary>WO-121: friendly fire / NPC attribution / the hit-slot filter (0x18).</summary>
+    public Task<PipeResult> HitsConfigAsync(bool friendlyFire, bool attribution, bool pvpHook, CancellationToken ct = default)
+        => SendForResultAsync(HitsConfig, [B(friendlyFire), B(attribution), B(pvpHook)], ct);
+
+    /// <summary>
+    /// WO-121 Phase 5: a peer's hit on a local NPC, WITH the peer's avatar as
+    /// the attacker: damage, the combat-history write, a skirmish once per
+    /// engagement. Returns the steps that ran (bit 0 damage, 1 history, 2
+    /// skirmish) and the two WUIDs (the agent sends the brain message).
+    /// </summary>
+    public async Task<(bool Ok, byte Steps, ulong AttackerWuid, ulong VictimWuid, byte Reason)> AttributedDamageAsync(
+        Guid soul, float stamina, float health, byte flags, uint attackerEid, CancellationToken ct = default)
+    {
+        var p = new byte[GuidLen + 4 + 4 + 1 + 4];
+        WriteSoulGuid(soul, p);
+        BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(16), stamina);
+        BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(20), health);
+        p[24] = flags;
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(25), attackerEid);
+        var (body, fail) = await SendAndAwaitAsync(AttributedDamage, p, AttributedReply, ct);
+        if (body is null) return (false, 0, 0, 0, (byte)fail);
+        if (body.Length < 19) return (body.Length > 0 && body[0] == 1, 0, 0, 0, 254);
+        return (body[0] == 1, body[2], BinaryPrimitives.ReadUInt64LittleEndian(body.AsSpan(3)),
+                BinaryPrimitives.ReadUInt64LittleEndian(body.AsSpan(11)), 0);
+    }
+
+    /// <summary>
+    /// WO-121 Phase 6: a partner's friendly-fire hit on OUR Henry, as plain
+    /// damage with no attacker; the flags (unarmed) reach the death guard's
+    /// knockdown classifier in the same call.
+    /// </summary>
+    public Task<PipeResult> ApplyPvpHitAsync(float stamina, float health, byte flags, byte attackerGhost, CancellationToken ct = default)
+    {
+        var p = new byte[10];
+        BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(0), stamina);
+        BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(4), health);
+        p[8] = flags; p[9] = attackerGhost;
+        return SendForResultAsync(ApplyPvpHit, p, ct);
+    }
+
+    /// <summary>WO-121: the movement/combat module's armed pieces and counters (text), or null.</summary>
+    public async Task<string?> Wo121StatusAsync(CancellationToken ct = default)
+    {
+        var (body, _) = await SendAndAwaitAsync(Wo121Status, [], Wo121StatusReply, ct);
+        if (body is null || body.Length < 3 || body[0] != 1) return null;
+        return System.Text.Encoding.UTF8.GetString(body, 2, body.Length - 2);
+    }
+
+    private static byte B(bool v) => v ? (byte)1 : (byte)0;
+
     /// <summary>Round-trip check that the DLL is alive and pumping frames.</summary>
     public async Task<bool> PingAsync(CancellationToken ct = default)
     {
@@ -400,7 +487,7 @@ public sealed class CombatPipe : IAsyncDisposable
                 var (type, body) = await ReadFrameAsync(CancellationToken.None);
                 // WO-118: replies are logged by their callers; 0x81/0x86/0x89
                 // arrive at frame-feed and heartbeat rates and would flood.
-                if (type is not (Result or LocalStateReply or NpcStatusReply or BodyStateReply))
+                if (type is not (Result or LocalStateReply or NpcStatusReply or BodyStateReply or LocalAction or PvpHitOut))
                     Console.WriteLine($"[combat] pipe frame 0x{type:X2} ({body.Length} bytes)");
                 if (type == LocalHit && body.Length >= 24)
                 {
@@ -409,10 +496,11 @@ public sealed class CombatPipe : IAsyncDisposable
                     float health  = BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(20));
                     // WO-86: trailing died byte; absent from a pre-WO-86 DLL.
                     bool  died    = body.Length >= 25 && body[24] != 0;
+                    bool  byPlayer = body.Length >= 26 && body[25] != 0;   // WO-121
                     if (died) Console.WriteLine($"[npcdeath] DLL reports a FATAL local hit on {soul} (hp -{health:F1})");
                     if (OnLocalHit is { } handler)
                     {
-                        try { await handler(soul, stamina, health, died); }
+                        try { await handler(soul, stamina, health, died, byPlayer); }
                         catch (Exception ex) { Console.WriteLine($"[combat] local hit not sent: {ex.Message}"); }
                     }
                 }
@@ -450,6 +538,28 @@ public sealed class CombatPipe : IAsyncDisposable
                                     BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(17)));
                         }
                         catch (Exception ex) { Console.WriteLine($"[grave] local grave not handled: {ex.Message}"); }
+                    }
+                }
+                else if (type == LocalAction && LocalActionFrame.TryParse(body, out var la))
+                {
+                    // WO-121: unsolicited, never a reply.
+                    if (OnLocalAction is { } h)
+                    {
+                        try { await h(la); }
+                        catch (Exception ex) { Console.WriteLine($"[wo121] local action not sent: {ex.Message}"); }
+                    }
+                }
+                else if (type == PvpHitOut && body.Length == 14)
+                {
+                    if (OnPvpHit is { } h)
+                    {
+                        try
+                        {
+                            await h(BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(0)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(4)),
+                                    BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(8)), body[12], body[13]);
+                        }
+                        catch (Exception ex) { Console.WriteLine($"[wo121] pvp hit not sent: {ex.Message}"); }
                     }
                 }
                 else if (type == NpcDropped && body.Length >= 2 && body.Length == 2 + body[1])
@@ -780,5 +890,27 @@ public sealed class CombatPipe : IAsyncDisposable
         _replies.Writer.TryComplete();
         _gate.Dispose();
         return ValueTask.CompletedTask;
+    }
+}
+
+
+/// <summary>
+/// WO-121: the DLL's 0x96 frame -- an action the local engine committed.
+/// <c>[kind:1][phase:1][inputClass:1][zone(table id):1][attackType:1][flags:1][rowGuid:16][eid:4][nameLen:1][name]</c>.
+/// eid 0 = the local player; otherwise an NPC (by its authored entity name).
+/// </summary>
+public readonly record struct LocalActionFrame(byte Kind, byte Phase, sbyte InputClass, sbyte ZoneTableId, sbyte AttackType,
+                                               byte Flags, Guid Row, uint Eid, string Name)
+{
+    public static bool TryParse(ReadOnlySpan<byte> b, out LocalActionFrame f)
+    {
+        f = default;
+        if (b.Length < 27) return false;
+        int n = b[26];
+        if (b.Length != 27 + n || n > 63) return false;
+        f = new LocalActionFrame(b[0], b[1], unchecked((sbyte)b[2]), unchecked((sbyte)b[3]), unchecked((sbyte)b[4]), b[5],
+                                 new Guid(b.Slice(6, 16)), BinaryPrimitives.ReadUInt32LittleEndian(b[22..]),
+                                 n == 0 ? "" : System.Text.Encoding.UTF8.GetString(b.Slice(27, n)));
+        return true;
     }
 }

@@ -282,6 +282,22 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// WO-121: routes a PlayerHit v8 (0x44) to the victim it names, as 0x45 with
+    /// the attacker's id. Unknown/departed victim or a hit on oneself: dropped.
+    /// </summary>
+    public void RoutePlayerHitV8(ClientSession source, byte[] body)
+    {
+        byte victimId = body[0];
+        if (victimId == source.Id) return;
+        foreach (var target in _clientHandler.GetClients())
+            if (target.IsReady && target.Id == victimId)
+            {
+                target.EnqueuePlayerHitV8(source.Id, body);
+                return;
+            }
+    }
+
+    /// <summary>
     /// Relays a PlayerDeathUp (0x23) to all other ready clients as a
     /// PlayerDeathDown (0x24) (WO-28 Flow C). Idempotent at the receiver.
     /// </summary>

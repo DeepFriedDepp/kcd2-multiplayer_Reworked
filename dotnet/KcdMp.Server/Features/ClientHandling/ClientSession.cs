@@ -212,6 +212,9 @@ public class ClientSession
             // below with no log line, and only the 17-byte heartbeats crossed.
             // docs/WO-101-findings.md S0. Protocol.IsPositionPayloadLen is the
             // one list; RelayRoundTripTests puts every length through it.
+            // WO-121 (v8): 17, 21, 29 (state block 2 behind flag 0x10), 33; the
+            // buffer is sized from the max -- sized for 26 it could not hold a
+            // 29-byte v8 packet (caught by the round-trip gate, not in the field).
             var posPayload = new byte[Protocol.PositionPayloadLenMax];
             while (true)
             {
@@ -528,7 +531,33 @@ public class ClientSession
                     var body = new byte[payloadLen];
                     await ReadExactAsync(body);
                     if (body[Protocol.ActionUpHeaderLen - 1] == payloadLen - Protocol.ActionUpHeaderLen)
+                    {
+                        // WO-121: a session lever (friendly fire) is the host's
+                        // alone. The host IS the damage authority (relay-local,
+                        // WO-110 R4), so a SessionSetting from anyone else is
+                        // dropped here -- a joiner cannot flip friendly fire for
+                        // the session by hand-sending one.
+                        if (body[0] == (byte)ActionKind.SessionSetting && !_clientHandler.IsDamageAuthority(this))
+                        {
+                            _clientHandler.CountDrop(Protocol.ActionUp, "session-setting-not-host");
+                            continue;
+                        }
                         _broadcastService.BroadcastAction(this, body);
+                    }
+                    continue;
+                }
+
+                // --- WO-121: friendly fire (0x44 PlayerHit v8) ---
+                // [victimGhostId:1][stamina:4f][health:4f][flags:1][material:1].
+                // Exact length; routed to the named victim alone (never a
+                // broadcast), never authority-gated -- any player can hit any
+                // player. Whether friendly fire is on is decided at both ends
+                // (the host's lever), not here.
+                if (type == Protocol.PlayerHitV8Up && payloadLen == PlayerHitV8.UpLen)
+                {
+                    var body = new byte[PlayerHitV8.UpLen];
+                    await ReadExactAsync(body);
+                    _broadcastService.RoutePlayerHitV8(this, body);
                     continue;
                 }
 
@@ -959,6 +988,19 @@ public class ClientSession
         var payload = new byte[Protocol.PlayerHitDownPayloadLen];
         Buffer.BlockCopy(upstreamBody, 1, payload, 0, Protocol.PlayerHitDownPayloadLen);
         EnqueueRaw(BuildPacket(Protocol.PlayerHitDown, payload));
+    }
+
+    /// <summary>
+    /// WO-121: enqueue a PlayerHit v8 down (0x45): the attacker's id, then the
+    /// upstream body verbatim (victim id included -- the receiver checks it is
+    /// itself).
+    /// </summary>
+    public void EnqueuePlayerHitV8(byte attackerId, byte[] upstreamBody)
+    {
+        var payload = new byte[PlayerHitV8.DownLen];
+        payload[0] = attackerId;
+        Buffer.BlockCopy(upstreamBody, 0, payload, 1, PlayerHitV8.UpLen);
+        EnqueueRaw(BuildPacket(Protocol.PlayerHitV8Down, payload));
     }
 
     /// <summary>Thread-safe: enqueue a PlayerDeathDown (0x24). Idempotent at the receiver.</summary>

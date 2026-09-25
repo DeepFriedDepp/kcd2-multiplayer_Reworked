@@ -1468,7 +1468,7 @@ public partial class GameBridge(ClientConfig config)
         // Outbound combat: the DLL notices a nearby NPC lose health and we put
         // it on the wire. Never fired for damage we applied on a peer's behalf —
         // the DLL credits those out — or two clients would echo a hit forever.
-        _combat.OnLocalHit = async (soul, stamina, health, died) =>
+        _combat.OnLocalHit = async (soul, stamina, health, died, byPlayer) =>
         {
             // WO-86: a FATAL hit is never noise, whatever its delta -- the
             // DLL's sampler reports the drop that took the soul to zero, which
@@ -1541,7 +1541,9 @@ public partial class GameBridge(ClientConfig config)
 
                 if (npcName is not null && !npcName.StartsWith("kcd2mp_", StringComparison.Ordinal))
                 {
-                    await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true, fatal: died);
+                    await SendNpcDamageAsync(stream, npcName, stamina, health, suppressHitReaction: true, fatal: died,
+                                             attributed: byPlayer && _npcAttribution);   // WO-121 Phase 5
+                    if (byPlayer && _npcAttribution) _w121AttribOut++;
                     Console.WriteLine($"[combat] sent hit {health:F1} on '{npcName}' ({soul}){(died ? " FATAL" : "")}");
                     NoteRequestResolvedOut(npcName);   // WO-102 Phase 5
                     _stats.DmgOut++; if (died) _stats.DmgOutFatal++;
@@ -1626,6 +1628,7 @@ public partial class GameBridge(ClientConfig config)
         // to Lua (the drop makes Lua write that puppet again at once).
         _combat.OnNpcDropped = OnNativeNpcDroppedAsync;
         _combat.OnNpcTraceDone = OnNativeTraceDoneAsync;
+        Wo121OnConnect(stream, cts.Token);   // WO-121: action frames, friendly fire, the toggles
         _ = _combat.NpcConfigAsync(_nativeWriteOn, _nativeSenderClock, cts.Token);
         _ = RespawnHeartbeatAsync(stream, announceGraves: true, cts.Token);
         // WO-99 Phase 0: learn who the local player is before the first hit.
@@ -2016,7 +2019,11 @@ public partial class GameBridge(ClientConfig config)
 
                     bool posHeartbeat = IntervalElapsed(
                         ref lastPositionHeartbeat, PositionHeartbeatInterval, nowTimestamp);
-                    if (!_hasPushed || HasChanged(x, y, z, rotZ) || posHeartbeat)
+                    // WO-121: the v8 state block is change-gated on its own, and
+                    // a change sends a packet even when the body stood still (a
+                    // block raised, a crouch, combat mode entered).
+                    Wo121State2For(nat, nowTimestamp, consume: false, out bool st2Due);
+                    if (!_hasPushed || HasChanged(x, y, z, rotZ) || posHeartbeat || st2Due)
                     {
                         bool moved = !_hasPushed || HasChanged(x, y, z, rotZ);
                         _hasPushed = true;
@@ -2031,7 +2038,7 @@ public partial class GameBridge(ClientConfig config)
                         // problem the engine does not have.
                         if (nat is null) local = await ReadLocalBodyStateAsync(cts.Token);   // log path: the separate 0x09 read, as before
                         await SendPositionAsync(stream, x, y, z, rotZ, riding,
-                                                body: local?.Body);
+                                                state2: Wo121State2For(nat, nowTimestamp, consume: true, out _));
                         // WO-100.5 Phase 3: the accepted input rides the same
                         // read -- one pipe round trip serves both channels.
                         if (local is LocalBodyState lb)
@@ -2091,6 +2098,7 @@ public partial class GameBridge(ClientConfig config)
             _sendWeather = null;
             _sendItemDrop = null;
             _sendItemClaim = null;
+            Wo121OnDisconnect();   // WO-121
             _myOpenDrops.Clear();
             // WO-113: no relay, no session -- the DLL's guard stands down
             // (vanilla death), and every peer's mirror gravestone goes.
@@ -4183,7 +4191,8 @@ public partial class GameBridge(ClientConfig config)
             int o = 2 + nameLen;
             _nativeFeed.Enqueue(new NativeNpcSample(payload[0], npcName,
                 ReadFloat(payload, o), ReadFloat(payload, o + 4), ReadFloat(payload, o + 8), ReadFloat(payload, o + 12),
-                payload[o + Protocol.NpcStateFlagsOffset],
+                // WO-121: 0x80 is the pipe's own "state block follows" bit, never a wire flag.
+                (byte)(payload[o + Protocol.NpcStateFlagsOffset] & ~NativeNpcCodec.FlagState2),
                 BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(o + Protocol.NpcStateSeqOffset)),
                 BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(o + Protocol.NpcStateSenderMsOffset)),
                 arrival));
@@ -4197,8 +4206,14 @@ public partial class GameBridge(ClientConfig config)
             // gs.SenderMs (0 from a sender without the stamp) puts the sample on
             // the peer's clock: the DLL's sender_stamp and need tracker then treat
             // the ghost exactly like a sender-stamped NPC stream.
+            // WO-121: the v8 state block rides the same sample, so the DLL's
+            // per-frame gait / crouch / combat hold for this avatar sees it in
+            // the frame the position does.
             _nativeFeed.Enqueue(new NativeNpcSample(gs.GhostId, "kcd2mp_" + gs.GhostId, gs.X, gs.Y, gs.Z, gs.RotZ,
-                gs.IsRiding ? (byte)0x10 : (byte)0, gSeq, gs.SenderMs, arrival));
+                gs.IsRiding ? (byte)0x10 : (byte)0, gSeq, gs.SenderMs, arrival, gs.State2));
+            // WO-121: the newest sender stamp per peer -- the clock an event's
+            // own stamp is judged against (Protocol.EventStaleMs).
+            if (gs.SenderMs != 0) _ghostLastSenderMs[gs.GhostId] = gs.SenderMs;
         }
     }
 
@@ -4274,6 +4289,7 @@ public partial class GameBridge(ClientConfig config)
                     // the bit but sends a short packet is a bug we must not
                     // read past the end of. The codec applies that rule.
                     BodyState? body = gs.Body;
+                    if (gs.State2 is not null) _peerState2At[ghostId] = DateTime.UtcNow;   // WO-121
                     if (body is BodyState bs) _stats.OnBodyState(ghostId, bs);
                     else if (gs.BodyStateShort) _stats.BodyStateShortPackets++;
                     // WO-59: a ghost id we have never seen this connection is
@@ -4329,6 +4345,10 @@ public partial class GameBridge(ClientConfig config)
                         {
                             OnNpcRequestIn(a);
                         }
+                        else if (await DispatchWo121ActionAsync(a, ct))
+                        {
+                            // WO-121: attack / jump / block / dodge rows, NPC rows, the host lever.
+                        }
                         else if (a.Kind == ActionKind.NpcResync)
                         {
                             // WO-102 Phase 6: a non-owner asks for a burst.
@@ -4354,6 +4374,11 @@ public partial class GameBridge(ClientConfig config)
                         Console.WriteLine(FormattableString.Invariant(
                             $"MP-ACTION section=inbound reject={reject}"));
                     }
+                }
+                else if (type == Protocol.PlayerHitV8Down)
+                {
+                    // WO-121: friendly fire -- a partner's hit on our Henry.
+                    await OnPlayerHitV8InAsync(payload.AsSpan(0, payloadLen).ToArray(), ct);
                 }
                 else if (type == Protocol.Name && payloadLen >= 2)
                 {
@@ -4491,8 +4516,13 @@ public partial class GameBridge(ClientConfig config)
                             // (the Lua observer saw the death, not the blow);
                             // there is nothing to apply then, only the death.
                             bool ndHasDelta = ndHealth > 0f || ndStamina > 0f;
-                            bool ndApplied = ndHasDelta && localGuid is Guid lg
-                                && await _combat.ApplyDamageAsync(lg, ndStamina, ndHealth, ndSupp, ct);
+                            // WO-121 Phase 5: an attributed hit on the NPC's
+                            // authority carries the peer's avatar as the attacker.
+                            bool? ndAttrib = ndHasDelta && localGuid is Guid alg
+                                ? await TryApplyAttributedAsync(ndSource, ndName, alg, ndStamina, ndHealth, payload[no + 8], ct)
+                                : null;
+                            bool ndApplied = ndAttrib ?? (ndHasDelta && localGuid is Guid lg
+                                && await _combat.ApplyDamageAsync(lg, ndStamina, ndHealth, ndSupp, ct));
                             if (ndApplied || (ndFatal && localGuid is not null))
                                 _dmgGuard.NoteInboundApplied(ndName, ndApplied ? ndHealth : 0f, ndApplied ? ndStamina : 0f, ndFatal, DateTime.UtcNow);
                             // WO-86 Phase 1: every inbound NPC damage event, with
@@ -4689,6 +4719,11 @@ public partial class GameBridge(ClientConfig config)
                                 && (nflags & 0x03) == 0
                                 && npcKnown;
                             if (npcSwingNative) nflags &= 0xF7;
+                            // WO-121: the owner streams this NPC's committed rows
+                            // (NpcAttack) -- the heuristic cue flag would add a
+                            // second swing. Stripped; the row plays instead.
+                            if ((nflags & 0x08) != 0 || npcSwingNative)
+                                if (Wo121SupersedesNpcCue(npcName)) { npcSwingNative = false; nflags &= 0xF7; }
 
                             // WO-86: the stream's dead bit. Logged on every
                             // transition (Phase 1), and a WITNESSED 0->1 -- a
@@ -4911,6 +4946,13 @@ public partial class GameBridge(ClientConfig config)
                     // can emit new events without breaking us.
                     byte ceSource = payload[0];
                     byte ceEvent  = payload[1];
+                    // WO-121: a peer on v8 rows swings through the Attack event and
+                    // holds its block natively -- the old cue would play on top.
+                    if (Wo121SupersedesCombatCue(ceSource, ceEvent))
+                    {
+                        Console.WriteLine($"[combatviz] ghost {ceSource} event {ceEvent} superseded by the v8 rows/state -- not played");
+                        continue;
+                    }
                     // WO-46: swings go native when the ghost's entity id is
                     // known and the DLL pipe is up — the WO-45 rung-2 route
                     // renders a real, complete Mannequin swing where the Lua
@@ -5329,6 +5371,7 @@ public partial class GameBridge(ClientConfig config)
             case "authority_radius":
             case "npc_track_max":
             case "wo102_toggle":
+            case "wo121_cfg":        // WO-121
                 HandleStateMirrorEvent(name, arg);
                 return;
         }
@@ -5504,6 +5547,9 @@ public partial class GameBridge(ClientConfig config)
                 }
                 var sendCombat = _sendCombatEvent;
                 if (sendCombat is null) break;
+                // WO-121: the DLL captures the committed attack row (v8 Attack);
+                // the press-time Lua cue would make the peer swing twice.
+                if (evt.Value == Protocol.CombatEventSwing && _dllAttackCapture && _avatarCombat) break;
                 ushort swingSid = evt.Value == Protocol.CombatEventSwing ? (ushort)(++_stats.SwingsSent) : (ushort)0;
                 _ = sendCombat(evt.Value, swingSid);
                 if (evt.Value == Protocol.CombatEventSwing)
@@ -5949,6 +5995,9 @@ public partial class GameBridge(ClientConfig config)
     {
         switch (name)
         {
+            case "wo121_cfg":
+                Wo121OnCfgEvent(arg);
+                break;
             case "respawn_toggle":
                 // WO-113: mp_respawn on|off. The policy is native; the DLL
                 // keeps its own copy (it outlives an agent restart), so this
@@ -6261,7 +6310,7 @@ public partial class GameBridge(ClientConfig config)
     public async Task SendNpcDamageAsync(NetworkStream stream, string npcName,
                                                 float stamina, float health,
                                                 bool suppressHitReaction,
-                                                bool fatal = false)
+                                                bool fatal = false, bool attributed = false)
     {
         var nb = Encoding.UTF8.GetBytes(npcName);
         var packet = new byte[3 + 1 + nb.Length + Protocol.NpcDamageFixedTail];
@@ -6274,6 +6323,7 @@ public partial class GameBridge(ClientConfig config)
         BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(o + 4), health);
         byte ndFlags = suppressHitReaction ? Protocol.DamageFlagSuppressHitReaction : (byte)0;
         if (fatal) ndFlags |= Protocol.NpcDamageFlagFatal;   // WO-86
+        if (attributed) ndFlags |= Protocol.NpcDamageFlagAttributed;   // WO-121
         packet[o + 8] = ndFlags;
         await WritePacketAsync(stream, packet);
     }
@@ -6299,8 +6349,10 @@ public partial class GameBridge(ClientConfig config)
     }
 
     private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ,
-                                         bool isRiding, bool stale = false, BodyState? body = null)
+                                         bool isRiding, bool stale = false, BodyState2? state2 = null)
     {
+        // WO-121 (v8): the WO-100.5 five-byte body state is superseded by the
+        // twelve-byte BodyState2 (flag 0x10), change-gated by the caller.
         // WO-100.5 Phase 2: body state rides along when we have one, as five
         // extra bytes behind a flag bit. Additive in the WO-99 STALE-bit shape:
         // the packet is the old 17-byte one whenever body is null, so a peer
@@ -6310,7 +6362,7 @@ public partial class GameBridge(ClientConfig config)
         // WO-118 follow-up: every packet carries the sender's clock, so the
         // peer's native writer renders this ghost on our timeline, not on its
         // arrival (flag 0x08; STALE heartbeats too -- same place, later time).
-        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, body, SenderMsNow()));
+        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, state2, SenderMsNow()));
     }
 
     /// <summary>
@@ -6697,10 +6749,9 @@ public partial class GameBridge(ClientConfig config)
     {
         var edge = _attackEdge.Feed(lb.HaveCombat, lb.InputClass, lb.Zone, lb.AttackType, lb.Prepared);
         if (edge is not (ActionPhase phase, AttackPayload payload)) return;
-        var packet = _actionOut.Build(ActionKind.Attack, phase, payload.ToBytes());
-        await WritePacketAsync(stream, packet, ct);
-        Console.WriteLine(FormattableString.Invariant(
-            $"MP-ACTION section=outbound kind=attack phase={phase} gen={_actionOut.Gen} {payload}"));
+        // WO-121 (v8): ActionKind.Attack now carries the committed ROW (the
+        // DLL's commit capture, OnLocalActionAsync); this polled edge only
+        // feeds the owner's attack request below.
 
         // WO-102 Phase 5: under host authority a non-owner's committed attack
         // at an owned NPC is a REQUEST to the owner. Same accepted input, plus

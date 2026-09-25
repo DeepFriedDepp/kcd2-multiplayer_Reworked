@@ -204,7 +204,7 @@ public sealed class WeaponSwingCatalog
         }
     }
 
-    private static string? FindTablesPak()
+    public static string? FindTablesPak()
     {
         // Prefer the install the running/last-run game wrote its log into.
         string? kcdLog = KcdLogLocator.Find();
