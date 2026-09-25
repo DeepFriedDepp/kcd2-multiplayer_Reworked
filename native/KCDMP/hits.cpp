@@ -96,6 +96,12 @@ struct PlayerHitMark { uint32_t victimEid; double at; };
 std::mutex g_qMutex;
 std::vector<PvpHit> g_pvp;
 std::vector<PlayerHitMark> g_marks;
+// A player's hit on an avatar, watched until its queued damage has landed.
+struct NewWatch { void* soul; uint32_t eid; float hp0, st0; uint8_t flags, material; };
+std::vector<NewWatch> g_newWatches;
+struct Watch { void* soul; uint32_t eid; float hp0, st0, dh = 0, ds = 0; uint8_t flags, material; double t0; int frames = 0, landedAt = -1; };
+std::vector<Watch> g_watches;   // main thread only
+constexpr double kWatchS = 0.6;
 std::atomic<uint64_t> g_playerWuid{0};
 std::atomic<PvpFn> g_pvpFn{nullptr};
 
@@ -123,21 +129,34 @@ void* hit_common(bool missile, HitFn orig, void* self, void* out, const uint8_t*
     if (vsoul) {
         // A hit on a peer's avatar. NEVER skipped: the caller expects a cause
         // back (session 1: an empty one crashed the game). Measured and put back.
-        c_avatarHits.fetch_add(1, std::memory_order_relaxed);
-        float hp0 = 0, st0 = 0, hp1 = 0, st1 = 0;
-        const bool r0 = rttr::soul_state(vsoul, "health", &hp0) && rttr::soul_state(vsoul, "stamina", &st0);
-        void* res = orig(self, out, data);
-        if (r0 && rttr::soul_state(vsoul, "health", &hp1) && rttr::soul_state(vsoul, "stamina", &st1)) {
-            const float dh = hp0 - hp1, ds = st0 - st1;
-            if (dh > 0.0f) rttr::soul_set_state(vsoul, "health", hp0);
-            if (ds > 0.0f) rttr::soul_set_state(vsoul, "stamina", st0);
-            if (dh > 0.0f || ds > 0.0f) c_restored.fetch_add(1, std::memory_order_relaxed);
-            const bool byPlayer = aw != 0 && aw == g_playerWuid.load(std::memory_order_relaxed);
-            if (byPlayer && (dh > 0.0f || ds > 0.0f)) {
-                std::lock_guard<std::mutex> lock(g_qMutex);
-                if (g_pvp.size() < 64) g_pvp.push_back({veid, ds > 0 ? ds : 0.0f, dh > 0 ? dh : 0.0f,
-                                                        static_cast<uint8_t>(missile ? 0x02 : 0), mat});
+        const uint32_t nHit = c_avatarHits.fetch_add(1, std::memory_order_relaxed);
+        if (nHit < 12) {
+            // S_CombatHitData, as 0x70ce00 copies it (0x90 bytes): the damage
+            // fields are identified from these dumps against the victim's
+            // later stamina/health change.
+            char line[1100]; int k = std::snprintf(line, sizeof(line), "WO121-HITDUMP n=%u missile=%d", nHit, missile ? 1 : 0);
+            for (int o = 0x20; o < 0x90 && k < static_cast<int>(sizeof(line)) - 40; o += 4) {
+                uint32_t u = 0; float f = 0;
+                if (!rd(data, o, &u)) break;
+                std::memcpy(&f, &u, 4);
+                k += std::snprintf(line + k, sizeof(line) - k, " +%02X=%08X(%.3g)", o, u, f);
             }
+            logf("%s", line);
+        }
+        // The damage is NOT applied inside this call: 0x70ce00 copies the hit
+        // data into a cause and queues it; the victim applies it on a later
+        // update (session 4: hp/stamina unchanged across the call, every
+        // time). And S_CombatHitData holds no damage amount (the dump above).
+        // So a player's hit is WATCHED: the avatar's health/stamina are read
+        // every frame for kWatchS, every drop is put back at once, and the
+        // total is what friendly fire forwards. Other attackers: untouched.
+        const bool byPlayer = aw != 0 && aw == g_playerWuid.load(std::memory_order_relaxed);
+        float hp0 = 0, st0 = 0;
+        const bool r0 = byPlayer && rttr::soul_state(vsoul, "health", &hp0) && rttr::soul_state(vsoul, "stamina", &st0);
+        void* res = orig(self, out, data);
+        if (r0) {
+            std::lock_guard<std::mutex> lock(g_qMutex);
+            g_newWatches.push_back({vsoul, veid, hp0, st0, static_cast<uint8_t>(missile ? 0x02 : 0), mat});
         }
         return res;
     }
@@ -295,7 +314,12 @@ AttribResult apply_attributed(const uint8_t* body, size_t len) {
     void* avatarEnt = engine::entity_by_id(avatarEid);
     r.attackerWuid = avatarEnt ? actions::entity_wuid(avatarEnt) : 0;
     // 1. damage with the avatar as the attacker
-    if (rttr::apply_damage_soul(victimSoulR, st, hp, buffs::as_c_soul(avatarSoul) ? buffs::as_c_soul(avatarSoul) : avatarSoul)) r.steps |= 1;
+    if (rttr::apply_damage_soul(victimSoulR, st, hp, buffs::as_c_soul(avatarSoul) ? buffs::as_c_soul(avatarSoul) : avatarSoul)) {
+        r.steps |= 1;
+        // The plain path's echo guard: without it the LocalHit observer
+        // reported this remote hit as ours and sent it back out (session 7).
+        rttr::note_remote_damage(body, hp);
+    }
     c_attrib.fetch_add(1);
     if (!g_attribArmed) { r.ok = (r.steps & 1) != 0; r.reason = 5; return r; }
     // The victim's own actor/soul (the path the probe proved for the history
@@ -377,10 +401,35 @@ void tick() {
     }
     std::vector<PvpHit> pvp;
     std::vector<PlayerHitMark> marks;
+    std::vector<NewWatch> nw;
     {
         std::lock_guard<std::mutex> lock(g_qMutex);
         pvp.swap(g_pvp);
         marks.swap(g_marks);
+        nw.swap(g_newWatches);
+    }
+    for (const auto& n : nw) {
+        bool merged = false;   // a second hit inside the window: same baseline, longer window
+        for (auto& w : g_watches) if (w.soul == n.soul) { w.t0 = now; w.flags |= n.flags; merged = true; break; }
+        if (!merged) g_watches.push_back({n.soul, n.eid, n.hp0, n.st0, 0, 0, n.flags, n.material, now});
+    }
+    for (auto it = g_watches.begin(); it != g_watches.end();) {
+        Watch& w = *it;
+        ++w.frames;
+        // The soul must still be this avatar's (a release or a respawn ends the watch).
+        const bool live = avatar_soul(w.eid) == w.soul;
+        float hp = 0, st = 0;
+        if (live && rttr::soul_state(w.soul, "health", &hp) && rttr::soul_state(w.soul, "stamina", &st)) {
+            bool dropped = false;
+            if (hp < w.hp0 - 0.01f) { w.dh += w.hp0 - hp; rttr::soul_set_state(w.soul, "health", w.hp0); dropped = true; }
+            if (st < w.st0 - 0.25f) { w.ds += w.st0 - st; rttr::soul_set_state(w.soul, "stamina", w.st0); dropped = true; }
+            if (dropped) { c_restored.fetch_add(1); if (w.landedAt < 0) w.landedAt = w.frames; }
+        }
+        if (live && now - w.t0 < kWatchS) { ++it; continue; }
+        logf("WO121-HITS player hit on avatar eid=0x%X measured hp -%.2f st -%.2f (landed at frame %d of %d) -> %s", w.eid, w.dh, w.ds,
+             w.landedAt, w.frames, !live ? "avatar gone, dropped" : (w.dh > 0 || w.ds > 0) ? (g_ff.load() ? "forwarded" : "dropped (friendly fire off)") : "no damage, nothing sent");
+        if (live && (w.dh > 0 || w.ds > 0)) pvp.push_back({w.eid, w.ds, w.dh, w.flags, w.material});
+        it = g_watches.erase(it);
     }
     for (const auto& m : marks) {
         if (void* soul = soul_of_actor(actor_by_eid(m.victimEid))) {

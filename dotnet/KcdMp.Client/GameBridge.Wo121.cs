@@ -79,8 +79,20 @@ public partial class GameBridge
         _ = Wo121HeartbeatAsync(ct);
     }
 
+    // WO-121 Phase 5: peers whose avatar is in an attributed engagement here
+    // (not ignorant) -> when it ends (30 s after the last attributed hit).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<byte, DateTime> _w121Engaged = new();
+    private static readonly TimeSpan Wo121EngagementHold = TimeSpan.FromSeconds(30);
+
+    private async Task Wo121EngageAsync(byte source, bool on)
+    {
+        await ExecLuaAsync($"if KCD2MP_Wo121Engage then KCD2MP_Wo121Engage({source}, {(on ? "true" : "false")}) end");
+        Console.WriteLine($"MP-ATTRIB engagement ghost={source} {(on ? "started -- the avatar is perceivable until 30 s after the last attributed hit" : "ended -- ignorance back to the session setting")}");
+    }
+
     private void Wo121OnDisconnect()
     {
+        _w121Engaged.Clear();
         _wo121Stream = null;
         _combat.OnLocalAction = null;
         _combat.OnPvpHit = null;
@@ -160,6 +172,12 @@ public partial class GameBridge
             try { await Task.Delay(1000, ct); } catch { return; }
             try
             {
+                if (_w121Engaged.Count > 0)
+                {
+                    var now = DateTime.UtcNow;
+                    foreach (var (src, until) in _w121Engaged.ToArray())
+                        if (now >= until && _w121Engaged.TryRemove(src, out _)) await Wo121EngageAsync(src, false);
+                }
                 string? st = await _combat.Wo121StatusAsync(ct);
                 if (st is not null)
                 {
@@ -469,13 +487,19 @@ public partial class GameBridge
         _w121AttribIn++;
         string steps = $"damage={((r.Steps & 1) != 0 ? 1 : 0)} history={((r.Steps & 2) != 0 ? 1 : 0)} skirmish={((r.Steps & 4) != 0 ? 1 : 0)}";
         bool brain = false;
+        if (r.Ok && (r.Steps & 1) != 0)
+        {
+            bool fresh = !_w121Engaged.ContainsKey(source);
+            _w121Engaged[source] = DateTime.UtcNow + Wo121EngagementHold;
+            if (fresh) await Wo121EngageAsync(source, true);
+        }
         if (r.Ok && r.AttackerWuid != 0)
         {
             // The brain's hit-reaction message, in the engine's own format
             // (WHGame CGameRules::SendAISignal: "attacker(%lld),hitStrength(%d),
             // hitType(%d),targetOrigMat(%d)") and the engine's own debug-command
-            // shape. hitStrength/hitType/targetOrigMat: PROVISIONAL until one
-            // vanilla sword hit is captured (needs the maintainer).
+            // shape. hitStrength/hitType/targetOrigMat: captured from a vanilla
+            // sword hit (below).
             string dec = unchecked((long)r.AttackerWuid).ToString(CultureInfo.InvariantCulture);
             await ExecLuaAsync($"pcall(function() XGenAIModule.SendMessageToEntity(System.GetEntityByName(\"{npcName}\").this.id,\"hitReaction\",\"attacker({dec}),hitStrength({Wo121HitStrength}),hitType({Wo121HitType}),targetOrigMat({Wo121TargetMat})\") end)");
             brain = true;
@@ -485,6 +509,10 @@ public partial class GameBridge
         return r.Ok && (r.Steps & 1) != 0;
     }
 
-    // Provisional hitReaction values (WO-119 s2.1 saw only the brain-driven hitType 10).
-    private const int Wo121HitStrength = 5, Wo121HitType = 1, Wo121TargetMat = 1;
+    // hitReaction values CAPTURED from one vanilla sword hit (WO-121 session 6,
+    // the SendAISignal S_HitInfo: hitStrength +0x44 = 5, hitType +0x18 = 1,
+    // targetOrigMat +0x34 = 5 on a cloth-wearing farmer). The brain-driven
+    // event WO-119 saw is hitType 10; a real weapon hit is 1. The material is
+    // the victim's and varies; 5 is the unarmoured case.
+    private const int Wo121HitStrength = 5, Wo121HitType = 1, Wo121TargetMat = 5;
 }

@@ -17,6 +17,7 @@
 #include "log.h"
 #include "hits.h"
 #include "pe_exports.h"
+#include "script_context.h"
 
 namespace kcdmp::motion {
 namespace {
@@ -170,6 +171,7 @@ struct Body {
     int appliedGz = -2, appliedGs = -2, appliedAz = -2;
     double lastCombatAssert = 0, lastBuffCheck = 0, lastGaitLog = 0;
     uint32_t combatStarts = 0;
+    bool ctxApplied = false;      // the WO-121 avatar contexts (kAvatarContexts) are set on its soul
 };
 std::unordered_map<uint32_t, Body> g_bodies;
 
@@ -464,8 +466,11 @@ void apply_combat(Body& b, const State2* st, double now) {
     }
 }
 
+void set_avatar_contexts(Body& b, bool on);
+
 void release_body(Body& b, const char* why) {
     release_gait(b);
+    if (b.ctxApplied) set_avatar_contexts(b, false);
     if (b.crouchApplied && b.exp && vslot(b.exp, kExpSetCrouch) == A.fnSetCrouch) { call_bb(A.fnSetCrouch, b.exp, false, false); b.crouchApplied = false; }
     if (b.ca && is_a(b.ca, A.vftCa)) {
         if (b.blockApplied) call_setblock(A.fnSetBlock, b.ca, false, 0);
@@ -485,6 +490,41 @@ bool is_avatar_key(const char* key) {
     return true;
 }
 
+// WO-121 Phase 6: the avatar is a puppet of another player, so its own brain
+// must not react to THIS player. Tables.pak :: Libs/Tables/ai/ScriptContext.xml,
+// all Class="Entity" rows on this build. Session 3 (observed): Henry drew a
+// sword near the avatar -> it barked crime_reaction_barks.vytazena_zbran
+// ("feels threatened by the player") and changed weapon on its own.
+// Set only while the avatar's combat is ours (mp_avatar_combat on), so the
+// legacy preset keeps the 0.28.x reactive ghost.
+constexpr const char* kAvatarContexts[] = {
+    "crime_ignorePlayersDrawnWeapon",       // the drawn-weapon bark and threat reaction
+    "crime_disableHitFromPlayerReaction",   // a hit from the player starts no reaction
+    "crime_suppressBehavioralReaction",     // new information starts no behaviour
+    "crime_suppressFightStartBark",
+    "combat_disableAllSkirmishBarks",
+    // NOT combat_suppressFriendlyFire: with it set, a player's sword hit on
+    // the avatar did no damage at all (session 5, unarmoured, buff off) --
+    // nothing to measure, so nothing for friendly fire to forward.
+};
+std::atomic<uint32_t> c_ctxSet{0}, c_ctxFail{0};
+
+void* body_soul(const Body& b) {
+    void* soul = nullptr;
+    void* fn = b.actor ? vslot(b.actor, kActorGetSoul) : nullptr;
+    return fn && call_p0(fn, b.actor, &soul) ? soul : nullptr;
+}
+
+void set_avatar_contexts(Body& b, bool on) {
+    void* soul = body_soul(b);
+    if (!soul) return;
+    int ok = 0, bad = 0;
+    for (const char* n : kAvatarContexts) (kcdmp::sctx::set_soul_context(soul, n, on) >= 0 ? ok : bad)++;
+    b.ctxApplied = on;
+    c_ctxSet.fetch_add(ok); c_ctxFail.fetch_add(bad);
+    logf("WO121-MOTION body=%s avatar contexts %s: %d ok, %d failed", b.key.c_str(), on ? "set" : "cleared", ok, bad);
+}
+
 // kcdmp_avatar_guard (buff__kcdmp.xml): imm=1 upr=1, non-persistent -- an
 // avatar can never die or be knocked out in this world, whatever hits it.
 unsigned char g_avatarGuard[16]{};
@@ -492,8 +532,11 @@ bool g_avatarGuardOk = false;
 std::atomic<uint32_t> c_buffAdds{0};
 
 void ensure_avatar_guard(Body& b, double now) {
-    if (!g_avatarGuardOk || now - b.lastBuffCheck < 5.0) return;
+    if (now - b.lastBuffCheck < 5.0) return;
     b.lastBuffCheck = now;
+    const bool wantCtx = g_combat && g_cfgCombat;
+    if (wantCtx != b.ctxApplied) set_avatar_contexts(b, wantCtx);
+    if (!g_avatarGuardOk) return;
     void* soul = nullptr;
     void* fn = vslot(b.actor, kActorGetSoul);
     if (!fn || !call_p0(fn, b.actor, &soul) || !soul) return;
@@ -819,12 +862,12 @@ int status_text(char* out, int n) {
     return std::snprintf(out, n,
         "gait=%s moves=%s combat=%s attack_capture=%s cfg=%d%d%d%d%d bodies=%zu gait_writes=%u crouch=%u jumps=%u/%u "
         "combat_starts=%u automation_off=%u guard_zone=%u atk_zone=%u block=%u cap_attack=%u cap_npc=%u cap_jump=%u cap_other=%u "
-        "cap_dropped=%u buff_adds=%u faults=%u",
+        "cap_dropped=%u buff_adds=%u ctx_set=%u ctx_fail=%u faults=%u",
         g_gait ? "armed" : "off", g_moves ? "armed" : "off", g_combat ? "armed" : "off", g_capture ? "armed" : "off",
         g_cfgAvatarGait.load(), g_cfgNpcGait.load(), g_cfgMoves.load(), g_cfgCombat.load(), g_cfgNpcRows.load(), g_bodies.size(),
         c_gaitWrites.load(), c_crouch.load(), c_jumps.load(), c_jumpFail.load(), c_combatStarts.load(), c_autoOff.load(),
         c_guardZone.load(), c_atkZone.load(), c_block.load(), c_capAttack.load(), c_capNpc.load(), c_capJump.load(), c_capOther.load(),
-        c_capDropped.load(), c_buffAdds.load(), c_faults.load());
+        c_capDropped.load(), c_buffAdds.load(), c_ctxSet.load(), c_ctxFail.load(), c_faults.load());
 }
 
 bool is_avatar_eid(uint32_t eid) {

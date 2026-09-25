@@ -197,6 +197,21 @@ static class P
                         await Send(st, outbox.Build(ActionKind.SessionSetting, ActionPhase.Commit, [SessionSettingKey.FriendlyFire, f[1] == "on" ? (byte)1 : (byte)0]));
                         Console.WriteLine($"PEER t={t:F1} ff {f[1]} (as host)");
                         break;
+                    case "npchit":   // npchit <npcName> <hp> <st>: this peer's attributed hit on a world NPC (0x30, WO-121 Phase 5)
+                    {
+                        var nhb = Encoding.UTF8.GetBytes(f[1]);
+                        var pk = new byte[3 + 1 + nhb.Length + Protocol.NpcDamageFixedTail];
+                        pk[0] = Protocol.NpcDamageUp;
+                        BinaryPrimitives.WriteUInt16LittleEndian(pk.AsSpan(1), (ushort)(1 + nhb.Length + Protocol.NpcDamageFixedTail));
+                        pk[3] = (byte)nhb.Length; nhb.CopyTo(pk, 4);
+                        int o = 4 + nhb.Length;
+                        BinaryPrimitives.WriteSingleLittleEndian(pk.AsSpan(o), F(f[3]));
+                        BinaryPrimitives.WriteSingleLittleEndian(pk.AsSpan(o + 4), F(f[2]));
+                        pk[o + 8] = (byte)(Protocol.DamageFlagSuppressHitReaction | Protocol.NpcDamageFlagAttributed);
+                        await Send(st, pk);
+                        Console.WriteLine($"PEER t={t:F1} npchit {f[1]} hp={f[2]} st={f[3]} attributed");
+                        break;
+                    }
                     case "hit":
                         if (joiner is byte j)
                         {

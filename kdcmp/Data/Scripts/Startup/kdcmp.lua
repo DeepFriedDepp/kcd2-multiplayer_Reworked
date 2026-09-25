@@ -11764,8 +11764,10 @@ end
 function KCD2MP_ReassertGhostIgnorance()
     if not KCD2MP.ghostsIgnorant then return end
     KCD2MP._ignorantFailLogged = KCD2MP._ignorantFailLogged or {}
+    local engaged = KCD2MP.w121Engaged or {}
     for id, ghost in pairs(KCD2MP.ghosts) do
-        if ghost.entity then
+        -- WO-121 Phase 5: an avatar in an attributed engagement stays perceivable.
+        if ghost.entity and not engaged[tostring(id)] then
             local ok, err = pcall(function() AI.SetIgnorant(ghost.entity.id, 1) end)
             if not ok and not KCD2MP._ignorantFailLogged[id] then
                 KCD2MP._ignorantFailLogged[id] = true
@@ -11777,6 +11779,27 @@ function KCD2MP_ReassertGhostIgnorance()
             end
         end
     end
+end
+
+-- WO-121 Phase 5 (host side, the NPC's damage authority): an attributed hit
+-- by peer <id>'s avatar lifts that avatar's ignorance so the hit NPC -- and
+-- anyone who would join a fight against Henry -- can fight it back (session 6:
+-- an ignorant avatar was targeted but never swung at). The agent ends the
+-- engagement 30 s after the last attributed hit; the flag goes back to the
+-- session setting (mp_ghost_ignorant). One write per edge, no loop.
+function KCD2MP_Wo121Engage(id, on)
+    KCD2MP.w121Engaged = KCD2MP.w121Engaged or {}
+    local key = tostring(id)
+    KCD2MP.w121Engaged[key] = on and true or nil
+    local g = KCD2MP.ghosts[id] or KCD2MP.ghosts[key] or KCD2MP.ghosts[tonumber(id) or -1]
+    if not (g and g.entity) then
+        System.LogAlways("[KCD2-MP] WO121-ENGAGE ghost=" .. key .. " on=" .. tostring(on) .. " -- no ghost body")
+        return
+    end
+    local flag = (on or not KCD2MP.ghostsIgnorant) and 0 or 1
+    local ok, err = pcall(function() AI.SetIgnorant(g.entity.id, flag) end)
+    System.LogAlways(string.format("[KCD2-MP] WO121-ENGAGE ghost=%s %s -> SetIgnorant(%d) ok=%s%s", key,
+        on and "engaged" or "released", flag, tostring(ok), ok and "" or (" err=" .. tostring(err))))
 end
 
 -- ===== WO-40 Phase 9: hostility remediation + faction-bind probe =====
@@ -12455,7 +12478,7 @@ local ok, err = pcall(function()
         mp_log(string.format("WO121-BUILD avatar_gait=%s npc_gait=%s avatar_moves=%s avatar_combat=%s npc_rows=%s npc_attribution=%s"
             .. " friendly_fire=%s protocol=v8 -- %s; mp_preset_legacy = the 0.28.x look (all seven off)",
             o(w.avatarGait), o(w.npcGait), o(w.avatarMoves), o(w.avatarCombat), o(w.npcRows), o(w.attribution), o(w.friendlyFire),
-            KCD2MP.w121FfReason or "friendly fire default ON: the Phase 6 gate passed (docs/WO-121-findings.md s6); the host's mp_friendly_fire decides for the session"))
+            KCD2MP.w121FfReason or "friendly fire default ON: Phase 6 gate items 1-5 passed solo, bleeding is not carried (plain damage; maintainer: ship on, known gap) -- docs/WO-121-findings.md s6; the host's mp_friendly_fire decides for the session"))
         KCD2MP_Wo121CfgEmit()
     end
     System.AddCCommand("mp_avatar_gait",         'KCD2MP_Wo121Set("avatarGait", %line)',      "WO-121: a peer's avatar walks/runs on the engine's own gait (SetPseudoSpeed every frame from their speed; default on); off = the Lua clip loop: mp_avatar_gait on|off")
