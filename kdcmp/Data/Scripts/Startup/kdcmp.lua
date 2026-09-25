@@ -3043,6 +3043,16 @@ function KCD2MP_Wo121Set(key, arg)
     return true
 end
 
+-- One handler per console command: %line must be the only argument, or a
+-- bare `mp_<name>` compiles to Fn("key", ) -- a Lua syntax error (WO-109).
+function KCD2MP_Wo121SetAvatarGait(arg) return KCD2MP_Wo121Set("avatarGait", arg) end
+function KCD2MP_Wo121SetNpcGait(arg) return KCD2MP_Wo121Set("npcGait", arg) end
+function KCD2MP_Wo121SetAvatarMoves(arg) return KCD2MP_Wo121Set("avatarMoves", arg) end
+function KCD2MP_Wo121SetAvatarCombat(arg) return KCD2MP_Wo121Set("avatarCombat", arg) end
+function KCD2MP_Wo121SetNpcRows(arg) return KCD2MP_Wo121Set("npcRows", arg) end
+function KCD2MP_Wo121SetAttribution(arg) return KCD2MP_Wo121Set("attribution", arg) end
+function KCD2MP_Wo121SetFriendlyFire(arg) return KCD2MP_Wo121Set("friendlyFire", arg) end
+
 -- The agent's 1 Hz heartbeat: the DLL's pieces and the session's friendly fire.
 function KCD2MP_Wo121Alive(gait, combat, ff)
     local w = KCD2MP.w121
@@ -12481,13 +12491,13 @@ local ok, err = pcall(function()
             KCD2MP.w121FfReason or "friendly fire default ON: Phase 6 gate items 1-5 passed solo, bleeding is not carried (plain damage; maintainer: ship on, known gap) -- docs/WO-121-findings.md s6; the host's mp_friendly_fire decides for the session"))
         KCD2MP_Wo121CfgEmit()
     end
-    System.AddCCommand("mp_avatar_gait",         'KCD2MP_Wo121Set("avatarGait", %line)',      "WO-121: a peer's avatar walks/runs on the engine's own gait (SetPseudoSpeed every frame from their speed; default on); off = the Lua clip loop: mp_avatar_gait on|off")
-    System.AddCCommand("mp_npc_gait",            'KCD2MP_Wo121Set("npcGait", %line)',         "WO-121: NPC copies walk/run on the engine's own gait (SetPseudoSpeed from the rendered speed; default on); off = the Lua clip loop: mp_npc_gait on|off")
-    System.AddCCommand("mp_avatar_moves",        'KCD2MP_Wo121Set("avatarMoves", %line)',     "WO-121: a peer's avatar crouches and jumps through the engine (SetCrouch / RequestJump; default on): mp_avatar_moves on|off")
-    System.AddCCommand("mp_avatar_combat",       'KCD2MP_Wo121Set("avatarCombat", %line)',    "WO-121: a peer's avatar holds their combat stance, guard, block and plays their real attack rows (its own combat automation off; default on); off = the 0.28.x swing cues: mp_avatar_combat on|off")
-    System.AddCCommand("mp_npc_rows",            'KCD2MP_Wo121Set("npcRows", %line)',         "WO-121: NPC copies swing the owner's committed attack row (default on); off = the WO-49 swing cue: mp_npc_rows on|off")
-    System.AddCCommand("mp_npc_attribution",     'KCD2MP_Wo121Set("attribution", %line)',     "WO-121: a peer's hit on an NPC names their avatar as the attacker on the NPC's owner (damage + combat history + skirmish + hit reaction; default on): mp_npc_attribution on|off")
-    System.AddCCommand("mp_friendly_fire",       'KCD2MP_Wo121Set("friendlyFire", %line)',    "WO-121: players can hurt each other (HOST only -- the host's value is the session's): mp_friendly_fire on|off; bare = report")
+    System.AddCCommand("mp_avatar_gait",         'KCD2MP_Wo121SetAvatarGait(%line)',      "WO-121: a peer's avatar walks/runs on the engine's own gait (SetPseudoSpeed every frame from their speed; default on); off = the Lua clip loop: mp_avatar_gait on|off")
+    System.AddCCommand("mp_npc_gait",            'KCD2MP_Wo121SetNpcGait(%line)',         "WO-121: NPC copies walk/run on the engine's own gait (SetPseudoSpeed from the rendered speed; default on); off = the Lua clip loop: mp_npc_gait on|off")
+    System.AddCCommand("mp_avatar_moves",        'KCD2MP_Wo121SetAvatarMoves(%line)',     "WO-121: a peer's avatar crouches and jumps through the engine (SetCrouch / RequestJump; default on): mp_avatar_moves on|off")
+    System.AddCCommand("mp_avatar_combat",       'KCD2MP_Wo121SetAvatarCombat(%line)',    "WO-121: a peer's avatar holds their combat stance, guard, block and plays their real attack rows (its own combat automation off; default on); off = the 0.28.x swing cues: mp_avatar_combat on|off")
+    System.AddCCommand("mp_npc_rows",            'KCD2MP_Wo121SetNpcRows(%line)',         "WO-121: NPC copies swing the owner's committed attack row (default on); off = the WO-49 swing cue: mp_npc_rows on|off")
+    System.AddCCommand("mp_npc_attribution",     'KCD2MP_Wo121SetAttribution(%line)',     "WO-121: a peer's hit on an NPC names their avatar as the attacker on the NPC's owner (damage + combat history + skirmish + hit reaction; default on): mp_npc_attribution on|off")
+    System.AddCCommand("mp_friendly_fire",       'KCD2MP_Wo121SetFriendlyFire(%line)',    "WO-121: players can hurt each other (HOST only -- the host's value is the session's): mp_friendly_fire on|off; bare = report")
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")

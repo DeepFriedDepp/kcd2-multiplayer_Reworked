@@ -118,9 +118,15 @@ local cmds = { { "mp_avatar_gait", "avatarGait" }, { "mp_npc_gait", "npcGait" },
                { "mp_friendly_fire", "friendlyFire" } }
 for _, nk in ipairs(cmds) do
     local c = CCMDS[nk[1]]
-    check("b: " .. nk[1] .. " registered with %line", c ~= nil and string.find(c.body, 'KCD2MP_Wo121Set("' .. nk[2] .. '", %line)', 1, true) ~= nil, c and c.body)
+    local fn = "KCD2MP_Wo121Set" .. nk[2]:sub(1, 1):upper() .. nk[2]:sub(2)
+    check("b: " .. nk[1] .. " registered with %line as the only argument", c ~= nil and string.find(c.body, fn .. "(%line)", 1, true) ~= nil, c and c.body)
+    check("b: " .. nk[1] .. " handler is defined", type(_G[fn]) == "function", fn)
     check("b: " .. nk[1] .. " documents on|off, no %LINE", c ~= nil and string.find(c.help, "on|off", 1, true) ~= nil and not string.find(c.body, "%LINE", 1, true), c and c.help)
 end
+
+-- a bare console call reaches the setter as nil and reports
+clearLog()
+check("b: a bare handler call reports, no error", KCD2MP_Wo121SetNpcRows(nil) == true and w.npcRows == true)
 
 -- (c) a toggle off
 clearLog()

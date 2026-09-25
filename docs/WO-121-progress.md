@@ -72,7 +72,17 @@ Phases 5 and 6 share `hits.cpp` for the same reason.
 - `tools/wo118/synthpeer`: a new plan verb, `row <t> <npc> <guid>`, sends an
   `NpcAttack`.
 
+## Caught by the release gate
+
+- `Test-WO108Synthetic` expected 22 preset values; WO-121 adds seven (29).
+- `Test-WO106ConsolePlaceholder`: the seven WO-121 commands were registered
+  as `KCD2MP_Wo121Set("key", %line)`. A bare `mp_avatar_gait` would compile
+  to `Fn("key", )`, a Lua syntax error (the WO-109 lesson). Each command now
+  has its own one-line handler taking `%line` alone.
+
 ## Suites
 
-Client 195/195, Relay 36/36, Farkle 59/59; Lua synthetic WO118 99, WO113 23,
-WO110 86, NpcSmooth 48, GhostInterp 35. All pass on the final tree.
+Client 195/195, Relay 36/36, Farkle 59/59; all 18 Lua synthetic suites,
+including the new `Test-WO121Synthetic` (55 checks), and the static gates, as
+run by `Build-Installer.ps1` on the final tree. Installer:
+`release/KCDMP-Setup-0.29.0.exe` (local only).
