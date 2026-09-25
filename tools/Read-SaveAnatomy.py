@@ -264,7 +264,7 @@ KNOWN_KEYS = [
     'ArmorRuntimeData', 'dirt', 'bloodZone', 'i', 'v', 'Human', 'fastTravelEnabled', 'PlayerRotation',
     'viewAngles', 'viewQuat', 'viewQuatFinal', 'baseQuat', 'ScriptProxy', 'scriptUpdateRate', 'currStateId',
 ]
-TOKEN_SIZES = {0x03: 1, 0x04: 4, 0x06: 12, 0x07: 16, 0x08: 12, 0x0B: 4, 0x0D: 1, 0x0F: 4, 0x10: 8, 0x12: 8}
+TOKEN_SIZES = {0x03: 1, 0x04: 4, 0x06: 12, 0x07: 16, 0x08: 12, 0x0B: 4, 0x0C: 8, 0x0D: 1, 0x0F: 4, 0x10: 8, 0x12: 8}
 KEYNAMES = {fnv1(k): k for k in KNOWN_KEYS}
 
 
@@ -357,7 +357,7 @@ def fmt_token(t, v):
         return str(v[0])
     if t == 0x0F:
         return '0x%x' % struct.unpack('<I', v)[0]
-    if t in (0x10, 0x12):
+    if t in (0x0C, 0x10, 0x12):
         return '0x%016x' % struct.unpack('<Q', v)[0]
     if t == 0x11:
         return 'table ' + json.dumps(v, default=str)[:160]
