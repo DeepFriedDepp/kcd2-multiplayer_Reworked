@@ -467,4 +467,14 @@ bool soul_position(void* soul, float out[3]);
 /// number of souls visited.
 int for_each_soul(bool (*visit)(void* soul, void* ctx), void* ctx);
 
+// ---- WO-121 -----------------------------------------------------------------
+
+/// Soul.CombatSoul (the C_CombatSoul), read fresh. Null when unreadable.
+void* combat_soul_of(void* soul);
+
+/// CombatSoul::TakeDamage on this soul, with `attacker` (an I_Soul*, may be
+/// null) as the cause -- the victim's brain and shouts then name the attacker
+/// (WO-119 s2.1). True only when the invoke returned a valid variant.
+bool apply_damage_soul(void* soul, float stamina, float health, void* attacker);
+
 } // namespace kcdmp::rttr

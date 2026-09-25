@@ -3,6 +3,8 @@
 // Loaded by KCDMP_LauncherInjector.exe via CreateRemoteThread(LoadLibraryA),
 // which is what KCDMP_launcher's LaunchGame already expects.
 
+#include "motion.h"
+#include "hits.h"
 #include "concept_read.h"
 #include "dice_hook.h"
 #include "log.h"
@@ -135,6 +137,11 @@ DWORD WINAPI plugin_main(LPVOID) {
         // WO-118: the native per-frame puppet write. Anchors fail closed
         // (WO118-NATIVE native_write=DISARMED): Lua then writes as before.
         kcdmp::npcdrive::install();
+        // WO-121: movement and combat on the writer's bodies, the committed-
+        // action capture, and the combat-hit chokepoint. Each piece fails
+        // closed on its own (WO121-MOTION / WO121-HITS lines).
+        kcdmp::motion::install();
+        kcdmp::hits::install();
     });
     if (!ran) {
         kcdmp::logf("MAIN: walk timed out waiting for a frame; not starting the pipe");
@@ -180,6 +187,9 @@ DWORD WINAPI plugin_main(LPVOID) {
     kcdmp::main_thread::post_repeating(&kcdmp::combatwrite::write_watch);
     // WO-113: the death guard's per-frame tick (rate-limits itself).
     kcdmp::main_thread::post_repeating(&kcdmp::respawn::tick);
+    // WO-121: drain the capture / friendly-fire queues, avatar jumps.
+    kcdmp::main_thread::post_repeating(&kcdmp::motion::tick);
+    kcdmp::main_thread::post_repeating(&kcdmp::hits::tick);
 
     kcdmp::pipe::start();
     return 0;

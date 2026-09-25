@@ -4,6 +4,7 @@
 #include "log.h"
 #include "main_thread.h"
 #include "npc_trace.h"
+#include "motion.h"
 #include "respawn_actions.h"
 
 #include <windows.h>
@@ -210,6 +211,8 @@ struct InSample {
     uint16_t seq = 0;
     uint32_t senderMs = 0;
     int64_t  arrivalQpc = 0;
+    bool     haveSt2 = false;      // WO-121: pipe flag 0x80 -- a peer's avatar sample carries its v8 state block
+    motion::State2 st2{};
 };
 struct InHold { char name[64]{}; uint16_t ms = 0; };
 
@@ -233,6 +236,9 @@ struct Stream {
     uint32_t    lastSenderMs = 0;   // the newest accepted sample's sender stamp
     double      needQ = 0;          // ~95th percentile of (drain time - newest stamp), seconds
     bool        needInit = false;
+    bool        haveSt2 = false;    // WO-121: the newest state block (avatars) and when it arrived
+    motion::State2 st2{};
+    double      st2At = 0;
 };
 struct SenderClock { double curMin = 1e300, curStart = 0, prevMin = 1e300, lastSeen = 0; bool havePrev = false; bool init = false; };
 
@@ -255,6 +261,7 @@ struct Puppet {
     bool     havePrev = false;      // the write before `last`
     float    prev[3]{};
     float    lastRot = 0;
+    float    speedMps = 0;          // WO-121: the rendered planar speed of the last written frame (gait for NPC copies)
     uint64_t writes = 0;
     uint32_t frameNo = 0;
     // MP-NPCPULL window
@@ -288,6 +295,7 @@ void notify_drop(uint8_t reason, const std::string& name) {
 void drop(std::unordered_map<std::string, Puppet>::iterator it, uint8_t reason, bool tell) {
     logf("MP-NPCWRITE npc=%s event=drop reason=%s eid=0x%X writes=%llu", it->second.name.c_str(), reason_name(reason),
          it->second.eid, static_cast<unsigned long long>(it->second.writes));
+    motion::body_released(it->second.key.c_str(), it->second.eid);   // WO-121: gait/combat hand the body back
     if (tell) notify_drop(reason, it->second.name);
     g_bound.erase(it);
 }
@@ -359,6 +367,7 @@ void push_sample(const InSample& in, double now) {
     s.haveSeq = true; s.lastSeq = in.seq; s.lastAcceptedAt = now;
     if (stamped) { s.haveSenderMs = true; s.lastSenderMs = in.senderMs; }
     s.flags = in.flags;
+    if (in.haveSt2) { s.haveSt2 = true; s.st2 = in.st2; s.st2At = now; }
     // The need, measured before this sample joins the ring: how long after the
     // newest sample's stamp the next one actually became renderable. A
     // streaming 95th percentile: up by q steps when above the estimate, down
@@ -579,6 +588,7 @@ void disarm(const char* why) {
     if (!g_armed.exchange(false)) return;
     logf("MP-NPCWRITE DISARMED -- %s; every bound puppet dropped, Lua writes them again", why);
     for (auto it = g_bound.begin(); it != g_bound.end();) {
+        motion::body_released(it->second.key.c_str(), it->second.eid);
         notify_drop(kFault, it->second.name);
         it = g_bound.erase(it);
     }
@@ -713,6 +723,12 @@ uint8_t on_samples(const uint8_t* body, size_t len) {
         std::memcpy(&s.seq, body + o, 2); o += 2;
         std::memcpy(&s.senderMs, body + o, 4); o += 4;
         std::memcpy(&s.arrivalQpc, body + o, 8); o += 8;
+        if (s.flags & 0x80) {   // WO-121: the agent's pipe-only "state block follows" bit
+            if (o + sizeof(motion::State2) > len) return kBadRequest;
+            std::memcpy(&s.st2, body + o, sizeof(motion::State2)); o += sizeof(motion::State2);
+            s.haveSt2 = true;
+            s.flags &= 0x7F;
+        }
         if (!std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(s.z) || !std::isfinite(s.rot)) continue;
         batch.push_back(s);
     }
@@ -875,6 +891,7 @@ void tick() {
         for (auto it = g_bound.begin(); it != g_bound.end();) {
             logf("MP-NPCWRITE npc=%s event=drop reason=pipe-closed writes=%llu", it->second.name.c_str(),
                  static_cast<unsigned long long>(it->second.writes));
+            motion::body_released(it->second.key.c_str(), it->second.eid);
             it = g_bound.erase(it);
         }
     }
@@ -927,6 +944,12 @@ void tick() {
         if (p.blendPending) blend_start(p, e, pose);
         if (p.blending) blend_apply(p, pose, dt);
         bool wrote = false;
+        // WO-121: the rendered planar speed (this pose against the last one written).
+        if (p.haveLast && dt > 0.0005) {
+            const float ddx = pose[0] - p.last[0], ddy = pose[1] - p.last[1];
+            const float sp = std::sqrt(ddx * ddx + ddy * ddy) / static_cast<float>(dt);
+            p.speedMps = std::isfinite(sp) && sp < 20.0f ? sp : p.speedMps;
+        } else if (!p.haveLast) p.speedMps = 0;
         if (!write_one(p, e, pose, &wrote)) {
             if (!g_announcedFault) { g_announcedFault = true; logf("MP-NPCWRITE npc=%s engine call FAULTED", p.name.c_str()); }
             disarm("an engine call faulted inside the per-frame write");
@@ -934,6 +957,8 @@ void tick() {
             return;
         }
         if (wrote) { ++writing; g_statWrites.fetch_add(1, std::memory_order_relaxed); npctrace::note_write(e, pose); }
+        // WO-121: gait / crouch / combat hold for this body, right after its write.
+        motion::body_frame(p.key.c_str(), e, p.eid, p.speedMps, s.haveSt2 ? &s.st2 : nullptr, s.haveSt2 ? now - s.st2At : 1e9, now);
         if (now - p.winStart >= kPullWindowS) pull_flush(p, now);
         ++it;
     }

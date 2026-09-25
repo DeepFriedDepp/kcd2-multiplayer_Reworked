@@ -52,4 +52,11 @@ bool enabled();
 // Is the guard (buff) currently applied to the player?
 bool guard_applied();
 
+// WO-121: a partner's friendly-fire hit just landed on the player (main
+// thread). `unarmed`: it was a fist. A downing within kPvpRecentS of an
+// unarmed PvP hit is a KNOCKDOWN even with no attacker attached (the PvP hit
+// deliberately carries none -- naming one is what starts fights), unless the
+// player is bleeding, poisoned or starving.
+void note_pvp_hit(bool unarmed, uint8_t attackerGhost);
+
 } // namespace kcdmp::respawn

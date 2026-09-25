@@ -4289,7 +4289,15 @@ public partial class GameBridge(ClientConfig config)
                     // the bit but sends a short packet is a bug we must not
                     // read past the end of. The codec applies that rule.
                     BodyState? body = gs.Body;
-                    if (gs.State2 is not null) _peerState2At[ghostId] = DateTime.UtcNow;   // WO-121
+                    // WO-121: the v8 state block is change-gated, so most packets
+                    // carry none; the legacy Lua gait path (KCD2MP_UpdateGhost
+                    // clears its body state on a call without one) gets the
+                    // newest block's derivation, held while the sender's 1 s
+                    // heartbeat keeps it fresh.
+                    if (gs.State2 is BodyState2 st2n) { _peerState2At[ghostId] = DateTime.UtcNow; _peerLastState2[ghostId] = st2n; }
+                    else if (_peerLastState2.TryGetValue(ghostId, out var st2h) && _peerState2At.TryGetValue(ghostId, out var st2t)
+                             && (DateTime.UtcNow - st2t).TotalSeconds < 3.0)
+                        body = st2h.ToLegacy(gs.IsRiding);
                     if (body is BodyState bs) _stats.OnBodyState(ghostId, bs);
                     else if (gs.BodyStateShort) _stats.BodyStateShortPackets++;
                     // WO-59: a ghost id we have never seen this connection is
@@ -6185,6 +6193,13 @@ public partial class GameBridge(ClientConfig config)
                     return;
                 }
                 ulong wuid = ulong.TryParse(p[3], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var w) ? w : 0;
+                // WO-121: a ghost's bind carries its entity id too. An agent
+                // that started under an already-spawned avatar never saw the
+                // spawn-time "ghostid" event; without an id, every v8 attack,
+                // block, dodge and jump for that avatar had nowhere to go.
+                if (npc.StartsWith("kcd2mp_", StringComparison.Ordinal) && byte.TryParse(npc.AsSpan(7), out byte bindGhost)
+                    && _ghostEntityIds.TryAdd(bindGhost.ToString(), eid))
+                    Console.WriteLine($"[wo121] ghost {bindGhost} entity id 0x{eid:X} learned from its native bind");
                 _ = Task.Run(async () =>
                 {
                     var (ok, reason) = await _combat.NpcBindAsync(true, eid, wuid, ax, ay, az, delayMs, npc);

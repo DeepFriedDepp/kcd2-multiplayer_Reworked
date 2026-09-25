@@ -41,6 +41,9 @@ bool exclude_from_targeting(bool on);
 // The game's own StopFight for the skirmish the player is in (what quests
 // use to end a fight): every soul of that skirmish is told to stop.
 bool stop_fight_available();
+// WO-121: the anchored wh::rpgmodule::StopFight itself (hits.cpp reads its
+// skirmish-manager getter out of it); null when not armed.
+const void* stop_fight_fn();
 bool stop_fight(void* playerSoul);
 
 // wh_rpg_DisablePlayerFallDamage while the wake teleport lands. Observed: a

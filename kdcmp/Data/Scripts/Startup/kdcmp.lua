@@ -3000,6 +3000,87 @@ function KCD2MP_GhostNativeSync(id, ghost, want)
     end
 end
 
+
+-- ===== WO-121: movement and combat =====================================================
+-- The engine now animates the bodies KCDMP.dll writes (motion.cpp): gait from
+-- SetPseudoSpeed every frame, crouch/jump through the state expansion, the
+-- avatar's combat automation off and its combat mode, guard, attack zone and
+-- block held from the peer's stream. Lua keeps only the toggles, the build
+-- marker and one duty: its own layer-0 clip loop must not sit on top of the
+-- engine's Mannequin (observed WO-121 session 1: the avatar showed no guard
+-- pose at all until the loop was parked). The policy is native; nothing here
+-- runs per tick beyond one boolean check in the two existing loops.
+KCD2MP.w121 = { avatarGait = true, npcGait = true, avatarMoves = true, avatarCombat = true, npcRows = true,
+                attribution = true, friendlyFire = true, ffSession = true, ffFrom = "build-default",
+                aliveAt = nil, gaitArmed = false, combatArmed = false, parked = 0, unparked = 0 }
+
+function KCD2MP_Wo121CfgEmit()
+    local w = KCD2MP.w121
+    local function o(b) return b and "on" or "off" end
+    KCD2MP_EmitEvent("wo121_cfg", string.format("avatar_gait=%s npc_gait=%s avatar_moves=%s avatar_combat=%s npc_rows=%s attribution=%s ff=%s",
+        o(w.avatarGait), o(w.npcGait), o(w.avatarMoves), o(w.avatarCombat), o(w.npcRows), o(w.attribution), o(w.friendlyFire)))
+end
+
+-- One setter for every WO-121 toggle: mp_<name> on|off, bare = report.
+function KCD2MP_Wo121Set(key, arg)
+    local w = KCD2MP.w121
+    if w[key] == nil then return false end
+    local s = tostring(arg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "on" or s == "1" or s == "true" then w[key] = true
+    elseif s == "off" or s == "0" or s == "false" then w[key] = false
+    elseif s ~= "" and s ~= "%line" and s ~= "nil" then
+        mp_log("WO-121 " .. key .. ": expected on|off, got '" .. tostring(arg) .. "'")
+        return false
+    end
+    if key == "friendlyFire" then
+        mp_log(string.format("MP-FF mp_friendly_fire=%s (this machine's pref; the HOST's decides for the session, now %s from %s)",
+            w.friendlyFire and "on" or "off", w.ffSession and "on" or "off", tostring(w.ffFrom)))
+    else
+        mp_log(string.format("WO121-TOGGLE %s=%s native_gait=%s native_combat=%s", key, w[key] and "on" or "off",
+            w.gaitArmed and "armed" or "off", w.combatArmed and "armed" or "off"))
+    end
+    KCD2MP_Wo121CfgEmit()
+    return true
+end
+
+-- The agent's 1 Hz heartbeat: the DLL's pieces and the session's friendly fire.
+function KCD2MP_Wo121Alive(gait, combat, ff)
+    local w = KCD2MP.w121
+    local wasG, wasC = w.gaitArmed, w.combatArmed
+    w.aliveAt = os.clock()
+    w.gaitArmed, w.combatArmed = gait == true, combat == true
+    if ff ~= nil then w.ffSession = ff == true end
+    if wasG ~= w.gaitArmed or wasC ~= w.combatArmed then
+        mp_log(string.format("WO121-NATIVE gait=%s combat=%s (heartbeat) -- Lua clip loops %s on native-written bodies",
+            w.gaitArmed and "armed" or "off", w.combatArmed and "armed" or "off", w.gaitArmed and "parked" or "run"))
+    end
+end
+
+-- The session's friendly-fire value changed (the host's lever).
+function KCD2MP_FriendlyFireSession(on, from)
+    local w = KCD2MP.w121
+    w.ffSession, w.ffFrom = on == true, tostring(from or "?")
+    mp_log(string.format("MP-FF session friendly_fire=%s from=%s", w.ffSession and "on" or "off", w.ffFrom))
+    pcall(KCD2MP_ShowInteractionMsg, "Friendly fire " .. (w.ffSession and "ON" or "OFF") .. " (set by the host)")
+end
+
+-- Does the engine animate this native-written body (so Lua must not)?
+function KCD2MP_Wo121GaitNative(isAvatar)
+    local w = KCD2MP.w121
+    if not (w.aliveAt and (os.clock() - w.aliveAt) < 3.0 and w.gaitArmed) then return false end
+    if isAvatar then return w.avatarGait end
+    return w.npcGait
+end
+
+-- Stop the Lua loop's clip once, so the engine's Mannequin shows through.
+function KCD2MP_Wo121Park(ent, st, who)
+    st.w121Parked = true
+    st.animLoopName = nil
+    local ok = pcall(function() ent:StopAnimation(0, 0) end)
+    KCD2MP.w121.parked = KCD2MP.w121.parked + 1
+    mp_log(string.format("WO121-GAIT body=%s lua_clip=parked stop=%s -- the engine's own gait/stance drives it", tostring(who), tostring(ok)))
+end
+
 function KCD2MP_NpcNativeCfgEmit()
     KCD2MP_EmitEvent("npc_native_cfg", (KCD2MP.npcNativeWrite and "on" or "off") .. " " .. (KCD2MP.npcSenderClock and "on" or "off"))
 end
@@ -4091,12 +4172,20 @@ KCD2MP._presets = {
     -- WO-118: `npc_native_write` and `npc_detach` -- clean = the per-frame native
     -- write and the activity detach (the new build), legacy = the 50 ms Lua
     -- write with no detach (the 0.27.0 behaviour).
+    -- WO-121: the seven movement/combat toggles -- clean = the engine's own gait,
+    -- crouch/jump, combat stance and rows, attributed NPC hits and friendly fire
+    -- (the new build), legacy = the Lua clip loops, swing cues and no friendly
+    -- fire (the 0.28.x behaviour). friendly_fire only counts on the host.
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true,
-               respawn = true,  npc_native_write = true,  npc_detach = true },
+               respawn = true,  npc_native_write = true,  npc_detach = true,
+               avatar_gait = true, npc_gait = true, avatar_moves = true, avatar_combat = true, npc_rows = true,
+               npc_attribution = true, friendly_fire = true },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false,
-               respawn = false, npc_native_write = false, npc_detach = false },
+               respawn = false, npc_native_write = false, npc_detach = false,
+               avatar_gait = false, npc_gait = false, avatar_moves = false, avatar_combat = false, npc_rows = false,
+               npc_attribution = false, friendly_fire = false },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -4131,6 +4220,14 @@ function KCD2MP_ApplyPreset(which)
     set("respawn",         KCD2MP.respawnEnabled,        P.respawn,         function() KCD2MP_SetRespawn(P.respawn and "on" or "off") end)                 -- WO-113
     set("npc_native_write", KCD2MP.npcNativeWrite,       P.npc_native_write, function() KCD2MP_SetNpcNativeWrite(P.npc_native_write and "on" or "off") end)  -- WO-118
     set("npc_detach",      KCD2MP.npcDetach,             P.npc_detach,      function() KCD2MP_SetNpcDetach(P.npc_detach and "on" or "off") end)            -- WO-118
+    local w121 = KCD2MP.w121   -- WO-121
+    set("avatar_gait",     w121.avatarGait,              P.avatar_gait,     function() KCD2MP_Wo121Set("avatarGait", P.avatar_gait and "on" or "off") end)
+    set("npc_gait",        w121.npcGait,                 P.npc_gait,        function() KCD2MP_Wo121Set("npcGait", P.npc_gait and "on" or "off") end)
+    set("avatar_moves",    w121.avatarMoves,             P.avatar_moves,    function() KCD2MP_Wo121Set("avatarMoves", P.avatar_moves and "on" or "off") end)
+    set("avatar_combat",   w121.avatarCombat,            P.avatar_combat,   function() KCD2MP_Wo121Set("avatarCombat", P.avatar_combat and "on" or "off") end)
+    set("npc_rows",        w121.npcRows,                 P.npc_rows,        function() KCD2MP_Wo121Set("npcRows", P.npc_rows and "on" or "off") end)
+    set("npc_attribution", w121.attribution,             P.npc_attribution, function() KCD2MP_Wo121Set("attribution", P.npc_attribution and "on" or "off") end)
+    set("friendly_fire",   w121.friendlyFire,            P.friendly_fire,   function() KCD2MP_Wo121Set("friendlyFire", P.friendly_fire and "on" or "off") end)
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -6702,6 +6799,17 @@ function KCD2MP_NpcPuppetTick(arg, gen)
                     if cIdle then tag, anim = "combatidle", cIdle end
                 end
             end
+            -- WO-121: a native-written copy gets the engine's own gait
+            -- (SetPseudoSpeed every frame from its rendered speed); the clip
+            -- below would sit on top of it. Horses stay on their clips.
+            if p.nativeOwned and tostring(e.class or "") ~= "Horse" and KCD2MP_Wo121GaitNative(false) then
+                if not p.w121Parked then KCD2MP_Wo121Park(e, p, name) end
+                return
+            elseif p.w121Parked then
+                p.w121Parked = nil
+                p.animTag = nil
+                KCD2MP.w121.unparked = KCD2MP.w121.unparked + 1
+            end
             -- WO-40 Phase 5: restart the looped locomotion only on a tag
             -- change, with a 1 s keep-alive refresh -- not every 50 ms tick.
             -- Restarting a loop 20x/sec is pure animation-system churn (the
@@ -8807,6 +8915,19 @@ function KCD2MP_UpdateAnimation(id, ghost, pumped)
         -- playing -- otherwise a ghost holds its swing pose until the next
         -- keep-alive. Under the old per-tick restart this could not happen.
         istate.animLoopName = nil
+    end
+
+    -- WO-121: a native-written avatar gets the engine's own gait, crouch, jump
+    -- and combat stance (KCDMP.dll motion.cpp); this clip loop would sit on
+    -- top of all four. Parked while the DLL says the gait piece is armed.
+    if istate.nativeOwned and KCD2MP_Wo121GaitNative(true) then
+        if not istate.w121Parked then KCD2MP_Wo121Park(ghost.entity, istate, id) end
+        return
+    elseif istate.w121Parked then
+        istate.w121Parked = nil
+        istate.animLoopName = nil
+        KCD2MP.w121.unparked = KCD2MP.w121.unparked + 1
+        mp_log(string.format("WO121-GAIT body=%s lua_clip=back (native gait off or unavailable)", tostring(id)))
     end
 
     local speed = istate.smoothedSpeed or 0
@@ -12325,6 +12446,25 @@ local ok, err = pcall(function()
         KCD2MP.npcNativeWrite and "on" or "off", KCD2MP.npcDetach and "on" or "off",
         TUNE.NPC_NATIVE_STALE_S, TUNE.NPC_NATIVE_RETRY_S))
     KCD2MP_NpcNativeCfgEmit()   -- the agent and the DLL mirror this Lua state's defaults (a restarted game resets them)
+    -- WO-121 build marker: every new default, friendly fire's with its reason.
+    -- The DLL logs WO121-MOTION / WO121-HITS (armed, or the anchor that failed)
+    -- in kcdmp-native.log.
+    do
+        local w = KCD2MP.w121
+        local function o(b) return b and "on" or "off" end
+        mp_log(string.format("WO121-BUILD avatar_gait=%s npc_gait=%s avatar_moves=%s avatar_combat=%s npc_rows=%s npc_attribution=%s"
+            .. " friendly_fire=%s protocol=v8 -- %s; mp_preset_legacy = the 0.28.x look (all seven off)",
+            o(w.avatarGait), o(w.npcGait), o(w.avatarMoves), o(w.avatarCombat), o(w.npcRows), o(w.attribution), o(w.friendlyFire),
+            KCD2MP.w121FfReason or "friendly fire default ON: the Phase 6 gate passed (docs/WO-121-findings.md s6); the host's mp_friendly_fire decides for the session"))
+        KCD2MP_Wo121CfgEmit()
+    end
+    System.AddCCommand("mp_avatar_gait",         'KCD2MP_Wo121Set("avatarGait", %line)',      "WO-121: a peer's avatar walks/runs on the engine's own gait (SetPseudoSpeed every frame from their speed; default on); off = the Lua clip loop: mp_avatar_gait on|off")
+    System.AddCCommand("mp_npc_gait",            'KCD2MP_Wo121Set("npcGait", %line)',         "WO-121: NPC copies walk/run on the engine's own gait (SetPseudoSpeed from the rendered speed; default on); off = the Lua clip loop: mp_npc_gait on|off")
+    System.AddCCommand("mp_avatar_moves",        'KCD2MP_Wo121Set("avatarMoves", %line)',     "WO-121: a peer's avatar crouches and jumps through the engine (SetCrouch / RequestJump; default on): mp_avatar_moves on|off")
+    System.AddCCommand("mp_avatar_combat",       'KCD2MP_Wo121Set("avatarCombat", %line)',    "WO-121: a peer's avatar holds their combat stance, guard, block and plays their real attack rows (its own combat automation off; default on); off = the 0.28.x swing cues: mp_avatar_combat on|off")
+    System.AddCCommand("mp_npc_rows",            'KCD2MP_Wo121Set("npcRows", %line)',         "WO-121: NPC copies swing the owner's committed attack row (default on); off = the WO-49 swing cue: mp_npc_rows on|off")
+    System.AddCCommand("mp_npc_attribution",     'KCD2MP_Wo121Set("attribution", %line)',     "WO-121: a peer's hit on an NPC names their avatar as the attacker on the NPC's owner (damage + combat history + skirmish + hit reaction; default on): mp_npc_attribution on|off")
+    System.AddCCommand("mp_friendly_fire",       'KCD2MP_Wo121Set("friendlyFire", %line)',    "WO-121: players can hurt each other (HOST only -- the host's value is the session's): mp_friendly_fire on|off; bare = report")
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")

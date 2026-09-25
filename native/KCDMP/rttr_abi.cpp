@@ -2495,4 +2495,49 @@ int for_each_soul(bool (*visit)(void* soul, void* ctx), void* ctx) {
     return visited;
 }
 
+
+// ---- WO-121 -----------------------------------------------------------------
+
+void* combat_soul_of(void* soul) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul)) return nullptr;
+    void* combat = read_object_property(*api, "wh::rpgmodule::Soul", soul, "CombatSoul", g_layout);
+    return plausible_pointer(combat) ? combat : nullptr;
+}
+
+bool apply_damage_soul(void* soul, float stamina, float health, void* attacker) {
+    const Api* api = cached_api();
+    if (!api || !plausible_pointer(soul)) return false;
+    void* combat = read_object_property(*api, "wh::rpgmodule::Soul", soul, "CombatSoul", g_layout);
+    if (!plausible_pointer(combat)) return false;
+    Type tCs{}, tFloat{}, tSoulPtr{};
+    if (!type_named(*api, "wh::rpgmodule::CombatSoul", &tCs)) return false;
+    if (!type_named(*api, "float", &tFloat)) return false;
+    Method m{};
+    if (!method_named(*api, tCs, "TakeDamage", &m)) return false;
+    // TakeDamage(float Stamina, float Health, I_Soul* Attacker, ...): the
+    // attacker is argument THREE (see apply_damage). With none, two args.
+    float st = stamina, hp = health;
+    void* who = attacker;
+    alignas(8) unsigned char a0[32], a1[32], a2[32];
+    build_argument(a0, &st, tFloat);
+    build_argument(a1, &hp, tFloat);
+    InstanceBuf inst{};
+    inst.build(g_layout, tCs, combat);
+    Variant res{};
+    bool invoked;
+    if (who) {
+        if (!type_named(*api, "wh::rpgmodule::I_Soul*", &tSoulPtr)) return false;
+        build_argument(a2, &who, tSoulPtr);
+        invoked = call_invoke3(api->invoke3, &m, &res, inst.bytes, a0, a1, a2);
+    } else {
+        invoked = call_invoke2(api->invoke2, &m, &res, inst.bytes, a0, a1);
+    }
+    if (!invoked) return false;
+    bool valid = false;
+    call_variant_valid(api->variant_is_valid, &res, &valid);
+    call_variant_dtor(api->variant_dtor, &res);
+    return valid;
+}
+
 } // namespace kcdmp::rttr

@@ -92,6 +92,12 @@ const uint8_t* function_find_sequence(HMODULE mod, const void* fn,
 // [rip+disp32] operand (e.g. 48 8B 05), the absolute address the operand names.
 const void* rip_target(const uint8_t* insn, size_t dispOffset = 3, size_t insnLen = 7);
 
+// WO-121: the distinct direct call / tail-jump targets of a function that are
+// primary function starts in the same module (up to `max`; returns the count).
+// A byte scan: a stray E8 inside another instruction can add a spurious entry,
+// so callers intersect two anchored functions' sets or check the target's body.
+int function_call_targets(HMODULE mod, const void* fn, const uint8_t** out, int max);
+
 // module+0xRVA for logs.
 void describe(const void* p, char* out, size_t n);
 

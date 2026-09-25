@@ -25,6 +25,8 @@
     npc_drive.cpp
     npc_trace.cpp
     inline_hook.cpp
+    motion.cpp
+    hits.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

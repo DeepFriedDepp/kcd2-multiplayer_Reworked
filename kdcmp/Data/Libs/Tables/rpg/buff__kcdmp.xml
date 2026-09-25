@@ -12,5 +12,11 @@
 		     guard for this one while it holds the player in the game's own knockout, then swaps
 		     back. NOT persistent, like the death guard. -->
 		<buff buff_class_id="15" buff_exclusivity_id="1" buff_id="4b43444d-7113-4d67-b1a5-9e2f6d8c0a14" buff_lifetime_id="0" buff_name="kcdmp_knockout_guard" buff_params="imm=1" duration="-1" icon_id="0" implementation="Cpp:Constant" is_persistent="false" />
+		<!-- WO-121: the avatar guard. A peer's avatar in THIS world must never die or be knocked out
+		     here, whatever hits it: its owner's own machine decides that (friendly fire forwards the hit,
+		     NPC hits reach the owner as WO-28 PlayerHit). imm=1 floors health, upr=1 blocks knockout.
+		     NOT persistent (avatars are never saved anyway). Applied natively by KCDMP.dll (motion.cpp)
+		     to every native-written avatar, re-checked every 5 s. -->
+		<buff buff_class_id="15" buff_exclusivity_id="1" buff_id="4b43444d-7121-4d67-b1a5-9e2f6d8c0a15" buff_lifetime_id="0" buff_name="kcdmp_avatar_guard" buff_params="imm=1,upr=1" duration="-1" icon_id="0" implementation="Cpp:Constant" is_persistent="false" />
 	</buffs>
 </database>

@@ -1388,6 +1388,7 @@ void resolve_stopfight() {
 } // namespace
 
 bool stop_fight_available() { return g_stopFight != nullptr; }
+const void* stop_fight_fn() { return g_stopFight; }
 
 bool stop_fight(void* playerSoul) {
     if (!g_stopFight || !playerSoul) return false;

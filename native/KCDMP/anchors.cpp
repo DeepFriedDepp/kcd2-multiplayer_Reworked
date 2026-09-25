@@ -296,6 +296,39 @@ const uint8_t* guarded_function_by_string(HMODULE mod, const Range& text, const 
     } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
+// WO-121: every distinct E8/E9 rel32 target in the function (all fragments)
+// that lands on a primary function start of the same module.
+int guarded_call_targets(HMODULE mod, const void* fn, const uint8_t** out, int max) {
+    __try {
+        Pdata p{};
+        if (!pdata(mod, &p)) return 0;
+        auto* base = reinterpret_cast<const uint8_t*>(mod);
+        const auto rva = static_cast<uint32_t>(static_cast<const uint8_t*>(fn) - base);
+        const RUNTIME_FUNCTION* e = entry_for(p, rva);
+        if (!e) return 0;
+        const RUNTIME_FUNCTION* root = root_of(mod, e);
+        if (!root) return 0;
+        int n = 0;
+        for_each_fragment(mod, p, root, [&](const Range& fr) {
+            for (const uint8_t* q = fr.begin; q + 5 <= fr.end; ++q) {
+                if (q[0] != 0xE8 && q[0] != 0xE9) continue;
+                int32_t disp;
+                std::memcpy(&disp, q + 1, 4);
+                const uint8_t* t = q + 5 + disp;
+                if (t < base) continue;
+                const uint32_t trva = static_cast<uint32_t>(t - base);
+                const RUNTIME_FUNCTION* te = entry_for(p, trva);
+                if (!te || te->BeginAddress != trva) continue;
+                bool seen = false;
+                for (int k = 0; k < n; ++k) if (out[k] == t) { seen = true; break; }
+                if (!seen && n < max) out[n++] = t;
+            }
+            return false;
+        });
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 } // namespace
 
 bool section(HMODULE mod, const char* name, Range* out) {
@@ -368,6 +401,11 @@ const uint8_t* function_find_sequence(HMODULE mod, const void* fn,
     const uint8_t* found = nullptr;
     ScanArgs s{ Scan::Find, nullptr, first, n1, second, n2, window, &found };
     return guarded_scan_function(mod, fn, s) ? found : nullptr;
+}
+
+int function_call_targets(HMODULE mod, const void* fn, const uint8_t** out, int max) {
+    if (!fn || !out || max <= 0) return 0;
+    return guarded_call_targets(mod, fn, out, max);
 }
 
 const void* rip_target(const uint8_t* insn, size_t dispOffset, size_t insnLen) {

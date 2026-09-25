@@ -246,6 +246,17 @@ constexpr uint8_t kNpcStatusReply     = 0x89;   // WO-118
 constexpr uint8_t kNpcDropped         = 0x94;   // WO-118, unsolicited
 constexpr uint8_t kNpcTraceDone       = 0x95;   // WO-118, unsolicited
 constexpr int     kNpcSamplesMaxLen   = 4096;
+// ---- WO-121: movement and combat (motion.h, hits.h) ----
+constexpr uint8_t kMotionConfig       = 0x16;   // [avatarGait][npcGait][avatarMoves][avatarCombat][npcRows]
+constexpr uint8_t kAvatarEvent        = 0x17;   // [kind:1][eid:4]
+constexpr uint8_t kHitsConfig         = 0x18;   // [ff][attribution][pvpHook]
+constexpr uint8_t kAttributedDamage   = 0x19;   // [guid:16][st:4f][hp:4f][flags][attackerEid:4][nameLen][name] -> 0x8B
+constexpr uint8_t kApplyPvpHit        = 0x1A;   // [st:4f][hp:4f][flags][attackerGhost]
+constexpr uint8_t kWo121Status        = 0x1B;   // -> 0x8A [ok][seq][text]
+constexpr uint8_t kWo121StatusReply   = 0x8A;
+constexpr uint8_t kAttributedReply    = 0x8B;   // [ok][seq][steps][attackerWuid:8][victimWuid:8]
+constexpr uint8_t kLocalAction        = 0x96;   // unsolicited: [kind][phase][ic][zone][type][flags][guid:16][eid:4][nameLen][name]
+constexpr uint8_t kPvpHitOut          = 0x97;   // unsolicited: [victimEid:4][st:4f][hp:4f][flags][material]
 
 constexpr int kGuidLen                  = 16;
 constexpr int kApplyDamageLen           = kGuidLen + 4 + 4 + 1;
@@ -259,6 +270,7 @@ constexpr int kConceptProbeMaxLen       = 480;    // matches concept_read.cpp's 
 constexpr int kReadBodyStateLen         = 4;      // entityId LE; 0 means "the player"
 constexpr int kReadLocalStateLen        = 4;      // WO-102: entityId LE, must be 0 (the player)
 constexpr int kLocalStateLen            = 40;     // WO-102: the fixed 0x86 reply body
+constexpr int kLocalStateLenV8          = 40 + 1 + 12;   // WO-121: + [haveState2][state2:12]
 constexpr int kScanNpcsAnchorMax        = 8;       // WO-102.5: self + up to 7 peer ghosts
 constexpr int kScanNpcsMinLen           = 1 + 4 + 1 * 12;               // anchorCount + radius + >=1 anchor
 constexpr int kScanNpcsMaxLen           = 1 + 4 + kScanNpcsAnchorMax * 12;

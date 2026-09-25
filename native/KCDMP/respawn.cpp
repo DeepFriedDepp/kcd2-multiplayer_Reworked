@@ -315,6 +315,13 @@ bool visit_soul(void* soul, void* ctx) {
     return false;
 }
 
+double now_s() { LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f); return double(q.QuadPart) / double(f.QuadPart); }
+// WO-121: the last friendly-fire hit on the player (main thread).
+double   g_pvpAt = -1e9;
+bool     g_pvpUnarmed = false;
+uint8_t  g_pvpFrom = 0;
+constexpr double kPvpRecentS = 3.0;
+
 Kind classify(void* soul, const float pos[3]) {
     Scan s{};
     s.player = soul;
@@ -330,6 +337,17 @@ Kind classify(void* soul, const float pos[3]) {
 
     const bool knockdown = s.recent > 0 && s.armedHostiles == 0 && ra && !playerArmed &&
                            rb && !bleeding && rs && !starving && !poisoned;
+    // WO-121: a partner's fist floored him. The PvP hit carries no attacker
+    // (so no combat history), so the recent-attacker clause can never hold for
+    // it; the unarmed flag stands in for it. Bleeding/poison/starvation still
+    // mean a real death.
+    const double sincePvp = now_s() - g_pvpAt;
+    const bool pvpFist = g_pvpUnarmed && sincePvp >= 0 && sincePvp <= kPvpRecentS && rb && !bleeding && rs && !starving && !poisoned;
+    if (pvpFist && !knockdown) {
+        logf("MP-RESPAWN classify -> knockdown: a friendly-fire FIST hit from ghost %u %.1f s ago (WO-121; no attacker is attached to PvP hits)",
+             g_pvpFrom, sincePvp);
+        return Kind::Knockdown;
+    }
     logf("MP-RESPAWN classify -> %s: recent_attackers=%d hostiles=%d armed_hostiles=%d player_armed=%s "
          "bleeding=%s starving=%s poison=%s unreadable=%d (rule: knockdown only when a recent attacker exists, "
          "no hostile within %.0f m and not the player has a weapon in hand, and no bleeding/poison/starvation)",
@@ -932,6 +950,12 @@ void tick() {
     float pos[3]{};
     actions::player_position(pos);
     start(classify(soul, pos), -1);
+}
+
+void note_pvp_hit(bool unarmed, uint8_t attackerGhost) {
+    g_pvpAt = now_s();
+    g_pvpUnarmed = unarmed;
+    g_pvpFrom = attackerGhost;
 }
 
 } // namespace kcdmp::respawn

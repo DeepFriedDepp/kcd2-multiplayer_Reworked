@@ -49,6 +49,7 @@ public partial class GameBridge
     private readonly ConcurrentDictionary<byte, uint> _ghostLastSenderMs = new();
     private readonly ConcurrentDictionary<byte, DateTime> _peerV8AttackAt = new();
     private readonly ConcurrentDictionary<byte, DateTime> _peerState2At = new();
+    private readonly ConcurrentDictionary<byte, BodyState2> _peerLastState2 = new();
     private readonly ConcurrentDictionary<string, DateTime> _npcRowAt = new();
 
     // WO-121: authored combat rows by GUID, read from this install's Tables.pak.
@@ -350,7 +351,12 @@ public partial class GameBridge
             case ActionKind.Jump:
             {
                 if (!_avatarMoves) { Console.WriteLine($"MP-ACTION section=inbound ghost={a.SourceGhostId} kind=Jump dispatch=dropped-toggle-off"); return true; }
-                if (!_ghostEntityIds.TryGetValue(a.SourceGhostId.ToString(), out uint jeid)) { _w121EvNoBody++; return true; }
+                if (!_ghostEntityIds.TryGetValue(a.SourceGhostId.ToString(), out uint jeid))
+                {
+                    _w121EvNoBody++;
+                    Console.WriteLine($"MP-ACTION section=inbound ghost={a.SourceGhostId} kind=Jump dispatch=dropped-no-entity");
+                    return true;
+                }
                 var r = await _combat.AvatarEventAsync(1, jeid, ct);
                 _w121Jumps++;
                 Console.WriteLine($"MP-ACTION section=inbound ghost={a.SourceGhostId} kind=Jump seq={a.Seq} dispatch=native-jump result={r.ReasonTag}");
@@ -363,7 +369,12 @@ public partial class GameBridge
                 _npcRowAt[ne.Name] = DateTime.UtcNow;
                 if (!_npcRows) return true;
                 if (catalog is null || !catalog.TryGet(ne.Row, out var row)) { _w121EvNoRow++; Console.WriteLine($"MP-ACTION section=inbound kind=NpcAttack npc={ne.Name} row={ne.Row} dispatch=dropped-unknown-row"); return true; }
-                if (!_npcEntityIds.TryGetValue(ne.Name, out uint neid)) { _w121EvNoBody++; return true; }
+                if (!_npcEntityIds.TryGetValue(ne.Name, out uint neid))
+                {
+                    _w121EvNoBody++;
+                    Console.WriteLine($"MP-ACTION section=inbound kind=NpcAttack npc={ne.Name} dispatch=dropped-no-entity (not a puppet here)");
+                    return true;
+                }
                 _ = _combat.NpcHoldAsync(ne.Name, 900, ct);
                 var r = await _combat.GhostSwingForResultAsync(neid, row.Spec, ct);
                 Console.WriteLine($"MP-ACTION section=inbound kind=NpcAttack npc={ne.Name} row={ne.Row} spec=\"{row.Spec}\" dispatch=native-row result={r.ReasonTag}");
@@ -389,7 +400,12 @@ public partial class GameBridge
             return;
         }
         string gid = a.SourceGhostId.ToString();
-        if (!_ghostEntityIds.TryGetValue(gid, out _)) { _w121EvNoBody++; return; }
+        if (!_ghostEntityIds.TryGetValue(gid, out _))
+        {
+            _w121EvNoBody++;
+            Console.WriteLine($"MP-ACTION section=inbound ghost={gid} kind={a.Kind} {detail} dispatch=dropped-no-entity (no entity id for the avatar yet)");
+            return;
+        }
         long rsid = ++_stats.SwingsRecv;
         _w121Swings++;
         Console.WriteLine($"MP-SWING hop=recv rsid={rsid} ghost={gid} kind={a.Kind} seq={a.Seq} table={row.Table} spec=\"{row.Spec}\" {detail}");
@@ -449,7 +465,7 @@ public partial class GameBridge
     {
         if (!_npcAttribution || !_isDamageAuthority || (flags & Protocol.NpcDamageFlagAttributed) == 0) return null;
         if (!_ghostEntityIds.TryGetValue(source.ToString(), out uint avatarEid)) return null;
-        var r = await _combat.AttributedDamageAsync(localGuid, stamina, health, flags, avatarEid, ct);
+        var r = await _combat.AttributedDamageAsync(localGuid, stamina, health, flags, avatarEid, npcName, ct);
         _w121AttribIn++;
         string steps = $"damage={((r.Steps & 1) != 0 ? 1 : 0)} history={((r.Steps & 2) != 0 ? 1 : 0)} skirmish={((r.Steps & 4) != 0 ? 1 : 0)}";
         bool brain = false;

@@ -11,6 +11,8 @@
 #include "respawn.h"
 #include "respawn_actions.h"
 #include "npc_drive.h"
+#include "motion.h"
+#include "hits.h"
 #include "npc_trace.h"
 #include "log.h"
 
@@ -120,12 +122,17 @@ void send_local_hit(const unsigned char guid[16], float health_delta, bool died)
     // the agent could never tell a killing blow from a chip and no client ever
     // put an NPC death on the wire. Appended as a trailing byte: an agent that
     // predates it reads the first 24 bytes exactly as before.
-    unsigned char body[16 + 4 + 4 + 1];
+    // WO-121: byte 25 -- the local player landed this hit (the combat-hit
+    // chokepoint saw it within 1.5 s): the NPC's authority books the peer's
+    // avatar as the attacker. An older agent reads 25 bytes and stops.
+    unsigned char body[16 + 4 + 4 + 1 + 1];
     std::memcpy(body, guid, 16);
     const float stamina = 0.0f;
     std::memcpy(body + 16, &stamina, 4);
     std::memcpy(body + 20, &health_delta, 4);
     body[24] = died ? 1 : 0;
+    void* hitSoul = rttr::find_soul_by_guid(guid);
+    body[25] = hitSoul && hits::hit_by_player(hitSoul, 1.5) ? 1 : 0;
     EnterCriticalSection(&g_write_lock);
     const bool sent = send_frame(g_pipe, kLocalHit, body, sizeof(body));
     const DWORD err = sent ? 0 : GetLastError();
@@ -186,6 +193,31 @@ void send_npc_dropped(uint8_t reason, const char* name) {
     body[1] = static_cast<BYTE>(n);
     std::memcpy(body + 2, name, n);
     send_unsolicited(kNpcDropped, body, static_cast<uint16_t>(2 + n), "NpcDropped");
+}
+
+// WO-121: one committed action (main thread, motion::tick).
+void send_local_action(uint8_t kind, uint8_t phase, int8_t ic, int8_t zone, int8_t type, uint8_t flags,
+                       const uint8_t guid[16], uint32_t eid, const char* name) {
+    BYTE body[27 + 63]{};
+    const size_t n = name ? std::strlen(name) : 0;
+    if (n > 63) return;
+    body[0] = kind; body[1] = phase; body[2] = static_cast<BYTE>(ic); body[3] = static_cast<BYTE>(zone);
+    body[4] = static_cast<BYTE>(type); body[5] = flags;
+    std::memcpy(body + 6, guid, 16);
+    std::memcpy(body + 22, &eid, 4);
+    body[26] = static_cast<BYTE>(n);
+    if (n) std::memcpy(body + 27, name, n);
+    send_unsolicited(kLocalAction, body, static_cast<uint16_t>(27 + n), "LocalAction");
+}
+
+// WO-121: the local player's hit on a peer's avatar (main thread, hits::tick).
+void send_pvp_hit(uint32_t victimEid, float st, float hp, uint8_t flags, uint8_t material) {
+    BYTE body[14]{};
+    std::memcpy(body, &victimEid, 4);
+    std::memcpy(body + 4, &st, 4);
+    std::memcpy(body + 8, &hp, 4);
+    body[12] = flags; body[13] = material;
+    send_unsolicited(kPvpHitOut, body, sizeof(body), "PvpHit");
 }
 
 // WO-118 Phase 5: a trace CSV was written (main thread).
@@ -273,8 +305,9 @@ void send_body_state(HANDLE h, bool ok, uint8_t seq,
 
 // WO-102 Phase 1. Fixed 40 bytes whatever the verdict; seq at body[1] as
 // every reply frame carries it. The body block reuses 0x85's byte order.
-void send_local_state(HANDLE h, bool ok, uint8_t seq, const kcdmp::localstate::LocalState& s) {
-    BYTE body[kLocalStateLen]{};
+void send_local_state(HANDLE h, bool ok, uint8_t seq, const kcdmp::localstate::LocalState& s,
+                      const kcdmp::motion::State2* st2 = nullptr) {
+    BYTE body[kLocalStateLenV8]{};
     body[0] = ok ? 1 : 0;
     body[1] = seq;
     body[2] = s.refuse;
@@ -295,6 +328,9 @@ void send_local_state(HANDLE h, bool ok, uint8_t seq, const kcdmp::localstate::L
     body[37] = static_cast<BYTE>(b.reqAtkZone);
     body[38] = static_cast<BYTE>(b.atkType);
     body[39] = b.reqPrepared;
+    // WO-121: the v8 state block read in the same frame.
+    body[40] = st2 ? 1 : 0;
+    if (st2) std::memcpy(body + 41, st2, sizeof(*st2));
     EnterCriticalSection(&g_write_lock);
     send_frame(h, kLocalState, body, sizeof(body));
     LeaveCriticalSection(&g_write_lock);
@@ -631,14 +667,17 @@ void serve(HANDLE h) {
                     break;
                 }
                 // WO-110 R12: by-value capture; result in the shared state (see ReadBodyState).
-                struct LocalStateOut { bool ok = false; kcdmp::localstate::LocalState ls{}; };
+                struct LocalStateOut { bool ok = false; bool ok2 = false; kcdmp::localstate::LocalState ls{}; kcdmp::motion::State2 st2{}; };
                 LocalStateOut r{};
                 bool faulted = false;
                 const bool ran = run_sync_bounded<LocalStateOut>(
-                    [](LocalStateOut& out) { out.ok = kcdmp::localstate::read_local_state(&out.ls); },
+                    [](LocalStateOut& out) {
+                        out.ok = kcdmp::localstate::read_local_state(&out.ls);
+                        if (out.ok) out.ok2 = kcdmp::motion::read_local_state2(&out.st2, out.ls.rotZ);
+                    },
                     "ReadLocalState", r, &faulted);
-                if (faulted) { r.ls = kcdmp::localstate::LocalState{}; r.ls.refuse = kcdmp::localstate::kReadFaulted; }
-                send_local_state(h, ran && r.ok, seq, r.ls);
+                if (faulted) { r.ls = kcdmp::localstate::LocalState{}; r.ls.refuse = kcdmp::localstate::kReadFaulted; r.ok2 = false; }
+                send_local_state(h, ran && r.ok, seq, r.ls, r.ok2 ? &r.st2 : nullptr);
                 break;
             }
 
@@ -762,6 +801,65 @@ void serve(HANDLE h) {
             case kNpcStatus:
                 send_npc_status(h, seq);
                 break;
+            // ---- WO-121 -----------------------------------------------------
+            case kMotionConfig: {
+                const uint8_t r = kcdmp::motion::on_config(body, len);
+                send_result(h, r == 0, seq, r);
+                break;
+            }
+            case kAvatarEvent: {
+                const uint8_t r = kcdmp::motion::on_avatar_event(body, len);
+                send_result(h, r == 0, seq, r);
+                break;
+            }
+            case kHitsConfig: {
+                const uint8_t r = kcdmp::hits::on_config(body, len);
+                send_result(h, r == 0, seq, r);
+                break;
+            }
+            case kAttributedDamage: {
+                std::vector<uint8_t> copy(body, body + len);
+                kcdmp::hits::AttribResult ar{};
+                bool faulted = false;
+                const bool ran = run_sync_bounded<kcdmp::hits::AttribResult>(
+                    [copy](kcdmp::hits::AttribResult& out) { out = kcdmp::hits::apply_attributed(copy.data(), copy.size()); },
+                    "AttributedDamage", ar, &faulted);
+                if (!ran) { ar = kcdmp::hits::AttribResult{}; ar.reason = faulted ? 17 : 16; }
+                BYTE rb[3 + 16]{};
+                rb[0] = ar.ok ? 1 : 0; rb[1] = seq; rb[2] = ar.steps;
+                std::memcpy(rb + 3, &ar.attackerWuid, 8);
+                std::memcpy(rb + 11, &ar.victimWuid, 8);
+                EnterCriticalSection(&g_write_lock);
+                send_frame(h, kAttributedReply, rb, sizeof(rb));
+                LeaveCriticalSection(&g_write_lock);
+                logf("PIPE: AttributedDamage -> ok=%d steps=0x%X reason=%u", ar.ok ? 1 : 0, ar.steps, ar.reason);
+                break;
+            }
+            case kApplyPvpHit: {
+                std::vector<uint8_t> copy(body, body + len);
+                bool ok = false, faulted = false;
+                const bool ran = run_sync_bounded<bool>(
+                    [copy](bool& out) { out = kcdmp::hits::apply_pvp_hit(copy.data(), copy.size()); }, "ApplyPvpHit", ok, &faulted);
+                send_result(h, ran && ok, seq, faulted ? 17 : (ran ? 0 : 16));
+                break;
+            }
+            case kWo121Status: {
+                char text[900]{};
+                int n = kcdmp::motion::status_text(text, 520);
+                if (n < 0) n = 0;
+                if (n > 519) n = 519;
+                text[n++] = ' ';
+                int m = kcdmp::hits::status_text(text + n, static_cast<int>(sizeof(text)) - n);
+                if (m > 0) n += m;
+                if (n > static_cast<int>(sizeof(text)) - 1) n = static_cast<int>(sizeof(text)) - 1;
+                BYTE rb[2 + sizeof(text)]{};
+                rb[0] = 1; rb[1] = seq;
+                std::memcpy(rb + 2, text, n);
+                EnterCriticalSection(&g_write_lock);
+                send_frame(h, kWo121StatusReply, rb, static_cast<uint16_t>(2 + n));
+                LeaveCriticalSection(&g_write_lock);
+                break;
+            }
             case kNpcBind: {
                 npcdrive::BindRequest req{};
                 if (!npcdrive::parse_bind(body, len, &req)) {
@@ -914,6 +1012,10 @@ bool start() {
     ev.grave_add = &on_grave_add;
     ev.grave_remove = &on_grave_remove;
     respawn::set_events(ev);
+
+    // WO-121: committed actions and friendly-fire hits become unsolicited frames.
+    kcdmp::motion::set_action_callback(&send_local_action);
+    kcdmp::hits::set_pvp_callback(&send_pvp_hit);
 
     // WO-118: the native writer's and the trace's unsolicited frames.
     npcdrive::set_drop_callback(&send_npc_dropped);

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Threading.Channels;
@@ -394,14 +395,21 @@ public sealed class CombatPipe : IAsyncDisposable
     /// skirmish) and the two WUIDs (the agent sends the brain message).
     /// </summary>
     public async Task<(bool Ok, byte Steps, ulong AttackerWuid, ulong VictimWuid, byte Reason)> AttributedDamageAsync(
-        Guid soul, float stamina, float health, byte flags, uint attackerEid, CancellationToken ct = default)
+        Guid soul, float stamina, float health, byte flags, uint attackerEid, string victimName, CancellationToken ct = default)
     {
-        var p = new byte[GuidLen + 4 + 4 + 1 + 4];
+        // [guid:16][st:4f][hp:4f][flags][attackerEid:4][nameLen][name]: the
+        // DLL resolves the victim's entity by name for the history writer and
+        // the skirmish (a soul GUID alone does not give the entity).
+        byte[] name = Encoding.ASCII.GetBytes(victimName ?? "");
+        if (name.Length > 63) name = Array.Empty<byte>();
+        var p = new byte[GuidLen + 4 + 4 + 1 + 4 + 1 + name.Length];
         WriteSoulGuid(soul, p);
         BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(16), stamina);
         BinaryPrimitives.WriteSingleLittleEndian(p.AsSpan(20), health);
         p[24] = flags;
         BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(25), attackerEid);
+        p[29] = (byte)name.Length;
+        name.CopyTo(p, 30);
         var (body, fail) = await SendAndAwaitAsync(AttributedDamage, p, AttributedReply, ct);
         if (body is null) return (false, 0, 0, 0, (byte)fail);
         if (body.Length < 19) return (body.Length > 0 && body[0] == 1, 0, 0, 0, 254);
