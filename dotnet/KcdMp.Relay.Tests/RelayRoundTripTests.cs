@@ -819,4 +819,46 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.True(await a.NoneOfAsync(Protocol.GraveAddDown, Quiet));
         Assert.True(await a.NoneOfAsync(Protocol.PlayerRespawnedDown, Quiet));
     }
+
+    // ---- WO-122: WorldSaved 0x46 -> 0x47, from the host only --------------
+
+    private static byte[] WorldSavedBody(uint seq, byte kind, byte playline, ushort idx) =>
+        new WorldSaved(seq, 1_790_000_000_123L, kind, playline, idx, Enumerable.Range(0, 16).Select(i => (byte)(0xA0 + i)).ToArray()).Encode();
+
+    [Fact]
+    public async Task World_saved_crosses_from_the_host_intact()
+    {
+        // alpha connects first -> lowest ready id -> damage authority (the host).
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        await a.SendRawAsync(Frame(Protocol.WorldSavedUp, WorldSavedBody(7, Protocol.SaveKindAuto, 1, 42)));
+        var down = await b.ReadUntilAsync(Protocol.WorldSavedDown, Wait);
+        var ws = WorldSaved.TryDecode(down, down: true, out byte src);
+        Assert.NotNull(ws);
+        Assert.Equal(a.Id, src);
+        Assert.Equal(7u, ws!.Value.Seq);
+        Assert.Equal(1_790_000_000_123L, ws.Value.SenderUnixMs);
+        Assert.Equal("autosave042.whs", ws.Value.FileName);
+        Assert.Equal(1, ws.Value.Playline);
+        Assert.Equal(0xAF, ws.Value.Md5[15]);
+        Assert.True(await a.NoneOfAsync(Protocol.WorldSavedDown, Quiet));   // never echoed to the sender
+    }
+
+    [Fact]
+    public async Task World_saved_from_a_joiner_or_of_the_wrong_length_is_dropped()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+
+        await b.SendRawAsync(Frame(Protocol.WorldSavedUp, WorldSavedBody(1, Protocol.SaveKindQuick, 1, 3)));   // bravo is not the authority
+        await a.SendRawAsync(Frame(Protocol.WorldSavedUp, new byte[Protocol.WorldSavedUpPayloadLen - 1]));
+        Assert.True(await a.NoneOfAsync(Protocol.WorldSavedDown, Quiet));
+        Assert.True(await b.NoneOfAsync(Protocol.WorldSavedDown, Quiet));
+
+        // framing survives: the host's next valid save arrives
+        await a.SendRawAsync(Frame(Protocol.WorldSavedUp, WorldSavedBody(2, Protocol.SaveKindManual, 1, 9)));
+        var down = await b.ReadUntilAsync(Protocol.WorldSavedDown, Wait);
+        Assert.Equal("save009.whs", WorldSaved.TryDecode(down, true, out _)!.Value.FileName);
+    }
 }

@@ -1629,6 +1629,7 @@ public partial class GameBridge(ClientConfig config)
         _combat.OnNpcDropped = OnNativeNpcDroppedAsync;
         _combat.OnNpcTraceDone = OnNativeTraceDoneAsync;
         Wo121OnConnect(stream, cts.Token);   // WO-121: action frames, friendly fire, the toggles
+        Wo122OnConnect(stream, cts.Token);   // WO-122: owner death, the host-only save lock, world saves
         _ = _combat.NpcConfigAsync(_nativeWriteOn, _nativeSenderClock, cts.Token);
         _ = RespawnHeartbeatAsync(stream, announceGraves: true, cts.Token);
         // WO-99 Phase 0: learn who the local player is before the first hit.
@@ -1703,6 +1704,8 @@ public partial class GameBridge(ClientConfig config)
             tailForPause.PlayerTeleported += OnLocalTeleport;        // WO-94
             tailForPause.CutsceneEdge += OnLocalCutsceneEdge;        // WO-98 Phase 5
             tailForPause.ModInitDetected += OnModInitDetected;       // WO-98 Phase 7
+            tailForPause.GameplayStarted += Wo122OnGameplayStarted;  // WO-122
+            tailForPause.AutoSaveRefused += Wo122OnAutoSaveRefused;  // WO-122
 
             // A reconnect keeps the tail (and its last marker) alive, so seed
             // from it rather than waiting for the next checkpoint -- at a
@@ -2085,6 +2088,8 @@ public partial class GameBridge(ClientConfig config)
                 tailForPause2.PlayerTeleported -= OnLocalTeleport;      // WO-94
                 tailForPause2.CutsceneEdge -= OnLocalCutsceneEdge;      // WO-98 Phase 5
                 tailForPause2.ModInitDetected -= OnModInitDetected;     // WO-98 Phase 7
+                tailForPause2.GameplayStarted -= Wo122OnGameplayStarted; // WO-122
+                tailForPause2.AutoSaveRefused -= Wo122OnAutoSaveRefused; // WO-122
             }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
@@ -2099,6 +2104,7 @@ public partial class GameBridge(ClientConfig config)
             _sendItemDrop = null;
             _sendItemClaim = null;
             Wo121OnDisconnect();   // WO-121
+            await Wo122OnDisconnectAsync();   // WO-122: the joiner may save again
             _myOpenDrops.Clear();
             // WO-113: no relay, no session -- the DLL's guard stands down
             // (vanilla death), and every peer's mirror gravestone goes.
@@ -3411,10 +3417,14 @@ public partial class GameBridge(ClientConfig config)
     /// Gated by the mod's mp_npc_deathsync toggle on the Lua side: when it is
     /// off, KCD2MP_NpcRemoteDeath returns false and nothing is applied.
     /// </summary>
-    private async Task ApplyRemoteNpcDeathAsync(string npcName, Guid? knownLocalGuid, byte sourceGhostId, string via, CancellationToken ct)
+    /// WO-122: <paramref name="bypassDedupe"/> is the owner-death route -- the
+    /// mod has just READ this world's copy alive while the owner streams it
+    /// dead (typically right after a load brought it back), so a death applied
+    /// here seconds ago says nothing about now. The mod throttles that route.
+    private async Task ApplyRemoteNpcDeathAsync(string npcName, Guid? knownLocalGuid, byte sourceGhostId, string via, CancellationToken ct, bool bypassDedupe = false)
     {
         var now = DateTime.UtcNow;
-        if (_npcDeathAppliedUtc.TryGetValue(npcName, out var lastUtc) && now - lastUtc < NpcDeathDedupeWindow)
+        if (!bypassDedupe && _npcDeathAppliedUtc.TryGetValue(npcName, out var lastUtc) && now - lastUtc < NpcDeathDedupeWindow)
         {
             Console.WriteLine($"[npcdeath] in: '{npcName}' via {via} from ghost {sourceGhostId} -- already applied {(now - lastUtc).TotalSeconds:F0}s ago, ignoring");
             return;
@@ -4382,6 +4392,12 @@ public partial class GameBridge(ClientConfig config)
                         Console.WriteLine(FormattableString.Invariant(
                             $"MP-ACTION section=inbound reject={reject}"));
                     }
+                }
+                else if (type == Protocol.WorldSavedDown && payloadLen == Protocol.WorldSavedDownPayloadLen)
+                {
+                    // WO-122 Phase 3: the host wrote a world save. Logged here; the
+                    // Henry-snapshot WO pairs the joiner's snapshot with it.
+                    await OnWorldSavedInAsync(payload.AsSpan(0, payloadLen).ToArray());
                 }
                 else if (type == Protocol.PlayerHitV8Down)
                 {
@@ -5380,7 +5396,12 @@ public partial class GameBridge(ClientConfig config)
             case "npc_track_max":
             case "wo102_toggle":
             case "wo121_cfg":        // WO-121
+            case "wo122_cfg":        // WO-122
                 HandleStateMirrorEvent(name, arg);
+                return;
+            case "npc_owner_dead":   // WO-122 Phase 1: needs no interaction session
+            case "world_save_request":
+                Wo122OnEvent(name, arg);
                 return;
         }
 
@@ -6005,6 +6026,9 @@ public partial class GameBridge(ClientConfig config)
         {
             case "wo121_cfg":
                 Wo121OnCfgEvent(arg);
+                break;
+            case "wo122_cfg":
+                Wo122OnCfgEvent(arg);
                 break;
             case "respawn_toggle":
                 // WO-113: mp_respawn on|off. The policy is native; the DLL

@@ -3380,6 +3380,288 @@ function KCD2MP_SetNpcDeathSync(arg)
     mp_log("NPC-DEATH sync " .. (KCD2MP.npcDeathSync and "enabled" or "disabled (pre-WO-86 behaviour: corpse body-follow on either source, no announce, no apply)"))
     KCD2MP_EmitEvent("npc_deathsync", KCD2MP.npcDeathSync and "on" or "off")
 end
+
+-- ===== WO-122: shared-world foundations ==============================================
+-- docs/WO-122-findings.md. Phase 1 ships ON; everything else is dormant behind
+-- mp_shared_world (default off): with it off nothing below changes a save.
+--
+-- Phase 1, owner death (mp_owner_death, default on): the 0.26.5 peer test had
+-- the host kill an NPC, the joiner reload, and the joiner's copy come back
+-- alive while the host kept streaming it dead -- WO-86 applies only a
+-- WITNESSED alive->dead transition, and after a load there is none. Now a
+-- body the owner streams dead that reads ALIVE here asks the agent to kill it
+-- (npc_owner_dead, throttled: every 3 s for 5 tries, then every 20 s while
+-- the stream insists), and once it is dead the corpse is put where the stream
+-- has it. One-way: a stream saying alive never revives a local corpse (the
+-- WO-86 safeguard). The agent applies it on the joiner only.
+--
+-- Phase 2, the joiner's lock: Game.AddSaveLock is AddScriptSaveLock
+-- (WHGame 0x18C990, code-verified) -- a NAMED script lock, so it cannot
+-- collide with anything else (WO-113 shipped no save lock at all). A load
+-- wipes every lock (WO-112 K3); the agent re-asserts it on "Gameplay started"
+-- and every second, and every assert reads it back: a second add of the same
+-- name must be refused. Its UI text is the player-facing refusal.
+--
+-- Phase 3/4, the host's world saves: Game.SaveGameViaResting() is
+-- EnqueueAutoSave(1, "") (WHGame 0x18B7C0, code-verified): one queued
+-- autosave the engine writes when CanSave passes. The agent schedules it and
+-- watches the saves folder for the file.
+KCD2MP.w122 = {
+    sharedWorld = false, ownerDeath = true, autosaveMinutes = 5,
+    lockName = "kcdmp_host_only", lockText = "The host saves this world.",
+    lockHeld = false, lockAsserts = 0, lockWiped = 0, lockReadbackFails = 0, lockFailLoggedAt = -1e9, lockNoBind = false,
+    lockCheckS = 30.0, lockCheckedAt = -1e9, refusedN = 0, refusedToldAt = -1e9,
+    ownerReq = {}, ownerRetryS = 3.0, ownerSlowS = 20.0, ownerFastN = 5, ownerReqN = 0, ownerApplied = 0,
+    saveReqN = 0, hitchUntil = nil, hitchLast = nil, hitchMax = 0, hitchFrames = 0,
+}
+
+function KCD2MP_Wo122CfgEmit()
+    local w = KCD2MP.w122
+    KCD2MP_EmitEvent("wo122_cfg", string.format("shared_world=%s owner_death=%s autosave_min=%d",
+        w.sharedWorld and "on" or "off", w.ownerDeath and "on" or "off", w.autosaveMinutes))
+end
+
+-- on|off|bare. Returns true/false, nil for a bare call (report), "bad" otherwise.
+function KCD2MP_Wo122ParseBool(arg)
+    local s = tostring(arg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+    if s == "on" or s == "1" or s == "true" then return true end
+    if s == "off" or s == "0" or s == "false" then return false end
+    if s == "" or s == "%line" or s == "nil" then return nil end
+    return "bad"
+end
+
+function KCD2MP_SetSharedWorld(arg)
+    local w = KCD2MP.w122
+    local v = KCD2MP_Wo122ParseBool(arg)
+    if v == "bad" then mp_log("mp_shared_world: expected on|off, got '" .. tostring(arg) .. "'"); return false end
+    if v ~= nil then w.sharedWorld = v end
+    if not w.sharedWorld and w.lockHeld then KCD2MP_HostOnlyLock(false, "shared-world-off") end
+    mp_log(string.format("WO122-TOGGLE shared_world=%s -- %s", w.sharedWorld and "on" or "off",
+        w.sharedWorld and "joiner: the host-only save lock in a session; host: world saves every mp_autosave_minutes + WorldSaved"
+                       or "dormant: this machine saves exactly as before"))
+    KCD2MP_Wo122CfgEmit()
+    return true
+end
+
+function KCD2MP_SetOwnerDeath(arg)
+    local w = KCD2MP.w122
+    local v = KCD2MP_Wo122ParseBool(arg)
+    if v == "bad" then mp_log("mp_owner_death: expected on|off, got '" .. tostring(arg) .. "'"); return false end
+    if v ~= nil then w.ownerDeath = v end
+    if not w.ownerDeath then w.ownerReq = {} end
+    mp_log(string.format("WO122-TOGGLE owner_death=%s -- %s", w.ownerDeath and "on" or "off",
+        w.ownerDeath and "an NPC the owner streams dead dies here even if this copy is alive (after a load too)"
+                      or "WO-86 only: a witnessed alive->dead transition on the stream"))
+    KCD2MP_Wo122CfgEmit()
+    return true
+end
+
+function KCD2MP_SetAutosaveMinutes(arg)
+    local w = KCD2MP.w122
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local n = tonumber(s)
+    if s ~= "" and s ~= "%line" and s ~= "nil" then
+        if not n or n < 0 or n > 120 or n ~= math.floor(n) then
+            mp_log("mp_autosave_minutes: expected a whole number 0..120 (0 = no schedule), got '" .. tostring(arg) .. "'")
+            return false
+        end
+        w.autosaveMinutes = n
+    end
+    mp_log(string.format("WO122-TOGGLE autosave_minutes=%d -- the host's world save cadence (mp_shared_world on, host only; 0 = none)", w.autosaveMinutes))
+    KCD2MP_Wo122CfgEmit()
+    return true
+end
+
+-- Phase 1. Called by the puppet tick and the one-shot resync with this
+-- world's reading of the body. Returns true when a request went out.
+function KCD2MP_OwnerDeathCheck(name, streamDead, locallyDead, x, y, z, owner, via)
+    local w = KCD2MP.w122
+    if not (w.ownerDeath and KCD2MP.npcDeathSync) then return false end
+    if not streamDead then w.ownerReq[name] = nil; return false end
+    if locallyDead then return false end
+    local now = os.clock()
+    local r = w.ownerReq[name]
+    if r then
+        if (now - r.at) < ((r.n < w.ownerFastN) and w.ownerRetryS or w.ownerSlowS) then return false end
+    else
+        r = { n = 0, since = now }
+        w.ownerReq[name] = r
+    end
+    r.n, r.at = r.n + 1, now
+    w.ownerReqN = w.ownerReqN + 1
+    KCD2MP._npcDeathRemote[name] = { via = "owner-death", at = now }   -- the local IsDead flip is not announced back
+    mp_log(string.format("MP-OWNERDEATH npc=%s request=%d local=alive stream=dead owner=%s stream_at=%.1f,%.1f,%.1f via=%s",
+        name, r.n, tostring(owner or "?"), x or 0, y or 0, z or 0, tostring(via)))
+    KCD2MP_EmitEvent("npc_owner_dead", string.format("%s %.2f %.2f %.2f %s", name, x or 0, y or 0, z or 0, tostring(owner or "?")))
+    return true
+end
+
+-- Phase 1, the landing: the body now reads dead here after a request. Put the
+-- corpse where the owner's stream has it and read the position back.
+function KCD2MP_OwnerDeathLanded(name, e, tx, ty, tz)
+    local w = KCD2MP.w122
+    local r = w.ownerReq[name]
+    if not r then return false end
+    w.ownerReq[name] = nil
+    w.ownerApplied = w.ownerApplied + 1
+    local cur, after = nil, nil
+    pcall(function() cur = e:GetWorldPos() end)
+    local off, placed, resid = -1, false, -1
+    if cur and tx then
+        local dx, dy, dz = tx - cur.x, ty - cur.y, (tz or cur.z) - cur.z
+        off = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if off > 0.5 then
+            placed = pcall(function() e:SetWorldPos({ x = tx, y = ty, z = tz or cur.z }) end)
+            pcall(function() after = e:GetWorldPos() end)
+            if after then resid = math.sqrt((tx - after.x)^2 + (ty - after.y)^2) end
+        else
+            resid = off
+        end
+    end
+    mp_log(string.format("MP-OWNERDEATH npc=%s applied=dead requests=%d after_s=%.1f corpse_to_stream_m=%.2f placed=%s residual_m=%.2f",
+        name, r.n, os.clock() - r.since, off, tostring(placed), resid))
+    return true
+end
+
+-- Phase 2. The agent calls this every second while this machine is the
+-- joiner with mp_shared_world on, and once with false when that ends.
+function KCD2MP_HostOnlyLock(want, why)
+    local w = KCD2MP.w122
+    why = tostring(why or "?")
+    if not (Game and Game.AddSaveLock and Game.RemoveSaveLock) then
+        if not w.lockNoBind then
+            w.lockNoBind = true
+            mp_log("MP-SAVELOCK Game.AddSaveLock/RemoveSaveLock not registered on this build -- the joiner cannot be locked")
+        end
+        return false
+    end
+    if want then
+        if not w.sharedWorld then return false end   -- dormant: never lock with the toggle off
+        -- Every refused add costs one engine "[Error] Script save lock ... already
+        -- exists" line (observed), so a held lock is re-checked on the agent's
+        -- 1 s tick only every lockCheckS; a load ("after-load") or anything but
+        -- the tick checks at once.
+        local now = os.clock()
+        if w.lockHeld and why == "tick" and (now - w.lockCheckedAt) < w.lockCheckS then return true end
+        w.lockCheckedAt = now
+        local ok1, a = pcall(Game.AddSaveLock, w.lockName, w.lockText)
+        local ok2, b = ok1, false
+        if not (ok1 and a == false) then ok2, b = pcall(Game.AddSaveLock, w.lockName, w.lockText) end
+        local held = ok2 and b == false   -- read-back: the engine refuses a name it already holds
+        if ok1 and a == true then
+            w.lockAsserts = w.lockAsserts + 1
+            if w.lockHeld then w.lockWiped = w.lockWiped + 1 end
+            mp_log(string.format("MP-SAVELOCK asserted name=%s why=%s n=%d readback=%s -- %s",
+                w.lockName, why, w.lockAsserts, held and "held" or "NOT HELD",
+                w.lockHeld and ("it was gone (a load wipes every lock; wiped " .. w.lockWiped .. "x)") or "first hold"))
+        end
+        if not held then
+            w.lockReadbackFails = w.lockReadbackFails + 1
+            if (os.clock() - w.lockFailLoggedAt) > 10 then
+                w.lockFailLoggedAt = os.clock()
+                mp_log(string.format("MP-SAVELOCK READBACK FAILED name=%s why=%s add1=%s/%s add2=%s/%s fails=%d -- saves may NOT be blocked",
+                    w.lockName, why, tostring(ok1), tostring(a), tostring(ok2), tostring(b), w.lockReadbackFails))
+            end
+        end
+        if held and not w.lockHeld then pcall(KCD2MP_ShowInteractionMsg, "Co-op: " .. w.lockText) end
+        w.lockHeld = held
+        return held
+    end
+    -- Always ask the engine (a lock can outlive the agent that asked for it);
+    -- log only when something was held or actually removed.
+    local had = w.lockHeld
+    local ok, r = pcall(Game.RemoveSaveLock, w.lockName)
+    if had or (ok and r == true) then
+        mp_log(string.format("MP-SAVELOCK released name=%s why=%s remove=%s/%s -- this machine saves as before",
+            w.lockName, why, tostring(ok), tostring(r)))
+    end
+    w.lockHeld = false
+    return true
+end
+
+-- Phase 3/4. The agent asks; the engine writes the save when it can.
+function KCD2MP_HostWorldSave(why, attempt)
+    local w = KCD2MP.w122
+    if not (Game and Game.SaveGameViaResting) then
+        mp_log("MP-WORLDSAVE Game.SaveGameViaResting not registered on this build -- no world save")
+        return false
+    end
+    local ok, err = pcall(Game.SaveGameViaResting)
+    w.saveReqN = w.saveReqN + 1
+    mp_log(string.format("MP-WORLDSAVE request why=%s attempt=%s enqueue=%s%s -- EnqueueAutoSave: the engine writes it when it can save",
+        tostring(why), tostring(attempt), tostring(ok), ok and "" or (" err=" .. tostring(err))))
+    if ok and tonumber(attempt) == 1 then KCD2MP_Wo122HitchArm(8.0) end
+    return ok
+end
+
+-- The hitch: the longest frame gap in the window after a request (the save
+-- itself lands inside it). A per-frame timer for a few seconds, then one line.
+function KCD2MP_Wo122HitchArm(seconds)
+    local w = KCD2MP.w122
+    local now = os.clock()
+    local win = tonumber(seconds) or 8.0
+    local fresh = w.hitchUntil == nil
+    w.hitchUntil = now + win
+    if not fresh then return end
+    w.hitchStart, w.hitchLast, w.hitchMax, w.hitchFrames = now, now, 0, 0
+    local function tick()
+        local t = os.clock()
+        local gap = (t - w.hitchLast) * 1000
+        if gap > w.hitchMax then w.hitchMax = gap end
+        w.hitchLast, w.hitchFrames = t, w.hitchFrames + 1
+        if t >= w.hitchUntil then
+            mp_log(string.format("MP-WORLDSAVE hitch frame_gap_max_ms=%.0f frames=%d window_s=%.1f",
+                w.hitchMax, w.hitchFrames, t - w.hitchStart))
+            w.hitchUntil = nil
+            return
+        end
+        Script.SetTimer(0, tick)
+    end
+    Script.SetTimer(0, tick)
+end
+
+function KCD2MP_WorldSaveDone(ok, file, why, attempts, ms, reason)
+    mp_log(string.format("MP-WORLDSAVE result=%s file=%s why=%s attempts=%s request_to_verified_ms=%s reason=%s",
+        ok and "saved" or "none", tostring(file), tostring(why), tostring(attempts), tostring(ms), tostring(reason)))
+    if tostring(why) == "manual" then
+        pcall(KCD2MP_ShowInteractionMsg, ok and ("World saved: " .. tostring(file)) or ("World save failed: " .. tostring(reason)))
+    end
+end
+
+function KCD2MP_WorldSavedIn(src, seq, file, md5, ageMs)
+    mp_log(string.format("MP-WORLDSAVED from=%s seq=%s file=%s md5=%s age_ms=%s -- the host saved the world",
+        tostring(src), tostring(seq), tostring(file), string.sub(tostring(md5), 1, 8), tostring(ageMs)))
+end
+
+-- The engine refused a save on this joiner (the agent saw "AutoSave is disabled
+-- under a script lock 'Script:kcdmp_host_only'" in kcd.log). The menu's own
+-- entries grey out under the lock; a refused autosave (sleep, a quest) is
+-- otherwise silent, so the player is told -- at most once every 30 s.
+function KCD2MP_SaveRefused(kind)
+    local w = KCD2MP.w122
+    w.refusedN = w.refusedN + 1
+    mp_log(string.format("MP-SAVELOCK refused kind=%s n=%d -- only the host saves this world", tostring(kind), w.refusedN))
+    if (os.clock() - w.refusedToldAt) >= 30 then
+        w.refusedToldAt = os.clock()
+        pcall(KCD2MP_ShowInteractionMsg, w.lockText)
+    end
+end
+
+function KCD2MP_SaveLeak(file)
+    mp_log(string.format("MP-SAVELOCK LEAK a save was written on this joiner: %s (lock held=%s)",
+        tostring(file), KCD2MP.w122.lockHeld and "yes" or "no"))
+end
+
+-- mp_world_save: the Phase 4 world save on demand (host, mp_shared_world on).
+function KCD2MP_WorldSaveNow()
+    if not KCD2MP.w122.sharedWorld then
+        mp_log("MP-WORLDSAVE mp_world_save needs mp_shared_world on")
+        pcall(KCD2MP_ShowInteractionMsg, "mp_world_save needs mp_shared_world on")
+        return false
+    end
+    KCD2MP_EmitEvent("world_save_request", "manual")
+    return true
+end
 -- WO-90: divergence release. When the local engine repeatedly drags a
 -- puppeted NPC far away from where the inbound stream is putting it, the two
 -- worlds are at different story beats and no amount of position smoothing can
@@ -4186,16 +4468,22 @@ KCD2MP._presets = {
     -- crouch/jump, combat stance and rows, attributed NPC hits and friendly fire
     -- (the new build), legacy = the Lua clip loops, swing cues and no friendly
     -- fire (the 0.28.x behaviour). friendly_fire only counts on the host.
+    -- WO-122: owner_death -- clean = the owner's streamed death wins over a
+    -- living local copy (the new build), legacy = WO-86 witnessed transitions
+    -- only (0.29.0). shared_world stays OFF in both (dormant until the join
+    -- exists); autosave_minutes is the same in both.
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true,
                respawn = true,  npc_native_write = true,  npc_detach = true,
                avatar_gait = true, npc_gait = true, avatar_moves = true, avatar_combat = true, npc_rows = true,
-               npc_attribution = true, friendly_fire = true },
+               npc_attribution = true, friendly_fire = true,
+               owner_death = true, shared_world = false, autosave_minutes = 5 },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false,
                respawn = false, npc_native_write = false, npc_detach = false,
                avatar_gait = false, npc_gait = false, avatar_moves = false, avatar_combat = false, npc_rows = false,
-               npc_attribution = false, friendly_fire = false },
+               npc_attribution = false, friendly_fire = false,
+               owner_death = false, shared_world = false, autosave_minutes = 5 },
 }
 function KCD2MP_ApplyPreset(which)
     which = tostring(which or "")
@@ -4238,6 +4526,10 @@ function KCD2MP_ApplyPreset(which)
     set("npc_rows",        w121.npcRows,                 P.npc_rows,        function() KCD2MP_Wo121Set("npcRows", P.npc_rows and "on" or "off") end)
     set("npc_attribution", w121.attribution,             P.npc_attribution, function() KCD2MP_Wo121Set("attribution", P.npc_attribution and "on" or "off") end)
     set("friendly_fire",   w121.friendlyFire,            P.friendly_fire,   function() KCD2MP_Wo121Set("friendlyFire", P.friendly_fire and "on" or "off") end)
+    local w122 = KCD2MP.w122   -- WO-122
+    set("owner_death",     w122.ownerDeath,              P.owner_death,     function() KCD2MP_SetOwnerDeath(P.owner_death and "on" or "off") end)
+    set("shared_world",    w122.sharedWorld,             P.shared_world,    function() KCD2MP_SetSharedWorld(P.shared_world and "on" or "off") end)
+    set("autosave_minutes", w122.autosaveMinutes,        P.autosave_minutes, function() KCD2MP_SetAutosaveMinutes(tostring(P.autosave_minutes)) end)
     set("npc_proximity",   KCD2MP.npcProx.enabled,       true,              function() KCD2MP_EnableNpcProximity("on") end)
     set("npc_sync",        KCD2MP.npcSync.enabled,       true,              function() KCD2MP_EnableNpcSync("on") end)
     mp_log(string.format("MP-PRESET applied name=%s values=%d authority_model=untouched (authority_host=%s pos_native=%s npc_scan_native=%s)",
@@ -5935,6 +6227,9 @@ function KCD2MP_ApplyNpcState(name, x, y, z, rot, hp, flags, src, seq, senderMs)
             st.applied = st.applied + 1
             if moved then st.moved = st.moved + 1 end
             if skip then st.skipped = st.skipped + 1 end
+            -- WO-122 Phase 1: a resync naming a dead body this world has alive.
+            if streamDead and locallyDead and KCD2MP.w122.ownerReq[name] then KCD2MP_OwnerDeathLanded(name, e, x, y, z)
+            else KCD2MP_OwnerDeathCheck(name, streamDead, locallyDead, x, y, z, src, "resync") end
             mp_log(string.format("MP-NPCRESYNC dir=apply npc=%s dist_m=%.2f moved=%d dead=%d owner=%s%s",
                 name, dist, moved and 1 or 0, streamDead and 1 or 0, tostring(src == nil and "?" or src),
                 skip and (" skipped=" .. skip) or ""))
@@ -6334,6 +6629,13 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             local localHp = -1
             if locallyDead and lifeE.actor then pcall(function() localHp = lifeE.actor:GetHealth() or -1 end) end
             mp_npc_death_observe(name, locallyDead, localHp, "puppet")
+            -- WO-122 Phase 1: the owner's death wins, even over a copy a load
+            -- made alive again; once it lands, the corpse goes where the stream has it.
+            if p.dead and locallyDead and KCD2MP.w122.ownerReq[name] then
+                if KCD2MP_OwnerDeathLanded(name, lifeE, p.tx, p.ty, p.tz) then p.dragX, p.dragY = p.tx, p.ty end
+            else
+                KCD2MP_OwnerDeathCheck(name, p.dead == true, locallyDead, p.tx, p.ty, p.tz, p.owner, "puppet")
+            end
             -- WO-104 Phase 1: resolution. A dead/KO NPC demotes at once so the
             -- real corpse is the one on the ground; a fight is over when the
             -- owner's stream has had the weapon away for sheathedDemoteS.
@@ -12498,6 +12800,18 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_rows",            'KCD2MP_Wo121SetNpcRows(%line)',         "WO-121: NPC copies swing the owner's committed attack row (default on); off = the WO-49 swing cue: mp_npc_rows on|off")
     System.AddCCommand("mp_npc_attribution",     'KCD2MP_Wo121SetAttribution(%line)',     "WO-121: a peer's hit on an NPC names their avatar as the attacker on the NPC's owner (damage + combat history + skirmish + hit reaction; default on): mp_npc_attribution on|off")
     System.AddCCommand("mp_friendly_fire",       'KCD2MP_Wo121SetFriendlyFire(%line)',    "WO-121: players can hurt each other (HOST only -- the host's value is the session's): mp_friendly_fire on|off; bare = report")
+    -- WO-122: shared-world foundations. mp_shared_world is dormant by default.
+    System.AddCCommand("mp_shared_world",        'KCD2MP_SetSharedWorld(%line)',          "WO-122: the shared world's save rules (default OFF = every machine saves as before). On: the joiner's saves are locked in a session (only the host saves), the host autosaves every mp_autosave_minutes and announces each world save: mp_shared_world on|off; bare = report")
+    System.AddCCommand("mp_owner_death",         'KCD2MP_SetOwnerDeath(%line)',           "WO-122: an NPC its owner streams dead dies here even when this copy is alive, after a load too (default on; off = WO-86 witnessed transitions only): mp_owner_death on|off")
+    System.AddCCommand("mp_autosave_minutes",    'KCD2MP_SetAutosaveMinutes(%line)',      "WO-122: the host's world-save cadence with mp_shared_world on (default 5; 0 = none): mp_autosave_minutes <n>; bare = report")
+    System.AddCCommand("mp_world_save",          "KCD2MP_WorldSaveNow()",                 "WO-122: the host writes a world save now and the agent reports the file (host, mp_shared_world on)")
+    do
+        local w = KCD2MP.w122
+        mp_log(string.format("WO122-BUILD shared_world=%s owner_death=%s autosave_minutes=%d lock=%s lock_text=\"%s\" world_save=EnqueueAutoSave"
+            .. " -- dormant unless mp_shared_world on (except owner_death); mp_preset_legacy = owner_death off",
+            w.sharedWorld and "on" or "off", w.ownerDeath and "on" or "off", w.autosaveMinutes, w.lockName, w.lockText))
+        KCD2MP_Wo122CfgEmit()
+    end
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")

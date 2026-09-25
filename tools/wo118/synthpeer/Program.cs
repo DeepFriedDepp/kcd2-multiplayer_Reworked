@@ -17,6 +17,8 @@
 // plan lines:
 //   line <npc> <x0> <y0> <z0> <ux> <uy> <len> <speed> [pingpong]
 //   hold <npc> <x> <y> <z> <yaw>
+//   dead <npc> <x> <y> <z> <yaw>                                (WO-122: a corpse: hold + dead bit 0x01, hp 0)
+//   saved <t> <kind> <playline> <idx>                           (WO-122: a WorldSaved 0x46 at stream time t, as the host)
 //   path <npc> <speed> <x1> <y1> <z1> <x2> <y2> <z2> ...        (ping-pong)
 //   timed <npc> <yaw> t0 x0 y0 z0 t1 x1 y1 z1 ...              (piecewise linear in time)
 //   fight <npc> <cx> <cy> <cz> <r>      (circles; flag 0x04 drawn, a 0x08 swing cue every 2.5 s)
@@ -61,7 +63,7 @@ static class P
     }
     sealed class Hold : Mover
     {
-        public float X, Y, Z, Yaw;
+        public float X, Y, Z, Yaw; public bool Dead;
         public override (float, float, float, float) At(double t) => (X, Y, Z, Yaw);
     }
     sealed class PathM : Mover
@@ -183,6 +185,7 @@ static class P
         // WO-121: `row <t_s> <npc> <rowGuid>` -- the host NPC committed that
         // attack row at stream time t: an NpcAttack action event (v8).
         var rows = new List<(double T, string Npc, Guid Row)>();
+        var saves = new List<(double T, byte Kind, byte Playline, ushort Idx)>(); uint wsSeq = 0;
         foreach (var raw in File.ReadAllLines(Arg(a, "--plan", "plan.txt")))
         {
             var t = raw.Trim(); if (t.Length == 0 || t.StartsWith('#')) continue;
@@ -191,6 +194,7 @@ static class P
             {
                 case "line": movers.Add(new Line { Name = f[1], X0 = F(f[2]), Y0 = F(f[3]), Z0 = F(f[4]), Ux = F(f[5]), Uy = F(f[6]), Len = F(f[7]), Speed = F(f[8]), PingPong = f.Length > 9 && f[9] == "pingpong" }); break;
                 case "hold": movers.Add(new Hold { Name = f[1], X = F(f[2]), Y = F(f[3]), Z = F(f[4]), Yaw = F(f[5]) }); break;
+                case "dead": movers.Add(new Hold { Name = f[1], X = F(f[2]), Y = F(f[3]), Z = F(f[4]), Yaw = F(f[5]), Dead = true }); break;
                 case "path":
                 {
                     var pm = new PathM { Name = f[1], Speed = F(f[2]) };
@@ -210,6 +214,7 @@ static class P
                     break;
                 case "start": startDelay = double.Parse(f[1], CultureInfo.InvariantCulture); break;
                 case "row": rows.Add((double.Parse(f[1], CultureInfo.InvariantCulture), f[2], Guid.Parse(f[3]))); break;
+                case "saved": saves.Add((double.Parse(f[1], CultureInfo.InvariantCulture), byte.Parse(f[2]), byte.Parse(f[3]), ushort.Parse(f[4]))); break;
             }
         }
 
@@ -227,7 +232,23 @@ static class P
 
         using var cts = new CancellationTokenSource();
         long rx = 0;
-        var reader = Task.Run(async () => { try { while (!cts.IsCancellationRequested) { await ReadPacket(st, cts.Token); rx++; } } catch { } });
+        var reader = Task.Run(async () =>
+        {
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    var (rt, rb2) = await ReadPacket(st, cts.Token); rx++;
+                    // WO-122: the host's world-save announcement, as a joiner receives it.
+                    if (rt == Protocol.WorldSavedDown && WorldSaved.TryDecode(rb2, down: true, out byte wsrc) is WorldSaved ws)
+                        Console.WriteLine(FormattableString.Invariant(
+                            $"SYNTH WorldSaved from={wsrc} file=playline{ws.Playline}/{ws.FileName} seq={ws.Seq} md5={Convert.ToHexString(ws.Md5)[..8].ToLowerInvariant()} age_ms={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - ws.SenderUnixMs}"));
+                    else if (rt == Protocol.CombatRole && rb2.Length == 1)
+                        Console.WriteLine($"SYNTH role={(rb2[0] == 1 ? "authority (host)" : "not the authority (joiner)")}");
+                }
+            }
+            catch { }
+        });
 
         var sw = Stopwatch.StartNew();
         var queue = new PriorityQueue<byte[], double>();
@@ -248,6 +269,18 @@ static class P
                     Console.WriteLine(FormattableString.Invariant($"SYNTH t={t:F1}s NpcAttack npc={rows[ri].Npc} row={rows[ri].Row}"));
                     rows.RemoveAt(ri);
                 }
+                for (int si = saves.Count - 1; si >= 0; si--)
+                {
+                    if (saves[si].T > t) continue;
+                    var md5 = System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes($"synthetic-{saves[si].Idx}"));
+                    var ws = new WorldSaved(++wsSeq, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), saves[si].Kind, saves[si].Playline, saves[si].Idx, md5);
+                    var body = ws.Encode();
+                    var wp = new byte[3 + body.Length]; wp[0] = Protocol.WorldSavedUp;
+                    BinaryPrimitives.WriteUInt16LittleEndian(wp.AsSpan(1), (ushort)body.Length); body.CopyTo(wp, 3);
+                    await st.WriteAsync(wp);
+                    Console.WriteLine(FormattableString.Invariant($"SYNTH t={t:F1}s WorldSaved sent file=playline{ws.Playline}/{ws.FileName}"));
+                    saves.RemoveAt(si);
+                }
                 foreach (var m in movers)
                 {
                     if (now - m.LastSent < emitMs) continue;
@@ -257,10 +290,10 @@ static class P
                     if (!moved && now - m.LastSent < 2000) continue;
                     m.LastSent = now; m.LastSentX = x; m.LastSentY = y; m.LastSentZ = z;
                     m.Seq++;
-                    byte fl = m is Fight fm ? fm.FlagsAt(t) : (byte)0;
+                    byte fl = m is Fight fm ? fm.FlagsAt(t) : m is Hold { Dead: true } ? Protocol.NpcStateFlagDead : (byte)0;
                     uint sms = senderClock == "tick" ? unchecked((uint)Environment.TickCount64)
                              : unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency));
-                    var pkt = BuildUp(m.Name, x, y, z, yaw, 100f, fl, m.Seq, sms);
+                    var pkt = BuildUp(m.Name, x, y, z, yaw, (fl & Protocol.NpcStateFlagDead) != 0 ? 0f : 100f, fl, m.Seq, sms);
                     double d = delayMs + rng.NextDouble() * jitterMs + (rng.NextDouble() * 100 < spikePct ? spikeMs : 0);
                     queue.Enqueue(pkt, now + d);
                     emitted++;

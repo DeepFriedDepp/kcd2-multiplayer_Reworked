@@ -1,0 +1,2 @@
+# WO-122 Phase 1: the host streams ttkc_man_26 dead, 3 m east of where it stands in the joiner world
+dead ttkc_man_26 2476.50 2065.00 116.70 0

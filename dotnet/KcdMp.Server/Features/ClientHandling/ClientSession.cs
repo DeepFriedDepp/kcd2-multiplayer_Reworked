@@ -685,6 +685,25 @@ public class ClientSession
                     continue;
                 }
 
+                // --- WO-122: the host wrote a world save ---
+                // Only the damage authority's saves are the world's; a joiner's
+                // save (which WO-122's lock should make impossible) is dropped.
+                if (type == Protocol.WorldSavedUp && payloadLen == Protocol.WorldSavedUpPayloadLen)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    var ws = WorldSaved.TryDecode(body, down: false, out _);
+                    if (!_clientHandler.IsDamageAuthority(this))
+                    {
+                        _logger.Warning("[!] '{Name}' (id={Id}) sent WorldSaved without holding damage authority -- dropped.", Name, Id);
+                        continue;
+                    }
+                    _logger.Information("[worldsave] '{Name}' (id={Id}) saved the world: seq {Seq} playline{Playline}/{File}.",
+                        Name, Id, ws?.Seq, ws?.Playline, ws?.FileName);
+                    _broadcastService.BroadcastSenderFact(this, Protocol.WorldSavedDown, body);
+                    continue;
+                }
+
                 if (type == Protocol.PlayerDeathUp && payloadLen == Protocol.PlayerDeathUpPayloadLen)
                 {
                     // Carries nothing: the relay already knows who sent it.

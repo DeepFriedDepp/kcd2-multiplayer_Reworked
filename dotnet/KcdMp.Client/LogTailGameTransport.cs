@@ -288,6 +288,23 @@ public sealed class LogTailGameTransport : IGameTransport
     /// </summary>
     public event Action? ModInitDetected;
 
+    /// <summary>
+    /// WO-122: the engine printed "Gameplay started" -- a save load (or a new
+    /// game) just finished. Every load wipes every script save lock (WO-112
+    /// s3.6), so the joiner's host-only lock is re-asserted from here.
+    /// </summary>
+    public event Action? GameplayStarted;
+
+    /// <summary>
+    /// WO-122: "AutoSave is disabled under a script lock 'Script:&lt;name&gt;'" --
+    /// the engine refused an autosave (sleep, a quest save, the mod's own
+    /// request) because of a named script lock. The argument is the lock name.
+    /// </summary>
+    public event Action<string>? AutoSaveRefused;
+
+    /// <summary>WO-122: the engine's own "generation time: N ms" for the save it just wrote (0 = none seen yet).</summary>
+    public int LastSaveGenerationMs { get; private set; }
+
     // WO-99 Phase 4: Fader/Text/SkipTime edges are now reported too, so a
     // loading fade or a sleep shows up beside the emitter gap it causes
     // (2026-09-16: all 18 cutscene lines were Fader, and the un-paused ghost
@@ -446,6 +463,35 @@ public sealed class LogTailGameTransport : IGameTransport
                     break;
                 }
             }
+        }
+
+        const string refusedMarker = "AutoSave is disabled under a script lock '";
+        int rm = line.IndexOf(refusedMarker, StringComparison.Ordinal);
+        if (rm >= 0)
+        {
+            var lockTail = line[(rm + refusedMarker.Length)..];
+            int end = lockTail.IndexOf('\'');
+            string lockName = end > 0 ? lockTail[..end].ToString() : "?";
+            if (lockName.StartsWith("Script:", StringComparison.Ordinal)) lockName = lockName[7..];
+            try { AutoSaveRefused?.Invoke(lockName); }
+            catch (Exception ex) { Console.WriteLine($"[worldsave] autosave-refused handler threw: {ex.Message}"); }
+        }
+        else if (line.IndexOf("[SAVE GAME] Binary saveload: After writing", StringComparison.Ordinal) >= 0)
+        {
+            int g = line.IndexOf("generation time: ", StringComparison.Ordinal);
+            if (g >= 0)
+            {
+                var rest = line[(g + 17)..];
+                int n = 0, i = 0;
+                while (i < rest.Length && char.IsAsciiDigit(rest[i])) { n = n * 10 + (rest[i] - '0'); i++; }
+                if (i > 0) LastSaveGenerationMs = n;
+            }
+        }
+
+        if (GameplayStarted is not null && line.Length < 40 && line.StartsWith("Gameplay started", StringComparison.Ordinal))
+        {
+            try { GameplayStarted.Invoke(); }
+            catch (Exception ex) { Console.WriteLine($"[worldsave] gameplay-started handler threw: {ex.Message}"); }
         }
 
         // WO-98 Phase 7: "[KCD2-MP] MOD INIT" (the second of the mod's two

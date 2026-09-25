@@ -2,6 +2,12 @@ using KcdMp.Client;
 using Microsoft.Win32;
 using System.Text.RegularExpressions;
 
+// --save-tool (WO-122 Phase 5): the ported .whs reader/verify/splicer, offline.
+// Runs before the config load and the agent.log tee so a tool run never
+// rotates or overwrites the agent's own log.
+if (args.Contains("--save-tool"))
+    return WhsSave.RunCli(args, Console.Out);
+
 // Settings live in kcdmp-client.json next to the executable; it is created with
 // defaults on first run. Everything can still be overridden on the command line:
 //   named:      --host <ip> --port <n> --name <s> --game-api <url> [--no-voice]
