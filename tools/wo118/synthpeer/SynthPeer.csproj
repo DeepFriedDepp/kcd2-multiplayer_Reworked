@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\dotnet\KcdMp.Protocol\KcdMp.Protocol.csproj" />
+    <ProjectReference Include="..\..\..\dotnet\KcdMp.Client\KcdMp.Client.csproj" />
   </ItemGroup>
 </Project>

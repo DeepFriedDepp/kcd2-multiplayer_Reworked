@@ -122,11 +122,12 @@ static class P
                     {
                         fs.Seek(controlPos, SeekOrigin.Begin);
                         var buf = new byte[fs.Length - controlPos]; int n = fs.Read(buf, 0, buf.Length); controlPos += n;
+                        int at = si;   // keep the file's order within one batch
                         foreach (var line in Encoding.UTF8.GetString(buf, 0, n).Split((char)10))
                         {
                             var ln = line.Trim(); if (ln.Length == 0 || ln.StartsWith('#')) continue;
                             if (ln == "quit") { endT = 0; break; }
-                            steps.Insert(si, new Step(t, ln.Split(' ', StringSplitOptions.RemoveEmptyEntries)));
+                            steps.Insert(at++, new Step(t, ln.Split(' ', StringSplitOptions.RemoveEmptyEntries)));
                         }
                     }
                 }

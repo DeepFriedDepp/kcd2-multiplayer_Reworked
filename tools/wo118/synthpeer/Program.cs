@@ -159,6 +159,8 @@ static class P
         return file;
     }
 
+    static readonly KcdMp.Client.ActionOutbox s_actions = new();
+
     static async Task<int> Main(string[] a)
     {
         string host = Arg(a, "--host", "127.0.0.1"); int port = int.Parse(Arg(a, "--port", "7778"));
@@ -178,6 +180,9 @@ static class P
         string release = File.ReadAllText(versionFile).Trim();
 
         var movers = new List<Mover>(); double startDelay = 0; Line? ghost = null; int ghostMs = 30;
+        // WO-121: `row <t_s> <npc> <rowGuid>` -- the host NPC committed that
+        // attack row at stream time t: an NpcAttack action event (v8).
+        var rows = new List<(double T, string Npc, Guid Row)>();
         foreach (var raw in File.ReadAllLines(Arg(a, "--plan", "plan.txt")))
         {
             var t = raw.Trim(); if (t.Length == 0 || t.StartsWith('#')) continue;
@@ -204,6 +209,7 @@ static class P
                     ghostMs = f.Length > 8 ? int.Parse(f[8]) : 30;
                     break;
                 case "start": startDelay = double.Parse(f[1], CultureInfo.InvariantCulture); break;
+                case "row": rows.Add((double.Parse(f[1], CultureInfo.InvariantCulture), f[2], Guid.Parse(f[3]))); break;
             }
         }
 
@@ -234,6 +240,14 @@ static class P
             if (ts >= streamT0)
             {
                 double t = ts - streamT0;
+                for (int ri = rows.Count - 1; ri >= 0; ri--)
+                {
+                    if (rows[ri].T > t) continue;
+                    var ev = new RowEvent(unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency)), 0, rows[ri].Row, rows[ri].Npc);
+                    await st.WriteAsync(s_actions.Build(ActionKind.NpcAttack, ActionPhase.Commit, ev.ToBytes()));
+                    Console.WriteLine(FormattableString.Invariant($"SYNTH t={t:F1}s NpcAttack npc={rows[ri].Npc} row={rows[ri].Row}"));
+                    rows.RemoveAt(ri);
+                }
                 foreach (var m in movers)
                 {
                     if (now - m.LastSent < emitMs) continue;
