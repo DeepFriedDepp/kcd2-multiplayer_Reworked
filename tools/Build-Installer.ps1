@@ -107,6 +107,15 @@ if (-not $SkipPublish) {
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Publish-Release.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Publish-Release.ps1 failed" }
 
+    # WO-129: the engine-free native tests (gait class bands against the
+    # engine's round(x)-1 mapper, the lock-free gait table). Publish-Release
+    # has just built native\ (Build-Native.ps1 builds this target too).
+    $nativeTests = Join-Path $root "native\build\tests\KCDMP_NativeTests.exe"
+    if (-not (Test-Path $nativeTests)) { throw "native tests missing: $nativeTests (Build-Native.ps1 should have built them)" }
+    Write-Host "Native unit tests (native\tests) ..."
+    & $nativeTests
+    if ($LASTEXITCODE -ne 0) { throw "native unit tests FAILED. Not shipping." }
+
     # WO-110 R10: execute the MERGED payload. Publish-Release flat-copies four
     # self-contained publishes over each other (later projects overwrite
     # shared DLLs) and no gate had ever started the result. This starts the

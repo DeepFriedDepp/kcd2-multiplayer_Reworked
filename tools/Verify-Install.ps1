@@ -105,7 +105,11 @@ $AsmMarkers = @(
     # 0.29.9 (WO-127): Steam as a connection path, the host claim, the leash recorder.
     @{ File = 'KcdMp.Steam.dll';   Marker = 'SteamJoinCode';         Owner = 'WO-127 Steam connection path' },
     @{ File = 'KcdMpServer.dll'; Marker = 'MP-HOST-CLAIM';          Owner = 'WO-127 host claim (relay authority)' },
-    @{ File = 'KcdMpClient.dll'; Marker = 'MP-LEASH-COST';          Owner = 'WO-127 leash recorder (agent half)' }
+    @{ File = 'KcdMpClient.dll'; Marker = 'MP-LEASH-COST';          Owner = 'WO-127 leash recorder (agent half)' },
+    # 0.30.0 (WO-129): the gait tag hook (native), the clock-skew removal and
+    # the Discord merge fix (agent).
+    @{ File = 'KCDMP.dll';       Marker = 'WO129-GAIT tag hook';    Owner = 'WO-129 avatar/NPC-copy gait (native)' },
+    @{ File = 'KcdMpClient.dll'; Marker = 'no (no clock sample yet)'; Owner = 'WO-129 host-stamp skew removal' }
 )
 
 $PakMarkers = @(
@@ -146,7 +150,10 @@ $PakMarkers = @(
     @{ Marker = 'CATCHUP-HAZARD';                 Owner = 'WO-94 hazard window (mod half)' },
     @{ Marker = 'MP_NPC_DIVERGE_COOLDOWN_S = 180'; Owner = 'WO-94 180 s divergence stand-off' },
     # 0.29.9 (WO-127): mp_leash_trace lives in the pak.
-    @{ Marker = 'function KCD2MP_SetLeashTrace';  Owner = 'WO-127 mp_leash_trace' }
+    @{ Marker = 'function KCD2MP_SetLeashTrace';  Owner = 'WO-127 mp_leash_trace' },
+    # 0.30.0 (WO-129): the host's join bar and the shared-world scan anchors.
+    @{ Marker = 'function KCD2MP_JoinBarText';     Owner = 'WO-129 host join bar (stage + seconds)' },
+    @{ Marker = 'function KCD2MP_Wo129SharedAnchors'; Owner = 'WO-129 every player an NPC scan anchor' }
 )
 
 function Test-Assembly($dir, $label) {

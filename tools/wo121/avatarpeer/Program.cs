@@ -5,7 +5,7 @@
 // then plays a timed scenario:
 //
 //   at <t> stand <x> <y> <z> <yawRad>          put the avatar there, still
-//   at <t> move <speedMps> <headingRad> <secs>  walk/run on a heading (the state
+//   at <t> move <speedMps> <headingRad> <secs> [zEnd]  walk/run on a heading (zEnd: z moves linearly to it; the state
 //                                              block's speed = speed; facing = heading)
 //   at <t> strafe <speedMps> <moveDirRad> <secs>  move at moveDir relative to the facing
 //   at <t> state k=v ...                       bits/zones: crouch=0|1 combat=0|1 block=0|1
@@ -24,7 +24,8 @@
 // block is change-gated exactly like the agent (and heartbeated at 1 s while
 // non-zero). Every received PlayerHit (0x45) and ActionDown is printed.
 //
-// usage: AvatarPeer --scenario s.txt [--host 127.0.0.1] [--port 7778] [--name wo121-peer]
+// usage: AvatarPeer --scenario s.txt [--host 127.0.0.1] [--port 7778] [--name wo121-peer] [--skew-ms N]
+//   --skew-ms N  (WO-129) every sender stamp this peer writes runs N ms ahead: an artificial clock skew
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
@@ -37,7 +38,8 @@ static class P
 {
     static string Arg(string[] a, string k, string d) { int i = Array.IndexOf(a, k); return i >= 0 && i + 1 < a.Length ? a[i + 1] : d; }
     static float F(string s) => float.Parse(s, CultureInfo.InvariantCulture);
-    static uint Ms() => unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency));
+    static long SkewMs;   // WO-129: --skew-ms
+    static uint Ms() => unchecked((uint)(Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency + SkewMs));
 
     record Step(double T, string[] F);
 
@@ -52,6 +54,7 @@ static class P
     {
         string host = Arg(a, "--host", "127.0.0.1"); int port = int.Parse(Arg(a, "--port", "7778"));
         string name = Arg(a, "--name", "wo121-peer");
+        SkewMs = long.Parse(Arg(a, "--skew-ms", "0"), CultureInfo.InvariantCulture);
         string release = File.ReadAllText(FindUp("VERSION")).Trim();
         var steps = new List<Step>(); double endT = 60;
         foreach (var raw in File.ReadAllLines(Arg(a, "--scenario", "scenario.txt")))
@@ -100,7 +103,7 @@ static class P
 
         var outbox = new ActionOutbox();
         var sw = Stopwatch.StartNew();
-        float x = 0, y = 0, z = 0, yaw = 0, speed = 0, head = 0, moveDir = 0; double moveUntil = -1;
+        float x = 0, y = 0, z = 0, yaw = 0, speed = 0, head = 0, moveDir = 0, zRate = 0; double moveUntil = -1;
         double jumpT0 = -1, jumpDur = 0.8; float jumpH = 0.5f, zBase = 0;
         var s2 = new BodyState2(0, 0, BodyState2Bits.None, WireZone.Undefined, WireGuardStance.None, WireZone.Undefined, 0, 0, 0);
         BodyState2? lastSent = null; double lastSentT = -9, lastPos = -9, lastPing = 0; int si = 0; bool placed = false, frozen = false;
@@ -141,7 +144,8 @@ static class P
                     case "freeze": frozen = true; break;      // stop sending (photo-mode shots: the native writer keeps rendering)
                     case "unfreeze": frozen = false; break;
                     case "stand": frozen = false; x = F(f[1]); y = F(f[2]); z = zBase = F(f[3]); yaw = F(f[4]); speed = 0; moveUntil = -1; placed = true; break;
-                    case "move": speed = F(f[1]); head = F(f[2]); yaw = head; moveDir = 0; moveUntil = t + F(f[3]); break;
+                    case "move": speed = F(f[1]); head = F(f[2]); yaw = head; moveDir = 0; moveUntil = t + F(f[3]);
+                        zRate = f.Length > 4 ? (F(f[4]) - z) / F(f[3]) : 0; break;   // WO-129: [zEnd] keeps a slope walk on the ground
                     case "strafe": speed = F(f[1]); moveDir = F(f[2]); head = yaw + moveDir; moveUntil = t + F(f[3]); break;
                     case "state":
                         foreach (var kv in f[1..])
@@ -228,6 +232,7 @@ static class P
             bool moving = moveUntil > t && speed > 0;
             if (moving)
             {
+                if (jumpT0 < 0) { z += zRate * (float)dt; zBase = z; }
                 x += (float)(-Math.Sin(head) * speed * dt);
                 y += (float)(Math.Cos(head) * speed * dt);
             }
