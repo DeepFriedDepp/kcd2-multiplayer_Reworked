@@ -395,58 +395,69 @@ static bool           g_walked = false;
 // reports the same number independently at the same moment. A wrong instance
 // layout gives a fault, a null, or a number that is not the soul count -- none
 // of which can be mistaken for success.
+// WO-124: the walk runs at the first gameplay tick, and on 1.5.5 that tick is
+// live at the MAIN MENU (observed), where there is no soul list yet: the walk
+// failed ("no candidate instance layout worked") and nothing ever walked again,
+// so read_player_soul() stayed null for the whole session -- no death guard, no
+// knockdown -- for any plugin injected before a world was loaded (the launcher
+// injects at startup). read_player_soul() now re-walks, quietly, every 2 s
+// until one succeeds.
+static bool g_walkQuiet = false;
+static int  g_walkRetries = 0;
+#define WALK_LOG(...) do { if (!g_walkQuiet) logf(__VA_ARGS__); } while (0)
+
 void walk_to_soul() {
     Api api{};
     if (!resolve(api)) {
-        logf("WALK: resolve incomplete (Shared.dll loaded? get_property_value found?)");
+        WALK_LOG("WALK: resolve incomplete (Shared.dll loaded? get_property_value found?)");
         return;
     }
 
     void* root = nullptr;
     if (!call_game_interface(api.game_interface, &root) || !plausible_pointer(root)) {
-        logf("WALK: C_GameInterface::GetWritableInstance() gave %p -- unusable", root);
+        WALK_LOG("WALK: C_GameInterface::GetWritableInstance() gave %p -- unusable", root);
         return;
     }
-    logf("WALK: GameInterface root = %p", root);
+    WALK_LOG("WALK: GameInterface root = %p", root);
 
     for (int i = 0; i < static_cast<int>(InstanceLayout::Count); ++i) {
         const auto layout = static_cast<InstanceLayout>(i);
-        logf("WALK: trying instance layout %s", layout_name(layout));
+        WALK_LOG("WALK: trying instance layout %s", layout_name(layout));
 
         void* rpg = read_object_property(api, "wh::shared::GameInterface", root, "RPGModule", layout);
         if (!plausible_pointer(rpg)) {
-            logf("  RPGModule -> %p  rejected", rpg);
+            WALK_LOG("  RPGModule -> %p  rejected", rpg);
             continue;
         }
-        logf("  RPGModule  = %p", rpg);
+        WALK_LOG("  RPGModule  = %p", rpg);
 
         void* souls = read_object_property(api, "wh::rpgmodule::RPGModule", rpg, "SoulList", layout);
         if (!plausible_pointer(souls)) {
-            logf("  SoulList  -> %p  rejected", souls);
+            WALK_LOG("  SoulList  -> %p  rejected", souls);
             continue;
         }
-        logf("  SoulList   = %p", souls);
+        WALK_LOG("  SoulList   = %p", souls);
 
         bool ok = false;
         const int count = read_int_property(api, "wh::rpgmodule::SoulList", souls, "SoulCount", layout, &ok);
-        if (!ok) { logf("  SoulCount unreadable"); continue; }
-        logf("  SoulCount  = %d", count);
+        if (!ok) { WALK_LOG("  SoulCount unreadable"); continue; }
+        WALK_LOG("  SoulCount  = %d", count);
 
         if (count <= 0 || count > 100000) {
-            logf("  SoulCount implausible -- layout %s rejected", layout_name(layout));
+            WALK_LOG("  SoulCount implausible -- layout %s rejected", layout_name(layout));
             continue;
         }
 
         void* player = read_object_property(api, "wh::rpgmodule::SoulList", souls, "PlayerSoul", layout);
-        logf("  PlayerSoul = %p", player);
+        WALK_LOG("  PlayerSoul = %p", player);
 
         void* combat = plausible_pointer(player)
             ? read_object_property(api, "wh::rpgmodule::Soul", player, "CombatSoul", layout)
             : nullptr;
-        logf("  CombatSoul = %p", combat);
+        WALK_LOG("  CombatSoul = %p", combat);
 
-        logf("WALK: SUCCESS with layout %s -- compare SoulCount against the HTTP API",
-             layout_name(layout));
+        logf("WALK: SUCCESS with layout %s -- compare SoulCount against the HTTP API (retries before it: %d)",
+             layout_name(layout), g_walkRetries);
 
         g_player = player;
         g_combat = combat;
@@ -457,7 +468,7 @@ void walk_to_soul() {
         return;
     }
 
-    logf("WALK: no candidate instance layout worked");
+    WALK_LOG("WALK: no candidate instance layout worked");
 }
 
 namespace {
@@ -2324,7 +2335,19 @@ bool bool_property(const Api& api, const char* typeName, const void* obj, const 
 
 void* read_player_soul() {
     const Api* api = cached_api();
-    if (!api || !g_walked) return nullptr;
+    if (!api) return nullptr;
+    if (!g_walked) {
+        // WO-124: see walk_to_soul. Main thread (every caller is a tick).
+        static DWORD lastTry = 0;
+        const DWORD now = GetTickCount();
+        if (now - lastTry < 2000) return nullptr;
+        lastTry = now;
+        ++g_walkRetries;
+        g_walkQuiet = (g_walkRetries % 30) != 1;   // one full trace per minute of retrying
+        walk_to_soul();
+        g_walkQuiet = false;
+        if (!g_walked) return nullptr;
+    }
     void* root = nullptr;
     if (!call_game_interface(api->game_interface, &root) || !plausible_pointer(root)) return nullptr;
     void* rpg = read_object_property(*api, "wh::shared::GameInterface", root, "RPGModule", g_layout);
