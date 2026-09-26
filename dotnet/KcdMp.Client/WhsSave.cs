@@ -34,7 +34,7 @@ namespace KcdMp.Client;
 /// description header and the footer tail are identical to the Python
 /// output; only the compressed bytes differ (docs/WO-122-findings.md s5).
 /// </summary>
-public static class WhsSave
+public static partial class WhsSave
 {
     public const string HenrySoul = "4c2dcffb-dea1-6263-72d7-b39f4db2d8b5";   // soul__player.xml player_henry
     public const int StatStory = 8;
@@ -604,46 +604,35 @@ public static class WhsSave
         public List<string> Blocks = [];
     }
 
-    private static byte[] BuildHenry(byte[] hostRaw, byte[] joinRaw, Dictionary<string, string> qclasses, QuestItemMode mode, SpliceReport rep)
+    private static byte[] BuildHenry(byte[] hostRaw, HenryParts parts, Dictionary<string, string> qclasses, QuestItemMode mode, SpliceReport rep)
     {
         var hRec = HenryChain(hostRaw)[^1];
-        var jRec = HenryChain(joinRaw)[^1];
-        var rec = NodeBytes(joinRaw, jRec);
+        var rec = parts.Record;
         var hrec = NodeBytes(hostRaw, hRec);
         if (!rec.AsSpan(6, 32).SequenceEqual(hrec.AsSpan(6, 32))) throw new InvalidDataException("player_henry GUID prefix differs between the saves");
 
-        // stat id 8 (storyProgress) from the host
-        var hch = FieldChain(hrec, 0x12FB, 0x0927, 0x1385);
-        var jch = FieldChain(rec, 0x12FB, 0x0927, 0x1385);
-        var hp = Payload(hrec, hch[^1]);
-        var jp = Payload(rec, jch[^1]);
-        uint? hval = null;
-        foreach (var (k, v) in Pairs(hp)) if (k == StatStory) hval = v;   // dict(): the last pair with the key wins
-        if (hval is not uint hv) throw new InvalidDataException($"host Henry has no stat id {StatStory}");
-        bool done = false;
-        for (int i = 0; i < jp.Length - 7; i += 8)
-        {
-            uint k = BinaryPrimitives.ReadUInt32LittleEndian(jp.AsSpan(i));
-            if (k == 0xFFFFFFFFu) break;
-            if (k == StatStory)
-            {
-                rep.StoryJoiner = BinaryPrimitives.ReadUInt32LittleEndian(jp.AsSpan(i + 4));
-                rep.StoryHost = hv;
-                BinaryPrimitives.WriteUInt32LittleEndian(jp.AsSpan(i + 4), hv);
-                done = true;
-            }
-        }
-        if (!done) throw new InvalidDataException($"joiner Henry has no stat id {StatStory} slot");
-        rec = Replace(rec, jch, jp);
+        // stat id 8 (storyProgress) from the host. WO-125: an early save may hold
+        // no story stat (host or joiner), and a new game's first Henry save holds
+        // no stat list at all: the host's value is written, inserted or (the host
+        // has none) removed, so the world's story progress is always the host's.
+        uint? hval = StoryOf(hrec);
+        rep.StoryHost = hval;
+        rec = WithStory(rec, hval, out uint? jOld);
+        rep.StoryJoiner = jOld;
 
         // 0x12FF renown record from the host
         var hr = FieldChain(hrec, 0x12FF)[^1];
-        var jr = FieldChain(rec, 0x12FF);
-        rep.RenownJoinerBytes = jr[^1].Len;
         rep.RenownHostBytes = hr.Len;
-        rec = Replace(rec, jr, Payload(hrec, hr));
+        if (HasField(rec, 0x12FF))
+        {
+            var jr = FieldChain(rec, 0x12FF);
+            rep.RenownJoinerBytes = jr[^1].Len;
+            rec = Replace(rec, jr, Payload(hrec, hr));
+        }
+        else rec = AppendField(rec, 0x12FF, Payload(hrec, hr));
 
         // quest-class items: the joiner's always go (they belong to the joiner's world)
+        if (!HasField(rec, 0x1301)) return rec;   // no inventory record (WO-125: the engine-default Henry)
         var (ch, items) = InventoryItems(rec);
         var eq = Equipped(rec);
         var drop = items.Where(it => qclasses.ContainsKey(it.Cls)).ToList();
@@ -666,38 +655,38 @@ public static class WhsSave
     /// <summary>
     /// EntityModule 01f8/7302/000B: [8-byte header] then 0x05AD entries of
     /// [16 owner soul GUID][9 bytes][16 key item instance GUID]. Host entries
-    /// naming a host Henry item are dropped; joiner entries naming a joiner
-    /// Henry item are added.
+    /// naming a host Henry item are dropped; the joiner's entries (those naming
+    /// one of the joiner Henry's own items, <see cref="HenryParts.KeyEntries"/>)
+    /// are added.
     /// </summary>
-    private static byte[] MergeKeys(byte[] hostRaw, byte[] joinRaw, HashSet<string> hostItems, HashSet<string> joinItems, SpliceReport? rep)
+    private static byte[] MergeKeys(byte[] hostRaw, HashSet<string> hostItems, IReadOnlyList<byte[]> joinerEntries, SpliceReport? rep)
     {
-        static (byte[] Head, List<(byte[] Entry, string Key)> Entries) Entries(byte[] raw)
-        {
-            var n = PathNodes(raw, 0x01F4, 0x01F8, 0x7302, 0x000B)[^1];
-            var b = Payload(raw, n);
-            var kids = b.Length > 8 ? Children(b, 8, b.Length) : [];
-            if (b.Length > 8 && kids is null) throw new InvalidDataException("EntityModule 000B does not parse");
-            var o = new List<(byte[], string)>();
-            foreach (var k in kids ?? [])
-            {
-                if (k.Tag != 0x05AD || k.Len != 41) throw new InvalidDataException($"unexpected 000B entry {k.Tag:x4}/{k.Len}");
-                o.Add((b.AsSpan(k.Off, 6 + k.Len).ToArray(), GuidStr(b.AsSpan(k.Off + 6 + 25))));
-            }
-            return (b.AsSpan(0, Math.Min(8, b.Length)).ToArray(), o);
-        }
-        var (hh, he) = Entries(hostRaw);
-        var (_, je) = Entries(joinRaw);
+        var (hh, he) = KeyEntries(hostRaw);
         var keep = he.Where(e => !hostItems.Contains(e.Key)).ToList();
-        var add = je.Where(e => joinItems.Contains(e.Key)).ToList();
-        if (rep is not null) { rep.KeysHostKept = keep.Count; rep.KeysHostDropped = he.Count - keep.Count; rep.KeysJoinerAdded = add.Count; }
+        if (rep is not null) { rep.KeysHostKept = keep.Count; rep.KeysHostDropped = he.Count - keep.Count; rep.KeysJoinerAdded = joinerEntries.Count; }
         using var ms = new MemoryStream();
         ms.Write(hh);
         foreach (var e in keep) ms.Write(e.Entry);
-        foreach (var e in add) ms.Write(e.Entry);
+        foreach (var e in joinerEntries) ms.Write(e);
         return ms.ToArray();
     }
 
-    private static readonly ushort[][] SideBlocks =
+    private static (byte[] Head, List<(byte[] Entry, string Key)> Entries) KeyEntries(byte[] raw)
+    {
+        var n = PathNodes(raw, KeyBlock)[^1];
+        var b = Payload(raw, n);
+        var kids = b.Length > 8 ? Children(b, 8, b.Length) : [];
+        if (b.Length > 8 && kids is null) throw new InvalidDataException("EntityModule 000B does not parse");
+        var o = new List<(byte[], string)>();
+        foreach (var k in kids ?? [])
+        {
+            if (k.Tag != 0x05AD || k.Len != 41) throw new InvalidDataException($"unexpected 000B entry {k.Tag:x4}/{k.Len}");
+            o.Add((b.AsSpan(k.Off, 6 + k.Len).ToArray(), GuidStr(b.AsSpan(k.Off + 6 + 25))));
+        }
+        return (b.AsSpan(0, Math.Min(8, b.Length)).ToArray(), o);
+    }
+
+    internal static readonly ushort[][] SideBlocks =
     [
         [0x01F4, 0x01F8, 0x7308, 0x352E], [0x01F4, 0x01F8, 0x7308, 0x352D],
         [0x01F4, 0x01F8, 0x7309, 0x0000], [0x01F4, 0x01F8, 0x7309, 0x0001],
@@ -705,16 +694,24 @@ public static class WhsSave
     ];
     private static readonly ushort[] KeyBlock = [0x01F4, 0x01F8, 0x7302, 0x000B];
 
-    private static HashSet<string> HenryItemSet(byte[] raw) =>
-        InventoryItems(NodeBytes(raw, HenryChain(raw)[^1])).Items.Select(i => i.Inst).ToHashSet();
+    private static HashSet<string> HenryItemSet(byte[] raw) => RecordItemSet(NodeBytes(raw, HenryChain(raw)[^1]));
+
+    private static HashSet<string> RecordItemSet(byte[] rec) =>
+        HasField(rec, 0x1301) ? InventoryItems(rec).Items.Select(i => i.Inst).ToHashSet() : [];
 
     /// <summary>The spliced stream: the host's, with the joiner's Henry record and side blocks put in.</summary>
-    public static byte[] SpliceStream(byte[] hostRaw, byte[] joinRaw, Dictionary<string, string> qclasses, QuestItemMode mode, SpliceReport rep)
+    public static byte[] SpliceStream(byte[] hostRaw, byte[] joinRaw, Dictionary<string, string> qclasses, QuestItemMode mode, SpliceReport rep) =>
+        SpliceStream(hostRaw, PartsFromStream(joinRaw, "", "save"), qclasses, mode, rep);
+
+    /// <summary>WO-125: the spliced stream from a Henry's parts (a save's, a stored snapshot's, a fresh Henry's).</summary>
+    public static byte[] SpliceStream(byte[] hostRaw, HenryParts parts, Dictionary<string, string> qclasses, QuestItemMode mode, SpliceReport rep)
     {
+        if (parts.Side.Length != SideBlocks.Length) throw new InvalidDataException("the Henry parts do not carry the six side blocks");
         var jobs = new List<(ushort[]? Tags, byte[] Payload)>();
-        foreach (var tags in SideBlocks) jobs.Add((tags, Payload(joinRaw, PathNodes(joinRaw, tags)[^1])));
-        jobs.Add((KeyBlock, MergeKeys(hostRaw, joinRaw, HenryItemSet(hostRaw), HenryItemSet(joinRaw), rep)));
-        var henry = BuildHenry(hostRaw, joinRaw, qclasses, mode, rep);
+        for (int i = 0; i < SideBlocks.Length; i++)
+            if (parts.Side[i] is byte[] sp) jobs.Add((SideBlocks[i], sp));
+        jobs.Add((KeyBlock, MergeKeys(hostRaw, HenryItemSet(hostRaw), parts.KeyEntries, rep)));
+        var henry = BuildHenry(hostRaw, parts, qclasses, mode, rep);
         jobs.Add((null, henry.AsSpan(6).ToArray()));
 
         List<Node> Where(byte[] r, ushort[]? tags) => tags is null ? HenryChain(r) : PathNodes(r, tags);
@@ -736,54 +733,67 @@ public static class WhsSave
     {
         if (!VerifyFooter(hostFile).Ok) throw new InvalidDataException("host save does not verify; refusing");
         if (!VerifyFooter(joinFile).Ok) throw new InvalidDataException("joiner save does not verify; refusing");
-        var h = Inflate(hostFile);
         var j = Inflate(joinFile);
-        var hs = DescriptionSummary(h.Desc);
         var js = DescriptionSummary(j.Desc);
-        hs.TryGetValue("BuildInfo", out var hb);
-        js.TryGetValue("BuildInfo", out var jb);
-        if (hb != jb) throw new InvalidDataException($"builds differ: {hb} vs {jb}");
-        var rep = new SpliceReport();
-        var raw = SpliceStream(h.Raw, j.Raw, qclasses, mode, rep);
-        return new SpliceResult(Deflate(h.DescBytes, raw, h.FooterTail), rep, hs, js);
+        return SpliceParts(hostFile, PartsFromStream(j.Raw, js.GetValueOrDefault("BuildInfo") ?? "", "save"), qclasses, mode, js);
     }
 
-    private static readonly string[] Spliced =
-    [
-        "01f4/01f8/7308/352e", "01f4/01f8/7308/352d", "01f4/01f8/7309/0000", "01f4/01f8/7309/0001",
-        "01f4/01f8/7301", "01f4/01f9/7302/0002", "01f4/01f8/7302/000b", "01f4/01f8/7308/3529/1161",
-    ];
+    /// <summary>WO-125: the splice from a Henry's parts (a stored snapshot, a fresh Henry). Refuses an unverified host and mixed builds.</summary>
+    public static SpliceResult SpliceParts(byte[] hostFile, HenryParts parts, Dictionary<string, string> qclasses, QuestItemMode mode,
+                                           SortedDictionary<string, string>? joinerSummary = null)
+    {
+        if (!VerifyFooter(hostFile).Ok) throw new InvalidDataException("host save does not verify; refusing");
+        var h = Inflate(hostFile);
+        var hs = DescriptionSummary(h.Desc);
+        hs.TryGetValue("BuildInfo", out var hb);
+        if ((hb ?? "") != parts.Build && !(parts.Build == "" && parts.Origin == HenryParts.OriginFreshDefault))
+            throw new InvalidDataException($"builds differ: {hb} vs {parts.Build}");
+        var rep = new SpliceReport();
+        var raw = SpliceStream(h.Raw, parts, qclasses, mode, rep);
+        var js = joinerSummary ?? new SortedDictionary<string, string>(StringComparer.Ordinal) { ["BuildInfo"] = parts.Build, ["Origin"] = parts.Origin };
+        return new SpliceResult(Deflate(h.DescBytes, raw, h.FooterTail), rep, hs, js);
+    }
 
     /// <summary>Re-derive every expectation from the three files. Returns the failures (empty = pass).</summary>
     public static List<string> Check(byte[] hostFile, byte[] joinFile, byte[] outFile, Dictionary<string, string> qclasses, QuestItemMode mode)
     {
+        var jc = Inflate(joinFile);
+        return CheckParts(hostFile, PartsFromStream(jc.Raw, DescriptionSummary(jc.Desc).GetValueOrDefault("BuildInfo") ?? "", "save"), outFile, qclasses, mode);
+    }
+
+    /// <summary>
+    /// WO-125: the check against a Henry's parts. Every block the parts carry
+    /// is theirs byte for byte; every other block is the host's.
+    /// </summary>
+    public static List<string> CheckParts(byte[] hostFile, HenryParts parts, byte[] outFile, Dictionary<string, string> qclasses, QuestItemMode mode)
+    {
         var fails = new List<string>();
         if (!VerifyFooter(outFile).Ok) fails.Add("output MD5 footer does not verify");
         var hc = Inflate(hostFile);
-        var jc = Inflate(joinFile);
         var oc = Inflate(outFile);
-        byte[] h = hc.Raw, j = jc.Raw, o = oc.Raw;
+        byte[] h = hc.Raw, o = oc.Raw;
         if (!hc.DescBytes.AsSpan().SequenceEqual(oc.DescBytes)) fails.Add("description header differs from the host");
 
-        bool Under(string k) => Spliced.Any(s => k == s || k.StartsWith(s + "/", StringComparison.Ordinal));
-        var lh = Leaves(h); var lo = Leaves(o); var lj = Leaves(j);
+        var spliced = new List<string> { "01f4/01f8/7302/000b", "01f4/01f8/7308/3529/1161" };
+        for (int i = 0; i < SideBlocks.Length; i++)
+            if (parts.Side[i] is not null) spliced.Add(PathText(SideBlocks[i]));
+        bool Under(string k) => spliced.Any(s => k == s || k.StartsWith(s + "/", StringComparison.Ordinal));
+        var lh = Leaves(h); var lo = Leaves(o);
         foreach (var k in lh.Keys.Union(lo.Keys).OrderBy(x => x, StringComparer.Ordinal))
         {
             if (Under(k)) continue;
             if (!lh.TryGetValue(k, out var a) || !lo.TryGetValue(k, out var b) || Digest(h, a) != Digest(o, b))
                 fails.Add("host block changed: " + k);
         }
-        foreach (var s in Spliced.Where(x => x != "01f4/01f8/7302/000b" && x != "01f4/01f8/7308/3529/1161").OrderBy(x => x, StringComparer.Ordinal))
+        for (int i = 0; i < SideBlocks.Length; i++)
         {
-            bool In(string k) => k == s || k.StartsWith(s + "/", StringComparison.Ordinal);
-            var ko = lo.Where(kv => In(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value);
-            var kj = lj.Where(kv => In(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value);
-            if (!ko.Keys.ToHashSet().SetEquals(kj.Keys) || ko.Any(kv => Digest(o, kv.Value) != Digest(j, kj[kv.Key])))
-                fails.Add("spliced block is not the joiner's: " + s);
+            if (parts.Side[i] is not byte[] want) continue;
+            if (PathGet(o, SideBlocks[i]) is not Node n || !Payload(o, n).AsSpan().SequenceEqual(want))
+                fails.Add("spliced block is not the joiner's: " + PathText(SideBlocks[i]));
         }
 
         var k0 = PathNodes(o, KeyBlock)[^1];
-        if (!Payload(o, k0).AsSpan().SequenceEqual(MergeKeys(h, j, HenryItemSet(h), HenryItemSet(j), null)))
+        if (!Payload(o, k0).AsSpan().SequenceEqual(MergeKeys(h, HenryItemSet(h), parts.KeyEntries, null)))
             fails.Add("EntityModule 000B key bindings are not the expected merge");
 
         var sh = SoulList(h); var so = SoulList(o);
@@ -797,13 +807,14 @@ public static class WhsSave
                 fails.Add("soul changed: " + gh[i]);
 
         var dh = DecodePlayerSoul(h, FindSoul(h, HenrySoul)!.Value);
-        var dj = DecodePlayerSoul(j, FindSoul(j, HenrySoul)!.Value);
+        var dj = DecodePlayerSoul(parts.Record, RecordNode(parts.Record));
         var dout = DecodePlayerSoul(o, FindSoul(o, HenrySoul)!.Value);
         foreach (var (key, val) in dj.Scalars)
             if (!dout.Scalars.TryGetValue(key, out var ov) || ov != val) fails.Add($"Henry {key} is not the joiner's");
         foreach (var key in dout.Scalars.Keys)
             if (!dj.Scalars.ContainsKey(key)) fails.Add($"Henry {key} is not the joiner's");
         var expStats = new SortedDictionary<string, uint>(dj.StatXp, StringComparer.Ordinal);
+        expStats.Remove("storyProgress");
         if (dh.StatXp.TryGetValue("storyProgress", out var hsp)) expStats["storyProgress"] = hsp;
         if (!expStats.SequenceEqual(dout.StatXp)) fails.Add("Henry stat_xp is not the joiner's with the host's storyProgress");
         var expInv = dj.Inventory.Where(i => !qclasses.ContainsKey(i.Class)).ToList();
@@ -889,6 +900,7 @@ public static class WhsSave
                     return fails.Count == 0 ? 0 : 1;
                 }
                 default:
+                    if (RunCliWo125(cmd, pos, Opt, w) is int rc) return rc;
                     w.WriteLine($"unknown --save-tool command '{cmd}'");
                     return 2;
             }

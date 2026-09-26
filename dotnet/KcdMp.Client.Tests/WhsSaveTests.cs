@@ -32,10 +32,16 @@ public class WhsSaveTests
     private const string Letter = "0b0b0b0b-0000-0000-0000-00000000b002";   // a quest-item class
     private const string Money = "5ef63059-322e-4e1b-abe8-926e100c770e";
 
-    private sealed record Item(string Inst, string Cls, uint Amount = 1, uint Flags = 0);
+    internal sealed record Item(string Inst, string Cls, uint Amount = 1, uint Flags = 0);
 
-    private sealed class Spec
+    internal sealed class Spec
     {
+        // WO-125: the playthrough seed (body 0x01FB, synthetic values only), who the player is, a new game's first Henry save
+        public uint Seed = 0xB0D1;
+        public bool Bohuta;       // the player entity is bound to player_bohuta (the prologue / Godwin), not Henry
+        public bool Pristine;     // Henry holds no stat and no skill XP (a new game's first Henry save)
+        public bool NoStory;      // Henry's stat list holds no storyProgress
+        public long SaveTime;
         public string Build = "1.5.5-release_1_5";
         public uint Story = 1000, Strength = 500;
         public byte[] Renown = [1, 2, 3, 4];
@@ -58,18 +64,20 @@ public class WhsSaveTests
 
     private static byte[] HenryRecord(Spec s)
     {
-        var stats = Cat(U32(0), U32(s.Strength), U32(8), U32(s.Story), U32(0xFFFFFFFF), U32(0));
+        var stats = s.NoStory ? Cat(U32(0), U32(s.Strength), U32(0xFFFFFFFF)) : Cat(U32(0), U32(s.Strength), U32(8), U32(s.Story), U32(0xFFFFFFFF), U32(0));
         var skills = Cat(U32(2), U32(77), U32(0xFFFFFFFF), U32(0));
         var states = new byte[24];
         BinaryPrimitives.WriteSingleLittleEndian(states, 55.5f + s.Side);
         var perks = Cat(s.Perks.Select(pk => Tlv(0x03D8, Tlv(0x137E, Tlv(0x1379, Cat(G(pk), new byte[4]))))).ToArray());
-        var core = Cat(Tlv(0x1385, stats), Tlv(0x138D, skills), Tlv(0x138B, states), Tlv(0x137E, perks.Length > 0 ? perks : Tlv(0x0001, [9])));
+        var core = s.Pristine
+            ? Cat(Tlv(0x138B, states), Tlv(0x137E, perks.Length > 0 ? perks : Tlv(0x0001, [9])))
+            : Cat(Tlv(0x1385, stats), Tlv(0x138D, skills), Tlv(0x138B, states), Tlv(0x137E, perks.Length > 0 ? perks : Tlv(0x0001, [9])));
         var buffs = Cat(U32(1), Tlv(0x0001, Cat(new byte[8], G("cccccccc-0000-0000-0000-00000000c003"), [s.Side])));
         var main = Cat(Tlv(0x0927, core), Tlv(0x0928, buffs));
         var list = Cat(new[] { Tlv(0x0000, G("dddddddd-0000-0000-0000-00000000d004")) }.Concat(s.Items.Select(ItemRec)).ToArray());
         var eq = Tlv(0x0001, Tlv(0x0000, Cat(s.Equipped.Select(G).ToArray()).Length > 0 ? Cat(s.Equipped.Select(G).ToArray()) : new byte[16]));
         var inv = Cat(Tlv(0x0007, list), Tlv(0x0006, eq));
-        var name = Cat(Encoding.Latin1.GetBytes("player_henry\0"), BitConverter.GetBytes(0x7777UL));
+        var name = Cat(Encoding.Latin1.GetBytes("player_henry\0"), BitConverter.GetBytes(s.Bohuta ? 0UL : 0x7777UL));
         var fields = Cat(Tlv(0x12F9, name), Tlv(0x12FB, main), Tlv(0x12FF, s.Renown), Tlv(0x1301, inv));
         if (s.Field1300) fields = Cat(fields, Tlv(0x1300, G("eeeeeeee-0000-0000-0000-00000000e005")));
         return Tlv(0x115E, Cat(G(Henry), G(Shared), fields));
@@ -82,7 +90,8 @@ public class WhsSaveTests
     {
         var keys = Cat(new[] { new byte[8] { 1, 0, 0, 0, s.Side, 0, 0, 0 } }
             .Concat(s.Keys.Select(k => Tlv(0x05AD, Cat(G(k.Owner), new byte[9], G(k.Key))))).ToArray());
-        var souls = Tlv(0x1161, Cat(NpcRecord(s), HenryRecord(s)));
+        var bohuta = Tlv(0x115E, Cat(G(WhsSave.BohutaSoul), G(Shared), Tlv(0x12F9, Cat(Encoding.Latin1.GetBytes("Dude\0"), BitConverter.GetBytes(s.Bohuta ? 0x7777UL : 0UL)))));
+        var souls = Tlv(0x1161, Cat(NpcRecord(s), HenryRecord(s), bohuta));
         var rpg = Tlv(0x7308, Cat(Tlv(0x3529, Cat(Tlv(0x1160, new byte[4]), souls)), Tlv(0x352C, Encoding.ASCII.GetBytes(s.World)),
                                   Tlv(0x352D, [0x2D, s.Side, 1, 1, 1, 1, 1]), Tlv(0x352E, [0x2E, s.Side, 2, 2, 2, 2, 2])));
         var ent = Tlv(0x7302, Cat(Tlv(0x000A, Encoding.ASCII.GetBytes(s.World + "-qim")), Tlv(0x000B, keys)));
@@ -92,15 +101,15 @@ public class WhsSaveTests
                                   Tlv(0x20A7, Cat(Encoding.ASCII.GetBytes("level\0"), Encoding.ASCII.GetBytes("trosecko")))));
         var phaseB = Tlv(0x01F8, Cat(ent, rpg, pm, gui));
         var phaseC = Tlv(0x01F9, Cat(Tlv(0x7302, Tlv(0x0002, [0x72, s.Side, 6, 6, 6, 6, 6])), Tlv(0x7305, Encoding.ASCII.GetBytes(s.World + "-weather"))));
-        var body = Tlv(0x01F4, Cat(Tlv(0x01FB, U32(0xB0D1)), Tlv(0x01F6, Tlv(0x730A, Encoding.ASCII.GetBytes(s.World + "-quests"))), cry, phaseB, phaseC));
+        var body = Tlv(0x01F4, Cat(Tlv(0x01FB, U32(s.Seed)), Tlv(0x01F6, Tlv(0x730A, Encoding.ASCII.GetBytes(s.World + "-quests"))), cry, phaseB, phaseC));
         // pad the world with a large filler so the stream spans several 32 KB blocks
         var filler = Tlv(0x01F5, Enumerable.Range(0, 70000).Select(i => (byte)(i * 7 + s.World.Length)).ToArray());
         return Cat(U32(23), filler, body, Tlv(0x01FA, []));
     }
 
-    private static byte[] File(Spec s)
+    internal static byte[] File(Spec s)
     {
-        var desc = Encoding.UTF8.GetBytes($"<SaveGame SaveType=\"QuickSave\" SaveId=\"7\" LevelName=\"trosecko\" BuildInfo=\"{s.Build}\" GameMode=\"normal\" World=\"{s.World}\"/>");
+        var desc = Encoding.UTF8.GetBytes($"<SaveGame SaveType=\"QuickSave\" SaveId=\"7\"{(s.SaveTime > 0 ? $" SaveTime=\"{s.SaveTime}\"" : "")} LevelName=\"trosecko\" BuildInfo=\"{s.Build}\" GameMode=\"normal\" World=\"{s.World}\"/>");
         var tail = Enumerable.Range(0, 44).Select(i => (byte)(i == 0 ? 0x5A : 0)).ToArray();
         return WhsSave.Deflate(desc, Stream(s), tail);
     }
@@ -108,9 +117,9 @@ public class WhsSaveTests
     /// <summary>WO-123: a valid synthetic save for the transfer tests (verifies; never a real file).</summary>
     internal static byte[] SyntheticSave(string world = "host-world") => File(new Spec { World = world });
 
-    private static readonly Dictionary<string, string> Quest = new() { [Letter] = "loveLetter" };
+    internal static readonly Dictionary<string, string> Quest = new() { [Letter] = "loveLetter" };
 
-    private static (Spec Host, Spec Join) Pair()
+    internal static (Spec Host, Spec Join) Pair()
     {
         var host = new Spec
         {
