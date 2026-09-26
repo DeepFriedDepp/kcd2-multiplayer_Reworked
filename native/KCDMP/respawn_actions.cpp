@@ -423,6 +423,7 @@ void* const*  g_vftApse = nullptr;
 void* const*  g_vftMap = nullptr;
 void*         g_aiObjectManager = nullptr;
 void*         g_aiCastLinkable = nullptr;
+void*         g_aiCastIntelligent = nullptr;   // WO-127: C_AIObject* -> C_IntelligentObject* (null when not one)
 
 void* g_apseGetter = nullptr;
 int   g_markType = kMarkGrave;   // lifted from C_ShowMapMarker's execute: "mov rcx,[rax+0xF0]; call <getter>"
@@ -552,6 +553,8 @@ void resolve_marker() {
     const auto ex = module_exports(xg);
     g_aiObjectManager = find_export(ex, "?AIObjectManager@C_AISingletons@xgenaimodule@wh@@");
     g_aiCastLinkable = find_export(ex, "??$ai_cast_impl@PEAVC_LinkableObject@xgenaimodule@wh@@PEAVC_AIObject@23@@ai_cast_private@xgenaimodule@wh@@");
+    g_aiCastIntelligent = find_export(ex, "??$ai_cast_impl@PEAVC_IntelligentObject@xgenaimodule@wh@@PEAVC_AIObject@23@@ai_cast_private@xgenaimodule@wh@@");
+    logf("MP-LEASH brain read %s (ai_cast<C_IntelligentObject> export)", g_aiCastIntelligent && g_aiObjectManager ? "armed" : "MISSING");
     g_markArmed = g_vftApse && g_vftMap && g_aiObjectManager && g_aiCastLinkable;
     logf("ACTIONS: marker %s (C_UIApse/C_UIMap RTTI %s, XGenAI AIObjectManager/ai_cast exports %s; map now %s)",
          g_markArmed ? "armed" : "NOT armed", (g_vftApse && g_vftMap) ? "ok" : "MISSING",
@@ -1438,5 +1441,25 @@ bool hud_message(const char* text) {
 }
 
 uint64_t entity_wuid(void* ent) { return ent ? wuid_of_entity(ent) : 0; }
+
+// WO-127: the brain's suspension, as C_IntelligentObject::Suspend keeps it
+// (WO-107 s3.2, code-verified): state enum at +0x128 (0 running, 1/2
+// suspended), suspend-reason bitmask at +0x129 (one bit per requesting
+// context; our wh_ai_PauseNPC is one of them). Reached through the game's own
+// exported ai_cast, which answers null for anything that is not an
+// intelligent object -- never a blind offset read.
+bool brain_state(void* ent, uint64_t* wuidOut, int* state, int* mask) {
+    *state = -1; *mask = -1;
+    const uint64_t w = ent ? wuid_of_entity(ent) : 0;
+    if (wuidOut) *wuidOut = w;
+    void* mgr = nullptr; void* ai = nullptr; void* io = nullptr;
+    if (!w || !g_aiCastIntelligent || !fcall(g_aiObjectManager, &mgr) || !mgr) return false;
+    if (!vcall(mgr, kAimgrByWuid, &ai, static_cast<const uint64_t*>(&w)) || !ai) return false;
+    if (!fcall(g_aiCastIntelligent, &io, ai) || !io) return false;
+    uint8_t st = 0, mk = 0;
+    if (!rd8(io, 0x128, &st) || !rd8(io, 0x129, &mk)) return false;
+    *state = st; *mask = mk;
+    return true;
+}
 
 } // namespace kcdmp::actions

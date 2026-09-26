@@ -101,7 +101,11 @@ $AsmMarkers = @(
     # 0.22.0 (WO-94). Shared Quests spans agent + pak; an agent that predates
     # it drops StoryBeat kinds 2-4 and never raises the prompt.
     @{ File = 'KcdMpClient.dll'; Marker = 'CATCH-UP FIRED HERE';    Owner = 'WO-94 Shared Quests (agent half)' },
-    @{ File = 'KcdMpClient.dll'; Marker = 'CATCHUP-HAZARD';         Owner = 'WO-94 catch-up hazard tagging' }
+    @{ File = 'KcdMpClient.dll'; Marker = 'CATCHUP-HAZARD';         Owner = 'WO-94 catch-up hazard tagging' },
+    # 0.29.9 (WO-127): Steam as a connection path, the host claim, the leash recorder.
+    @{ File = 'KcdMp.Steam.dll';   Marker = 'SteamJoinCode';         Owner = 'WO-127 Steam connection path' },
+    @{ File = 'KcdMpServer.dll'; Marker = 'MP-HOST-CLAIM';          Owner = 'WO-127 host claim (relay authority)' },
+    @{ File = 'KcdMpClient.dll'; Marker = 'MP-LEASH-COST';          Owner = 'WO-127 leash recorder (agent half)' }
 )
 
 $PakMarkers = @(
@@ -140,7 +144,9 @@ $PakMarkers = @(
     @{ Marker = '@@WO94-MAINQUEST-REGISTRY-BEGIN@@'; Owner = 'WO-94 main-quest registry' },
     @{ Marker = 'function KCD2MP_QuestShowPrompt'; Owner = 'WO-94 readiness prompt' },
     @{ Marker = 'CATCHUP-HAZARD';                 Owner = 'WO-94 hazard window (mod half)' },
-    @{ Marker = 'MP_NPC_DIVERGE_COOLDOWN_S = 180'; Owner = 'WO-94 180 s divergence stand-off' }
+    @{ Marker = 'MP_NPC_DIVERGE_COOLDOWN_S = 180'; Owner = 'WO-94 180 s divergence stand-off' },
+    # 0.29.9 (WO-127): mp_leash_trace lives in the pak.
+    @{ Marker = 'function KCD2MP_SetLeashTrace';  Owner = 'WO-127 mp_leash_trace' }
 )
 
 function Test-Assembly($dir, $label) {

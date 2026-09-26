@@ -121,4 +121,18 @@ bool   entity_pos(void* e, float out[3]);          // world translation, SEH-gua
 void*  entity_by_name(const char* name);           // one full walk; null when absent
 bool   living_flying(void* e, int* flying);        // pe_status_living.bFlying, when readable
 
+// WO-127 (leash recorder), main thread, read-only.
+struct PhysicsStatus {
+    uint8_t present = 0;      // the entity has a physical entity
+    uint8_t awakeKnown = 0, awake = 0;   // pe_status_awake answered, and its answer
+    uint8_t living = 0;       // a CryPhysics living entity
+    uint8_t flying = 0;       // pe_status_living.bFlying
+    uint8_t speedKnown = 0;
+    float   speed = 0;        // |pe_status_living.vel|, m/s
+};
+bool physics_status(void* e, PhysicsStatus* out);
+// The native stream for an authored name (joiner: the host's NPC samples):
+// seconds since the last accepted sample (-1 none), and whether it drives a body.
+bool stream_info(const char* name, double* ageS, bool* bound);
+
 } // namespace kcdmp::npcdrive

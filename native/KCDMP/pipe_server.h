@@ -264,6 +264,14 @@ constexpr int     kJoinPlaceLen       = 16;
 constexpr uint8_t kSaveList           = 0x1D;   // -> 0x8D
 constexpr uint8_t kJoinGuard          = 0x1E;   // WO-124: the death guard's state -> 0x8E [ok][seq][session][enabled][applied]
 constexpr uint8_t kJoinGuardReply     = 0x8E;
+// WO-127: the leash recorder's sample (leash.h). Offset 0 takes a fresh sample on
+// the main thread; any other offset pages the last one (no main-thread work).
+//   request [radius:4f][n:1][anchors n*12][offset:2]
+//   reply   [ok][seq][refuse][n][town n][interior n][walked:4][frames:4][sampleUs:4][total:2][offset:2][count:2]
+//           + count * [wuid:8][x,y,z:12][flags:2][brainState:1][brainMask:1][speedCms:2][streamAgeMs:2][nameLen:1][name]
+constexpr uint8_t kLeashSample        = 0x1F;
+constexpr uint8_t kLeashReply         = 0x8F;
+constexpr size_t  kLeashPageBudget    = 7000;
 constexpr uint8_t kSaveListReply      = 0x8D;   // [ok][seq][listed][idx:2][count:2][current][contPl][contIdx:2][nameLen][contName]
 constexpr uint8_t kLocalAction        = 0x96;   // unsolicited: [kind][phase][ic][zone][type][flags][guid:16][eid:4][nameLen][name]
 constexpr uint8_t kPvpHitOut          = 0x97;   // unsolicited: [victimEid:4][st:4f][hp:4f][flags][material]

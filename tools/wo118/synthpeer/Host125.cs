@@ -141,7 +141,7 @@ static class Host125
             {
                 while (!hard.IsCancellationRequested)
                 {
-                    await W(PositionCodec.BuildPosition(hp[0], hp[1], hp[2], 0, false, false, null));
+                    await W(PositionCodec.BuildPosition(hp[0], hp[1], hp[2], 0, false, false, null, hostClaim: true));   // WO-127: the synthetic host claims the session like a real one
                     if (n++ % 5 == 0) await Announce();
                     await Task.Delay(1000, hard.Token);
                 }

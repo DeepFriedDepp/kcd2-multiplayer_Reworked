@@ -100,4 +100,12 @@ constexpr size_t kMaxReplyBytes = 8000;   // well under the pipe's uint16 payloa
 // callers control it (the pipe caps it, see pipe_server.h).
 bool scan(const Anchor* anchors, int anchorCount, float radius, ScanResult* out);
 
+// WO-127 (leash recorder): the same walk and the same gates as scan(), handing
+// each NPC/NPC_Female/Horse within radius of any anchor to `visit` instead of
+// packing a reply. Main thread; `visit` must be read-only. Returns false (with
+// *refuse set) on the same refusals scan() makes.
+using Visit = void (*)(void* entity, const char* name, float x, float y, float z, bool isHorse, void* ctx);
+bool for_each_in_radius(const Anchor* anchors, int anchorCount, float radius, Visit visit, void* ctx,
+                        uint32_t* walked, uint8_t* refuse);
+
 } // namespace kcdmp::npcscan

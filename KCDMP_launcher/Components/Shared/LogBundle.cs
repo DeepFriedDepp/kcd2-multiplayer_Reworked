@@ -110,6 +110,15 @@ namespace KCDMP_launcher.Components.Shared
                 // The primary native log sits beside the DLL, which ships in
                 // the same directory as the agent.
                 AddIfPresent(Path.Combine(agentDirectory, "kcdmp-native.log"), "kcdmp-native.log");
+                // WO-127: the leash recorder's CSVs (mp_leash_trace), newest first.
+                try
+                {
+                    var leash = new DirectoryInfo(Path.Combine(agentDirectory, "leash"));
+                    if (leash.Exists)
+                        foreach (var f in leash.GetFiles("leash-*.csv").OrderByDescending(f => f.LastWriteTimeUtc).Take(8))
+                            AddIfPresent(f.FullName, $"leash/{f.Name}");
+                }
+                catch { }
             }
 
             // Serilog's rolling file names are app<yyyyMMdd>.log; take the two

@@ -5241,6 +5241,35 @@ function KCD2MP_Wo125Files(arg)
     return true
 end
 
+-- WO-127: the leash recorder (for WO-128). The agent does the work (a native
+-- sample a second, CSV beside agent.log); this only flips it and answers the
+-- agent's once-a-second question about the host's own context.
+KCD2MP.leashTrace = false
+
+-- mp_leash_trace on|off (default off); bare = report.
+function KCD2MP_SetLeashTrace(arg)
+    local v = KCD2MP_Wo122ParseBool(arg)
+    if v == "bad" then mp_log("mp_leash_trace: expected on|off, got '" .. tostring(arg) .. "'"); return false end
+    if v ~= nil then KCD2MP.leashTrace = v end
+    mp_log(string.format("WO127-LEASH trace=%s -- %s", KCD2MP.leashTrace and "on" or "off",
+        KCD2MP.leashTrace and "one sample a second, CSV in the agent's leash folder (host: every NPC within 200 m of either player)"
+                          or "nothing recorded"))
+    if v ~= nil then KCD2MP_EmitEvent("leash_trace", KCD2MP.leashTrace and "on" or "off") end
+    return true
+end
+
+-- Asked by the agent once a second while the trace is on (host): in dialogue, in a fight.
+function KCD2MP_LeashCtx()
+    if not KCD2MP.leashTrace or not player then return end
+    local d, f = 0, 0
+    pcall(function() if player.human and player.human:IsInDialog() then d = 1 end end)
+    pcall(function()
+        local c = player.soul and player.soul:IsInCombatDanger()
+        if c == true or (tonumber(c) or 0) ~= 0 then f = 1 end
+    end)
+    KCD2MP_EmitEvent("leash_ctx", string.format("d=%d f=%d", d, f))
+end
+
 -- The agent's answer to mp_henry_files: one line per world, "|"-separated.
 function KCD2MP_Wo125FilesShow(text)
     local n = 0
@@ -13478,6 +13507,8 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_henry_reset",         "KCD2MP_Wo125Reset()",                   "WO-125: start over in your current host's world: its stored character is deleted and the next join asks Bring / Start fresh again")
     System.AddCCommand("mp_henry_files",         'KCD2MP_Wo125Files(%line)',              "WO-125: list the host worlds your character is stored for (world, last joined, snapshots, size): mp_henry_files; delete one: mp_henry_files delete <world>")
     mp_log("WO125-BUILD snapshot=QuickSave keep=100 stale_days=90 -- dormant unless the host runs a shared world")
+    -- WO-127: the leash recorder (off unless turned on; the tester page says: host, for the session).
+    System.AddCCommand("mp_leash_trace",         'KCD2MP_SetLeashTrace(%line)',           "WO-127: record, once a second, every NPC within 200 m of either player and every simulation signal the game exposes cheaply, to a CSV beside agent.log (for WO-128): mp_leash_trace on|off; bare = report")
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")

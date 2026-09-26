@@ -69,6 +69,9 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte SaveListReply     = 0x8D;
     private const byte JoinGuard         = 0x1E;   // -> 0x8E [ok][seq][session][enabled][applied]
     private const byte JoinGuardReply    = 0x8E;
+    // WO-127: the leash recorder (native/KCDMP/leash.h)
+    private const byte LeashSample       = 0x1F;   // [radius:4f][n][anchors n*12][offset:2] -> 0x8F
+    private const byte LeashReply        = 0x8F;
 
     private const int GuidLen = 16;
 
@@ -795,6 +798,30 @@ public sealed class CombatPipe : IAsyncDisposable
             return null;
         }
         return res;
+    }
+
+    /// <summary>
+    /// WO-127: one leash sample (pipe 0x1F -> 0x8F), every page of it. The
+    /// first request takes the sample on the game's main thread; later pages
+    /// are served from the DLL's copy. Null when the DLL refused or never
+    /// answered (a DLL older than 0.29.9 answers "unknown command").
+    /// </summary>
+    public async Task<(LeashPage Head, List<LeashEntry> All)?> LeashSampleAsync(
+        IReadOnlyList<(float X, float Y, float Z)> anchors, float radius, CancellationToken ct = default)
+    {
+        var all = new List<LeashEntry>();
+        LeashPage? head = null;
+        ushort offset = 0;
+        for (int guard = 0; guard < 64; guard++)
+        {
+            var (body, _) = await SendAndAwaitAsync(LeashSample, LeashCodec.BuildRequest(anchors, radius, offset), LeashReply, ct);
+            if (body is null || !LeashCodec.TryParse(body, out var page) || page is null || !page.Ok) return null;
+            head ??= page;
+            all.AddRange(page.Entries);
+            if (page.Entries.Count == 0 || all.Count >= page.Total) break;
+            offset = (ushort)all.Count;
+        }
+        return head is null ? null : (head, all);
     }
 
     /// <summary>

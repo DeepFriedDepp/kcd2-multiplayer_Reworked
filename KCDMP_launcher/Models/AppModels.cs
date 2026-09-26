@@ -223,7 +223,10 @@ namespace KCDMP_launcher.Models
         // the final default after the WO-128 test.
         public uint SteamAppId { get; set; } = 2429020;
 
-        // WO-127: the last Steam code typed in the Join window (this machine only).
+        // WO-127: the last Steam code typed in the Join window, for this launcher
+        // run only: never written to settings.json (the log bundle carries that
+        // file, and a code names the host's Steam account).
+        [System.Text.Json.Serialization.JsonIgnore]
         public string LastSteamCode { get; set; } = "";
     }
 }

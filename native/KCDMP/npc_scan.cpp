@@ -268,4 +268,55 @@ bool scan(const Anchor* anchors, int anchorCount, float radius, ScanResult* out)
     return true;
 }
 
+bool for_each_in_radius(const Anchor* anchors, int anchorCount, float radius, Visit visit, void* ctx,
+                        uint32_t* walked, uint8_t* refuse) {
+    *walked = 0; *refuse = kOk;
+    if (!anchors || anchorCount < 1 || !visit) { *refuse = kModuleMissing; return false; }
+    HMODULE entSysMod = GetModuleHandleA("CryEntitySystem.dll");
+    HMODULE scriptSysMod = GetModuleHandleA("CryScriptSystem.dll");
+    if (!entSysMod || !scriptSysMod) { *refuse = kModuleMissing; return false; }
+    const void* cEntityVftable = reinterpret_cast<const char*>(entSysMod) + kRvaCEntityVftable;
+    void* gEnvPtr = nullptr; void* entitySystem = nullptr;
+    if (!read_ptr(reinterpret_cast<const char*>(scriptSysMod) + kRvaCryScriptSystemGEnvPtr, 0, &gEnvPtr) || !gEnvPtr ||
+        !read_ptr(gEnvPtr, kOffGEnvEntitySystem, &entitySystem) || !entitySystem) { *refuse = kGEnvUnmapped; return false; }
+    if (!resolve_classes(entitySystem)) { *refuse = kClassRegistryUnmapped; return false; }
+    void* iter = nullptr;
+    if (!call_vtbl(kVtblEntitySystemGetEntityIterator, entitySystem, &iter) || !iter) { *refuse = kGEnvUnmapped; return false; }
+    { void* dummy = nullptr; call_vtbl(kVtblIterAddRef, iter, &dummy); }
+    auto release_iter = [&] { void* dummy = nullptr; call_vtbl(kVtblIterRelease, iter, &dummy); };
+    { void* dummy = nullptr; if (!call_vtbl(kVtblIterMoveFirst, iter, &dummy)) { release_iter(); *refuse = kReadFaulted; return false; } }
+
+    uint32_t total = 0, vptrOk = 0;
+    for (;;) {
+        void* entity = nullptr;
+        if (!call_vtbl(kVtblIterNext, iter, &entity) || !entity) break;
+        ++total;
+        void* vptr = nullptr;
+        if (!read_ptr(entity, 0, &vptr) || vptr != cEntityVftable) {
+            if (total >= 5 && vptrOk == 0) { release_iter(); *refuse = kGEnvUnmapped; *walked = total; return false; }
+            continue;
+        }
+        ++vptrOk;
+        void* cls = nullptr;
+        if (!call_vtbl(kVtblEntityGetClass, entity, &cls) || !cls) continue;
+        const bool isHorse = (cls == g_classHorse);
+        if (!isHorse && cls != g_classNpc && cls != g_classNpcFemale) continue;
+        float x, y, z, yaw;
+        if (!read_pos_yaw(entity, &x, &y, &z, &yaw)) continue;
+        bool inRange = false;
+        for (int i = 0; i < anchorCount && !inRange; ++i) {
+            const float dx = x - anchors[i].x, dy = y - anchors[i].y;
+            inRange = dx * dx + dy * dy <= radius * radius;
+        }
+        if (!inRange) continue;
+        char name[60]{};
+        if (!read_name_safe(entity, name, sizeof(name))) continue;
+        visit(entity, name, x, y, z, isHorse, ctx);
+    }
+    release_iter();
+    *walked = total;
+    if (vptrOk == 0) { *refuse = kGEnvUnmapped; return false; }
+    return true;
+}
+
 } // namespace kcdmp::npcscan

@@ -132,4 +132,9 @@ bool hud_message(const char* text);
 // GetMyWUID resolves it -- the grave marker's route). 0 when unavailable.
 uint64_t entity_wuid(void* ent);
 
+// WO-127 (leash recorder): the entity's WUID and its brain's suspension --
+// state (0 running, 1/2 suspended) and the per-context reason bitmask.
+// -1/-1 when the entity has no intelligent object. Main thread, read-only.
+bool brain_state(void* ent, uint64_t* wuid, int* state, int* mask);
+
 } // namespace kcdmp::actions

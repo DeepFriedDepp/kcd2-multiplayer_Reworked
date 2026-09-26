@@ -67,7 +67,8 @@ function Bad([string] $m) { $script:fail++; Write-Host "  FAIL  $m" -ForegroundC
 
 Write-Host "`n=== WO-110 R10: payload coherence + smoke, $Payload ===`n"
 
-foreach ($f in @('KcdMpServer.exe', 'KcdMpClient.exe', 'KcdMp.Protocol.dll', 'appsettings.json', 'KcdMpClient.deps.json', 'KcdMpServer.deps.json')) {
+# WO-127: KcdMp.Steam.dll -- the relay and the agent both load it (the Steam connection path).
+foreach ($f in @('KcdMpServer.exe', 'KcdMpClient.exe', 'KcdMp.Protocol.dll', 'KcdMp.Steam.dll', 'appsettings.json', 'KcdMpClient.deps.json', 'KcdMpServer.deps.json')) {
     if (-not (Test-Path (Join-Path $Payload $f))) { Bad "payload is missing $f"; exit 1 }
 }
 

@@ -16,6 +16,7 @@
 #include "npc_trace.h"
 #include "join_native.h"
 #include "savelist.h"
+#include "leash.h"
 #include "log.h"
 
 #include <windows.h>
@@ -365,6 +366,35 @@ void send_npc_scan_result(HANDLE h, bool ok, uint8_t seq, const kcdmp::npcscan::
     }
     const size_t payloadLen = frame.size() - 3;
     frame[0] = kNpcScanResult;
+    frame[1] = static_cast<BYTE>(payloadLen & 0xFF);
+    frame[2] = static_cast<BYTE>((payloadLen >> 8) & 0xFF);
+    EnterCriticalSection(&g_write_lock);
+    write_all(h, frame.data(), static_cast<DWORD>(frame.size()));
+    LeaveCriticalSection(&g_write_lock);
+}
+
+// WO-127: 0x8F, one page of a leash sample (layout in pipe_server.h).
+void send_leash_page(HANDLE h, bool ok, uint8_t seq, const kcdmp::leash::Result& r, uint16_t total, uint16_t offset) {
+    std::vector<BYTE> frame;
+    frame.reserve(3 + 40 + r.entries.size() * 64);
+    frame.resize(3);
+    auto put = [&](const void* p, size_t n) { const BYTE* b = static_cast<const BYTE*>(p); frame.insert(frame.end(), b, b + n); };
+    BYTE okB = ok ? 1 : 0, n = static_cast<BYTE>(r.anchors);
+    put(&okB, 1); put(&seq, 1); put(&r.refuse, 1); put(&n, 1);
+    for (int i = 0; i < r.anchors; ++i) put(&r.town[i], 1);
+    for (int i = 0; i < r.anchors; ++i) put(&r.interior[i], 1);
+    put(&r.walked, 4); put(&r.frames, 4); put(&r.sampleUs, 4);
+    const uint16_t count = static_cast<uint16_t>(r.entries.size());
+    put(&total, 2); put(&offset, 2); put(&count, 2);
+    for (const auto& e : r.entries) {
+        put(&e.wuid, 8); put(&e.x, 4); put(&e.y, 4); put(&e.z, 4);
+        put(&e.flags, 2); put(&e.brainState, 1); put(&e.brainMask, 1);
+        put(&e.speedCms, 2); put(&e.streamAgeMs, 2);
+        const BYTE nl = static_cast<BYTE>(std::strlen(e.name));
+        put(&nl, 1); put(e.name, nl);
+    }
+    const size_t payloadLen = frame.size() - 3;
+    frame[0] = kLeashReply;
     frame[1] = static_cast<BYTE>(payloadLen & 0xFF);
     frame[2] = static_cast<BYTE>((payloadLen >> 8) & 0xFF);
     EnterCriticalSection(&g_write_lock);
@@ -1016,6 +1046,40 @@ void serve(HANDLE h) {
                     }, "ResolveLuaClosure", info);
                 if (!ran) logf("PIPE: ResolveLuaClosure timed out waiting for a frame");
                 send_closure_info(h, ran ? info : kcdmp::luaintrospect::ClosureInfo{});
+                break;
+            }
+
+            // WO-127: the leash recorder (read-only; nothing runs unless the trace is on).
+            case kLeashSample: {
+                kcdmp::leash::Result page{};
+                uint8_t n = len >= 5 ? body[4] : 0;
+                if (n < 1 || n > kcdmp::leash::kMaxAnchors || static_cast<int>(len) != 4 + 1 + n * 12 + 2) {
+                    logf("PIPE: LeashSample wrong length %u (anchors %u)", len, n);
+                    send_leash_page(h, false, seq, page, 0, 0);
+                    break;
+                }
+                float radius = 0; std::memcpy(&radius, body, 4);
+                kcdmp::leash::Anchor anchors[kcdmp::leash::kMaxAnchors];
+                for (int i = 0; i < n; ++i) std::memcpy(&anchors[i], body + 5 + i * 12, 12);
+                uint16_t offset = 0; std::memcpy(&offset, body + 5 + n * 12, 2);
+                bool ok = true;
+                if (offset == 0) {
+                    bool faulted = false, sampled = false;
+                    const bool ran = run_sync_bounded<bool>(
+                        [anchors, n, radius](bool& result) {
+                            kcdmp::leash::Result r{};
+                            result = kcdmp::leash::sample(anchors, n, radius, &r);
+                        }, "LeashSample", sampled, &faulted);
+                    ok = ran && !faulted && sampled;
+                    if (!ran) logf("PIPE: LeashSample timed out waiting for a frame");
+                }
+                uint16_t total = 0;
+                if (!ok || !kcdmp::leash::page(offset, kLeashPageBudget, &page, &total)) {
+                    page.entries.clear();
+                    send_leash_page(h, false, seq, page, 0, offset);
+                    break;
+                }
+                send_leash_page(h, true, seq, page, total, offset);
                 break;
             }
 

@@ -2069,6 +2069,7 @@ public partial class GameBridge(ClientConfig config)
                     {
                         x = st.X; y = st.Y; z = st.Z; rotZ = st.RotZ; riding = st.IsRiding;
                     }
+                    Wo127NoteLocal(x, y, z, riding);   // WO-127: the leash recorder's host/joiner anchor
 
                     // WO-28 Flows A and C ride the same sample the position
                     // push already reads, so neither adds a read of its own.
@@ -3934,6 +3935,7 @@ public partial class GameBridge(ClientConfig config)
     {
         try
         {
+            Wo127NotePeerMenu(sourceGhostId, paused);   // WO-127
             await ExecLuaAsync(
                 $"KCD2MP_SetGhostMenuState(\"{sourceGhostId}\", {(paused ? "true" : "false")})");
             Console.WriteLine($"[menu] ghost {sourceGhostId} {(paused ? "entered" : "left")} a menu");
@@ -4112,7 +4114,7 @@ public partial class GameBridge(ClientConfig config)
         // so a reconnecting agent keeps a continuous clock.
         var packet = NpcStateCodec.BuildUp(npcName, x, y, z, rotZ, health, flags, seq, SenderMsNow());
         if ((flags & Protocol.NpcStateFlagResync) != 0) _resyncEmitted++;
-        try { await WritePacketAsync(stream, packet, ct); if (!asClaim) _stats.NpcStateOut++; }   // WO-110 Phase 6: a SENT packet, not a hand-off
+        try { await WritePacketAsync(stream, packet, ct); if (!asClaim) { _stats.NpcStateOut++; Wo127NoteSent(npcName); } }   // WO-110 Phase 6: a SENT packet, not a hand-off
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
     }
 
@@ -4396,6 +4398,7 @@ public partial class GameBridge(ClientConfig config)
                     float rotZ     = gs.RotZ;
                     bool  isRiding = gs.IsRiding;
                     bool  isStale  = gs.IsStale;   // WO-99 Phase 1
+                    Wo127NoteGhost(ghostId, x, y, z, isRiding, isStale);   // WO-127: the joiner's avatar for the leash recorder
 
                     // WO-118 Phase 2b: the native writer already has this sample --
                     // fed at the socket read (FeedNativeAtRead, WO-118 follow-up).
@@ -4824,6 +4827,7 @@ public partial class GameBridge(ClientConfig config)
                         if (!NpcNamePattern.IsMatch(npcName)) CountDrop(type, "name-rejected");   // WO-110 R9
                         if (NpcNamePattern.IsMatch(npcName))
                         {
+                            Wo127NoteRecv(npcName);   // WO-127: age of the host's last update, for the leash recorder
                             int o = 2 + nameLen;
                             float nx    = ReadFloat(payload, o);
                             float ny    = ReadFloat(payload, o + 4);
@@ -5532,6 +5536,10 @@ public partial class GameBridge(ClientConfig config)
             case "wo125_reset":
             case "wo125_files":
                 Wo125OnEvent(name, arg);
+                return;
+            case "leash_trace":      // WO-127: mp_leash_trace on|off
+            case "leash_ctx":
+                Wo127LeashOnEvent(name, arg);
                 return;
         }
 

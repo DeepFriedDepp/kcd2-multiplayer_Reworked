@@ -994,4 +994,45 @@ void tick() {
     npctrace::frame_end();
 }
 
+// ---- WO-127: read-only signals for the leash recorder (leash.cpp) --------------
+bool physics_status(void* e, PhysicsStatus* out) {
+    *out = PhysicsStatus{};
+    void* phys = get_physics(e);
+    if (!phys) return true;                       // no physical entity: present=0
+    out->present = 1;
+    // pe_status_awake (type 7, lag 0): GetStatus answers 1 while awake.
+    alignas(16) uint8_t aw[0x40]{};
+    const int kAwake = 7;
+    std::memcpy(aw, &kAwake, 4);
+    void* fn = vslot(phys, kPhysGetStatus);
+    int r = 0;
+    if (fn && call_int1(fn, phys, aw, &r)) { out->awakeKnown = 1; out->awake = r != 0 ? 1 : 0; }
+    if (is_a(phys, g_vftLiving)) {
+        out->living = 1;
+        alignas(16) uint8_t st[0x100]{};
+        std::memcpy(st, &kPeStatusLiving, 4);
+        int lr = 0;
+        if (fn && call_int1(fn, phys, st, &lr) && lr != 0) {
+            int f = 0; std::memcpy(&f, st + 4, 4);
+            out->flying = f == 1 ? 1 : 0;
+            float v[3]{}; std::memcpy(v, st + 24, 12);   // pe_status_living.vel
+            if (std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2])) {
+                out->speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                out->speedKnown = 1;
+            }
+        }
+    }
+    return true;
+}
+
+bool stream_info(const char* name, double* ageS, bool* bound) {
+    *ageS = -1; *bound = false;
+    if (!name || !*name) return false;
+    const std::string key = lower(name);
+    *bound = g_bound.find(key) != g_bound.end();
+    auto it = g_streams.find(key);
+    if (it != g_streams.end() && it->second.lastAcceptedAt > 0) *ageS = now_s() - it->second.lastAcceptedAt;
+    return true;
+}
+
 } // namespace kcdmp::npcdrive
