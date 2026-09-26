@@ -8,7 +8,7 @@ using KcdMp.SteamProbe;
 // print into a report file. Nothing identifying reaches the file: no Steam
 // ids, no names, no addresses. Lines starting CONSOLE: stay on screen only.
 
-const string ProbeVersion = "wo120-probe-1";
+const string ProbeVersion = "wo120-probe-2";   // WO-127: InitFlat decides (not IsSteamRunning), rich presence read back in check
 uint[] defaultApps = [2429020, 480, 1771300]; // Modding Tools (the game's own), Spacewar, retail KCD2
 
 var argList = args.ToList();

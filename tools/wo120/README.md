@@ -59,6 +59,13 @@ upload it to GitHub):
 dotnet publish tools/wo120/SteamProbe -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o release/wo120-probe
 ```
 
+Since WO-127 (0.29.9) the same Steam code is a real connection path in the
+launcher (Host: "Also allow Steam"; JOIN THROUGH STEAM), and the probe reports
+say `probe=wo120-probe-2`: Steam's start is decided by `SteamAPI_InitFlat`,
+not `SteamAPI_IsSteamRunning` (that one reads a registry pid the current Steam
+client leaves at 0 -- it made WO-120's first local run read "not running").
+`check` also sets and reads back a rich presence key.
+
 Other modes: `KcdMpSteamProbe.exe check` (this PC only), `host`,
 `join <code>`, `--apps 2429020`, `--seconds 120`, `--api sockets`,
 `--selftest` (offline: friend-code and log-scrubber checks).

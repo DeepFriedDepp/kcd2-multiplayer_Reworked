@@ -22,6 +22,11 @@ until two machines on two networks connect.
 
 - (inconclusive) Not run. The probe does it end to end for all three APIs
   under three app ids; one command each side.
+- **Corrected by WO-127 (observed):** the reading below was the probe's
+  `SteamAPI_IsSteamRunning` pre-check, which only reads the `ActiveProcess`
+  registry pid; the current Steam client leaves it at 0 while logged on.
+  `SteamAPI_InitFlat` succeeds under all three app ids on this PC, relay
+  network ready in ~4 s. The probe (`wo120-probe-2`) no longer gates on it.
 - Local runs on the maintainer's PC: `SteamAPI_IsSteamRunning=false` under
   all three app ids (observed). Steam's `ActiveProcess` key read `pid=0`,
   `ActiveUser=0` inside and outside the shell sandbox, with `steam.exe`

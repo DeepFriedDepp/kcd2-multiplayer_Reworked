@@ -1010,9 +1010,9 @@ bool physics_status(void* e, PhysicsStatus* out) {
     if (fn && call_int1(fn, phys, aw, &r)) { out->awakeKnown = 1; out->awake = r != 0 ? 1 : 0; }
     if (is_a(phys, g_vftLiving)) {
         out->living = 1;
-        // pe_player_dynamics (type 4) via GetParams: bActive at +92 ("0 disables all
-        // simulation for the character, apart from moving along the requested
-        // velocity"). pe_status_awake says nothing for a living entity (the engine's
+        // pe_player_dynamics (type 4) via GetParams: bActive at +92 -- whether the
+        // character is simulated at all (off = it only follows its requested
+        // velocity). pe_status_awake says nothing for a living entity (the engine's
         // base IsAwake answers 0 and CLivingEntity does not override it -- a walking
         // NPC 5 m away read 0, observed), so this is the living "awake".
         alignas(16) uint8_t pd[0x100]{};

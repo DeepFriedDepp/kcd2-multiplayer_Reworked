@@ -7,10 +7,12 @@ Background: `docs/WO-124-findings.md`, `docs/WO-125-findings.md`.
 
 ## Before you start
 
-* Both machines on a build of `main` with WO-125 or later (no installer was
-  made: build one with `tools\Build-Installer.ps1` when you decide to). Both
-  machines on the **same** commit: an older host never tells the joiner which
-  world it runs, and the joiner then waits forever.
+* Both machines on **0.29.9** (`KCDMP-Setup-0.29.9.exe`; the launcher's bottom
+  bar shows the version). Both on the same build: an older host never tells
+  the joiner which world it runs, and the relay refuses a different release
+  anyway (the launcher says so in plain words, on both sides).
+* The tester page for this build is `docs/TEST-0.29.9.md` (Steam probe first,
+  then this runbook).
 * **Joiner: delete any copy of the host's save you copied in by hand** under
   the old 0.28.x method. The mod ignores those now (a save of the host's
   playthrough is never treated as yours), but they clutter the save list, and
@@ -21,14 +23,23 @@ Background: `docs/WO-124-findings.md`, `docs/WO-125-findings.md`.
 * The host is in the world in **daytime**, somewhere quiet, not in a fight,
   dialogue or cutscene, and past the prologue (the joiner can't join while the
   host plays Godwin). **Make a save of your own first** (it is your world).
-* Host starts first: the host's launcher **Host** (relay on this machine).
+* Host starts first: the host's launcher **HOST GAME** (relay on this machine).
+  Leave **Also allow Steam** ticked: the window shows the host's code and
+  "Steam: ready". Since 0.29.9 the host is the authority whatever order people
+  connect in (WO-127), so starting first is only for convenience.
 
 ## Start it
 
-1. **Host**: launcher → Host → Launch. Load your save. Console (`~`):
-   `mp_shared_world on`. You should read `WO122-TOGGLE shared_world=on`.
-2. **Joiner**: launcher → Join (host's address) → Launch. **Stay at the main
-   menu.** Do not press Continue.
+1. **Host**: launcher → HOST GAME → START GAME. Load your save. Console (`~`):
+   `mp_leash_trace on` (you read `WO127-LEASH trace=on`; the recorder for
+   WO-128), then `mp_shared_world on`. You should read
+   `WO122-TOGGLE shared_world=on`.
+2. **Joiner**: launcher → **JOIN THROUGH STEAM**, type the host's code (or
+   FIND FRIENDS), **TEST CONNECTION** first (reachable, same version, round
+   trip), then **JOIN** → Launch. If Steam fails the launcher says why and
+   offers the host's address in the same window (CONNECT BY ADDRESS); the old
+   way (Add Server → TEST CONNECTION → JOIN SERVER) works as before. **Stay at
+   the main menu.** Do not press Continue.
 3. **First time in this host's world only:** the joiner's launcher asks
    **Bring my character** / **Start fresh**. Nothing is asked of the host
    until you answer, so take your time.
@@ -119,10 +130,13 @@ host's world (time, NPCs, quests).
 * `kcd.log` from the Modding Tools folder (the next launch overwrites it).
 * The agent log (`agent.log` beside `KcdMpClient.exe`) and
   `kcdmp-native.mirror.log` (Modding Tools folder).
-* The host: the relay's log, if the launcher kept one.
+* The host: the relay's log (`relay*.log` beside `KcdMpServer.exe`).
+* The recorder's CSVs: the `leash` folder beside `KcdMpClient.exe` (the
+  launcher's REPORT BUG zip includes them).
 * Screenshots of anything odd (the launcher's two buttons, please).
 * Do **not** send save files or the joiner's `KCDMP\henry` folder around
   (saves name the machine's account).
 
 Lines worth grepping: `MP-JOIN`, `MP-HENRY`, `MP-SAVELOCK`, `MP-JOINPLACE`,
-`MP-DISMOUNT`, `WO124-`, `WO125-`, `Game load failed`.
+`MP-DISMOUNT`, `WO124-`, `WO125-`, `Game load failed`, and since 0.29.9
+`MP-CONN`, `MP-HOST-CLAIM`, `MP-AUTHORITY-OWNER`, `MP-LEASH`, `[steam]`.
