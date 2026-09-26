@@ -14,7 +14,7 @@ namespace KcdMp.Client;
 /// state and asks (npc_owner_dead, throttled); this file applies it through the
 /// WO-86 route. One-way: nothing here ever revives anything.
 ///
-/// Phases 2-4 (dormant: only with mp_shared_world on):
+/// Phases 2-4 (only with mp_shared_world on -- the default since 0.30.0):
 ///   * joiner: the named script save lock kcdmp_host_only, held while connected
 ///     as the joiner, re-asserted after every load and read back every second;
 ///     released on disconnect so a solo game saves as before;
@@ -29,7 +29,9 @@ namespace KcdMp.Client;
 /// </summary>
 public partial class GameBridge
 {
-    public const bool SharedWorldDefault = false;
+    // 0.30.0: the shared world is ON by default (the maintainer's rule for this
+    // and every later build). The mod's wo122_cfg mirror overrides it at load.
+    public const bool SharedWorldDefault = true;
     public const bool OwnerDeathDefault = true;
     public const int AutosaveMinutesDefault = 5;
 

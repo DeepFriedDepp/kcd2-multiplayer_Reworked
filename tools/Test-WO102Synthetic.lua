@@ -862,6 +862,10 @@ end
 --        once it clears, and departure handoff resets the state fresh
 do
     resetAll4(); clearLog()
+    -- Separate worlds: in a shared world (the 0.30.0 default) co-location is
+    -- always "together" (WO-129, tools/Test-WO129Synthetic.lua).
+    local sharedWas = KCD2MP.w122.sharedWorld
+    KCD2MP.w122.sharedWorld = false
     KCD2MP.hitSensorOn = true
     KCD2MP.wo102.authorityHost = true
     KCD2MP.npcSync.enabled = true; KCD2MP.npcSyncRunning = true
@@ -962,6 +966,7 @@ do
     check("cc: new authority starts apart, fresh", KCD2MP.wo1025.together == false)
 
     KCD2MP.npcSyncRunning = false; KCD2MP.hitSensorOn = false
+    KCD2MP.w122.sharedWorld = sharedWas
     check("cc: no Lua errors", #ERRS == 0, ERRS[1])
 end
 

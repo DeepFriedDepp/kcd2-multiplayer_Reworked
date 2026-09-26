@@ -3423,8 +3423,10 @@ function KCD2MP_SetNpcDeathSync(arg)
 end
 
 -- ===== WO-122: shared-world foundations ==============================================
--- docs/WO-122-findings.md. Phase 1 ships ON; everything else is dormant behind
--- mp_shared_world (default off): with it off nothing below changes a save.
+-- docs/WO-122-findings.md. Phase 1 ships ON; everything else sits behind
+-- mp_shared_world -- default ON since 0.30.0 (the maintainer's rule for this
+-- and every later build; it was off through 0.29.9). With it off nothing
+-- below changes a save.
 --
 -- Phase 1, owner death (mp_owner_death, default on): the 0.26.5 peer test had
 -- the host kill an NPC, the joiner reload, and the joiner's copy come back
@@ -3448,7 +3450,7 @@ end
 -- autosave the engine writes when CanSave passes. The agent schedules it and
 -- watches the saves folder for the file.
 KCD2MP.w122 = {
-    sharedWorld = false, ownerDeath = true, autosaveMinutes = 5,
+    sharedWorld = true, ownerDeath = true, autosaveMinutes = 5,   -- 0.30.0: shared world ON by default
     lockName = "kcdmp_host_only", lockText = "The host saves this world.",
     lockHeld = false, lockAsserts = 0, lockWiped = 0, lockReadbackFails = 0, lockFailLoggedAt = -1e9, lockNoBind = false,
     lockCheckS = 30.0, lockCheckedAt = -1e9, refusedN = 0, refusedToldAt = -1e9,
@@ -4514,14 +4516,15 @@ KCD2MP._presets = {
     -- fire (the 0.28.x behaviour). friendly_fire only counts on the host.
     -- WO-122: owner_death -- clean = the owner's streamed death wins over a
     -- living local copy (the new build), legacy = WO-86 witnessed transitions
-    -- only (0.29.0). shared_world stays OFF in both (dormant until the join
-    -- exists); autosave_minutes is the same in both.
+    -- only (0.29.0). shared_world -- clean = ON (the default since 0.30.0),
+    -- legacy = OFF (every machine saves as before, 0.29.9); autosave_minutes
+    -- is the same in both.
     clean  = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = false, npc_track_max = 200, cull_radius_m = 60, npc_senderclock = true,
                respawn = true,  npc_native_write = true,  npc_detach = true,
                avatar_gait = true, npc_gait = true, avatar_moves = true, avatar_combat = true, npc_rows = true,
                npc_attribution = true, friendly_fire = true,
-               owner_death = true, shared_world = false, autosave_minutes = 5 },
+               owner_death = true, shared_world = true, autosave_minutes = 5 },
     legacy = { authority_pause = true,  npc_replica = false, npc_yield = false, resume_dwell_s = 10.0,
                npc_read_native = true,  npc_track_max = 40,  cull_radius_m = 30, npc_senderclock = false,
                respawn = false, npc_native_write = false, npc_detach = false,
@@ -13523,15 +13526,15 @@ local ok, err = pcall(function()
     System.AddCCommand("mp_npc_rows",            'KCD2MP_Wo121SetNpcRows(%line)',         "WO-121: NPC copies swing the owner's committed attack row (default on); off = the WO-49 swing cue: mp_npc_rows on|off")
     System.AddCCommand("mp_npc_attribution",     'KCD2MP_Wo121SetAttribution(%line)',     "WO-121: a peer's hit on an NPC names their avatar as the attacker on the NPC's owner (damage + combat history + skirmish + hit reaction; default on): mp_npc_attribution on|off")
     System.AddCCommand("mp_friendly_fire",       'KCD2MP_Wo121SetFriendlyFire(%line)',    "WO-121: players can hurt each other (HOST only -- the host's value is the session's): mp_friendly_fire on|off; bare = report")
-    -- WO-122: shared-world foundations. mp_shared_world is dormant by default.
-    System.AddCCommand("mp_shared_world",        'KCD2MP_SetSharedWorld(%line)',          "WO-122: the shared world's save rules (default OFF = every machine saves as before). On: the joiner's saves are locked in a session (only the host saves), the host autosaves every mp_autosave_minutes and announces each world save: mp_shared_world on|off; bare = report")
+    -- WO-122: shared-world foundations. mp_shared_world is ON by default since 0.30.0.
+    System.AddCCommand("mp_shared_world",        'KCD2MP_SetSharedWorld(%line)',          "WO-122: the shared world's save rules (default ON since 0.30.0; off = every machine saves as before). On: the joiner's saves are locked in a session (only the host saves), the host autosaves every mp_autosave_minutes and announces each world save: mp_shared_world on|off; bare = report")
     System.AddCCommand("mp_owner_death",         'KCD2MP_SetOwnerDeath(%line)',           "WO-122: an NPC its owner streams dead dies here even when this copy is alive, after a load too (default on; off = WO-86 witnessed transitions only): mp_owner_death on|off")
     System.AddCCommand("mp_autosave_minutes",    'KCD2MP_SetAutosaveMinutes(%line)',      "WO-122: the host's world-save cadence with mp_shared_world on (default 5; 0 = none): mp_autosave_minutes <n>; bare = report")
     System.AddCCommand("mp_world_save",          "KCD2MP_WorldSaveNow()",                 "WO-122: the host writes a world save now and the agent reports the file (host, mp_shared_world on)")
     do
         local w = KCD2MP.w122
         mp_log(string.format("WO122-BUILD shared_world=%s owner_death=%s autosave_minutes=%d lock=%s lock_text=\"%s\" world_save=EnqueueAutoSave"
-            .. " -- dormant unless mp_shared_world on (except owner_death); mp_preset_legacy = owner_death off",
+            .. " -- shared world on by default (0.30.0); mp_shared_world off = saves as before; mp_preset_legacy = owner_death off, shared_world off",
             w.sharedWorld and "on" or "off", w.ownerDeath and "on" or "off", w.autosaveMinutes, w.lockName, w.lockText))
         KCD2MP_Wo122CfgEmit()
     end

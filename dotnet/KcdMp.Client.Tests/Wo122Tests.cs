@@ -61,9 +61,9 @@ public class Wo122Tests
     }
 
     [Fact]
-    public void Shared_world_ships_dormant_and_owner_death_on()
+    public void Shared_world_and_owner_death_ship_on()
     {
-        Assert.False(GameBridge.SharedWorldDefault);
+        Assert.True(GameBridge.SharedWorldDefault);   // 0.30.0: the maintainer's default for every build from here on
         Assert.True(GameBridge.OwnerDeathDefault);
         Assert.Equal(5, GameBridge.AutosaveMinutesDefault);
     }

@@ -1,7 +1,7 @@
 -- WO-122 synthetic test, against the real kdcmp.lua under MoonSharp.
 --
 -- The Lua half of the shared-world foundations:
---   (a) shipped defaults: shared_world OFF, owner_death ON, autosave 5 min;
+--   (a) shipped defaults: shared_world ON (since 0.30.0), owner_death ON, autosave 5 min;
 --       WO122-BUILD once; the agent mirror event; the four commands
 --   (b) owner death: a copy ALIVE here while the owner streams it dead asks
 --       the agent (npc_owner_dead), throttled; once it reads dead the corpse
@@ -142,18 +142,22 @@ end
 -- (a) defaults, marker, mirror, commands ---------------------------------------
 do
     local w = KCD2MP.w122
-    check("a: mp_shared_world ships OFF", w.sharedWorld == false)
+    check("a: mp_shared_world ships ON (0.30.0)", w.sharedWorld == true)
     check("a: mp_owner_death ships ON", w.ownerDeath == true)
     check("a: mp_autosave_minutes ships 5", w.autosaveMinutes == 5)
     check("a: WO122-BUILD logged once at load", countLog("WO122-BUILD ") == 1, lastLog("WO122-BUILD"))
     local m = lastLog("WO122-BUILD") or ""
-    check("a: the marker names the defaults and the lock", m:find("shared_world=off owner_death=on autosave_minutes=5 lock=kcdmp_host_only", 1, true) ~= nil, m)
-    check("a: the mirror event went to the agent at load", countEvt("wo122_cfg", "shared_world=off owner_death=on autosave_min=5") == 1)
+    check("a: the marker names the defaults and the lock", m:find("shared_world=on owner_death=on autosave_minutes=5 lock=kcdmp_host_only", 1, true) ~= nil, m)
+    check("a: the mirror event went to the agent at load", countEvt("wo122_cfg", "shared_world=on owner_death=on autosave_min=5") == 1)
     for _, c in ipairs({ { "mp_shared_world", "KCD2MP_SetSharedWorld(%line)" }, { "mp_owner_death", "KCD2MP_SetOwnerDeath(%line)" },
                          { "mp_autosave_minutes", "KCD2MP_SetAutosaveMinutes(%line)" }, { "mp_world_save", "KCD2MP_WorldSaveNow()" } }) do
         check("a: " .. c[1] .. " is registered as " .. c[2], CCMDS[c[1]] and CCMDS[c[1]].body == c[2], CCMDS[c[1]] and CCMDS[c[1]].body)
     end
     check("a: nothing locked at load", next(LOCKS) == nil and LOCKCALLS == 0)
+    -- The rest of the suite starts from off and turns it on itself (the
+    -- off -> on transitions are what (g)-(i) test).
+    KCD2MP_SetSharedWorld("off")
+    check("a: off is still one command away", w.sharedWorld == false and next(LOCKS) == nil)
     noErrs("a")
 end
 
@@ -373,10 +377,9 @@ do
     local w = KCD2MP.w122
     KCD2MP_ApplyPreset("legacy")
     check("k: legacy = owner_death off, shared_world off, autosave 5", w.ownerDeath == false and w.sharedWorld == false and w.autosaveMinutes == 5)
-    KCD2MP_SetSharedWorld("on")
-    KCD2MP_ApplyPreset("clean")
-    check("k: clean = owner_death on, shared_world off (dormant in both), autosave 5",
-        w.ownerDeath == true and w.sharedWorld == false and w.autosaveMinutes == 5)
+    KCD2MP_ApplyPreset("clean")   -- from legacy's off
+    check("k: clean = owner_death on, shared_world on (the 0.30.0 default), autosave 5",
+        w.ownerDeath == true and w.sharedWorld == true and w.autosaveMinutes == 5)
     check("k: each preset logs the three rows", countLog("MP-PRESET name=clean set=owner_death") == 1 and countLog("MP-PRESET name=clean set=shared_world") == 1
         and countLog("MP-PRESET name=clean set=autosave_minutes") == 1)
     noErrs("k")

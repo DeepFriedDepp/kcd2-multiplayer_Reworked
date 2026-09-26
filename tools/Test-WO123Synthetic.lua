@@ -172,7 +172,9 @@ end
 do
     reset()
     local mark, cm = #LOG, #CMDS
-    check("b: shared world ships off", KCD2MP.w122.sharedWorld == false)
+    check("b: shared world ships on (0.30.0)", KCD2MP.w122.sharedWorld == true)
+    KCD2MP_SetSharedWorld("off")
+    mark, cm = #LOG, #CMDS
     check("b: JoinTry refuses", KCD2MP_JoinTry("0000abcd", "Bob", 180) == false)
     check("b: answers busy shared-world-off", countEvt("join_try", "0000abcd busy shared-world-off", mark) == 1)
     check("b: the clock is untouched", RATIO == 15)
