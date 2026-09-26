@@ -14,6 +14,8 @@
 #include "anchors.h"
 #include "buffs.h"
 #include "engine.h"
+#include "gait_logic.h"
+#include "inline_hook.h"
 #include "log.h"
 #include "hits.h"
 #include "pe_exports.h"
@@ -45,6 +47,22 @@ constexpr size_t kActionEnterImpl     = 0x1C8;
 constexpr size_t kActionDescriptor    = 0x60;
 constexpr size_t kActionCombatActor   = 0x78;    // C_CombatActorActionAttack ctor: mov [rbx+0x78], rbp (rbp = ca)
 constexpr size_t kDescRowGuid         = 0x84;    // live, WO-121 session 1: mn_fragment_guid, Windows byte order
+
+// WO-129 -- the gait at the engine's own tag update (docs/WO-129-findings.md s1).
+// C_ActorMovementController::Update (EntityModule 0xB18D0) calls SetPseudoSpeed
+// with its movement request's value on every actor every frame, AFTER our write
+// at the frame hook and BEFORE C_Actor::UpdateMannequinTags reads it (observed:
+// 0.00 at every tag update of a written avatar). With no movement request the
+// requested velocity is 0 too, so neither a pace nor a direction tag was ever
+// set: the body slid. Our inputs are re-applied at UpdateMannequinTags' entry.
+constexpr size_t kActorUpdateTags     = 0xC98;   // C_Actor vftable slot: C_Actor::UpdateMannequinTags
+constexpr size_t kActorMoveVec        = 0x614;   // Vec2 the tag update prefers for the direction tag
+constexpr size_t kActorSpeedType      = 0x860;   // stance manager (actor+0x850) +0x10: the logical-speed table kind
+constexpr size_t kGiSpeedHolder       = 0x138;   // GetGameIface()+0x138 -> vtbl[0x100]() = the logical-speed manager
+constexpr size_t kHolderGetSpeedMgr   = 0x100;
+constexpr size_t kSpeedMgrCount       = 0x08;    // count(soul, kind): how many logical speeds this body has
+constexpr size_t kSpeedMgrMap         = 0x78;    // id = (int)(pseudo + 0.5) - 1 (checked by bytes at install)
+const uint8_t kTagsPrologue[18] = {0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x57, 0x41, 0x55, 0x41, 0x57, 0x48, 0x81, 0xEC, 0xA8, 0x00, 0x00, 0x00};
 
 // Combat-model properties, each names itself at +0x30 (WO-119 s7); value at +8.
 struct Prop { size_t off; const char* name; };
@@ -98,6 +116,10 @@ bool call_ret_u8(void* fn, void* self, uint8_t* out) {
     __try { *out = reinterpret_cast<uint8_t (__fastcall*)(void*)>(fn)(self); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+bool call_count(void* fn, void* mgr, void* soul, int32_t kind, uint64_t* out) {
+    __try { *out = reinterpret_cast<uint64_t (__fastcall*)(void*, void*, int32_t)>(fn)(mgr, soul, kind); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 bool call_trystart(void* fn, void* ca, uint64_t* out) {
     struct { uint8_t has; uint8_t pad[3]; int32_t v; } opt{};   // optional<int>{has=false}
     __try { *out = reinterpret_cast<uint64_t (__fastcall*)(void*, void*)>(fn)(ca, &opt); return true; }
@@ -138,6 +160,7 @@ struct Anchors {
     void* const* vftActor = nullptr;
     void* const* vftExp = nullptr;
     void* const* vftCa = nullptr;
+    void* const* vftCa8 = nullptr;   // WO-129: C_CombatActor's secondary base (+8): an interface pointer to it carries this vptr
     void* fnSetPseudo = nullptr, *fnSetCrouch = nullptr, *fnGetCrouch = nullptr, *fnRequestJump = nullptr;
     void* fnTryStart = nullptr, *fnAuto = nullptr, *fnSetFlag = nullptr;
     void* fnSetGuardZone = nullptr, *fnSetAtkZone = nullptr, *fnSetBlock = nullptr;
@@ -164,6 +187,11 @@ struct Body {
     // gait
     float speedEma = 0;
     bool gaitWritten = false;
+    float velX = 0, velY = 0;     // WO-129: smoothed rendered planar velocity (world), the direction tag's input
+    float cls = 0;                // WO-129: the logical speed class written (0 still, 1 walk, 2 run, 3 sprint)
+    int   range = -1;             // WO-129: the body's own class count (engine), -1 unknown
+    double rangeAt = -1;
+    int   slot = -1;              // WO-129: index into g_gaitTable, -1 none
     // moves
     bool crouchApplied = false;
     // combat
@@ -174,6 +202,43 @@ struct Body {
     bool ctxApplied = false;      // the WO-121 avatar contexts (kAvatarContexts) are set on its soul
 };
 std::unordered_map<uint32_t, Body> g_bodies;
+
+// ---- WO-129: the gait table (main thread writes, any thread reads) --------------
+// UpdateMannequinTags runs on the main thread and on job workers, so the hook
+// reads gait::Table (fixed, open-addressed atomics); only the main thread
+// inserts and removes. A slot older than kGaitStaleTicks frames is ignored.
+constexpr uint32_t kGaitStaleTicks = 30;
+gait::Table<256> g_gaitTable;
+std::atomic<uint32_t> g_gaitTick{0};
+std::atomic<bool> g_tags{false};
+std::string g_whyTags = "not installed";
+std::atomic<uint32_t> c_tagApplied{0};
+void* g_fnSpeedMap = nullptr;          // the manager's vtbl[0x78] body, byte-checked (the round(x)-1 mapper)
+
+bool write_tag_inputs(void* actor, float cls, float vx, float vy) {
+    __try {
+        void* comp = *reinterpret_cast<void**>(static_cast<char*>(actor) + kActorPseudoComp);
+        if (comp) *reinterpret_cast<float*>(static_cast<char*>(comp) + 0x18) = cls;
+        float* rv = reinterpret_cast<float*>(static_cast<char*>(actor) + kActorReqVel);
+        rv[0] = vx; rv[1] = vy; rv[2] = 0.0f;
+        float* mv = reinterpret_cast<float*>(static_cast<char*>(actor) + kActorMoveVec);
+        mv[0] = vx; mv[1] = vy;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// UpdateMannequinTags entry (any thread). Cheap when nothing is driven.
+void on_update_tags(void* actor) {
+    if (g_gaitTable.live() <= 0 || !g_tags.load(std::memory_order_relaxed)) return;
+    float cls, vx, vy;
+    if (!g_gaitTable.read(actor, g_gaitTick.load(std::memory_order_relaxed), kGaitStaleTicks, &cls, &vx, &vy)) return;
+    if (write_tag_inputs(actor, cls, vx, vy)) c_tagApplied.fetch_add(1, std::memory_order_relaxed);
+}
+
+// The engine reads pseudo-speed as a logical speed CLASS, not m/s: the manager's
+// mapper is id = (int)(pseudo + 0.5) - 1, and this body's table holds `range`
+// classes (3 on the avatars seen: walk, run, sprint). Streams are in m/s (the
+// sender's requested velocity), so they are classed (gait::speed_class).
 
 // Pending avatar events (pipe thread -> main thread).
 struct PendingEvent { uint8_t kind; uint32_t eid; };
@@ -193,7 +258,9 @@ std::atomic<ActionFn> g_actionFn{nullptr};
 // Counters for the status reply.
 std::atomic<uint32_t> c_gaitWrites{0}, c_crouch{0}, c_jumps{0}, c_jumpFail{0}, c_combatStarts{0}, c_autoOff{0},
     c_guardZone{0}, c_atkZone{0}, c_block{0}, c_capAttack{0}, c_capNpc{0}, c_capJump{0}, c_capOther{0}, c_capDropped{0},
-    c_faults{0};
+    c_faults{0},
+    // WO-129: why a capture was dropped (the first two-player session: cap_dropped 5 / 11, cap_attack 0)
+    c_dropNotCa{0}, c_dropNoDesc{0}, c_dropNoGuid{0}, c_dropNoOwner{0}, c_capViaBase8{0}, c_capOurs{0};
 
 void* g_autoCmd = nullptr;   // a zeroed stand-in for the test command the automation function reads (+0x79..+0x7B)
 void* g_autoCmdOn = nullptr; // the same with every enable byte set
@@ -228,6 +295,21 @@ void* expansion_of(void* actor) {
     return is_a(ext, A.vftExp) ? ext : nullptr;   // the extension IS a C_ActorStateExpansion, or nothing
 }
 
+// WO-129: a combat-actor pointer as the engine hands it out, normalised to the
+// object's start. C_CombatActor has a secondary base at +8 (RTTI: vftables at
+// offsets 0 and 8), so a pointer typed as that base is the object + 8 and
+// carries the +8 vptr; comparing it to the primary vftable (the WO-121 code)
+// rejects it. Nothing else is accepted.
+void* as_combat_actor(void* p) {
+    if (!p) return nullptr;
+    if (is_a(p, A.vftCa)) return p;
+    if (A.vftCa8) {
+        void* base = static_cast<char*>(p) - 8;
+        if (is_a(p, A.vftCa8) && is_a(base, A.vftCa)) return base;
+    }
+    return nullptr;
+}
+
 void* combat_actor_of(void* actor, bool create) {
     void* ca = nullptr;
     if (!create) { if (!rd(actor, kActorCombatField, &ca)) return nullptr; }
@@ -235,7 +317,7 @@ void* combat_actor_of(void* actor, bool create) {
         void* fn = vslot(actor, kActorCombatActor);
         if (!fn || !call_p0(fn, actor, &ca)) return nullptr;
     }
-    return is_a(ca, A.vftCa) ? ca : nullptr;
+    return as_combat_actor(ca);
 }
 
 void* player_actor() {
@@ -260,18 +342,29 @@ enum Cls : uint8_t { kClsAttack = 0, kClsDodge = 1, kClsPerfect = 2, kClsBlock =
 void* g_origEnter[kClsCount]{};
 uint8_t* g_thunks = nullptr;
 
+// WO-129: one line for the first drops of each reason (then counters only).
+void note_drop(std::atomic<uint32_t>& counter, const char* why, uint8_t cls, const void* raw) {
+    c_capDropped.fetch_add(1);
+    if (counter.fetch_add(1) >= 2) return;
+    void* vp = nullptr; rd(raw, 0, &vp);
+    char d[64]{}; anchor::describe(vp, d, sizeof d);
+    logf("WO129-CAPTURE drop reason=%s class=%u owner_ptr_vptr=%s (C_CombatActor primary/+8 expected)", why, cls, d);
+}
+
 void capture(uint8_t cls, void* action) {
-    void* ca = nullptr;
-    if (!rd(action, kActionCombatActor, &ca) || !ca) return;
+    void* raw = nullptr;
+    if (!rd(action, kActionCombatActor, &raw) || !raw) return;
+    void* ca = as_combat_actor(raw);
     void* playerCa = g_playerCa.load(std::memory_order_relaxed);
-    const bool isPlayer = ca == playerCa;
+    const bool isPlayer = ca && ca == playerCa;
     if (!isPlayer && !(cls == kClsAttack && g_cfgNpcRows.load(std::memory_order_relaxed))) return;
-    if (!is_a(ca, A.vftCa)) { c_capDropped.fetch_add(1); return; }
+    if (!ca) { note_drop(c_dropNotCa, "owner-not-a-combat-actor", cls, raw); return; }
+    if (ca != raw) c_capViaBase8.fetch_add(1);
     void* desc = nullptr;
     Captured c{};
-    if (!rd(action, kActionDescriptor, &desc) || !desc) { c_capDropped.fetch_add(1); return; }
+    if (!rd(action, kActionDescriptor, &desc) || !desc) { note_drop(c_dropNoDesc, "no-descriptor", cls, raw); return; }
     uint64_t g0 = 0, g1 = 0;
-    if (!rd(desc, kDescRowGuid, &g0) || !rd(desc, kDescRowGuid + 8, &g1) || (g0 == 0 && g1 == 0)) { c_capDropped.fetch_add(1); return; }
+    if (!rd(desc, kDescRowGuid, &g0) || !rd(desc, kDescRowGuid + 8, &g1) || (g0 == 0 && g1 == 0)) { note_drop(c_dropNoGuid, "no-row-guid", cls, raw); return; }
     std::memcpy(c.guid, &g0, 8); std::memcpy(c.guid + 8, &g1, 8);
     c.kind = cls == kClsAttack ? 1 : cls == kClsDodge ? 7 : 6;
     c.flags = cls == kClsPerfect ? 0x01 : 0;
@@ -288,10 +381,10 @@ void capture(uint8_t cls, void* action) {
         (cls == kClsAttack ? c_capAttack : c_capOther).fetch_add(1);
     } else {
         void* ent = nullptr;
-        if (!rd(ca, kCaOwnerEntity, &ent) || !ent) { c_capDropped.fetch_add(1); return; }
+        if (!rd(ca, kCaOwnerEntity, &ent) || !ent) { note_drop(c_dropNoOwner, "no-owner-entity", cls, raw); return; }
         const char* n = engine::entity_name(ent);
-        if (!n || !copy_cstr(n, c.name, sizeof(c.name)) || !c.name[0]) { c_capDropped.fetch_add(1); return; }
-        if (_strnicmp(c.name, "kcd2mp_", 7) == 0 || _strnicmp(c.name, "DialogTwin_", 11) == 0) return;   // never ours
+        if (!n || !copy_cstr(n, c.name, sizeof(c.name)) || !c.name[0]) { note_drop(c_dropNoOwner, "no-owner-name", cls, raw); return; }
+        if (_strnicmp(c.name, "kcd2mp_", 7) == 0 || _strnicmp(c.name, "DialogTwin_", 11) == 0) { c_capOurs.fetch_add(1); return; }   // never ours
         c.eid = engine::entity_id(ent);
         c_capNpc.fetch_add(1);
     }
@@ -394,7 +487,10 @@ void apply_gait(Body& b, float speed) {
     c_gaitWrites.fetch_add(1, std::memory_order_relaxed);
 }
 
+void unpublish_gait(Body& b);
+
 void release_gait(Body& b) {
+    unpublish_gait(b);   // WO-129: the tag update is the engine's own again from the next frame
     if (!b.gaitWritten || !b.actor) return;
     void* fn = vslot(b.actor, kActorSetPseudoSpeed);
     if (fn == A.fnSetPseudo) call_f(fn, b.actor, 0.0f);
@@ -544,6 +640,49 @@ void ensure_avatar_guard(Body& b, double now) {
     if (buffs::add(soul, g_avatarGuard)) { c_buffAdds.fetch_add(1); logf("WO121-MOTION body=%s avatar guard applied (imm+upr)", b.key.c_str()); }
 }
 
+// WO-129: the body's own class count from the engine's logical-speed manager
+// (GetGameIface()+0x138 -> vtbl[0x100]; count = vtbl[0x08](soul, kind)), re-read
+// every 0.5 s because the kind (actor+0x860) follows the body's state. The
+// manager's mapper (vtbl[0x78]) is byte-checked as the round(x)-1 function
+// before anything is trusted. -1 = unreadable (the caller then clamps to 3).
+int body_range(Body& b, double now) {
+    if (b.rangeAt >= 0 && now - b.rangeAt < 0.5) return b.range;
+    b.rangeAt = now;
+    b.range = -1;
+    void* gi = engine::game_iface();
+    void* holder = nullptr;
+    if (!gi || !rd(gi, kGiSpeedHolder, &holder) || !holder) return -1;
+    void* getMgr = vslot(holder, kHolderGetSpeedMgr);
+    void* mgr = nullptr;
+    if (!getMgr || !call_p0(getMgr, holder, &mgr) || !mgr) return -1;
+    void* map = vslot(mgr, kSpeedMgrMap);
+    if (!map) return -1;
+    if (map != g_fnSpeedMap) {
+        HMODULE rpg = GetModuleHandleA("RPGModule.dll");
+        if (!rpg || !has(rpg, map, {0xF3, 0x0F, 0x2C, 0xC6}) || !has(rpg, map, {0xFF, 0xC8})) return -1;
+        g_fnSpeedMap = map;
+    }
+    void* cnt = vslot(mgr, kSpeedMgrCount);
+    void* soul = body_soul(b);
+    int32_t kind = -1;
+    uint64_t n = 0;
+    if (!cnt || !soul || !rd(b.actor, kActorSpeedType, &kind) || !call_count(cnt, mgr, soul, kind, &n) || n > 16) return -1;
+    b.range = static_cast<int>(n);
+    return b.range;
+}
+
+// WO-129: publish this frame's gait inputs for the tag-update hook.
+void publish_gait(Body& b, float cls) {
+    if (!g_gaitTable.holds(b.slot, b.actor)) b.slot = g_gaitTable.insert(b.actor, g_gaitTick.load(std::memory_order_relaxed));
+    if (b.slot < 0) return;
+    g_gaitTable.publish(b.slot, cls, b.velX, b.velY, g_gaitTick.load(std::memory_order_relaxed));
+}
+
+void unpublish_gait(Body& b) {
+    if (g_gaitTable.holds(b.slot, b.actor)) g_gaitTable.remove(b.slot);
+    b.slot = -1;
+}
+
 } // namespace
 
 // ================================================================================
@@ -577,6 +716,7 @@ void install() {
 
     // ---- combat: C_CombatActor + the shipped test commands' Execute ------------
     A.vftCa = anchor::find_vftable(cm, ".?AVC_CombatActor@combatmodule@wh@@", 0);
+    A.vftCa8 = anchor::find_vftable(cm, ".?AVC_CombatActor@combatmodule@wh@@", 8);
     A.fnTryStart = slot_fn(A.vftCa, kCaTryStartCombat);
     auto exec_of = [&](const char* rtti) -> const void* {
         void* const* v = anchor::find_vftable(cm, rtti, 0);
@@ -621,6 +761,32 @@ void install() {
     }
     if (why.empty()) { g_combat = true; g_whyCombat.clear(); } else g_whyCombat = why;
     if (!A.actorLookup) { g_gait = false; if (g_whyGait.empty()) g_whyGait = "actor lookup did not verify"; g_moves = false; if (g_whyMoves.empty()) g_whyMoves = "actor lookup did not verify"; }
+
+    // ---- WO-129: the tag-update hook (C_Actor vftable slot 0xC98) --------------
+    // Without it a written body slides whatever SetPseudoSpeed we call (observed),
+    // so the gait piece is armed only with it: otherwise the Lua clip walk stays.
+    {
+        const void* tags = slot_fn(A.vftActor, kActorUpdateTags);
+        std::string whyT;
+        if (!tags) whyT = "RTTI C_Actor vftable has no slot 0xC98";
+        else if (!has(em, tags, {0x48, 0x8B, 0x91, 0x50, 0x04, 0x00, 0x00}))          // mov rdx,[rcx+0x450] (GetPseudoSpeed)
+            whyT = "slot 0xC98 does not read GetPseudoSpeed (+0x450)";
+        else if (!has(em, tags, {0xF3, 0x0F, 0x10, 0x8F, 0x74, 0x05, 0x00, 0x00}))     // movss xmm1,[rdi+0x574] (requested velocity)
+            whyT = "slot 0xC98 does not read the requested velocity (+0x574)";
+        else if (!has(em, tags, {0xF2, 0x44, 0x0F, 0x10, 0x87, 0x14, 0x06, 0x00, 0x00})) // movsd xmm8,[rdi+0x614] (move vector)
+            whyT = "slot 0xC98 does not read the move vector (+0x614)";
+        else if (!has(em, tags, {0x48, 0x8D, 0x8F, 0x50, 0x08, 0x00, 0x00}))          // lea rcx,[rdi+0x850] (stance manager)
+            whyT = "slot 0xC98 does not reach the stance manager (+0x850)";
+        else {
+            const char* why = nullptr;
+            if (inlinehook::install_this(const_cast<void*>(tags), kTagsPrologue, sizeof(kTagsPrologue), &on_update_tags, &why)) g_tags = true;
+            else whyT = std::string("hook refused: ") + (why ? why : "?");
+        }
+        g_whyTags = g_tags ? "" : whyT;
+        char dt[64]{}; anchor::describe(tags, dt, sizeof dt);
+        logf("WO129-GAIT tag hook %s at %s%s%s", g_tags ? "installed" : "NOT installed", dt, whyT.empty() ? "" : " -- ", whyT.c_str());
+        if (!g_tags && g_gait) { g_gait = false; g_whyGait = "no tag-update hook (" + whyT + ")"; }
+    }
 
     // ---- capture: EnterImpl on the four action classes, RequestJump ------------
     A.vftAttack = anchor::find_vftable(cm, ".?AVC_CombatActorActionAttack@combatmodule@wh@@", 0);
@@ -712,9 +878,11 @@ uint8_t on_avatar_event(const uint8_t* body, size_t len) {
     return 0;
 }
 
-void body_frame(const char* key, void* ent, uint32_t eid, float renderSpeedMps, const State2* st, double stAgeS, double now) {
+void body_frame(const char* key, void* ent, uint32_t eid, float renderSpeedMps, float renderVx, float renderVy,
+                const State2* st, double stAgeS, double now) {
     Body& b = g_bodies[eid];
     if (b.ent != ent || b.eid != eid) {
+        unpublish_gait(b);   // WO-129: never leave a slot naming a body we no longer drive
         b = Body{};
         b.eid = eid; b.ent = ent; b.key = key; b.avatar = is_avatar_key(key);
         b.actor = actor_by_eid(eid);
@@ -736,22 +904,30 @@ void body_frame(const char* key, void* ent, uint32_t eid, float renderSpeedMps, 
         float s = (b.avatar && fresh) ? st->speedCm / 100.0f : renderSpeedMps;
         // A render step faster than any gait (> 9 m/s) is a snap or a teleport,
         // never a pace: it keeps the previous speed instead of a sprint burst.
+        const bool snap = !(renderVx * renderVx + renderVy * renderVy < 81.0f);
         if (!(b.avatar && fresh) && s > 9.0f) s = b.speedEma;
         if (!(b.avatar && fresh)) {
             // The rendered speed is per-frame noisy at 60+ fps: smooth it (tau ~0.15 s).
             b.speedEma += (s - b.speedEma) * 0.2f;
             s = b.speedEma < 0.05f ? 0.0f : b.speedEma;
         }
-        apply_gait(b, s);
+        // WO-129: the direction tag's input, the rendered velocity (tau ~0.12 s).
+        if (!snap) { b.velX += (renderVx - b.velX) * 0.25f; b.velY += (renderVy - b.velY) * 0.25f; }
+        // WO-129: pseudo-speed is a logical speed CLASS; clamp it to this body's own range.
+        const int range = body_range(b, now);
+        const float cls = gait::clamp_class(gait::speed_class(s), range);
+        b.cls = cls;
+        apply_gait(b, cls);
+        publish_gait(b, cls);
         if (b.avatar && now - b.lastGaitLog >= 2.0) {
             b.lastGaitLog = now;
             void* comp = nullptr; float back = -1.0f;
             if (rd(b.actor, kActorPseudoComp, &comp) && comp) rd(comp, 0x18, &back);
-            logf("WO121-GAIT body=%s state=%s age_s=%.2f stream_cm_s=%u render_mps=%.2f wrote_mps=%.2f readback=%.2f",
+            logf("WO121-GAIT body=%s state=%s age_s=%.2f stream_cm_s=%u render_mps=%.2f speed_mps=%.2f class=%.0f range=%d readback=%.2f tags_applied=%u",
                  b.key.c_str(), st ? (fresh ? "fresh" : "stale") : "none", st ? stAgeS : -1.0, st ? st->speedCm : 0,
-                 renderSpeedMps, s, back);
+                 renderSpeedMps, s, cls, range, back, c_tagApplied.load(std::memory_order_relaxed));
         }
-    } else if (b.gaitWritten) release_gait(b);
+    } else if (b.gaitWritten || b.slot >= 0) release_gait(b);
     if (!b.avatar) return;
     ensure_avatar_guard(b, now);
     // crouch
@@ -768,6 +944,7 @@ void body_released(const char* key, uint32_t eid) {
     auto it = g_bodies.find(eid);
     if (it == g_bodies.end()) return;
     if (it->second.avatar) hits::note_avatar(eid, nullptr, false);
+    unpublish_gait(it->second);   // WO-129: even when the entity is already gone
     if (it->second.actor && engine::entity_by_id(eid) == it->second.ent) release_body(it->second, key);
     g_bodies.erase(it);
 }
@@ -818,6 +995,7 @@ bool read_local_state2(State2* out, float facingYaw) {
 }
 
 void tick() {
+    g_gaitTick.fetch_add(1, std::memory_order_relaxed);   // WO-129: the gait table's freshness clock
     // Keep the player's combat actor / expansion fresh for the capture hooks
     // (a load replaces them). Cheap: two virtual calls a frame.
     if (void* actor = player_actor()) {
@@ -862,12 +1040,15 @@ int status_text(char* out, int n) {
     return std::snprintf(out, n,
         "gait=%s moves=%s combat=%s attack_capture=%s cfg=%d%d%d%d%d bodies=%zu gait_writes=%u crouch=%u jumps=%u/%u "
         "combat_starts=%u automation_off=%u guard_zone=%u atk_zone=%u block=%u cap_attack=%u cap_npc=%u cap_jump=%u cap_other=%u "
-        "cap_dropped=%u buff_adds=%u ctx_set=%u ctx_fail=%u faults=%u",
+        "cap_dropped=%u buff_adds=%u ctx_set=%u ctx_fail=%u faults=%u tags=%s tags_applied=%u gait_slots=%d "
+        "cap_drop_notca=%u cap_drop_nodesc=%u cap_drop_noguid=%u cap_drop_noowner=%u cap_via_base8=%u cap_ours=%u",
         g_gait ? "armed" : "off", g_moves ? "armed" : "off", g_combat ? "armed" : "off", g_capture ? "armed" : "off",
         g_cfgAvatarGait.load(), g_cfgNpcGait.load(), g_cfgMoves.load(), g_cfgCombat.load(), g_cfgNpcRows.load(), g_bodies.size(),
         c_gaitWrites.load(), c_crouch.load(), c_jumps.load(), c_jumpFail.load(), c_combatStarts.load(), c_autoOff.load(),
         c_guardZone.load(), c_atkZone.load(), c_block.load(), c_capAttack.load(), c_capNpc.load(), c_capJump.load(), c_capOther.load(),
-        c_capDropped.load(), c_buffAdds.load(), c_ctxSet.load(), c_ctxFail.load(), c_faults.load());
+        c_capDropped.load(), c_buffAdds.load(), c_ctxSet.load(), c_ctxFail.load(), c_faults.load(),
+        g_tags ? "armed" : "off", c_tagApplied.load(), g_gaitTable.live(),
+        c_dropNotCa.load(), c_dropNoDesc.load(), c_dropNoGuid.load(), c_dropNoOwner.load(), c_capViaBase8.load(), c_capOurs.load());
 }
 
 bool is_avatar_eid(uint32_t eid) {

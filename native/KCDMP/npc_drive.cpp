@@ -263,6 +263,7 @@ struct Puppet {
     float    prev[3]{};
     float    lastRot = 0;
     float    speedMps = 0;          // WO-121: the rendered planar speed of the last written frame (gait for NPC copies)
+    float    velX = 0, velY = 0;    // WO-129: the same frame's planar velocity (the engine's direction tag input)
     uint64_t writes = 0;
     uint32_t frameNo = 0;
     // MP-NPCPULL window
@@ -949,8 +950,11 @@ void tick() {
         if (p.haveLast && dt > 0.0005) {
             const float ddx = pose[0] - p.last[0], ddy = pose[1] - p.last[1];
             const float sp = std::sqrt(ddx * ddx + ddy * ddy) / static_cast<float>(dt);
-            p.speedMps = std::isfinite(sp) && sp < 20.0f ? sp : p.speedMps;
-        } else if (!p.haveLast) p.speedMps = 0;
+            if (std::isfinite(sp) && sp < 20.0f) {
+                p.speedMps = sp;
+                p.velX = ddx / static_cast<float>(dt); p.velY = ddy / static_cast<float>(dt);
+            }
+        } else if (!p.haveLast) { p.speedMps = 0; p.velX = p.velY = 0; }
         if (!write_one(p, e, pose, &wrote)) {
             if (!g_announcedFault) { g_announcedFault = true; logf("MP-NPCWRITE npc=%s engine call FAULTED", p.name.c_str()); }
             disarm("an engine call faulted inside the per-frame write");
@@ -959,7 +963,7 @@ void tick() {
         }
         if (wrote) { ++writing; g_statWrites.fetch_add(1, std::memory_order_relaxed); npctrace::note_write(e, pose); }
         // WO-121: gait / crouch / combat hold for this body, right after its write.
-        motion::body_frame(p.key.c_str(), e, p.eid, p.speedMps, s.haveSt2 ? &s.st2 : nullptr, s.haveSt2 ? now - s.st2At : 1e9, now);
+        motion::body_frame(p.key.c_str(), e, p.eid, p.speedMps, p.velX, p.velY, s.haveSt2 ? &s.st2 : nullptr, s.haveSt2 ? now - s.st2At : 1e9, now);
         if (now - p.winStart >= kPullWindowS) pull_flush(p, now);
         ++it;
     }

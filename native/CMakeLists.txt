@@ -23,6 +23,7 @@ add_link_options("/PDBALTPATH:%_PDB%")
 
 add_subdirectory(KCDMP)
 add_subdirectory(KCDMP_LauncherInjector)
+add_subdirectory(tests)   # WO-129: engine-free unit tests (KCDMP_NativeTests.exe)
 
 # --- WO-72 experiment (NOT product) -------------------------------------
 # A throwaway probe DLL used to measure which IRenderer methods a headless boot

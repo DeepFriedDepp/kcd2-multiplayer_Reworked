@@ -125,4 +125,8 @@ bool install(void* target, const uint8_t* expect, size_t len, Callback cb, const
     return false;
 }
 
+bool install_this(void* target, const uint8_t* expect, size_t len, ThisCallback cb, const char** why) {
+    return install(target, expect, len, reinterpret_cast<Callback>(cb), why);
+}
+
 } // namespace kcdmp::inlinehook

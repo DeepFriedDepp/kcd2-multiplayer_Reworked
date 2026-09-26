@@ -30,4 +30,12 @@ using Callback = void (*)();
 // patch suspends every other thread).
 bool install(void* target, const uint8_t* expect, size_t len, Callback cb, const char** why);
 
+// WO-129: the same hook, for a callback that reads the hooked function's first
+// argument. The thunk leaves rcx/rdx/r8/r9 as they were at the hooked entry
+// when it calls `cb`, so `cb`'s own first argument IS the original rcx (the
+// `this` of a method). The callback may run on any thread the engine runs the
+// target on (actor updates run on the main thread and eight job workers).
+using ThisCallback = void (*)(void* self);
+bool install_this(void* target, const uint8_t* expect, size_t len, ThisCallback cb, const char** why);
+
 } // namespace kcdmp::inlinehook

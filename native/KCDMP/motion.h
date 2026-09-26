@@ -11,6 +11,13 @@
 //           speed (NPC copies). The engine then picks walk/run, direction and
 //           footfalls itself (WO-119 s3.3, observed). Toggles mp_avatar_gait /
 //           mp_npc_gait; off, the mod's Lua clip loops come back.
+//           WO-129: pseudo-speed is a logical speed CLASS (1 walk, 2 run,
+//           3 sprint; the engine maps round(x)-1), clamped to the body's own
+//           range, and it is re-applied -- with the rendered velocity as the
+//           requested velocity -- at the entry of C_Actor::UpdateMannequinTags
+//           (slot 0xC98): the actor's movement controller overwrites both every
+//           frame after our frame-hook write, which made every body slide.
+//           Without that hook the gait piece does not arm.
 //   crouch  C_ActorStateExpansion::SetCrouch (slot 0xE8) from the state bit.
 //   jump    C_ActorStateExpansion::RequestJump (slot 0x100) on the Jump event.
 //           (mp_avatar_moves)
@@ -72,8 +79,9 @@ uint8_t on_avatar_event(const uint8_t* body, size_t len);
 // ---- main thread ---------------------------------------------------------------
 // npc_drive calls this for every body it wrote this frame. `st` is the newest
 // state block from the stream (null when the stream never carried one) and
-// `stAgeS` its age in seconds.
-void body_frame(const char* key, void* ent, uint32_t eid, float renderSpeedMps,
+// `stAgeS` its age in seconds (receiver clock: arrival, never the sender's).
+// renderVx/Vy: this frame's rendered planar velocity (world, m/s).
+void body_frame(const char* key, void* ent, uint32_t eid, float renderSpeedMps, float renderVx, float renderVy,
                 const State2* st, double stAgeS, double now);
 // The writer stopped driving this body (unbind, drop, disarm): give it back.
 void body_released(const char* key, uint32_t eid);
