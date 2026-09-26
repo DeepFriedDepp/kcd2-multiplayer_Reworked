@@ -7,12 +7,12 @@ Background: `docs/WO-124-findings.md`, `docs/WO-125-findings.md`.
 
 ## Before you start
 
-* Both machines on **0.29.9** (`KCDMP-Setup-0.29.9.exe`; the launcher's bottom
+* Both machines on **0.30.0** (`KCDMP-Setup-0.30.0.exe`; the launcher's bottom
   bar shows the version). Both on the same build: an older host never tells
   the joiner which world it runs, and the relay refuses a different release
   anyway (the launcher says so in plain words, on both sides).
-* The tester page for this build is `docs/TEST-0.29.9.md` (Steam probe first,
-  then this runbook).
+* The tester page for this build is `docs/TEST-0.30.0.md` (what to look at
+  for the 0.30.0 fixes, then this runbook).
 * **Joiner: delete any copy of the host's save you copied in by hand** under
   the old 0.28.x method. The mod ignores those now (a save of the host's
   playthrough is never treated as yours), but they clutter the save list, and
@@ -46,20 +46,21 @@ Background: `docs/WO-124-findings.md`, `docs/WO-125-findings.md`.
    * Bring: the character from your newest own Henry save.
    * Start fresh: a new game's starting Henry (from your first save after the
      prologue). Never the host's character.
-   * Console instead of the buttons: `mp_join_henry auto` (bring), `mp_join_henry
-     fresh`, or `mp_join_henry playline2/save021` (a save of yours).
+   * The two buttons are in the launcher window, above the connection line.
+     Nothing is typed in the game for the join.
 4. Wait. Nothing else to click.
 
 ## What each screen should say
 
 | when | host | joiner (launcher banner) |
 |---|---|---|
+| joiner starts the agent | — | "Connecting to your host..." (bottom line; it clears once connected) |
 | joiner connects | — | "Waiting for your host..." |
 | first time in this world | — | "First time in this world: bring your character, or start fresh?" + two buttons |
 | host busy (fight, dialogue, loading) | nothing | "Your host is busy, you'll join in a moment." |
-| host pauses | "<partner> is joining... [bar] N%" — world frozen, keys dead | "Your host is saving the world..." then "Receiving the world... N%" |
+| host pauses | "<partner> is joining -- saving the world... N s", then "Sending the world to <partner>... N%" (under it: `[x] save [>] send N% [ ] load [ ] ready`) — world frozen, keys dead | "Your host is saving the world..." then "Receiving the world... N%" |
 | joiner prepares | same | "Preparing your character..." |
-| joiner loads (about 50-60 s, loading screen) | "<partner> is loading the world..." | "Loading your host's world..." |
+| joiner loads (about 50-60 s, loading screen) | "<partner> is loading your world... N s" (the seconds count up; no percentage) | "Loading your host's world..." |
 | in | world resumes by itself | "In your host's world." + in game: "Co-op: you are in your host's world." |
 
 The joiner arrives **3 m beside the host**, with their own character, in the
@@ -82,8 +83,20 @@ host's world (time, NPCs, quests).
 
 ## Try
 
-* Walk together; a fist fight with each other (friendly fire is on); one of
-  you rides a horse and gets off (the partner's avatar must come off it).
+* Walk, run and sprint side by side: the partner's legs must move with the
+  speed (no gliding), on both screens. The same for NPCs walking near the
+  joiner, on the joiner's screen.
+* **Swing at an NPC, and at each other** (friendly fire is on): the other
+  screen must show the same swing on your figure. This is the one 0.30.0 fix
+  that could not be tried with a real mouse click before release; note it if
+  it does not show.
+* A fist fight with each other; one of you rides a horse and gets off (the
+  partner's avatar must come off it).
+* Joiner: die once (a fall, a fight, anything): you must wake up somewhere
+  else with a **grave** holding your things where you died (0.29.9 made no
+  grave for a joiner).
+* Wander apart (the host far away, a few hundred metres): the NPCs around the
+  joiner must keep moving normally on the joiner's screen.
 * Joiner: the pause menu's **Save & Quit** is greyed out. That is correct:
   only the host saves this world.
 * Host: `mp_world_save`. The joiner's screen hitches once (the snapshot).
@@ -123,6 +136,9 @@ host's world (time, NPCs, quests).
   the host resumes by itself.
 * Joiner wants to start over in this host's world: `mp_henry_reset` (the next
   join asks Bring / Start fresh again).
+* The two buttons don't show on the joiner's launcher, or its bottom line
+  stays on "Connecting...": send the launcher log (`app*.log`): since 0.30.0
+  it has an `Agent status:` line for every change it read from the agent.
 * Anything else: note the time, carry on or stop, and capture (below).
 
 ## Capture afterwards (both machines, before relaunching the game)
@@ -133,10 +149,31 @@ host's world (time, NPCs, quests).
 * The host: the relay's log (`relay*.log` beside `KcdMpServer.exe`).
 * The recorder's CSVs: the `leash` folder beside `KcdMpClient.exe` (the
   launcher's REPORT BUG zip includes them).
+* The launcher's log (`app*.log` in the launcher's folder; REPORT BUG takes it).
 * Screenshots of anything odd (the launcher's two buttons, please).
 * Do **not** send save files or the joiner's `KCDMP\henry` folder around
   (saves name the machine's account).
 
 Lines worth grepping: `MP-JOIN`, `MP-HENRY`, `MP-SAVELOCK`, `MP-JOINPLACE`,
-`MP-DISMOUNT`, `WO124-`, `WO125-`, `Game load failed`, and since 0.29.9
-`MP-CONN`, `MP-HOST-CLAIM`, `MP-AUTHORITY-OWNER`, `MP-LEASH`, `[steam]`.
+`MP-DISMOUNT`, `WO124-`, `WO125-`, `Game load failed`, since 0.29.9
+`MP-CONN`, `MP-HOST-CLAIM`, `MP-AUTHORITY-OWNER`, `MP-LEASH`, `[steam]`, and
+since 0.30.0 `WO129-GAIT tag hook`, `WO121-GAIT … class= … tags_applied=`,
+`WO129-CAPTURE drop reason=`, `WO129-SHARED`, `ACTIONS: graves live`,
+`MP-WORLDSAVED … skew_removed=` (native/agent/kcd.log) and `Agent status:`
+(launcher log).
+
+First checks afterwards (the maintainer, from the logs):
+
+1. Both native logs: `WO129-GAIT tag hook installed`. Both kcd.logs: no
+   `requested logical speed id … out of range`.
+2. The last `MP-WO121-STATS` line on each side, after the swings:
+   `cap_attack` above 0. If it is still 0, `cap_drop_notca`, `cap_drop_nodesc`,
+   `cap_drop_noguid`, `cap_drop_noowner` and the first `WO129-CAPTURE drop
+   reason=` lines say why; `cap_via_base8` counts the swings the 0.30.0 fix
+   let through.
+3. Joiner: `ACTIONS: graves live`, and at its death `MP-GRAVE made`, not
+   `grave NOT made`.
+4. Host: `WO129-SHARED` once the shared world is on, and no `WO1025-COLOCATE
+   event=exit … released=` while the two of you are apart.
+5. Launcher logs: `Agent status:` lines reaching `connection=connected` and, on the
+   joiner's first join, `join=choose buttons=shown`.
