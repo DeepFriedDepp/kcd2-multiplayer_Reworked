@@ -32,8 +32,9 @@ Background: `docs/WO-124-findings.md`, `docs/WO-125-findings.md`.
 
 1. **Host**: launcher → HOST GAME → START GAME. Load your save. Console (`~`):
    `mp_leash_trace on` (you read `WO127-LEASH trace=on`; the recorder for
-   WO-128), then `mp_shared_world on`. You should read
-   `WO122-TOGGLE shared_world=on`.
+   WO-128). The shared world is **on by default** since 0.30.0: nothing to
+   type. `mp_shared_world` alone reports it (`WO122-TOGGLE shared_world=on`);
+   `mp_shared_world off` goes back to separate worlds.
 2. **Joiner**: launcher → **JOIN THROUGH STEAM**, type the host's code (or
    FIND FRIENDS), **TEST CONNECTION** first (reachable, same version, round
    trip), then **JOIN** → Launch. If Steam fails the launcher says why and

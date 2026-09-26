@@ -266,3 +266,16 @@ Nothing else sets itself up once from a live world object.
   `docs/TEST-0.30.0.md` and the runbook.
 - The avatars' class count by state (only 3 ever seen).
 - Why WO-121's single-frame sheet looked like gait.
+
+## 12. After the WO: the shared world is on by default
+
+The maintainer's decision, for 0.30.0 and every later build:
+`mp_shared_world` now ships **on**. It was off through 0.29.9.
+
+- It is set in the mod (`KCD2MP.w122.sharedWorld`) and mirrored in the agent
+  (`SharedWorldDefault`). `mp_preset_clean` = on; `mp_preset_legacy` = off.
+- `mp_shared_world off` still goes back to separate worlds.
+- A joiner still follows the host's mode (WO-124), and a solo game saves as
+  before: the lock and the autosaves need a session (code-verified).
+- The suites that tested the off state now set it off themselves (WO-102 cc,
+  WO-122 a/k, WO-123 b). Gates rerun green (synthetic).

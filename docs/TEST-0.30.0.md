@@ -66,8 +66,9 @@ mp_leash_trace on
 ```
 
 You should read `WO127-LEASH trace=on`. It writes a small file once a second
-for the whole session. Then follow the shared-world steps in
-`WO-124-first-shared-world-runbook.md` (from "Start it").
+for the whole session. The shared world is **on by default** in 0.30.0, so
+`mp_shared_world on` is no longer needed. Then follow the shared-world steps
+in `WO-124-first-shared-world-runbook.md` (from "Start it").
 
 **Partner:** the first time in a world, the launcher window now shows two
 buttons, **Bring my character** and **Start fresh**. Click one. Nothing is
