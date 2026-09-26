@@ -19,7 +19,7 @@ namespace KcdMp.Client;
 ///
 /// GET /version-status -> { "myReleaseVersion": "0.9.5", "peers": [{"ghostId":1,"releaseVersion":"0.9.4"}] }
 /// </summary>
-public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port, Func<string>? getJoinStatus = null)
+public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port, Func<string>? getJoinStatus = null, Action<string>? onJoinChoice = null)
 {
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -132,6 +132,22 @@ public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers
             {
                 var bytes = Encoding.UTF8.GetBytes(getJoinStatus());
                 res.StatusCode = 200;
+                res.ContentType = "application/json";
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes);
+                res.Close();
+                return;
+            }
+
+            // WO-125: the first-join answer from the launcher's two buttons
+            // ("Bring my character" / "Start fresh"): /join-choice?c=bring|fresh.
+            if ((req.HttpMethod == "POST" || req.HttpMethod == "GET") && req.Url?.AbsolutePath == "/join-choice" && onJoinChoice is not null)
+            {
+                string c = req.QueryString["c"] ?? "";
+                bool ok = c is "bring" or "fresh";
+                if (ok) onJoinChoice(c);
+                var bytes = Encoding.UTF8.GetBytes(ok ? "{\"Ok\":true}" : "{\"Ok\":false}");
+                res.StatusCode = ok ? 200 : 400;
                 res.ContentType = "application/json";
                 res.ContentLength64 = bytes.Length;
                 await res.OutputStream.WriteAsync(bytes);

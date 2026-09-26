@@ -98,7 +98,9 @@ public static partial class Protocol
                       JoinAbortJoinerCancel = 9, JoinAbortHostReload = 10, JoinAbortTooBig = 11,
                       // WO-124: the joiner's side of the join (docs/WO-124-findings.md)
                       JoinAbortNoOwnSave = 12, JoinAbortSpliceFailed = 13, JoinAbortLoadFailed = 14,
-                      JoinAbortHenryMismatch = 15, JoinAbortLockFailed = 16, JoinAbortPlaceFailed = 17;
+                      JoinAbortHenryMismatch = 15, JoinAbortLockFailed = 16, JoinAbortPlaceFailed = 17,
+                      // WO-125: continuity (docs/WO-125-findings.md)
+                      JoinAbortWorldChanged = 18, JoinAbortNotHenry = 19, JoinAbortNoHenrySource = 20;
 
     public static string JoinAbortName(byte r) => r switch
     {
@@ -108,6 +110,7 @@ public static partial class Protocol
         JoinAbortHostReload => "host-reload", JoinAbortTooBig => "too-big",
         JoinAbortNoOwnSave => "no-own-save", JoinAbortSpliceFailed => "splice-failed", JoinAbortLoadFailed => "load-failed",
         JoinAbortHenryMismatch => "henry-mismatch", JoinAbortLockFailed => "lock-failed", JoinAbortPlaceFailed => "place-failed",
+        JoinAbortWorldChanged => "world-changed", JoinAbortNotHenry => "not-henry", JoinAbortNoHenrySource => "no-henry-source",
         _ => $"unknown-{r}",
     };
 
@@ -116,13 +119,21 @@ public static partial class Protocol
                       JoinStateWaitingReady = 5, JoinStateResumed = 6, JoinStateRefused = 7,
                       // WO-124: the host's session mode, sent to every peer (joinId 0) on connect, on a new
                       // peer, on a toggle change and every 30 s; reason "shared-world" or "separate".
-                      JoinStateSession = 8;
+                      JoinStateSession = 8,
+                      // WO-125: the host started a save load (joinId 0, to every peer). A joiner in the
+                      // host's world keeps nothing from here on and rejoins once the host announces again.
+                      JoinStateReloading = 9;
+
+    // WO-125: the "session" status (state 8) carries the host world's identity in the joinId
+    // slot (unused for state 8 since WO-124, which always sent 0): the playthrough seed (save
+    // body 0x01FB), and in arg these flags. A WO-124 joiner ignores both.
+    public const ushort SessionSeedKnown = 1, SessionHenryWorld = 2;
 
     public static string JoinStateName(byte s) => s switch
     {
         JoinStateDeferred => "deferred", JoinStatePaused => "paused", JoinStateSaving => "saving", JoinStateSending => "sending",
         JoinStateWaitingReady => "waiting-ready", JoinStateResumed => "resumed", JoinStateRefused => "refused",
-        JoinStateSession => "session", _ => $"unknown-{s}",
+        JoinStateSession => "session", JoinStateReloading => "reloading", _ => $"unknown-{s}",
     };
 
     /// <summary>Why a host defers (JoinStateDeferred) or refuses (JoinStateRefused). APPEND-ONLY.</summary>
@@ -133,6 +144,8 @@ public static partial class Protocol
         // WO-124
         "shared-world", "separate", "no-own-save", "splice-failed", "load-failed", "henry-mismatch", "lock-failed", "place-failed",
         "joiner-abort",
+        // WO-125
+        "not-henry", "world-changed", "reloading", "no-henry-source",
     };
 
     public static byte JoinReasonId(string name)

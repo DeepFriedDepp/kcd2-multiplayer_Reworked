@@ -15,6 +15,7 @@
 //                  [--version-file path]   (default: the first VERSION found walking up from
 //                                           the working directory, then from this binary)
 //        SynthPeer --join ...  | --join-host ...   (WO-123: the synthetic joiner / host, JoinPeer.cs)
+//        SynthPeer --join-host125 ...               (WO-125: the continuity host, Host125.cs)
 // plan lines:
 //   line <npc> <x0> <y0> <z0> <ux> <uy> <len> <speed> [pingpong]
 //   hold <npc> <x> <y> <z> <yaw>
@@ -183,6 +184,7 @@ static class P
         string versionFile = Arg(a, "--version-file", FindUp("VERSION"));
         string release = File.ReadAllText(versionFile).Trim();
         // WO-123: the synthetic joiner and the transfer-ceiling host (JoinPeer.cs).
+        if (a.Contains("--join-host125")) return await Host125.RunAsync(a, release);   // WO-125: the continuity host (Host125.cs)
         if (a.Contains("--join")) return await JoinPeer.RunJoinerAsync(a, release);
         if (a.Contains("--join-host")) return await JoinPeer.RunHostAsync(a, release);
 

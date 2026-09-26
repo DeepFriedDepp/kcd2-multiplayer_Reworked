@@ -38,7 +38,17 @@ public static partial class Protocol
     public const byte SaveKindUnknown = 0, SaveKindAuto = 1, SaveKindQuick = 2, SaveKindManual = 3,
                       SaveKindPermanent = 4, SaveKindCrucial = 5, SaveKindExit = 6;
 
-    public static string SaveKindName(byte k) => k switch
+    /// <summary>
+    /// WO-125: a WorldSaved whose kind has this bit is not a new save but one
+    /// entry of the host's current BRANCH (the save it loaded and every save
+    /// since), replayed oldest first right before a WorldOffer: SenderUnixMs
+    /// is the entry's position (0 starts a new list) and Seq the number of
+    /// entries in the replay. Same type, same exact length, no version bump;
+    /// a WO-122..124 receiver only logs it.
+    /// </summary>
+    public const byte SaveKindBranchFlag = 0x80;
+
+    public static string SaveKindName(byte k) => (byte)(k & 0x7F) switch
     {
         SaveKindAuto => "autosave", SaveKindQuick => "quicksave", SaveKindManual => "save",
         SaveKindPermanent => "permanent", SaveKindCrucial => "crucialdecision", SaveKindExit => "exit",
@@ -50,7 +60,10 @@ public static partial class Protocol
 public readonly record struct WorldSaved(uint Seq, long SenderUnixMs, byte Kind, byte Playline, ushort Idx, byte[] Md5)
 {
     /// <summary>The file name the engine gave it (autosave042.whs, exit.whs).</summary>
-    public string FileName => Kind == Protocol.SaveKindExit ? "exit.whs" : $"{Protocol.SaveKindName(Kind)}{Idx:D3}.whs";
+    public string FileName => (Kind & 0x7F) == Protocol.SaveKindExit ? "exit.whs" : $"{Protocol.SaveKindName(Kind)}{Idx:D3}.whs";
+
+    /// <summary>WO-125: a branch-replay entry (<see cref="Protocol.SaveKindBranchFlag"/>), not a new save.</summary>
+    public bool IsBranchEntry => (Kind & Protocol.SaveKindBranchFlag) != 0;
 
     public byte[] Encode()
     {

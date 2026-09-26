@@ -281,6 +281,7 @@ public partial class GameBridge
         string who = _ghostNames.TryGetValue(joiner, out var n) ? n : $"player {joiner}";
         string refuse = !_sharedWorld ? "shared-world-off"
                       : !(_combatRoleApplied && _isDamageAuthority) ? "not-host"
+                      : _hostWorldHenry == false ? "not-henry"   // WO-125 Phase 7: never paused for a join that cannot happen
                       : "";
         HostJoin? j = null;
         if (refuse == "")
@@ -342,6 +343,20 @@ public partial class GameBridge
         var ct = j.Cts.Token;
         try
         {
+            // ---- 0. WO-125: the world must be known (a world save identifies it, the host NOT paused) and a Henry world
+            if (_hostWorldHenry is null && Volatile.Read(ref _worldSaveBusy) == 0)
+            {
+                Console.WriteLine($"MP-JOIN host: join 0x{j.JoinId:x8}: this world is not identified yet -- one world save first (not paused)");
+                await RequestWorldSaveCoreAsync("identify");
+            }
+            if (_hostWorldHenry == false)
+            {
+                Console.WriteLine($"MP-JOIN host: join 0x{j.JoinId:x8} refused: this world's player is not Henry ({_hostWorldPlayer}) -- not paused");
+                await TrySendStatusAsync(j, Protocol.JoinStateRefused, "not-henry");
+                resumeReason = "not-henry";
+                return;
+            }
+
             // ---- 1. defer until the mod can pause the world
             string lastBusy = "";
             var lastStatus = DateTime.MinValue;
@@ -400,6 +415,12 @@ public partial class GameBridge
                 return;
             }
             if (bytes.Length > Protocol.WorldMaxBytes) { abortReason = Protocol.JoinAbortTooBig; resumeReason = "failed"; return; }
+            if (_hostWorldHenry == false)   // WO-125: only reachable when the world was unknown until this save
+            {
+                abortReason = Protocol.JoinAbortNotHenry; resumeReason = "not-henry";
+                Console.WriteLine($"MP-JOIN host: join 0x{j.JoinId:x8}: the join save's player is not Henry ({_hostWorldPlayer}) -- abort");
+                return;
+            }
             var sender = new WorldSender(bytes, j.JoinId, j.Joiner, save.Seq, save.Md5);
             j.Sender = sender;
             string sha = Convert.ToHexString(sender.Offer.Sha256).ToLowerInvariant();
@@ -409,6 +430,7 @@ public partial class GameBridge
             // ---- 3. offer + windowed chunks
             j.Phase = "sending";
             await TrySendStatusAsync(j, Protocol.JoinStateSending, "none");
+            await Wo125SendBranchReplayAsync(j.JoinId);   // WO-125: the joiner picks the snapshot paired with this branch
             await WriteJoinAsync(sender.BuildOfferPacket());
             var sendT0 = DateTime.UtcNow;
             var lastProgress = DateTime.MinValue;
@@ -598,7 +620,8 @@ public partial class GameBridge
     private void OnJoinStatusIn(byte src, uint joinId, byte[] body)
     {
         if (!JoinStatusCodec.TryDecode(body, out byte state, out byte reason, out ushort arg)) return;
-        if (state == Protocol.JoinStateSession) { Wo124OnSessionMode(src, reason); return; }   // WO-124: the host's session mode
+        if (state == Protocol.JoinStateSession) { Wo124OnSessionMode(src, reason, joinId, arg); return; }   // WO-124: the host's session mode (WO-125: + its world)
+        if (state == Protocol.JoinStateReloading) { Wo125OnHostReloading(); return; }                   // WO-125: the host started a load
         string st = Protocol.JoinStateName(state), rs = Protocol.JoinReasonName(reason);
         Console.WriteLine($"MP-JOIN joiner: host status join=0x{joinId:x8} state={st} reason={rs} arg={arg}");
         switch (state)
@@ -607,7 +630,10 @@ public partial class GameBridge
             case Protocol.JoinStatePaused:
             case Protocol.JoinStateSaving: SetJoinUi("saving", "Your host is saving the world..."); break;
             case Protocol.JoinStateWaitingReady: SetJoinUi("received", "World received. Loading..."); break;
-            case Protocol.JoinStateRefused: _joinOutId = 0; SetJoinUi("refused", $"Your host can't take a join right now ({rs})."); break;
+            case Protocol.JoinStateRefused:
+                _joinOutId = 0;
+                SetJoinUi("refused", rs == "not-henry" ? "Your host is in a part of the story where you can't join yet." : $"Your host can't take a join right now ({rs}).");   // WO-125
+                break;
             case Protocol.JoinStateResumed:
                 // WO-124: a message this joiner already gave (no own save, a failed splice) stays.
                 if (rs != "ready" && _joinUiState is not ("no-save" or "failed" or "left")) SetJoinUi("aborted", $"The join ended ({rs}).");
@@ -695,6 +721,7 @@ public partial class GameBridge
         await WriteJoinAsync(rx.BuildDone());
         _joinReceivedId = joinId;
         _joinReceivedSeq = rx.Offer.WorldSavedSeq;
+        _joinReceivedMd5 = rx.Offer.Md5;   // WO-125: the join save's md5, the key of its matched pair
         _joinOutId = 0;
         SetJoinUi("received", "World received. Loading...");
         Console.WriteLine(FormattableString.Invariant(

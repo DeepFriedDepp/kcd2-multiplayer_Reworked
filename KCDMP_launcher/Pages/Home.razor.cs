@@ -53,6 +53,7 @@ namespace KCDMP_launcher.Pages
         private CancellationTokenSource? versionPollCts;
         // WO-123: the joiner's world transfer ("Receiving the world... 62%"), polled from the agent.
         private string joinStatusMessage = "";
+        private string joinStatusState = "idle";   // WO-125: "choose" shows the first-join buttons
 
         private DotNetObjectReference<Home>? objRef;
         private AppSettings settings = new AppSettings();
@@ -693,13 +694,28 @@ namespace KCDMP_launcher.Pages
                 if (ct.IsCancellationRequested) break;
                 var js = await NetService.GetJoinStatusAsync(settings.VersionIpcPort);
                 string msg = js is null || js.State == "idle" ? "" : js.Message;
-                if (msg != joinStatusMessage)
+                string st = js?.State ?? "idle";
+                if (msg != joinStatusMessage || st != joinStatusState)
                 {
                     joinStatusMessage = msg;
+                    joinStatusState = st;
                     await InvokeAsync(StateHasChanged);
                 }
             }
             joinStatusMessage = "";
+            joinStatusState = "idle";
+        }
+
+        /// <summary>
+        /// WO-125: the first-join answer ("Bring my character" / "Start fresh"),
+        /// sent to the agent's /join-choice. The agent asks the host only after it.
+        /// </summary>
+        private async Task SendJoinChoiceAsync(string choice)
+        {
+            bool ok = await NetService.PostJoinChoiceAsync(settings.VersionIpcPort, choice);
+            joinStatusMessage = ok ? (choice == "bring" ? "Bringing your character..." : "Starting fresh...") : "The choice did not reach the agent -- try again.";
+            joinStatusState = ok ? "chosen" : joinStatusState;
+            await InvokeAsync(StateHasChanged);
         }
 
         /// <summary>

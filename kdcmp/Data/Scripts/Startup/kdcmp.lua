@@ -5117,20 +5117,27 @@ function KCD2MP_Wo124Where()
     return where
 end
 
--- mp_join_henry <auto|playlineN/file>: which own save the joiner's Henry comes from.
+-- mp_join_henry <auto|fresh|playlineN/file>: the answer to a first join's question
+-- (WO-125): auto = bring my character (the newest own Henry save), fresh = a new
+-- game's first Henry save, playlineN/file = that save. A world this player has
+-- joined before always restores its own Henry; the answer only matters for a
+-- first join. Typing it sends the answer to the agent (wo125_choice).
 function KCD2MP_SetJoinHenry(arg)
     local w = KCD2MP.w124
     local v = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local typed = false
     if v ~= "" and v ~= "%line" and v ~= "nil" then
-        if v ~= "auto" and not v:match("^playline[0-4]/[%w_]+$") and not v:match("^playline[0-4]/[%w_]+%.whs$") then
-            mp_log("mp_join_henry: expected auto or playlineN/file (e.g. playline2/save021), got '" .. v .. "'")
+        if v ~= "auto" and v ~= "fresh" and not v:match("^playline[0-4]/[%w_]+$") and not v:match("^playline[0-4]/[%w_]+%.whs$") then
+            mp_log("mp_join_henry: expected auto, fresh or playlineN/file (e.g. playline2/save021), got '" .. v .. "'")
             return false
         end
         w.henry = v
+        typed = true
     end
-    mp_log("WO124-TOGGLE join_henry=" .. w.henry .. " -- the joiner's Henry comes from " ..
-        (w.henry == "auto" and "its newest own save (by save time, every playline)" or w.henry))
+    mp_log("WO124-TOGGLE join_henry=" .. w.henry .. " -- a first join's Henry comes from " ..
+        (w.henry == "auto" and "the newest own Henry save (bring my character)" or w.henry == "fresh" and "a new game's first Henry save (start fresh)" or w.henry))
     KCD2MP_Wo124CfgEmit()
+    if typed then KCD2MP_EmitEvent("wo125_choice", w.henry) end
     return true
 end
 
@@ -5172,6 +5179,76 @@ function KCD2MP_Wo124Msg(text)
     KCD2MP.w124.msgs = KCD2MP.w124.msgs + 1
     mp_log("WO124-MSG " .. tostring(text))
     pcall(KCD2MP_ShowInteractionMsg, tostring(text))
+end
+
+-- ===== WO-125: continuity (per-world Henry files) ==================================
+-- docs/WO-125-findings.md. The agent keeps the joiner's Henry for each host world
+-- and pairs a snapshot with every host world save: this mod writes the snapshot
+-- as a QuickSave (the one save type that passes the joiner's lock; the agent
+-- moves the file out of the playline at once) and answers the agent's questions.
+KCD2MP.w125 = { snaps = 0, snapRefused = 0 }
+
+-- A snapshot of this game's copy of the host's world, for the agent. The hitch
+-- is measured the WO-122 way (the longest frame gap in the next 6 s).
+function KCD2MP_Wo125Snapshot(tok)
+    local w = KCD2MP.w125
+    local ok, r = false, nil
+    if Game and Game.QuickSave then
+        pcall(KCD2MP_Wo122HitchArm, 6.0)
+        ok, r = pcall(Game.QuickSave)
+    end
+    local saved = ok and r == true   -- the bind answers true when the engine takes it (observed), false when refused
+    if saved then w.snaps = w.snaps + 1 else w.snapRefused = w.snapRefused + 1 end
+    mp_log(string.format("WO125-SNAPSHOT quicksave=%s (%s) n=%d refused=%d", saved and "requested" or "REFUSED",
+        tostring(r), w.snaps, w.snapRefused))
+    KCD2MP_EmitEvent("wo124_reply", tostring(tok) .. " ok=" .. (saved and "true" or "false"))
+    return saved
+end
+
+-- Is the player Henry right now (the live half of the Phase 7 test; the agent reads the save).
+function KCD2MP_Wo125PlayerIsHenry(tok)
+    local id = "?"
+    pcall(function() id = tostring(player.soul:GetNameStringId()) end)
+    KCD2MP_EmitEvent("wo124_reply", tostring(tok) .. " henry=" .. ((id == "char_26_uiName") and "yes" or "no") .. " id=" .. id)
+end
+
+-- The save the engine loaded last (cvar wh_sys_LastLoadedSave), base name only: the
+-- agent checks that the world in memory is the file its join placed.
+function KCD2MP_Wo125LastLoaded(tok)
+    local v = "?"
+    pcall(function() v = tostring(System.GetCVar("wh_sys_LastLoadedSave")) end)
+    local base = (v:match("([^/\\]+)$") or v):gsub("%.whs$", "")
+    KCD2MP_EmitEvent("wo124_reply", tostring(tok) .. " last=" .. base)
+    return base
+end
+
+-- mp_henry_reset: start over in the current host's world (the next join asks again).
+function KCD2MP_Wo125Reset()
+    mp_log("WO125-CMD mp_henry_reset -- the agent deletes this host world's Henry files")
+    KCD2MP_EmitEvent("wo125_reset", "")
+    return true
+end
+
+-- mp_henry_files [delete <world>]: list the worlds held, or delete one.
+function KCD2MP_Wo125Files(arg)
+    local v = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if v == "%line" or v == "nil" then v = "" end
+    if v ~= "" and not v:match("^delete [0-9a-f]+$") then
+        mp_log("mp_henry_files: expected nothing (list) or delete <world>, got '" .. v .. "'")
+        return false
+    end
+    KCD2MP_EmitEvent("wo125_files", v)
+    return true
+end
+
+-- The agent's answer to mp_henry_files: one line per world, "|"-separated.
+function KCD2MP_Wo125FilesShow(text)
+    local n = 0
+    for line in string.gmatch(tostring(text or ""), "[^|]+") do
+        n = n + 1
+        mp_log("WO125-FILES " .. line)
+    end
+    pcall(KCD2MP_ShowInteractionMsg, n == 0 and "No characters stored for any host world." or (n .. " host world(s) with your character -- see the log (mp_henry_files)."))
 end
 
 -- The join's load (and the way back to the player's own save), from the menu
@@ -13394,9 +13471,13 @@ local ok, err = pcall(function()
         KCD2MP_Wo123CfgEmit()
     end
     -- WO-124: the joiner's side of the join (the agent drives it; dormant unless the host runs a shared world).
-    System.AddCCommand("mp_join_henry",          'KCD2MP_SetJoinHenry(%line)',            "WO-124: which own save the joiner's Henry comes from: mp_join_henry <auto|playlineN/file> (auto = the newest own save by save time); bare = report")
+    System.AddCCommand("mp_join_henry",          'KCD2MP_SetJoinHenry(%line)',            "WO-124/125: a first join to a host world: mp_join_henry <auto|fresh|playlineN/file> (auto = bring my character, fresh = start fresh from a new game's first save); a world joined before restores its own Henry; bare = report")
     mp_log("WO124-BUILD join_henry=auto place_m=3 transient=mpworld<joinId>.whs -- dormant unless the host runs a shared world")
     KCD2MP_Wo124CfgEmit()
+    -- WO-125: continuity (per-world Henry files; the agent keeps them).
+    System.AddCCommand("mp_henry_reset",         "KCD2MP_Wo125Reset()",                   "WO-125: start over in your current host's world: its stored character is deleted and the next join asks Bring / Start fresh again")
+    System.AddCCommand("mp_henry_files",         'KCD2MP_Wo125Files(%line)',              "WO-125: list the host worlds your character is stored for (world, last joined, snapshots, size): mp_henry_files; delete one: mp_henry_files delete <world>")
+    mp_log("WO125-BUILD snapshot=QuickSave keep=100 stale_days=90 -- dormant unless the host runs a shared world")
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")

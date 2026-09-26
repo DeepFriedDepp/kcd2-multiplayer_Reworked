@@ -130,6 +130,14 @@
     @* WO-123: the joiner's world transfer, from the agent's /join-status *@
     <div class="join-status-banner" style="position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); padding: 10px 22px; background: rgba(20, 14, 8, 0.88); border: 1px solid #8a6d3b; color: #e8d9b5; font-size: 16px; z-index: 900;">
         @joinStatusMessage
+        @if (joinStatusState == "choose")
+        {
+            @* WO-125: a first join to this host world -- the player's choice, before anything is asked of the host *@
+            <div style="margin-top: 8px; display: flex; gap: 12px; justify-content: center;">
+                <button class="btn btn-primary" @onclick='() => SendJoinChoiceAsync("bring")'>Bring my character</button>
+                <button class="btn btn-secondary" @onclick='() => SendJoinChoiceAsync("fresh")'>Start fresh</button>
+            </div>
+        }
     </div>
 }
 

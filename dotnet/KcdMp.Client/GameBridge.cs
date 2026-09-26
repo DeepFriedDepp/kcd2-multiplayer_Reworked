@@ -1466,8 +1466,8 @@ public partial class GameBridge(ClientConfig config)
         // WO-19: lets the launcher poll this agent's own release version plus
         // whatever release versions have arrived for connected peers so far.
         Wo123SweepAtStart();   // WO-123: staging files an earlier agent left behind
-        Wo124SweepAtStart();   // WO-124: transient mpworld files a crash left in the saves folder
-        _versionIpcServer = new VersionIpcServer(() => _ghostReleaseVersions.ToArray(), config.VersionIpcPort, JoinStatusJson);
+        Wo125AtStart();        // WO-125 (replaces WO-124's start sweep): transient files and ledgered saves out of the playlines, the 90-day rule
+        _versionIpcServer = new VersionIpcServer(() => _ghostReleaseVersions.ToArray(), config.VersionIpcPort, JoinStatusJson, Wo125OnLauncherChoice);
         _versionIpcServer.Start();
 
         // Kick off the Lua interp tick immediately so KCD2MP.isRiding gets updated
@@ -5489,6 +5489,11 @@ public partial class GameBridge(ClientConfig config)
             case "wo124_henry_cfg":
                 Wo124OnEvent(name, arg);
                 return;
+            case "wo125_choice":     // WO-125
+            case "wo125_reset":
+            case "wo125_files":
+                Wo125OnEvent(name, arg);
+                return;
         }
 
         var interactions = Interactions;
@@ -6387,7 +6392,7 @@ public partial class GameBridge(ClientConfig config)
     public static bool IsMenuSafeLua(string lua) => MenuSafeLua.IsMatch(lua);
 
     private static readonly System.Text.RegularExpressions.Regex MenuSafeLua = new(
-        @"^(if )?KCD2MP_(Wo12[1-4]|Join|HostOnlyLock|EmitEvent|SetHitSensor|WorldSavedIn|SaveRefused|SaveLeak)|^if KCD2MP_Wo124|^System\.LogAlways",
+        @"^(if )?KCD2MP_(Wo12[1-5]|Join|HostOnlyLock|EmitEvent|SetHitSensor|WorldSavedIn|SaveRefused|SaveLeak)|^if KCD2MP_Wo12[45]|^System\.LogAlways",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     // WO-110 R9: the client side of the framing-drop counters (the relay has

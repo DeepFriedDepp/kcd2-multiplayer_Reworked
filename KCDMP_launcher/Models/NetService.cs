@@ -289,6 +289,23 @@ namespace KCDMP_launcher.Services
         }
 
         /// <summary>
+        /// WO-125: the player's answer to a first join ("bring" / "fresh"),
+        /// POST /join-choice on the agent's listener. False when it did not land.
+        /// </summary>
+        public async Task<bool> PostJoinChoiceAsync(int port, string choice)
+        {
+            try
+            {
+                using var r = await _httpClient.PostAsync($"http://localhost:{port}/join-choice?c={Uri.EscapeDataString(choice)}", null);
+                return r.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
         /// An IPv6 literal has to be bracketed in a URL, or the colons in the
         /// address are read as the port separator and the request throws.
         /// </summary>

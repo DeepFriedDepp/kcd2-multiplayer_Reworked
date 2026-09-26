@@ -397,6 +397,8 @@ public partial class GameBridge
         string kind = Protocol.SaveKindName(s.Kind);
         if (_combatRoleApplied && _wo122Connected && !_isDamageAuthority)
         {
+            // WO-125: the snapshot's own QuickSave, or a leak moved out at once.
+            if (Wo125OnJoinerSaveObserved(s.FullPath, Convert.ToHexString(s.Md5).ToLowerInvariant())) return;
             // The lock should make this impossible on the joiner (QuickSave passes a
             // script lock, and nothing in the mod calls it). Loud, for the next WO.
             Console.WriteLine($"MP-SAVELOCK LEAK a {kind} was written on this joiner: {s.Display} (lock held={On(_lockHeld)})");
@@ -422,6 +424,7 @@ public partial class GameBridge
             Console.WriteLine($"MP-WORLDSAVE saved {s.Display} ({kind}, {s.Bytes} B, verify ok, engine generation_ms={gen}) -> WorldSaved seq={ws.Seq} md5={Convert.ToHexString(s.Md5)[..8].ToLowerInvariant()}");
         }
         catch (Exception ex) { Console.WriteLine($"MP-WORLDSAVE WorldSaved not sent for {s.Display}: {ex.Message}"); }
+        Wo125HostIdentify(s.FullPath, loaded: false, "saved");   // WO-125: the world's identity and the branch, before a join takes the file
         lock (_saveWaitGate)
         {
             if (_saveWaiter is { } w && s.AtUtc >= w.Since) w.Tcs.TrySetResult(s with { Seq = ws.Seq });
@@ -433,6 +436,8 @@ public partial class GameBridge
     {
         var ws = WorldSaved.TryDecode(payload, down: true, out byte src);
         if (ws is not WorldSaved w) return;
+        if (w.IsBranchEntry) { Wo125OnBranchEntry(w); return; }   // WO-125: the host's branch, replayed before an offer
+        _ = Wo125OnHostWorldSavedAsync(w, src);                    // WO-125: a joiner in the world snapshots its Henry
         long age = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - w.SenderUnixMs;
         string md5 = Convert.ToHexString(w.Md5).ToLowerInvariant();
         Console.WriteLine(FormattableString.Invariant(

@@ -78,6 +78,11 @@ public partial class GameBridge
         public WhsSave.PlayerSoul? Henry;          // the spliced file's Henry (= the source's, minus quest items)
         public DateTime LoadCmdUtc, LoadStartUtc, LoadGameUtc, GameplayUtc;
         public volatile string Phase = "preparing";
+        public bool InWorld;                        // WO-125: an in-world rejoin (a host reload) or a join from the own world
+        public string Mode = "bring";               // WO-125: bring | fresh | restore
+        public string? WorldTag;
+        public WhsSave.HenryParts? SplicedParts;
+        public byte[]? OfferMd5;
         public TaskCompletionSource<bool>? LoadStarted, GameplayStarted, LoadFailed;
     }
 
@@ -89,7 +94,6 @@ public partial class GameBridge
     private DateTime _autoNextUtc = DateTime.MinValue;
     private volatile bool _needsMenuTold;
     private volatile bool _gameQuitting;           // "CSystem::Quit invoked" seen; cleared by the next connection
-    private volatile bool _noSaveTold;
     private string _henryOverride = "auto";        // mp_join_henry
     private Dictionary<string, string>? _questClasses;
 
@@ -102,19 +106,6 @@ public partial class GameBridge
     }
 
     // ---------------------------------------------------------------- lifecycle
-
-    /// <summary>An agent start sweeps every transient world file an earlier agent left (a crash between placing and deleting).</summary>
-    private static void Wo124SweepAtStart()
-    {
-        try
-        {
-            string? saves = ResolveSavesDirForJoin();
-            if (saves is null) return;
-            int n = SweepTransientWorlds(saves, keep: null);
-            Console.WriteLine($"MP-JOIN joiner: start sweep -- {n} transient mpworld file(s) removed from <saves>");
-        }
-        catch (Exception ex) { Console.WriteLine($"MP-JOIN joiner: start sweep failed: {ex.Message}"); }
-    }
 
     /// <summary>KCDMP_JOIN_SAVES_DIR (tests) or the engine's saves folder.</summary>
     private static string? ResolveSavesDirForJoin() =>
@@ -150,7 +141,6 @@ public partial class GameBridge
         _autoRequests = 0;
         _autoNextUtc = DateTime.UtcNow.AddSeconds(2);
         _needsMenuTold = false;
-        _noSaveTold = false;
         _gameQuitting = false;
         _ = ExecLuaAsync("if KCD2MP_Wo124CfgEmit then KCD2MP_Wo124CfgEmit() end");
         _ = Wo124LoopAsync(ct);
@@ -195,6 +185,11 @@ public partial class GameBridge
         // which mode it runs, so a flip back to separate reaches every joiner.
         if (_sharedWorld) _modeEverShared = true;
         if (!_modeEverShared) return;
+        Wo125HostTick();   // WO-125: an unknown world is identified by one world save
+        // WO-125: silent while a load runs. The status carries the world's identity; sent mid-load it names
+        // the world being left, and a joiner rewinding with the host would rejoin THAT one (observed with the
+        // synthetic host). The next tick after "Gameplay started" announces the loaded world.
+        if (_hostLoadAnnounced) return;
         bool resendAll = (DateTime.UtcNow - _modeBroadcastUtc).TotalSeconds >= 30;
         var peers = _peerLastSeenUtc.Keys.Concat(_ghostNames.Keys).Distinct().ToList();
         foreach (byte g in peers)
@@ -202,7 +197,8 @@ public partial class GameBridge
             if (!resendAll && _modeTold.TryGetValue(g, out bool told) && told == _sharedWorld) continue;
             try
             {
-                await WriteJoinAsync(JoinStatusCodec.Build(g, 0, Protocol.JoinStateSession, Protocol.JoinReasonId(_sharedWorld ? "shared-world" : "separate"), 0));
+                var (seed, flags) = _sharedWorld ? Wo125SessionIdentity() : (0u, (ushort)0);   // WO-125: the world's identity rides along
+                await WriteJoinAsync(JoinStatusCodec.Build(g, seed, Protocol.JoinStateSession, Protocol.JoinReasonId(_sharedWorld ? "shared-world" : "separate"), flags));
                 if (!_modeTold.TryGetValue(g, out bool was) || was != _sharedWorld)
                     Console.WriteLine($"MP-JOIN host: session mode {(_sharedWorld ? "shared-world" : "separate")} -> ghost {g}");
                 _modeTold[g] = _sharedWorld;
@@ -215,14 +211,15 @@ public partial class GameBridge
     /// <summary>A toggle flip on the host: tell every peer at the next tick.</summary>
     private void Wo124OnSharedWorldChanged() => _modeTold.Clear();
 
-    /// <summary>JoinStatus state "session" from the host.</summary>
-    private void Wo124OnSessionMode(byte src, byte reason)
+    /// <summary>JoinStatus state "session" from the host (WO-125: the joinId slot carries the world's seed, arg its flags).</summary>
+    private void Wo124OnSessionMode(byte src, byte reason, uint joinId = 0, ushort arg = 0)
     {
         bool on = Protocol.JoinReasonName(reason) == "shared-world";
         bool changed = !_hostModeKnown || _hostSharedWorld != on || _hostModeFrom != src;
         _hostSharedWorld = on;
         _hostModeKnown = true;
         _hostModeFrom = src;
+        if (on) Wo125OnSessionIdentity(joinId, arg);
         if (!changed) return;
         Console.WriteLine($"MP-JOIN joiner: the host (ghost {src}) runs {(on ? "a SHARED WORLD" : "separate worlds")} -- this machine follows (local mp_shared_world={On(_sharedWorld)} ignored while connected)");
         _ = ExecLuaAsync($"if KCD2MP_Wo124SessionMode then KCD2MP_Wo124SessionMode({(on ? "true" : "false")}) end");
@@ -258,6 +255,7 @@ public partial class GameBridge
     private void Wo124OnSaveLoadAccepted(string display)
     {
         _where = GameWhere.Loading;
+        if (_combatRoleApplied && _isDamageAuthority) { Wo125HostOnLoadAccepted(display); return; }   // WO-125: the host's world changes
         if (_jj is { LoadStarted: { } t } j && display.Equals($"playline{j.Playline}/{j.Name}.whs", StringComparison.OrdinalIgnoreCase))
         {
             if (j.LoadStartUtc == default) j.LoadStartUtc = DateTime.UtcNow;
@@ -268,7 +266,8 @@ public partial class GameBridge
         if (_joinedWorld)
         {
             // The joiner loaded a save of its own from the pause menu: it has left the host's world.
-            Console.WriteLine("MP-JOIN joiner: a load started that the join did not ask for -- this game is leaving the host's world (its shared-world progress is not saved, WO-125)");
+            Console.WriteLine("MP-JOIN joiner: a load started that the join did not ask for -- this game is leaving the host's world (its progress there is kept up to the host's last save, WO-125)");
+            _rewinding = false; _rejoinPending = false;
             SetJoinedWorld(false);
             _ = Wo122SetLockAsync(false, "left-shared-world");
             SetJoinUi("idle", "");
@@ -279,6 +278,7 @@ public partial class GameBridge
     private void Wo124OnLoadFailedToMenu()
     {
         _where = GameWhere.Menu;
+        _leaveInProgress = false;
         Console.WriteLine("MP-JOIN joiner: the engine reports a failed load and is back at the MAIN MENU");
         if (_jj is { LoadFailed: { } f }) f.TrySetResult(true);
         if (_joinedWorld) { SetJoinedWorld(false); _ = Wo122SetLockAsync(false, "load-failed"); }
@@ -295,14 +295,22 @@ public partial class GameBridge
             _gameQuitting = false;
             _autoRequests = 0;
             _needsMenuTold = false;
-            _noSaveTold = false;
+        }
+        // WO-125: a new process's mod starts with no session mode and the agent pushes it only on a change,
+        // so an agent kept across a restart left the mod refusing the joiner's lock (observed: lock=failed).
+        // Every main-menu line re-tells it (idempotent in the mod; a crash prints no quit line).
+        if (_hostModeKnown)
+        {
+            Console.WriteLine($"MP-JOIN joiner: at the main menu -- telling the mod the host's session mode ({(_hostSharedWorld ? "shared world" : "separate")})");
+            _ = ExecLuaAsync($"if KCD2MP_Wo124SessionMode then KCD2MP_Wo124SessionMode({(_hostSharedWorld ? "true" : "false")}) end");
         }
     }
 
     private void Wo124OnGameplayStarted()
     {
         _where = GameWhere.World;
-        if (_ownLoadExpected) { _ownLoadExpected = false; Console.WriteLine("MP-JOIN joiner: back in this player's own world (Gameplay started)"); }
+        Wo125HostOnGameplayStarted();
+        if (_ownLoadExpected) { _ownLoadExpected = false; _leaveInProgress = false; Console.WriteLine("MP-JOIN joiner: back in this player's own world (Gameplay started)"); }
         if (_jj is { } j && j.GameplayStarted is { } t) { j.GameplayUtc = DateTime.UtcNow; t.TrySetResult(true); }
     }
 
@@ -311,8 +319,33 @@ public partial class GameBridge
     private async Task Wo124JoinerTickAsync()
     {
         if (!_hostModeKnown || !_hostSharedWorld) return;
-        if (_jj is not null || _joinRx is not null || _joinOutId != 0 || _joinedWorld || _gameQuitting) return;
-        if (_where == GameWhere.World && !_needsMenuTold)
+        if (_jj is not null || _joinRx is not null || _joinOutId != 0 || _gameQuitting) return;
+        // WO-125: nothing is asked while this game is leaving a world (its own load not yet in). Observed
+        // before this gate: a join asked during the leave's 4 s notice raced the leave's own load, and the
+        // own load landed last -- the agent believed the joiner was in the host's world.
+        if (_leaveInProgress)
+        {
+            if ((DateTime.UtcNow - _leaveSinceUtc).TotalMinutes < 5) return;
+            Console.WriteLine("MP-HENRY joiner: the leave's own load never reported in (5 min) -- the join gate opens again");
+            _leaveInProgress = false;
+        }
+        if (_joinedWorld)
+        {
+            // WO-125 Phase 6: the host reloaded this world -- rejoin from inside it (the host defers while it loads).
+            if (!_rejoinPending || DateTime.UtcNow < _autoNextUtc) return;
+            if ((DateTime.UtcNow - _rejoinSinceUtc).TotalMinutes > 5)
+            {
+                _rejoinPending = false;
+                await LeaveSharedWorldAsync("rejoin-timeout", "Could not rejoin your host after its reload.");
+                return;
+            }
+            _autoNextUtc = DateTime.UtcNow.AddSeconds(20);
+            Console.WriteLine("MP-HENRY joiner: asking the host for its reloaded world (an in-world rejoin)");
+            await SendJoinRequestAsync();
+            return;
+        }
+        bool fromWorld = _where == GameWhere.World && _joinFromWorldOnce;   // WO-125: after leaving for the host's new world
+        if (_where == GameWhere.World && !fromWorld && !_needsMenuTold)
         {
             _needsMenuTold = true;
             const string msg = "Your host is in a shared world. Quit, start the game again and wait at the main menu to join.";
@@ -321,23 +354,20 @@ public partial class GameBridge
             await ExecLuaAsync($"if KCD2MP_Wo124Msg then KCD2MP_Wo124Msg(\"{EscapeLua(msg)}\") end");
             return;
         }
-        if (_where != GameWhere.Menu || DateTime.UtcNow < _autoNextUtc) return;
+        if ((_where != GameWhere.Menu && !fromWorld) || DateTime.UtcNow < _autoNextUtc) return;
         if (_autoRequests >= 5) return;   // five automatic tries per connection; mp_join_request always works
-        var src = FindHenrySource(out string why);
-        if (src is null)
+        // WO-125: the host's world must be known and a Henry world; a first join needs the player's choice
+        // and a usable source BEFORE the request, so the host is never paused while someone decides.
+        if (!Wo125ReadyToRequest(out string why))
         {
-            if (!_noSaveTold)
-            {
-                _noSaveTold = true;
-                Console.WriteLine($"MP-JOIN joiner: no join asked -- {why}");
-                SetJoinUi("no-save", NoOwnSaveMessage);
-            }
-            _autoNextUtc = DateTime.UtcNow.AddSeconds(20);
+            _autoNextUtc = DateTime.UtcNow.AddSeconds(2);
             return;
         }
         _autoRequests++;
         _autoNextUtc = DateTime.UtcNow.AddSeconds(30);
-        Console.WriteLine($"MP-JOIN joiner: at the main menu with a shared-world host -- asking for the world (auto, try {_autoRequests}; Henry would come from {src.Display})");
+        if (fromWorld) _joinFromWorldOnce = false;
+        string what = _henry.HasWorld(_peerTag!) ? $"its own Henry for world {_peerTag} is restored" : $"first join ({CurrentChoice()})";
+        Console.WriteLine($"MP-JOIN joiner: {(fromWorld ? "in its own world after the host changed worlds" : "at the main menu")} with a shared-world host -- asking for the world (auto, try {_autoRequests}; {what})");
         await SendJoinRequestAsync();
         if (_joinOutId != 0) SetJoinUi("waiting", "Waiting for your host...");
     }
@@ -345,40 +375,6 @@ public partial class GameBridge
     private const string NoOwnSaveMessage = "Start a game of your own first, so your character can come with you.";
 
     // ---------------------------------------------------------------- Phase 1: which Henry
-
-    /// <summary>
-    /// The joiner's Henry source: mp_join_henry playlineN/file, else the newest
-    /// own save by its header SaveTime across playline0..4, never a transient
-    /// mpworld file. The pick must pass WhsSave.Verify (a newer broken file is
-    /// skipped and logged).
-    /// </summary>
-    private HenrySource? FindHenrySource(out string why)
-    {
-        why = "";
-        string? saves = ResolveSavesDirForJoin();
-        if (saves is null) { why = "no saves folder"; return null; }
-        if (_henryOverride != "auto")
-        {
-            var m = Regex.Match(_henryOverride, @"^playline([0-4])/([A-Za-z0-9_]+?)(\.whs)?$");
-            if (!m.Success) { why = $"mp_join_henry '{_henryOverride}' is not playlineN/file"; return null; }
-            string f = m.Groups[2].Value + ".whs";
-            string full = Path.Combine(saves, $"playline{m.Groups[1].Value}", f);
-            if (!File.Exists(full)) { why = $"mp_join_henry playline{m.Groups[1].Value}/{f}: no such save"; return null; }
-            var v = WhsSave.VerifyFile(full);
-            if (!v.Ok) { why = $"mp_join_henry playline{m.Groups[1].Value}/{f} does not verify ({v.Reason})"; return null; }
-            return new HenrySource(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), f, full, ReadSaveTime(full) ?? 0);
-        }
-        var all = ListOwnSaves(saves);
-        if (all.Count == 0) { why = "no save of this player's own in playline0..4"; return null; }
-        foreach (var s in all)
-        {
-            var v = WhsSave.VerifyFile(s.FullPath);
-            if (v.Ok) return s;
-            Console.WriteLine($"MP-JOIN joiner: skipping {s.Display} as the Henry source: {v.Reason}");
-        }
-        why = $"none of {all.Count} own saves verifies";
-        return null;
-    }
 
     /// <summary>Every engine-named save in playline0..4, newest SaveTime first.</summary>
     public static List<HenrySource> ListOwnSaves(string saves)
@@ -424,7 +420,7 @@ public partial class GameBridge
     private Task Wo124OnWorldReceivedAsync(uint joinId, byte host, string stagedPath, uint seq)
     {
         if (!JoinerSharedEffective) return Task.CompletedTask;
-        var j = new JoinerJoin { JoinId = joinId, Host = host, WorldSavedSeq = seq };
+        var j = new JoinerJoin { JoinId = joinId, Host = host, WorldSavedSeq = seq, InWorld = _where == GameWhere.World, OfferMd5 = _joinReceivedMd5 };
         _jj = j;
         // Never awaited by the frame loop: observed, awaiting it held every relay
         // frame (the host's positions, its aborts) for the whole ~50 s load.
@@ -438,18 +434,6 @@ public partial class GameBridge
         try
         {
             SetJoinUi("preparing", "Preparing your character...");
-            // ---- Phase 1: the Henry source
-            var src = FindHenrySource(out string why);
-            if (src is null)
-            {
-                Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8}: {why}");
-                await AbortJoinerJoinAsync(j, Protocol.JoinAbortNoOwnSave, "no-own-save", NoOwnSaveMessage);
-                return;
-            }
-            j.Source = src;
-            Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8}: the Henry comes from {src.Display} ({(_henryOverride == "auto" ? "newest own save by SaveTime" : "mp_join_henry")})");
-
-            // ---- Phase 2: splice + check + verify, in memory
             string? saves = ResolveSavesDirForJoin();
             string? tables = TablesPakPath();
             if (saves is null || tables is null)
@@ -459,15 +443,37 @@ public partial class GameBridge
                 return;
             }
             byte[] hostBytes = WhsSave.ReadShared(stagedPath);
-            byte[] joinBytes = WhsSave.ReadShared(src.FullPath);
+
+            // ---- Phase 1 (WO-125): which Henry. The world's own (restore) or the first-join choice
+            // (bring / fresh); the world must be the one announced and a Henry world.
+            var choice = Wo125HenryForWorld(j.JoinId, hostBytes, out string why, out byte abortWhy, out string worldTag);
+            if (choice is null)
+            {
+                Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8}: {why}");
+                string msg = abortWhy switch
+                {
+                    Protocol.JoinAbortNotHenry => "Your host is in a part of the story where you can't join yet.",
+                    Protocol.JoinAbortWorldChanged => "Your host changed worlds -- trying again in a moment.",
+                    Protocol.JoinAbortNoOwnSave => NoOwnSaveMessage,
+                    _ => why.EndsWith('.') ? why : "Your character could not be prepared.",
+                };
+                if (j.InWorld) await LeaveAfterFailedJoinAsync(j, abortWhy, Protocol.JoinAbortName(abortWhy), msg);
+                else await AbortJoinerJoinAsync(j, abortWhy, abortWhy == Protocol.JoinAbortNoOwnSave ? "no-own-save" : Protocol.JoinAbortName(abortWhy), msg);
+                return;
+            }
+            j.Source = choice.Save;
+            j.Mode = choice.Mode;
+            j.WorldTag = worldTag;
+
+            // ---- Phase 2: splice + check + verify, in memory
             _questClasses ??= WhsSave.QuestClasses(tables);
             var ts = DateTime.UtcNow;
             WhsSave.SpliceResult res;
             List<string> fails;
             try
             {
-                res = WhsSave.Splice(hostBytes, joinBytes, _questClasses, WhsSave.QuestItemMode.Strip);
-                fails = WhsSave.Check(hostBytes, joinBytes, res.File, _questClasses, WhsSave.QuestItemMode.Strip);
+                res = WhsSave.SpliceParts(hostBytes, choice.Parts, _questClasses, WhsSave.QuestItemMode.Strip);
+                fails = WhsSave.CheckParts(hostBytes, choice.Parts, res.File, _questClasses, WhsSave.QuestItemMode.Strip);
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or ArgumentException)
             {
@@ -487,17 +493,21 @@ public partial class GameBridge
             var rp = res.Report;
             var splicedRaw = WhsSave.Inflate(res.File).Raw;
             j.Henry = WhsSave.DecodePlayerSoul(splicedRaw, WhsSave.FindSoul(splicedRaw, WhsSave.HenrySoul)!.Value);
+            // WO-125: the Henry exactly as loaded -- the join save pairs with it after Ready.
+            j.SplicedParts = WhsSave.PartsFromStream(splicedRaw, choice.Parts.Build, WhsSave.HenryParts.OriginSnapshot);
             Console.WriteLine(FormattableString.Invariant(
-                $"MP-JOIN joiner: join 0x{j.JoinId:x8} spliced world={hostBytes.Length} B + henry={src.Display} -> {res.File.Length} B in {spliceMs:F0} ms; check PASS, verify ok; quest items stripped={rp.QuestItemsRemoved.Count}, keys host_kept={rp.KeysHostKept} joiner_added={rp.KeysJoinerAdded}"));
+                $"MP-JOIN joiner: join 0x{j.JoinId:x8} spliced world={hostBytes.Length} B + henry={choice.Detail} ({choice.Mode}) -> {res.File.Length} B in {spliceMs:F0} ms; check PASS, verify ok; quest items stripped={rp.QuestItemsRemoved.Count}, keys host_kept={rp.KeysHostKept} joiner_added={rp.KeysJoinerAdded}"));
             try { File.Delete(stagedPath); } catch { }
 
-            // ---- Phase 3: place, read back, rescan, listed
-            j.Playline = src.Playline;
+            // ---- Phase 3: place, read back, rescan, listed. In the playline of this player's newest own
+            // save (= the menu's current playline, WO-124 s4.2); in a world: the playline it is in.
+            j.Playline = j.InWorld && _lastWorldPlayline >= 0 ? _lastWorldPlayline : Wo125NewestOwn(out _)?.Playline ?? choice.Save?.Playline ?? 0;
+            _lastWorldPlayline = j.Playline;
             j.Name = $"mpworld{j.JoinId:x8}";
             string dir = Path.Combine(saves, $"playline{j.Playline}");
             string part = Path.Combine(dir, j.Name + ".part");
             string final = Path.Combine(dir, j.Name + ".whs");
-            SweepTransientWorlds(saves, keep: null);
+            Wo125Sweep("before a join");
             using (var fs = new FileStream(part, FileMode.CreateNew, FileAccess.Write)) fs.Write(res.File);
             File.Move(part, final);
             j.PlacedPath = final;
@@ -548,7 +558,7 @@ public partial class GameBridge
             Console.WriteLine(FormattableString.Invariant(
                 $"MP-JOIN joiner: join 0x{j.JoinId:x8} loaded: command -> accepted {(j.LoadStartUtc - j.LoadCmdUtc).TotalSeconds:F1} s, -> file read (LoadGame) {(j.LoadGameUtc == default ? double.NaN : (j.LoadGameUtc - j.LoadCmdUtc).TotalSeconds):F1} s, -> Gameplay started {(j.GameplayUtc - j.LoadCmdUtc).TotalSeconds:F1} s (received -> in world {(j.GameplayUtc - t0).TotalSeconds:F1} s)"));
             j.Phase = "post-load";
-            _joinedSource = src;
+            _joinedSource = choice.Save;
             SetJoinedWorld(true);   // the saves watch runs: a save that still lands here is a leak (QuickSave passes the lock)
 
             // ---- right after Gameplay started: the file goes, Continue must not find it
@@ -582,8 +592,8 @@ public partial class GameBridge
         string expect = "?";
         if (ResolveSavesDirForJoin() is string saves)
         {
-            var own = ListOwnSaves(saves).FirstOrDefault(s => s.Playline == j.Playline);
-            expect = own?.Base ?? "-";
+            var own = OwnSaves(saves, HostSeedForOwn(), l => Console.WriteLine(l)).FirstOrDefault(s => s.Save.Playline == j.Playline);   // WO-125: a host-seed copy is never "own"
+            expect = own?.Save.Base ?? "-";
         }
         bool contOk = after is not null && !after.Listed && after.ContinueName == expect;
         Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} {why}: {SaveDisplay(p)} deleted={On(gone)}; rescan listed={(after is null ? "?" : On(after.Listed))}; " +
@@ -594,6 +604,21 @@ public partial class GameBridge
 
     private async Task PostLoadAsync(JoinerJoin j)
     {
+        // 0. WO-125: the world in memory is the file this join placed (the engine's own record of the last
+        // load). The Henry check cannot tell two worlds apart when the Henry is the same (a "bring" restore
+        // equals the player's own save's Henry), so it is asked here.
+        string last = await AskModAsync("KCD2MP_Wo125LastLoaded", 6000);
+        string lastBase = last.StartsWith("last=", StringComparison.Ordinal) ? last[5..] : "?";
+        if (lastBase is "?" or "" or "nil" or "timeout" || last == "timeout")
+            Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} step 0 loaded file: the engine's last-loaded save is not readable ({last}) -- not checked (inconclusive)");
+        else if (!string.Equals(lastBase, j.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} step 0 loaded file: the engine last loaded '{lastBase}', not {j.Name} -- this is not the host's world; leaving");
+            await LeaveAfterFailedJoinAsync(j, Protocol.JoinAbortLoadFailed, "load-failed", "Your host's world did not load.");
+            return;
+        }
+        else Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} step 0 loaded file: {lastBase} (the engine's last load = the placed file)");
+
         // 1. the save lock, read back
         await Wo122SetLockAsync(true, "join");
         string lockR = await AskModAsync("KCD2MP_Wo124Lock", 6000);
@@ -641,7 +666,9 @@ public partial class GameBridge
         else Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} step 4 beside the host: no fresh host position (ghost {j.Host}) -- the joiner keeps the spliced spot");
 
         // 5. Ready
+        uint readySeq = _joinReceivedSeq;
         await SendJoinerReadyAsync("wo124");
+        if (j.WorldTag is string wt && j.SplicedParts is { } sp) Wo125AfterReady(wt, j.Mode, sp, j.OfferMd5, readySeq);   // WO-125: the join save's matched pair
         j.Phase = "in";
         SetJoinUi("in", "In your host's world.");
         await ExecLuaAsync("if KCD2MP_Wo124Msg then KCD2MP_Wo124Msg(\"Co-op: you are in your host's world.\") end");
@@ -757,7 +784,9 @@ public partial class GameBridge
         if (ReferenceEquals(_jj, j)) _jj = null;
         _autoNextUtc = DateTime.UtcNow.AddSeconds(30);
         SetJoinUi(why == "no-own-save" ? "no-save" : "failed", message);
-        Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} ABORTED ({why}) -- JoinAbort {Protocol.JoinAbortName(reason)} {(sendAbort ? "sent (the host resumes)" : "not sent")}; staying at the menu");
+        Console.WriteLine($"MP-JOIN joiner: join 0x{j.JoinId:x8} ABORTED ({why}) -- JoinAbort {Protocol.JoinAbortName(reason)} {(sendAbort ? "sent (the host resumes)" : "not sent")}; {(j.InWorld && _joinedWorld ? "leaving the host's world" : "staying where it is")}");
+        // WO-125: a failed in-world rejoin leaves the host's world (what the joiner did since the reload is not kept).
+        if (j.InWorld && _joinedWorld) await LeaveSharedWorldAsync(why, message);
     }
 
     /// <summary>After the load: abort to the host, then leave its world (back to this player's own newest save).</summary>
@@ -779,15 +808,27 @@ public partial class GameBridge
     private async Task LeaveSharedWorldAsync(string why, string message)
     {
         if (!_joinedWorld && _jj is null) return;
-        var src = _joinedSource;
+        _leaveInProgress = true;           // WO-125: no join is asked until this leave's own load is in
+        _newWorldLeavePending = false;
+        _leaveSinceUtc = DateTime.UtcNow;
+        // WO-125 Phase 2: the target is recomputed now -- the newest own save whose playthrough is not the
+        // host's (a hand-placed copy of the host's world is never "own"). None: the way back to the menu.
+        var (src, ownWhy) = await Wo125NewestOwnLoadableAsync();
         SetJoinedWorld(false);
         _jj = null;
+        _rewinding = false;
+        _rejoinPending = false;
         await Wo122SetLockAsync(false, "left-shared-world");
         string full = src is null ? message : $"{message} Going back to your own game.";
         SetJoinUi("left", full);
-        Console.WriteLine($"MP-JOIN joiner: leaving the host's world ({why}) -> {(src is null ? "no own save known: staying" : "loading " + src.Display)}");
+        Console.WriteLine($"MP-JOIN joiner: leaving the host's world ({why}) -> {(src is null ? "no own save (" + ownWhy + "): back to the main menu" : "loading " + src.Display)}");
         await ExecLuaAsync($"if KCD2MP_Wo124Msg then KCD2MP_Wo124Msg(\"{EscapeLua(full)}\") end");
-        if (src is null) return;
+        if (src is null)
+        {
+            await Task.Delay(4000);
+            if (!await Wo125ExitToMenuAsync(why)) { _leaveInProgress = false; SetJoinUi("left", message + " Quit the game to get back to the main menu."); }
+            return;
+        }
         await Task.Delay(4000);
         _ownLoadExpected = true;
         await ExecLuaAsync($"if KCD2MP_Wo124LoadGame then KCD2MP_Wo124LoadGame({src.Playline}, \"{src.Base}\", \"leave\") end");
@@ -853,18 +894,18 @@ public partial class GameBridge
     private void Wo124OnGameQuit()
     {
         bool wasShared = _joinedWorld;
-        _where = GameWhere.Unknown;   // the process is ending: no "come back through the menu" either
+        // WO-125: the next process starts at the main menu, so the menu gate holds world pushes from now
+        // until a world loads. With Unknown here (WO-124) an agent kept running across a restart pushed a
+        // ghost spawn into the new game at its menu and crashed it (observed). The join tick stays quiet
+        // meanwhile: _gameQuitting blocks it until the next "main menu" line.
+        _where = GameWhere.Menu;
         _gameQuitting = true;
         SetJoinedWorld(false);
-        if (ResolveSavesDirForJoin() is string saves) SweepTransientWorlds(saves, keep: null);
+        Wo125Sweep("game quit");
         if (!wasShared) return;
-        string marker = Path.Combine(WorldReceiver.DefaultStagingDir(), "..", "wo124-progress-notice.txt");
-        bool first = !File.Exists(marker);
-        Console.WriteLine($"MP-JOIN joiner: the game is quitting from the host's world{(first ? " -- first time: the progress notice is shown" : "")}");
-        if (first)
-        {
-            try { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(marker))!); File.WriteAllText(marker, "shown\n"); } catch { }
-            SetJoinUi("notice", "Your progress in shared worlds isn't saved yet.");
-        }
+        // WO-125: true now -- the Henry for this world is the snapshot paired with the host's last save.
+        var last = _joinedTag is string t ? _henry.Snapshots(t).FirstOrDefault() : null;
+        Console.WriteLine($"MP-JOIN joiner: the game is quitting from the host's world -- its Henry for world {_joinedTag ?? "?"} is the last pair ({last?.Short ?? "none"})");
+        SetJoinUi("notice", "Your progress in this world is saved up to your host's last save.");
     }
 }

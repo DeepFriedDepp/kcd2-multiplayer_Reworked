@@ -33,3 +33,6 @@ kcd_launcher.log
 
 # WO-120 probe reports (curate before committing anything from them)
 wo120-probe-*.txt
+
+# Python bytecode from the save tools (Read-SaveAnatomy.py imported by scripts)
+tools/__pycache__/
