@@ -51,6 +51,8 @@ namespace KCDMP_launcher.Pages
         private bool showVersionMismatch = false;
         private string versionMismatchMessage = "";
         private CancellationTokenSource? versionPollCts;
+        // WO-123: the joiner's world transfer ("Receiving the world... 62%"), polled from the agent.
+        private string joinStatusMessage = "";
 
         private DotNetObjectReference<Home>? objRef;
         private AppSettings settings = new AppSettings();
@@ -668,6 +670,7 @@ namespace KCDMP_launcher.Pages
                 versionPollCts?.Cancel();
                 versionPollCts = new CancellationTokenSource();
                 _ = PollVersionMismatchAsync(versionPollCts.Token);
+                _ = PollJoinStatusAsync(versionPollCts.Token);   // WO-123: same lifetime as the version poll
             }
             catch (Exception ex)
             {
@@ -675,6 +678,28 @@ namespace KCDMP_launcher.Pages
                 UiService.ShowError($"Critical Connect Error: {ex.Message}");
                 ResetLaunchState();
             }
+        }
+
+        /// <summary>
+        /// WO-123. While the agent runs, shows its world-transfer line (the host
+        /// busy, receiving with a percentage, received, failed). Idle shows
+        /// nothing. Stops with the version poll's token (disconnect/exit).
+        /// </summary>
+        private async Task PollJoinStatusAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(1000, ct).ContinueWith(_ => { });
+                if (ct.IsCancellationRequested) break;
+                var js = await NetService.GetJoinStatusAsync(settings.VersionIpcPort);
+                string msg = js is null || js.State == "idle" ? "" : js.Message;
+                if (msg != joinStatusMessage)
+                {
+                    joinStatusMessage = msg;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+            joinStatusMessage = "";
         }
 
         /// <summary>

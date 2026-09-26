@@ -738,7 +738,8 @@ namespace KcdMp.Wire;
 /// Protocol.Version stays 7 -- but the release-version check (0x3D) already
 /// refuses a mixed pair, and both machines must run the same build.
 ///
-/// Free type bytes for new features: 0x46 and up (0x44/0x45 are WO-121 PlayerHit, ProtocolV8.cs).
+/// Free type bytes for new features: 0x58 and up (0x44/0x45 are WO-121 PlayerHit, ProtocolV8.cs;
+/// 0x46/0x47 WO-122 WorldSaved, ProtocolWo122.cs; 0x48-0x57 the WO-123 join, ProtocolWo123.cs).
 ///
 /// **Protocol.Version is deliberately NOT bumped for this layer.** Everything
 /// above is additive: a client that predates it never sends 0x1F/0x21/0x23 and
@@ -777,8 +778,13 @@ public static partial class Protocol
     /// relay's exact-length gate would drop), the action channel gains
     /// row-carrying events, and PlayerHit 0x44/0x45 is new. One bump for the
     /// whole WO; a v7 agent and a v8 relay refuse each other at Handshake.
+    ///
+    /// Bumped to 9 in WO-123 (the join: send the world, pause the host,
+    /// ProtocolWo123.cs, 0x48-0x57). WO-122's WorldSaved (0x46/0x47), added
+    /// without a bump, rides along with this one. A v8 relay would drop every
+    /// join frame and count it; v8 and v9 now refuse each other at Handshake.
     /// </summary>
-    public const byte Version = 8;
+    public const byte Version = 9;
 
     // C→S
     public const byte Handshake      = 0x00;

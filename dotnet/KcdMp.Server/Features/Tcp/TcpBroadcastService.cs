@@ -282,6 +282,47 @@ public class TcpBroadcastService
     }
 
     /// <summary>
+    /// WO-123: routes one join-channel message (ProtocolWo123.cs) to the one
+    /// peer it is for, as the row's down type with the sender's id prefixed.
+    /// The joiner's messages go to the damage authority (the host) only; the
+    /// host's are accepted only from it; aborts go either way. Returns the
+    /// destination, or null with the drop counted under <paramref name="why"/>.
+    /// </summary>
+    public ClientSession? RouteJoin(ClientSession source, byte downType, KcdMp.Wire.Protocol.JoinFrom from, byte[] body, out string why)
+    {
+        why = "";
+        bool fromHost = _clientHandler.IsDamageAuthority(source);
+        byte target = body[0];
+        ClientSession? dest = null;
+        switch (from)
+        {
+            case KcdMp.Wire.Protocol.JoinFrom.Joiner:
+                if (fromHost) { why = "from-the-host"; return null; }
+                dest = _clientHandler.DamageAuthority;
+                if (dest is null) { why = "no-host"; return null; }
+                if (target != KcdMp.Wire.Protocol.JoinTargetHost && target != dest.Id) { why = "target-not-host"; return null; }
+                break;
+            case KcdMp.Wire.Protocol.JoinFrom.Host:
+                if (!fromHost) { why = "not-the-host"; return null; }
+                dest = Find(target);
+                break;
+            default:
+                dest = target == KcdMp.Wire.Protocol.JoinTargetHost ? _clientHandler.DamageAuthority : Find(target);
+                break;
+        }
+        if (dest is null || ReferenceEquals(dest, source)) { why = "no-target"; return null; }
+        dest.EnqueueSenderFact(downType, source.Id, body);
+        return dest;
+    }
+
+    private ClientSession? Find(byte id)
+    {
+        foreach (var c in _clientHandler.GetClients())
+            if (c.IsReady && c.Id == id) return c;
+        return null;
+    }
+
+    /// <summary>
     /// WO-121: routes a PlayerHit v8 (0x44) to the victim it names, as 0x45 with
     /// the attacker's id. Unknown/departed victim or a hit on oneself: dropped.
     /// </summary>

@@ -820,6 +820,138 @@ public class RelayRoundTripTests : IClassFixture<RelayFixture>
         Assert.True(await a.NoneOfAsync(Protocol.PlayerRespawnedDown, Quiet));
     }
 
+    // ---- WO-123: the join channel 0x48..0x57, protocol v9 ------------------
+
+    [Fact]
+    public async Task A_v8_agent_is_refused_by_the_v9_relay()
+    {
+        var (p, type, payload) = await Peer.ConnectRawAsync(_relay.TcpPort, "v8build", ReleaseVersionInfo.Current, 8);
+        await using var _p = p;
+        Assert.Equal(Protocol.VersionMismatch, type);
+        Assert.Equal(Protocol.Version, payload[0]);
+        Assert.Equal(9, Protocol.Version);
+    }
+
+    [Fact]
+    public async Task A_whole_world_crosses_the_relay_windowed_and_byte_exact()
+    {
+        // alpha connects first -> lowest ready id -> damage authority (the host); bravo joins.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+        uint join = 0x0BADF00D;
+
+        // the joiner asks "the host" (0xFF); the relay names the joiner to the host
+        await b.SendRawAsync(WorldReceiver.BuildRequest(join));
+        var req = await a.ReadUntilAsync(Protocol.JoinRequestDown, Wait);
+        Assert.True(Protocol.TrySplitJoinDown(req, out byte src, out _, out uint rid, out _));
+        Assert.Equal(b.Id, src);
+        Assert.Equal(join, rid);
+
+        var file = System.Security.Cryptography.RandomNumberGenerator.GetBytes(700_001);   // 22 chunks: three windows' worth
+        var tx = new WorldSender(file, join, src, 5, new byte[16]);
+        await a.SendRawAsync(tx.BuildOfferPacket());
+        var offerDown = await b.ReadUntilAsync(Protocol.WorldOfferDown, Wait);
+        Assert.True(Protocol.TrySplitJoinDown(offerDown, out byte host, out _, out _, out _));
+        Assert.Equal(a.Id, host);
+        var offer = WorldOffer.TryDecode(offerDown.AsSpan(1 + Protocol.JoinHeaderLen), out string why);
+        Assert.NotNull(offer);
+        Assert.Equal(file.Length, offer!.Value.Size);
+
+        var got = new MemoryStream();
+        int next = 0, acksSeen = 0;
+        while (next < offer.Value.ChunkCount)
+        {
+            foreach (var pkt in tx.TakeSendable()) await a.SendRawAsync(pkt);
+            Assert.True(tx.InFlightBytes <= Protocol.WorldWindowBytes);
+            // the joiner drains what is in flight and acks every 4th chunk and the last
+            while (next < tx.NextToSend)
+            {
+                var c = await b.ReadUntilAsync(Protocol.WorldChunkDown, Wait);
+                var cb = c.AsSpan(1 + Protocol.JoinHeaderLen).ToArray();
+                Assert.Equal((uint)next, BinaryPrimitives.ReadUInt32LittleEndian(cb));
+                got.Write(cb, 4, cb.Length - 4);
+                next++;
+                if (next % Protocol.WorldAckEvery == 0 || next == offer.Value.ChunkCount)
+                {
+                    var ack = new byte[4];
+                    BinaryPrimitives.WriteUInt32LittleEndian(ack, (uint)next);
+                    await b.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldAckUp, Protocol.JoinTargetHost, join, ack));
+                    var ad = await a.ReadUntilAsync(Protocol.WorldAckDown, Wait);
+                    Assert.True(tx.OnAck(BinaryPrimitives.ReadUInt32LittleEndian(ad.AsSpan(1 + Protocol.JoinHeaderLen)), out why), why);
+                    acksSeen++;
+                }
+            }
+        }
+        Assert.Equal(file, got.ToArray());
+        Assert.True(tx.AllAcked);
+        Assert.Equal(6, acksSeen);   // 22 chunks: acks at 4, 8, 12, 16, 20 and 22
+
+        // done, then ready, reach the host; status reaches the joiner; nothing echoes
+        await b.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldDoneUp, Protocol.JoinTargetHost, join, tx.Offer.Sha256.AsSpan(0, 8)));
+        var done = await a.ReadUntilAsync(Protocol.WorldDoneDown, Wait);
+        Assert.Equal(tx.Offer.Sha256.AsSpan(0, 8).ToArray(), done.AsSpan(1 + Protocol.JoinHeaderLen).ToArray());
+        await a.SendRawAsync(JoinStatusCodec.Build(b.Id, join, Protocol.JoinStateWaitingReady, 0, 0));
+        Assert.NotNull(await b.ReadUntilAsync(Protocol.JoinStatusDown, Wait));
+        await b.SendRawAsync(WorldReceiver.BuildReady(join, 5));
+        var ready = await a.ReadUntilAsync(Protocol.JoinerReadyDown, Wait);
+        Assert.Equal(5u, BinaryPrimitives.ReadUInt32LittleEndian(ready.AsSpan(1 + Protocol.JoinHeaderLen)));
+        Assert.True(await b.NoneOfAsync(Protocol.JoinerReadyDown, Quiet));
+    }
+
+    [Fact]
+    public async Task Join_messages_from_the_wrong_side_or_of_a_wrong_length_are_dropped()
+    {
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+        uint join = 77;
+        var tx = new WorldSender(new byte[1000], join, b.Id, 1, new byte[16]);
+
+        await b.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldOfferUp, a.Id, join, tx.Offer.Encode()));   // a joiner cannot offer a world
+        await b.SendRawAsync(JoinStatusCodec.Build(a.Id, join, Protocol.JoinStateResumed, 0, 0));           // nor send host status
+        await a.SendRawAsync(WorldReceiver.BuildRequest(join));                                            // the host does not ask itself
+        await a.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldChunkUp, b.Id, join, new byte[4 + Protocol.WorldChunkMaxData + 1])); // too long
+        await a.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldChunkUp, b.Id, join, new byte[4]));         // no data
+        await a.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldOfferUp, 200, join, tx.Offer.Encode()));   // nobody is id 200
+        await b.SendRawAsync(Protocol.BuildJoinUp(Protocol.JoinerReadyUp, 200, join, new byte[4]));       // the joiner may only name the host
+        Assert.True(await a.NoneOfAsync(Protocol.WorldOfferDown, Quiet));
+        Assert.True(await a.NoneOfAsync(Protocol.JoinStatusDown, Quiet));
+        Assert.True(await a.NoneOfAsync(Protocol.JoinerReadyDown, Quiet));
+        Assert.True(await a.NoneOfAsync(Protocol.JoinRequestDown, Quiet));
+        Assert.True(await b.NoneOfAsync(Protocol.WorldChunkDown, Quiet));
+        Assert.True(await b.NoneOfAsync(Protocol.WorldOfferDown, Quiet));
+
+        // the framing survived every drop: a real offer still arrives, and an abort goes either way
+        await a.SendRawAsync(tx.BuildOfferPacket());
+        Assert.NotNull(await b.ReadUntilAsync(Protocol.WorldOfferDown, Wait));
+        await b.SendRawAsync(WorldReceiver.BuildAbort(Protocol.JoinTargetHost, join, Protocol.JoinAbortHashMismatch));
+        var ab = await a.ReadUntilAsync(Protocol.JoinAbortDown, Wait);
+        Assert.Equal(Protocol.JoinAbortHashMismatch, ab[^1]);
+        await a.SendRawAsync(WorldReceiver.BuildAbort(b.Id, join, Protocol.JoinAbortTimeout));
+        var ab2 = await b.ReadUntilAsync(Protocol.JoinAbortDown, Wait);
+        Assert.Equal(Protocol.JoinAbortTimeout, ab2[^1]);
+    }
+
+    [Fact]
+    public async Task A_full_window_into_a_joiner_that_is_not_reading_does_not_overflow_its_queue()
+    {
+        // WO-110 4.4: 512 KB queued for one client disconnects it. The window is
+        // 256 KB, so a joiner that stalls (loading, a slow disk) keeps its connection.
+        var (a, b) = await TwoPeersAsync();
+        await using var _a = a; await using var _b = b;
+        var tx = new WorldSender(new byte[2_000_000], 9, b.Id, 1, new byte[16]);
+        await a.SendRawAsync(tx.BuildOfferPacket());
+        var window = tx.TakeSendable();
+        Assert.Equal(8, window.Count);
+        foreach (var pkt in window) await a.SendRawAsync(pkt);
+        Assert.Empty(tx.TakeSendable());   // the sender holds back until an ack
+        await Task.Delay(500);             // the relay queues all of it for bravo, who reads nothing yet
+        Assert.NotNull(await b.ReadUntilAsync(Protocol.WorldOfferDown, Wait));
+        for (int i = 0; i < 8; i++) Assert.NotNull(await b.ReadUntilAsync(Protocol.WorldChunkDown, Wait));
+        // still connected both ways
+        await b.SendRawAsync(Protocol.BuildJoinUp(Protocol.WorldAckUp, Protocol.JoinTargetHost, 9, [8, 0, 0, 0]));
+        Assert.NotNull(await a.ReadUntilAsync(Protocol.WorldAckDown, Wait));
+    }
+
     // ---- WO-122: WorldSaved 0x46 -> 0x47, from the host only --------------
 
     private static byte[] WorldSavedBody(uint seq, byte kind, byte playline, ushort idx) =>

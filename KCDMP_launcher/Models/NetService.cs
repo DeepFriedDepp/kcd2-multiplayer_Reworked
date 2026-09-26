@@ -273,6 +273,22 @@ namespace KCDMP_launcher.Services
         }
 
         /// <summary>
+        /// WO-123: the agent's world-transfer state (GET /join-status on the
+        /// same listener as /version-status). Null while the agent is not up.
+        /// </summary>
+        public async Task<JoinStatusData?> GetJoinStatusAsync(int port)
+        {
+            try
+            {
+                return await _httpClient.GetFromJsonAsync<JoinStatusData>($"http://localhost:{port}/join-status");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// An IPv6 literal has to be bracketed in a URL, or the colons in the
         /// address are read as the port separator and the request throws.
         /// </summary>

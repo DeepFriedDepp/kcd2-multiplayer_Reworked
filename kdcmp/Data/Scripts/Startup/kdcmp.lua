@@ -1152,6 +1152,7 @@ function KCD2MP_DrawInteractionUI()
 
     -- WO-94: the readiness prompt and the catch-up window, rows 160/184/208.
     if KCD2MP_QuestDrawUI then pcall(KCD2MP_QuestDrawUI) end
+    if KCD2MP_JoinDrawUI then pcall(KCD2MP_JoinDrawUI) end   -- WO-123: "<partner> is joining..."
     mp_screen_frame_end()   -- WO-98 Phase 6: rows that vanished this frame log text=""
 end
 
@@ -3436,6 +3437,8 @@ function KCD2MP_SetSharedWorld(arg)
     if v == "bad" then mp_log("mp_shared_world: expected on|off, got '" .. tostring(arg) .. "'"); return false end
     if v ~= nil then w.sharedWorld = v end
     if not w.sharedWorld and w.lockHeld then KCD2MP_HostOnlyLock(false, "shared-world-off") end
+    -- WO-123: a join in progress ends with the toggle (the host resumes here, the agent aborts).
+    if not w.sharedWorld and KCD2MP.w123 and KCD2MP.w123.paused then KCD2MP_JoinResume(KCD2MP.w123.joinId, "shared-world-off") end
     mp_log(string.format("WO122-TOGGLE shared_world=%s -- %s", w.sharedWorld and "on" or "off",
         w.sharedWorld and "joiner: the host-only save lock in a session; host: world saves every mp_autosave_minutes + WorldSaved"
                        or "dormant: this machine saves exactly as before"))
@@ -4692,6 +4695,344 @@ local function mp_is_mod_entity(e)
     end
     return false
 end
+
+-- ===== WO-123: send the world, pause the host ======================================
+-- docs/WO-123-findings.md. Dormant: nothing here runs unless mp_shared_world is on
+-- (the agent never asks, and KCD2MP_JoinTry refuses with it off).
+--
+-- The host's half of a join. The agent (GameBridge.Wo123.cs) asks
+-- KCD2MP_JoinTry; the mod either names why the host is busy (combat, a
+-- dialogue, a cutscene, a load, dead) -- the join is deferred and asked again
+-- -- or pauses the world and answers "paused":
+--   * clock: Calendar.SetWorldTimeRatio(0), the previous ratio read first and
+--     put back on resume (WO-112 s3.2: the clock froze, Lua timers ran on);
+--   * NPCs: wh_ai_PauseNPC on every NPC/horse around the player that is not
+--     already paused by the WO-102 lever -- the list is KEPT, and the resume
+--     wakes exactly that list (a name the lever took over meanwhile is left
+--     to the lever); names that stream in while paused are added (2 s scan);
+--   * the host's Henry: input held (w.holdMethod, chosen live -- see the
+--     findings) and "<partner> is joining..." with a bar on screen;
+--   * its own safety timer (the agent's timeout + 15 s), so a dead agent
+--     cannot strand the host. mp_join_cancel resumes at once, here, whatever
+--     the agent does.
+-- Every resume logs MP-JOIN resume with its reason.
+KCD2MP.w123 = {
+    timeoutS = 180, joinId = nil, partner = "", paused = false, pausedAt = nil, deferredAt = nil,
+    ratioWas = nil, ratioSet = false, npcs = {}, npcN = 0, npcSkipped = 0, npcRadius = 120,
+    holdMethod = "noinput", holdUsed = nil, holdOn = false, holdDetail = "",
+    pct = 0, phase = "", busyToldAt = -1e9, resumes = 0, lastResume = nil, tries = 0,
+    safetyGen = 0, scanGen = 0,
+}
+
+function KCD2MP_Wo123CfgEmit()
+    KCD2MP_EmitEvent("wo123_cfg", string.format("timeout_s=%d hold=%s", KCD2MP.w123.timeoutS, KCD2MP.w123.holdMethod))
+end
+
+-- mp_join_timeout <30..1800>: the host's safety timeout, seconds paused.
+function KCD2MP_SetJoinTimeout(arg)
+    local w = KCD2MP.w123
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if s ~= "" and s ~= "%line" and s ~= "nil" then
+        local n = tonumber(s)
+        if not n or n < 30 or n > 1800 or n ~= math.floor(n) then
+            mp_log("mp_join_timeout: expected whole seconds 30..1800, got '" .. tostring(arg) .. "'")
+            return false
+        end
+        w.timeoutS = n
+    end
+    mp_log(string.format("WO123-TOGGLE join_timeout_s=%d -- a paused host resumes after this long whatever happens", w.timeoutS))
+    KCD2MP_Wo123CfgEmit()
+    return true
+end
+
+-- Why this host cannot pause for a join right now, or nil. The engine refuses
+-- a save in most of these anyway (WO-112 CanSave); the rest would freeze the
+-- host mid-fight or mid-sentence.
+function KCD2MP_JoinBusyReason()
+    if not KCD2MP.w122.sharedWorld then return "shared-world-off" end
+    if not player then return "loading" end
+    local busy = nil
+    pcall(function() if Game.IsLoadingEngineSaveGame and Game.IsLoadingEngineSaveGame() then busy = "loading" end end)
+    if busy then return busy end
+    pcall(function() if player.actor and player.actor:IsDead() then busy = "dead" end end)
+    if busy then return busy end
+    if KCD2MP.cutsceneActive then return "cutscene" end
+    pcall(function() if player.human and player.human:IsInDialog() then busy = "dialogue" end end)
+    if busy then return busy end
+    pcall(function()
+        local c = player.soul and player.soul:IsInCombatDanger()
+        if c == true or (tonumber(c) or 0) ~= 0 then busy = "combat" end
+    end)
+    if busy then return busy end
+    if KCD2MP._w123TestBusy then return KCD2MP._w123TestBusy end   -- tests only
+    return nil
+end
+
+-- The input hold. Methods (the live probe's candidates, docs/WO-123-findings.md):
+--   noinput      -- the engine's own "no_input" map on (defaultProfile.xml: fader
+--                   priority, exclusive, no actions -- what a fade holds input with)
+--   actionmap    -- ActionMapManager.EnableActionMap: "player" and "movement" off
+--   noninteractive -- the engine's own exclusive map (camera + menu only) on
+--   none         -- no hold; the message still shows
+-- (Action FILTERS -- no_move, no_attack -- would be the finer lever, but
+-- EnableActionFilter is not registered in either build: only EnableActionMap.)
+-- The release always undoes the method the hold used (w.holdUsed).
+KCD2MP_JoinHoldMethods = { noinput = true, actionmap = true, noninteractive = true, none = true }
+function KCD2MP_JoinHold(on, method)
+    local w = KCD2MP.w123
+    method = tostring(method or (not on and w.holdUsed) or w.holdMethod)
+    if on then w.holdUsed = method end
+    local detail = ""
+    if method == "none" then
+        w.holdOn = on and true or false
+        return true, "none"
+    end
+    if not (ActionMapManager and ActionMapManager.EnableActionMap) then return false, "no-ActionMapManager" end
+    local okAll = true
+    local maps
+    if method == "noninteractive" then maps = { { "noninteractive", on } }
+    elseif method == "noinput" then maps = { { "no_input", on } }
+    elseif method == "actionmap" then maps = { { "player", not on }, { "movement", not on } }
+    else return false, "unknown-method-" .. method end
+    for _, m in ipairs(maps) do
+        local ok, err = pcall(ActionMapManager.EnableActionMap, m[1], m[2])
+        okAll = okAll and ok
+        detail = detail .. string.format("%s%s=%s%s", detail == "" and "" or ",", m[1], tostring(m[2]), ok and "" or ("!" .. tostring(err)))
+    end
+    w.holdOn = on and okAll
+    w.holdDetail = detail
+    return okAll, method .. ":" .. detail
+end
+
+-- mp_join_hold <noinput|actionmap|noninteractive|none>: how a paused host's input is held.
+function KCD2MP_SetJoinHold(arg)
+    local w = KCD2MP.w123
+    local s = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if s ~= "" and s ~= "%line" and s ~= "nil" then
+        if not KCD2MP_JoinHoldMethods[s] then
+            mp_log("mp_join_hold: expected noinput|actionmap|noninteractive|none, got '" .. tostring(arg) .. "'")
+            return false
+        end
+        w.holdMethod = s
+    end
+    mp_log(string.format("WO123-TOGGLE join_hold=%s -- the paused host's input hold (takes effect at the next pause)", w.holdMethod))
+    KCD2MP_Wo123CfgEmit()
+    return true
+end
+
+-- Live probe: mp_join_hold_probe <noinput|actionmap|noninteractive|none> <on|off>
+function KCD2MP_JoinHoldProbe(line)
+    local m, v = tostring(line or ""):match("^%s*(%S+)%s+(%S+)")
+    if not m then mp_log("mp_join_hold_probe <noinput|actionmap|noninteractive|none> <on|off>"); return false end
+    local p0 = player and player:GetWorldPos()
+    local ok, d = KCD2MP_JoinHold(v == "on", m)
+    mp_log(string.format("MP-JOIN hold-probe method=%s on=%s ok=%s detail=%s pos=%.2f,%.2f,%.2f",
+        m, v, tostring(ok), tostring(d), p0 and p0.x or 0, p0 and p0.y or 0, p0 and p0.z or 0))
+    return ok
+end
+
+-- Every AI body around the host that the join should freeze: NPCs and horses
+-- (the classes the WO-102 resync walks) and animals (any other body with a
+-- soul), not ours, not dead, not already paused by the lever (that one
+-- resumes them itself).
+function KCD2MP_JoinScanNpcs(add)
+    local w = KCD2MP.w123
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return 0 end
+    local added = 0
+    for _, e in ipairs(System.GetEntitiesInSphere(pp, w.npcRadius) or {}) do
+        local cls = e.class
+        -- NPCs and horses, plus every other AI body with a soul: the animals
+        -- (hares, deer, dogs) keep running under ratio 0 and take the same
+        -- pause (live, WO-123: 7/7 hares moved in 60 s unpaused, 0/7 paused).
+        local ai = cls == "NPC" or cls == "NPC_Female" or cls == "Horse" or (e.soul ~= nil and e.actor ~= nil)
+        if ai and not mp_is_mod_entity(e) and e ~= player then
+            local name = nil
+            pcall(function() name = e:GetName() end)
+            if name and not w.npcs[name] and string.find(name, "^[%w_]+$") and not mp_is_excluded_npc_name(name) then
+                local dead = false
+                pcall(function() if e.actor and e.actor:IsDead() then dead = true end end)
+                if dead or KCD2MP._npcPaused[name] then
+                    w.npcSkipped = w.npcSkipped + 1
+                elseif add then
+                    local ok = pcall(System.ExecuteCommand, "wh_ai_PauseNPC " .. name)
+                    if ok then
+                        w.npcs[name] = os.clock()
+                        w.npcN = w.npcN + 1
+                        added = added + 1
+                    end
+                end
+            end
+        end
+    end
+    return added
+end
+
+function KCD2MP_JoinTry(joinId, partner, timeoutS)
+    local w = KCD2MP.w123
+    joinId = tostring(joinId)
+    w.tries = w.tries + 1
+    if w.paused then
+        if w.joinId == joinId then KCD2MP_EmitEvent("join_try", joinId .. " paused " .. w.npcN); return true end
+        KCD2MP_EmitEvent("join_try", joinId .. " busy another-join")
+        return false
+    end
+    local busy = KCD2MP_JoinBusyReason()
+    if busy then
+        w.deferredAt = w.deferredAt or os.clock()
+        w.partner = tostring(partner or "your partner")
+        if (os.clock() - w.busyToldAt) >= 15 then
+            w.busyToldAt = os.clock()
+            mp_log(string.format("MP-JOIN defer join=%s partner=%s reason=%s -- asked again every 2 s", joinId, w.partner, busy))
+            pcall(KCD2MP_ShowInteractionMsg, string.format("%s wants to join -- waiting (%s)", w.partner, busy))
+        end
+        KCD2MP_EmitEvent("join_try", joinId .. " busy " .. busy)
+        return false
+    end
+    local t0 = os.clock()
+    w.joinId, w.partner, w.paused, w.pausedAt = joinId, tostring(partner or "your partner"), true, os.clock()
+    w.timeoutS = tonumber(timeoutS) or w.timeoutS
+    w.npcs, w.npcN, w.npcSkipped, w.pct, w.phase = {}, 0, 0, 0, "saving"
+    -- the clock: read, freeze, read back
+    w.ratioWas, w.ratioSet = nil, false
+    pcall(function() w.ratioWas = Calendar.GetWorldTimeRatio() end)
+    local ratioNow = nil
+    pcall(function() Calendar.SetWorldTimeRatio(0); w.ratioSet = true end)
+    pcall(function() ratioNow = Calendar.GetWorldTimeRatio() end)
+    local clock0 = nil
+    pcall(function() clock0 = Calendar.GetWorldTime() end)
+    w.clockAtPause = clock0
+    -- the NPCs
+    KCD2MP_JoinScanNpcs(true)
+    -- the host's own Henry
+    local holdOk, holdHow = KCD2MP_JoinHold(true)
+    local names, k = {}, 0
+    for n in pairs(w.npcs) do k = k + 1; if k <= 12 then names[#names + 1] = n end end
+    table.sort(names)
+    mp_log(string.format("MP-JOIN pause join=%s partner=%s ratio_was=%s ratio_now=%s clock=%s npcs_paused=%d skipped=%d hold=%s(%s) ms=%.1f names=%s%s",
+        joinId, w.partner, tostring(w.ratioWas), tostring(ratioNow), tostring(clock0), w.npcN, w.npcSkipped,
+        tostring(holdHow), holdOk and "ok" or "FAILED", (os.clock() - t0) * 1000, table.concat(names, ","), k > 12 and ",..." or ""))
+    -- the safety timer, independent of the agent
+    w.safetyGen = w.safetyGen + 1
+    local gen, id = w.safetyGen, joinId
+    Script.SetTimer((w.timeoutS + 15) * 1000, function()
+        if w.paused and w.joinId == id and w.safetyGen == gen then KCD2MP_JoinResume(id, "mod-safety-timeout") end
+    end)
+    -- NPCs that stream in while paused join the list
+    w.scanGen = w.scanGen + 1
+    local sg = w.scanGen
+    local function rescan()
+        if not (w.paused and w.scanGen == sg) then return end
+        local n = KCD2MP_JoinScanNpcs(true)
+        if n > 0 then mp_log(string.format("MP-JOIN pause join=%s added=%d npcs_paused=%d (streamed in while paused)", id, n, w.npcN)) end
+        Script.SetTimer(2000, rescan)
+    end
+    Script.SetTimer(2000, rescan)
+    w.deferredAt = nil
+    KCD2MP_EmitEvent("join_try", string.format("%s paused %d", joinId, w.npcN))
+    return true
+end
+
+function KCD2MP_JoinResume(joinId, reason)
+    local w = KCD2MP.w123
+    joinId, reason = tostring(joinId), tostring(reason or "?")
+    if not w.paused or w.joinId ~= joinId then
+        mp_log(string.format("MP-JOIN resume join=%s reason=%s -- not paused for this join (already resumed)", joinId, reason))
+        return false
+    end
+    w.paused = false
+    w.scanGen = w.scanGen + 1
+    local ratioBack, clock1 = nil, nil
+    if w.ratioSet and w.ratioWas ~= nil then
+        pcall(function() Calendar.SetWorldTimeRatio(w.ratioWas) end)
+    end
+    pcall(function() ratioBack = Calendar.GetWorldTimeRatio() end)
+    pcall(function() clock1 = Calendar.GetWorldTime() end)
+    local resumed, left = 0, 0
+    for name in pairs(w.npcs) do
+        if KCD2MP._npcPaused[name] then
+            left = left + 1          -- the WO-102 lever took it over: its pause, its resume
+        elseif pcall(System.ExecuteCommand, "wh_ai_ResumeNPC " .. name) then
+            resumed = resumed + 1
+        end
+    end
+    local holdOk, holdHow = KCD2MP_JoinHold(false)
+    w.resumes = w.resumes + 1
+    w.lastResume = reason
+    local held = os.clock() - (w.pausedAt or os.clock())
+    mp_log(string.format("MP-JOIN resume join=%s reason=%s paused_s=%.1f ratio_back=%s (was %s) clock=%s->%s npcs_resumed=%d left_to_lever=%d hold_released=%s(%s)",
+        joinId, reason, held, tostring(ratioBack), tostring(w.ratioWas), tostring(w.clockAtPause), tostring(clock1),
+        resumed, left, holdOk and "ok" or "FAILED", tostring(holdHow)))
+    w.npcs, w.npcN, w.joinId, w.phase = {}, 0, nil, ""
+    if reason ~= "ready" then
+        pcall(KCD2MP_ShowInteractionMsg, string.format("Join ended (%s) -- the world runs again", reason))
+    end
+    KCD2MP_EmitEvent("join_resumed", joinId .. " " .. reason)
+    return true
+end
+
+-- After a load (the agent, twice): a pause no join owns any more -- its resume
+-- was lost in the load, and the load killed the safety timer -- ends here.
+function KCD2MP_JoinResumeStale(reason)
+    local w = KCD2MP.w123
+    if not w.paused then return false end
+    return KCD2MP_JoinResume(w.joinId, tostring(reason or "stale"))
+end
+
+-- The agent gave up a join that never paused (the joiner left while deferred).
+function KCD2MP_JoinDeferEnd(joinId, reason)
+    local w = KCD2MP.w123
+    if w.deferredAt then
+        mp_log(string.format("MP-JOIN defer-end join=%s reason=%s after_s=%.1f", tostring(joinId), tostring(reason), os.clock() - w.deferredAt))
+        w.deferredAt = nil
+    end
+end
+
+function KCD2MP_JoinProgress(joinId, pct, phase)
+    local w = KCD2MP.w123
+    if w.joinId ~= tostring(joinId) then return end
+    w.pct, w.phase = tonumber(pct) or 0, tostring(phase or "")
+end
+
+-- mp_join_cancel: on the host, resume NOW (here, not via the agent) and tell
+-- the agent; on a joiner, the agent aborts its transfer.
+function KCD2MP_JoinCancel()
+    local w = KCD2MP.w123
+    if w.paused then KCD2MP_JoinResume(w.joinId, "cancel") end
+    KCD2MP_EmitEvent("join_cancel", "")
+    return true
+end
+
+function KCD2MP_JoinRequest()
+    if not KCD2MP.w122.sharedWorld then
+        mp_log("MP-JOIN mp_join_request needs mp_shared_world on")
+        return false
+    end
+    KCD2MP_EmitEvent("join_request", "")
+    return true
+end
+
+-- Drawn from KCD2MP_DrawInteractionUI (the 8 ms label loop).
+function KCD2MP_JoinDrawUI()
+    local w = KCD2MP.w123
+    if not w.paused then return end
+    -- Backstop for the safety timer: a save load kills every Script.SetTimer
+    -- chain, but this draw loop is restarted after loads. Same limit.
+    if w.pausedAt and (os.clock() - w.pausedAt) > (w.timeoutS + 15) then
+        KCD2MP_JoinResume(w.joinId, "mod-safety-timeout")
+        return
+    end
+    local label = w.phase == "loading" and (w.partner .. " is loading the world...")
+               or (w.partner .. " is joining...")
+    local pct = math.max(0, math.min(100, math.floor(w.pct or 0)))
+    local bars = math.floor(pct / 5)
+    local bar = "[" .. string.rep("|", bars) .. string.rep(".", 20 - bars) .. "] " .. pct .. "%"
+    mp_draw_row("join_title", 760, 480, label, 2.4, label)
+    mp_draw_row("join_bar", 760, 520, bar, 2.0, "bar")
+    mp_draw_row("join_hint", 760, 556, "The world is paused until they arrive (mp_join_cancel to stop).", 1.4)
+end
+
 
 -- Rebuild the tracked set: the maxTracked nearest live human NPCs within
 -- radius. Names not re-selected simply age out of KCD2MP.npcTracked (their
@@ -12811,6 +13152,18 @@ local ok, err = pcall(function()
             .. " -- dormant unless mp_shared_world on (except owner_death); mp_preset_legacy = owner_death off",
             w.sharedWorld and "on" or "off", w.ownerDeath and "on" or "off", w.autosaveMinutes, w.lockName, w.lockText))
         KCD2MP_Wo122CfgEmit()
+    end
+    -- WO-123: the join (send the world, pause the host). Dormant with mp_shared_world off.
+    System.AddCCommand("mp_join_cancel",         "KCD2MP_JoinCancel()",                   "WO-123: stop a join now. Host: the world resumes at once and the joiner is told; joiner: the transfer stops and its staging is deleted")
+    System.AddCCommand("mp_join_timeout",        'KCD2MP_SetJoinTimeout(%line)',          "WO-123: the host's safety timeout -- a paused host resumes after this many seconds whatever happens (default 180; 30..1800): mp_join_timeout <s>; bare = report")
+    System.AddCCommand("mp_join_request",        "KCD2MP_JoinRequest()",                  "WO-123: (joiner, mp_shared_world on) ask the host for its world; the next WO calls this from the menu flow")
+    System.AddCCommand("mp_join_hold",           'KCD2MP_SetJoinHold(%line)',             "WO-123: how a paused host's input is held: mp_join_hold <noinput|actionmap|noninteractive|none>; bare = report")
+    System.AddCCommand("mp_join_hold_probe",     'KCD2MP_JoinHoldProbe(%line)',           "WO-123 live probe: hold or release the player's input by one method: mp_join_hold_probe <noinput|actionmap|noninteractive|none> <on|off>")
+    do
+        local w = KCD2MP.w123
+        mp_log(string.format("WO123-BUILD join_timeout_s=%d hold=%s npc_radius_m=%d chunk=32768 window=262144 -- dormant unless mp_shared_world on",
+            w.timeoutS, w.holdMethod, w.npcRadius))
+        KCD2MP_Wo123CfgEmit()
     end
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")

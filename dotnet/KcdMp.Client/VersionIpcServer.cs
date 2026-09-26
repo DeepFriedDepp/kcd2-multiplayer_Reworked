@@ -19,7 +19,7 @@ namespace KcdMp.Client;
 ///
 /// GET /version-status -> { "myReleaseVersion": "0.9.5", "peers": [{"ghostId":1,"releaseVersion":"0.9.4"}] }
 /// </summary>
-public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port)
+public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port, Func<string>? getJoinStatus = null)
 {
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -120,6 +120,19 @@ public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers
                 res.StatusCode = 200;
                 res.ContentType = "application/json";
                 var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes);
+                res.Close();
+                return;
+            }
+
+            // WO-123: the joiner's world transfer, for the launcher's
+            // "Receiving the world... 62%" line. Hand-rolled JSON (see above).
+            if (req.HttpMethod == "GET" && req.Url?.AbsolutePath == "/join-status" && getJoinStatus is not null)
+            {
+                var bytes = Encoding.UTF8.GetBytes(getJoinStatus());
+                res.StatusCode = 200;
+                res.ContentType = "application/json";
                 res.ContentLength64 = bytes.Length;
                 await res.OutputStream.WriteAsync(bytes);
                 res.Close();

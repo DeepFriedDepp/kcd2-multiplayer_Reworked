@@ -56,7 +56,8 @@ public partial class GameBridge
     private readonly ConcurrentDictionary<string, byte> _saveSettling = new(StringComparer.OrdinalIgnoreCase);
     private string? _lastObservedMd5;
 
-    private sealed record ObservedSave(string Display, byte Kind, byte Playline, ushort Idx, byte[] Md5, int Bytes, DateTime AtUtc);
+    /// <summary>A verified world save. FullPath stays on this machine (never logged); Seq is its WorldSaved seq once announced.</summary>
+    private sealed record ObservedSave(string Display, byte Kind, byte Playline, ushort Idx, byte[] Md5, int Bytes, DateTime AtUtc, string FullPath, uint Seq = 0);
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -106,7 +107,8 @@ public partial class GameBridge
                 // Phase 3: the host's scheduled world save.
                 if (_sharedWorld && _combatRoleApplied && _isDamageAuthority && _autosaveMinutes > 0
                     && (DateTime.UtcNow - _lastWorldSaveUtc).TotalMinutes >= _autosaveMinutes
-                    && Volatile.Read(ref _worldSaveBusy) == 0)
+                    && Volatile.Read(ref _worldSaveBusy) == 0
+                    && !Wo123HostJoinActive)   // WO-123: never a scheduled save while a join holds the world
                 {
                     _ = RequestWorldSaveAsync("schedule");
                 }
@@ -227,7 +229,10 @@ public partial class GameBridge
     /// death); the request is repeated every 5 s for up to a minute in case
     /// the engine discarded it. Returns the verified file, or null.
     /// </summary>
-    private async Task<string?> RequestWorldSaveAsync(string why)
+    private async Task<string?> RequestWorldSaveAsync(string why) => (await RequestWorldSaveCoreAsync(why))?.Display;
+
+    /// <summary>The request itself; WO-123's join takes the file (path, md5, WorldSaved seq) from here.</summary>
+    private async Task<ObservedSave?> RequestWorldSaveCoreAsync(string why)
     {
         if (!_sharedWorld || !_combatRoleApplied || !_isDamageAuthority)
         {
@@ -259,7 +264,7 @@ public partial class GameBridge
                         $"MP-WORLDSAVE done why={why} file={s.Display} attempts={attempt} request_to_verified_ms={ms:F0} bytes={s.Bytes} md5={Convert.ToHexString(s.Md5).ToLowerInvariant()} verify=ok"));
                     _ = ExecLuaAsync(FormattableString.Invariant(
                         $"if KCD2MP_WorldSaveDone then KCD2MP_WorldSaveDone(true, \"{s.Display}\", \"{why}\", {attempt}, {ms:F0}, \"ok\") end"));
-                    return s.Display;
+                    return s;
                 }
                 Console.WriteLine($"MP-WORLDSAVE why={why} attempt={attempt}: no verified file 5 s after the request -- asking again (the engine may be unable to save right now)");
             }
@@ -373,7 +378,7 @@ public partial class GameBridge
             if (_lastObservedMd5 == last.Md5) return;   // the same file seen again (Changed fires more than once)
             _lastObservedMd5 = last.Md5;
             int bytes = (int)new FileInfo(path).Length;
-            var obs = new ObservedSave(display, id.Kind, id.Playline, id.Idx, md5, bytes, DateTime.UtcNow);
+            var obs = new ObservedSave(display, id.Kind, id.Playline, id.Idx, md5, bytes, DateTime.UtcNow, path);
             await OnWorldSaveObservedAsync(obs);
         }
         catch (Exception ex) { Console.WriteLine($"MP-WORLDSAVE settle failed for {SaveDisplay(path)}: {ex.Message}"); }
@@ -412,7 +417,7 @@ public partial class GameBridge
         catch (Exception ex) { Console.WriteLine($"MP-WORLDSAVE WorldSaved not sent for {s.Display}: {ex.Message}"); }
         lock (_saveWaitGate)
         {
-            if (_saveWaiter is { } w && s.AtUtc >= w.Since) w.Tcs.TrySetResult(s);
+            if (_saveWaiter is { } w && s.AtUtc >= w.Since) w.Tcs.TrySetResult(s with { Seq = ws.Seq });
         }
     }
 

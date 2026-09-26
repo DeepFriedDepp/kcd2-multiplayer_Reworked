@@ -296,6 +296,13 @@ public sealed class LogTailGameTransport : IGameTransport
     public event Action? GameplayStarted;
 
     /// <summary>
+    /// WO-123: the engine printed "[CryAction] LoadGame: '...'" -- a save load
+    /// STARTED. Between this and "Gameplay started" the mod's Lua runs and the
+    /// player exists, but the engine cannot save (observed): a join defers.
+    /// </summary>
+    public event Action? LoadStarted;
+
+    /// <summary>
     /// WO-122: "AutoSave is disabled under a script lock 'Script:&lt;name&gt;'" --
     /// the engine refused an autosave (sleep, a quest save, the mod's own
     /// request) because of a named script lock. The argument is the lock name.
@@ -486,6 +493,12 @@ public sealed class LogTailGameTransport : IGameTransport
                 while (i < rest.Length && char.IsAsciiDigit(rest[i])) { n = n * 10 + (rest[i] - '0'); i++; }
                 if (i > 0) LastSaveGenerationMs = n;
             }
+        }
+
+        if (LoadStarted is not null && line.StartsWith("[CryAction] LoadGame: '", StringComparison.Ordinal))
+        {
+            try { LoadStarted.Invoke(); }
+            catch (Exception ex) { Console.WriteLine($"[join] load-started handler threw: {ex.Message}"); }
         }
 
         if (GameplayStarted is not null && line.Length < 40 && line.StartsWith("Gameplay started", StringComparison.Ordinal))

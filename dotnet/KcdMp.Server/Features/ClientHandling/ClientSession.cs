@@ -685,6 +685,29 @@ public class ClientSession
                     continue;
                 }
 
+                // --- WO-123: the join (send the world, pause the host) ---
+                // Lengths from the one table (Protocol.JoinWire); a wrong length
+                // falls through to the counted skip below like every other gate.
+                // Routed to one peer. A chunk is up to 32 KB: the host's agent
+                // keeps at most 256 KB unacknowledged, so the joiner's 512 KB
+                // queue (MaxQueuedBytes) never overflows on a transfer.
+                if (Protocol.JoinWireFor(type) is { } jw && payloadLen >= jw.Min && payloadLen <= jw.Max)
+                {
+                    var body = new byte[payloadLen];
+                    await ReadExactAsync(body);
+                    var dest = _broadcastService.RouteJoin(this, jw.Down, jw.From, body, out string why);
+                    if (dest is null)
+                    {
+                        _clientHandler.CountDrop((byte)type, why);
+                        _logger.Warning("[join] {Kind} from '{Name}' (id={Id}) to {Target} dropped: {Why}.", jw.Name, Name, Id, body[0], why);
+                        continue;
+                    }
+                    if (type != Protocol.WorldChunkUp && type != Protocol.WorldAckUp)
+                        _logger.Information("[join] {Kind} '{Name}' (id={Id}) -> id={Dest} join=0x{Join:X8} ({Len} B).",
+                            jw.Name, Name, Id, dest.Id, BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(1)), payloadLen);
+                    continue;
+                }
+
                 // --- WO-122: the host wrote a world save ---
                 // Only the damage authority's saves are the world's; a joiner's
                 // save (which WO-122's lock should make impossible) is dropped.

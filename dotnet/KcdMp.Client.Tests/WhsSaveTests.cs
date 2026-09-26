@@ -105,6 +105,9 @@ public class WhsSaveTests
         return WhsSave.Deflate(desc, Stream(s), tail);
     }
 
+    /// <summary>WO-123: a valid synthetic save for the transfer tests (verifies; never a real file).</summary>
+    internal static byte[] SyntheticSave(string world = "host-world") => File(new Spec { World = world });
+
     private static readonly Dictionary<string, string> Quest = new() { [Letter] = "loveLetter" };
 
     private static (Spec Host, Spec Join) Pair()

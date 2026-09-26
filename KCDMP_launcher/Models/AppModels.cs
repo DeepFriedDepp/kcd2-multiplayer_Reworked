@@ -38,6 +38,18 @@ namespace KCDMP_launcher.Models
         public List<PeerVersionData> Peers { get; set; } = new();
     }
 
+    // Mirrors GameBridge.JoinStatusJson (dotnet/KcdMp.Client/GameBridge.Wo123.cs, WO-123):
+    // the joiner's world transfer, for "Receiving the world... 62%".
+    public class JoinStatusData
+    {
+        public string State { get; set; } = "idle";
+        public double Percent { get; set; }
+        public long Bytes { get; set; }
+        public long Total { get; set; }
+        public double EtaS { get; set; }
+        public string Message { get; set; } = "";
+    }
+
     public class PeerVersionData
     {
         public byte GhostId { get; set; }

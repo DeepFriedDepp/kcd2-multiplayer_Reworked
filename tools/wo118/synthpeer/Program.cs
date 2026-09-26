@@ -14,6 +14,7 @@
 //                  [--ghost-sender-ms on|off]   (the ghost's Position carries its stamp, flag 0x08)
 //                  [--version-file path]   (default: the first VERSION found walking up from
 //                                           the working directory, then from this binary)
+//        SynthPeer --join ...  | --join-host ...   (WO-123: the synthetic joiner / host, JoinPeer.cs)
 // plan lines:
 //   line <npc> <x0> <y0> <z0> <ux> <uy> <len> <speed> [pingpong]
 //   hold <npc> <x> <y> <z> <yaw>
@@ -180,6 +181,9 @@ static class P
         bool ghostSenderMs = Arg(a, "--ghost-sender-ms", "on") != "off";
         string versionFile = Arg(a, "--version-file", FindUp("VERSION"));
         string release = File.ReadAllText(versionFile).Trim();
+        // WO-123: the synthetic joiner and the transfer-ceiling host (JoinPeer.cs).
+        if (a.Contains("--join")) return await JoinPeer.RunJoinerAsync(a, release);
+        if (a.Contains("--join-host")) return await JoinPeer.RunHostAsync(a, release);
 
         var movers = new List<Mover>(); double startDelay = 0; Line? ghost = null; int ghostMs = 30;
         // WO-121: `row <t_s> <npc> <rowGuid>` -- the host NPC committed that

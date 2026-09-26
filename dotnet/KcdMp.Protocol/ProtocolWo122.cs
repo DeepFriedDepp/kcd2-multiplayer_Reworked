@@ -17,9 +17,9 @@ namespace KcdMp.Wire;
 // the file (autosave042 in playline1 = kind 1, playline 1, idx 42); md5 is
 // the save's own footer MD5, a content id the joiner's Henry snapshot pairs
 // with (the next WOs). The relay forwards it only from the damage authority
-// (the host): a joiner's save is not the world. Additive, exact length, no
-// Protocol.Version bump (the release-version check already refuses a mixed
-// pair); an older relay drops it and counts it.
+// (the host): a joiner's save is not the world. Additive, exact length; it
+// shipped without a Protocol.Version bump and rides along with WO-123's bump
+// to v9 (ProtocolWo123.cs).
 // ---------------------------------------------------------------------------
 
 public static partial class Protocol
