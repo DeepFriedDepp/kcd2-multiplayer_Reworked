@@ -2,8 +2,8 @@
   <img src="docs/branding/kcd2-mp-logo.png" alt="KCD2 Multiplayer" width="220">
 </p>
 
-<h1 align="center">KCD2 Multiplayer</h1>
-<p align="center"><em>An unofficial co-op mod for Kingdom Come: Deliverance II.</em></p>
+<h1 align="center">Kingdom Come: Together</h1>
+<p align="center"><em>An **unofficial** co-op mod for Kingdom Come: Deliverance II.</em></p>
 
 <p align="center">
   <a href="docs/releases/RELEASE-NOTES-0.30.0.md"><img alt="main" src="https://img.shields.io/badge/main-0.30.0-b8860b?style=flat-square"></a>
