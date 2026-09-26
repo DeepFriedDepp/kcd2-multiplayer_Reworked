@@ -102,6 +102,11 @@ public sealed class SteamSession : IDisposable
         Environment.SetEnvironmentVariable("SteamAppId", appId.ToString());
         Environment.SetEnvironmentVariable("SteamGameId", appId.ToString());
 
+        // WO-127: steam_api64.dll prints the account's SteamID to stderr while it
+        // loads and initialises ("Caching Steam ID: ..."). Its C runtime binds
+        // stderr when the DLL loads, so the process's stderr points at NUL for
+        // exactly that window: the id reaches no console, pipe or file.
+        IntPtr savedErr = QuietStderr();
         try
         {
             // WO-127 Phase 0: SteamAPI_IsSteamRunning only reads the
@@ -125,6 +130,10 @@ public sealed class SteamSession : IDisposable
             detail = ex.GetType().Name + ": " + ex.Message;
             return null;
         }
+        finally
+        {
+            RestoreStderr(savedErr);
+        }
 
         var s = new SteamSession(appId);
         if (!SteamNative.SteamAPI_ISteamUser_BLoggedOn(s._user))
@@ -137,6 +146,28 @@ public sealed class SteamSession : IDisposable
         failure = SteamStartFailure.None;
         _current = s;
         return s;
+    }
+
+    [DllImport("kernel32.dll")] private static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll")] private static extern bool SetStdHandle(int nStdHandle, IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+    private const int StdErrorHandle = -12;
+    private static IntPtr _nul;
+
+    private static IntPtr QuietStderr()
+    {
+        if (!OperatingSystem.IsWindows()) return IntPtr.Zero;
+        IntPtr prev = GetStdHandle(StdErrorHandle);
+        if (_nul == IntPtr.Zero || _nul == new IntPtr(-1))
+            _nul = CreateFileW("NUL", 0x40000000 /*GENERIC_WRITE*/, 3, IntPtr.Zero, 3 /*OPEN_EXISTING*/, 0, IntPtr.Zero);
+        if (_nul != IntPtr.Zero && _nul != new IntPtr(-1)) SetStdHandle(StdErrorHandle, _nul);
+        return prev;
+    }
+
+    private static void RestoreStderr(IntPtr prev)
+    {
+        if (OperatingSystem.IsWindows() && prev != IntPtr.Zero) SetStdHandle(StdErrorHandle, prev);
     }
 
     // --- relay network --------------------------------------------------------

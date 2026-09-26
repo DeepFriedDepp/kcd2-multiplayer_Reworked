@@ -61,6 +61,7 @@ int interior_at(const float pos[3]) {
 
 void visit(void* e, const char* name, float x, float y, float z, bool isHorse, void* ctx) {
     auto* out = static_cast<Result*>(ctx);
+    if (std::strncmp(name, "kcd2mp_", 7) == 0) return;   // our own avatars of the peers, not NPCs
     Entry en{};
     en.x = x; en.y = y; en.z = z;
     std::strncpy(en.name, name, sizeof(en.name) - 1);
@@ -79,6 +80,7 @@ void visit(void* e, const char* name, float x, float y, float z, bool isHorse, v
     if (ps.awakeKnown) { f |= kAwakeKnown; if (ps.awake) f |= kAwake; }
     if (ps.living) f |= kLiving;
     if (ps.flying) f |= kFlying;
+    if (ps.activeKnown) { f |= kSimKnown; if (ps.active) f |= kSimActive; }
     if (ps.speedKnown) en.speedCms = static_cast<uint16_t>(std::fmin(65534.f, std::fmax(0.f, ps.speed * 100.f)));
 
     int st = -1, mk = -1;

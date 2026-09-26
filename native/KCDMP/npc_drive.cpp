@@ -47,6 +47,7 @@ constexpr size_t kEntGetScale       = 0x160;
 constexpr size_t kEntSetPosRotScale = 0x168;
 constexpr size_t kEntGetPhysics     = 0x278;
 constexpr size_t kPhysSetParams     = 0x20;
+constexpr size_t kPhysGetParams     = 0x28;   // WO-127: between SetParams (0x20) and GetStatus (0x30), the interface's order
 constexpr size_t kPhysGetStatus     = 0x30;
 constexpr size_t kOffWorldX = 0x64, kOffWorldY = 0x74, kOffWorldZ = 0x84;   // CEntity world matrix translation
 
@@ -1009,6 +1010,20 @@ bool physics_status(void* e, PhysicsStatus* out) {
     if (fn && call_int1(fn, phys, aw, &r)) { out->awakeKnown = 1; out->awake = r != 0 ? 1 : 0; }
     if (is_a(phys, g_vftLiving)) {
         out->living = 1;
+        // pe_player_dynamics (type 4) via GetParams: bActive at +92 ("0 disables all
+        // simulation for the character, apart from moving along the requested
+        // velocity"). pe_status_awake says nothing for a living entity (the engine's
+        // base IsAwake answers 0 and CLivingEntity does not override it -- a walking
+        // NPC 5 m away read 0, observed), so this is the living "awake".
+        alignas(16) uint8_t pd[0x100]{};
+        const int kPlayerDynamics = 4;
+        std::memcpy(pd, &kPlayerDynamics, 4);
+        void* gp = vslot(phys, kPhysGetParams);
+        int gr = 0;
+        if (gp && call_int1(gp, phys, pd, &gr) && gr != 0) {
+            int act = -1; std::memcpy(&act, pd + 92, 4);
+            if (act == 0 || act == 1) { out->activeKnown = 1; out->active = static_cast<uint8_t>(act); }
+        }
         alignas(16) uint8_t st[0x100]{};
         std::memcpy(st, &kPeStatusLiving, 4);
         int lr = 0;

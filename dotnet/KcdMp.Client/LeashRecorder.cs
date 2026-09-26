@@ -9,7 +9,8 @@ public readonly record struct LeashEntry(ulong Wuid, float X, float Y, float Z, 
     ushort SpeedCms, ushort StreamAgeMs, string Name)
 {
     public const ushort Horse = 1 << 0, Hidden = 1 << 1, Active = 1 << 2, PhysPresent = 1 << 3, AwakeKnown = 1 << 4,
-        Awake = 1 << 5, Living = 1 << 6, Flying = 1 << 7, Driven = 1 << 8, BrainKnown = 1 << 9, EntFlagsKnown = 1 << 10;
+        Awake = 1 << 5, Living = 1 << 6, Flying = 1 << 7, Driven = 1 << 8, BrainKnown = 1 << 9, EntFlagsKnown = 1 << 10,
+        SimKnown = 1 << 11, SimActive = 1 << 12;
     public bool Has(ushort f) => (Flags & f) != 0;
     /// <summary>A stable key: the WUID, or the name when the WUID read failed.</summary>
     public string Key => Wuid != 0 ? Wuid.ToString("X16", CultureInfo.InvariantCulture) : "n:" + Name;
@@ -104,11 +105,11 @@ public sealed class LeashCsv : IDisposable
         "joiner_town,joiner_interior,joiner_riding,joiner_fight,joiner_dialogue,joiner_cutscene,joiner_menu," +
         "npcs,sample_us,walked," +
         // npc
-        "wuid,name,horse,x,y,z,d_host,d_joiner,exists,hidden,active,phys,phys_awake,living,flying,speed_mps," +
+        "wuid,name,horse,x,y,z,d_host,d_joiner,exists,hidden,active,phys,phys_awake,phys_sim,living,flying,speed_mps," +
         "brain_state,brain_mask,moved_1s,in_stream_1s,driven,stream_age_ms";
 
     public const string JoinerHeader =
-        "utc,t_s,kind,wuid,name,horse,x,y,z,d_joiner,exists,age_ms,stream_age_ms,suspended,brain_state,brain_mask,driven,hidden,active,moved_1s";
+        "utc,t_s,kind,wuid,name,horse,x,y,z,d_joiner,exists,age_ms,stream_age_ms,suspended,brain_state,brain_mask,driven,hidden,active,phys_sim,moved_1s";
 
     public const long RotateBytes = 50L * 1024 * 1024;
 
@@ -177,7 +178,7 @@ public sealed class LeashRowBuilder
         LeashContext HostCtx, LeashContext JoinerCtx, uint SampleUs, uint Walked,
         IReadOnlyList<LeashEntry> Npcs, Func<string, bool> InStream);
 
-    public const int SummaryColumns = 25, NpcColumns = 22;
+    public const int SummaryColumns = 25, NpcColumns = 23;
 
     public IEnumerable<string> HostRows(HostInputs i)
     {
@@ -210,7 +211,8 @@ public sealed class LeashRowBuilder
 
     private static string NpcCells(LeashEntry n, (float X, float Y, float Z) host, (float X, float Y, float Z)? joiner, bool exists, bool? moved, bool inStream)
     {
-        bool fk = n.Has(LeashEntry.EntFlagsKnown), ak = n.Has(LeashEntry.AwakeKnown), bk = n.Has(LeashEntry.BrainKnown);
+        bool fk = n.Has(LeashEntry.EntFlagsKnown), ak = n.Has(LeashEntry.AwakeKnown) && !n.Has(LeashEntry.Living), bk = n.Has(LeashEntry.BrainKnown),
+             sk = n.Has(LeashEntry.SimKnown);
         float? speed = n.SpeedCms == 0xFFFF ? null : n.SpeedCms / 100f;
         return string.Join(",",
             n.Wuid == 0 ? "" : n.Wuid.ToString("X16", CultureInfo.InvariantCulture), LeashCsv.Csv(n.Name), LeashCsv.B(n.Has(LeashEntry.Horse)),
@@ -220,6 +222,7 @@ public sealed class LeashRowBuilder
             LeashCsv.B(exists),
             exists && fk ? LeashCsv.B(n.Has(LeashEntry.Hidden)) : "", exists && fk ? LeashCsv.B(n.Has(LeashEntry.Active)) : "",
             exists ? LeashCsv.B(n.Has(LeashEntry.PhysPresent)) : "", exists && ak ? LeashCsv.B(n.Has(LeashEntry.Awake)) : "",
+            exists && sk ? LeashCsv.B(n.Has(LeashEntry.SimActive)) : "",
             exists ? LeashCsv.B(n.Has(LeashEntry.Living)) : "", exists ? LeashCsv.B(n.Has(LeashEntry.Flying)) : "",
             exists ? LeashCsv.F(speed) : "",
             exists && bk ? LeashCsv.T(n.BrainState) : "", exists && bk ? n.BrainMask.ToString("X2", CultureInfo.InvariantCulture) : "",
@@ -247,7 +250,7 @@ public sealed class LeashRowBuilder
 
     private static string CopyCells(LeashEntry n, (float X, float Y, float Z) me, bool exists, double? ageMs, bool? moved)
     {
-        bool bk = n.Has(LeashEntry.BrainKnown), fk = n.Has(LeashEntry.EntFlagsKnown);
+        bool bk = n.Has(LeashEntry.BrainKnown), fk = n.Has(LeashEntry.EntFlagsKnown), sk = n.Has(LeashEntry.SimKnown);
         return string.Join(",",
             n.Wuid == 0 ? "" : n.Wuid.ToString("X16", CultureInfo.InvariantCulture), LeashCsv.Csv(n.Name), LeashCsv.B(n.Has(LeashEntry.Horse)),
             LeashCsv.F(n.X), LeashCsv.F(n.Y), LeashCsv.F(n.Z), LeashCsv.F(LeashCsv.Dist2D(n.X, n.Y, me.X, me.Y), "0.0"),
@@ -258,6 +261,7 @@ public sealed class LeashRowBuilder
             exists && bk ? n.BrainMask.ToString("X2", CultureInfo.InvariantCulture) : "",
             exists ? LeashCsv.B(n.Has(LeashEntry.Driven)) : "",
             exists && fk ? LeashCsv.B(n.Has(LeashEntry.Hidden)) : "", exists && fk ? LeashCsv.B(n.Has(LeashEntry.Active)) : "",
+            exists && sk ? LeashCsv.B(n.Has(LeashEntry.SimActive)) : "",
             LeashCsv.B(moved));
     }
 }

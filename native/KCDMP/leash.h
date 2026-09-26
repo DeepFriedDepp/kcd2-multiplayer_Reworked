@@ -11,8 +11,10 @@
 //   hidden / active  CEntity +0x08 bit 4 / bit 0 -- what CScriptBind_Entity's
 //                    IsHidden / IsActive read inline (CryEntitySystem.dll,
 //                    disassembled this WO: `(dword[e+8] >> 4) & 1`, `byte[e+8] & 1`)
-//   physics          IEntity::GetPhysics -> pe_status_awake (awake) and, for a
-//                    living entity, pe_status_living (flying, |vel|)
+//   physics          IEntity::GetPhysics -> pe_status_awake (awake; always 0
+//                    for a living entity by the engine's design) and, for a
+//                    living entity, pe_player_dynamics.bActive (simulated) and
+//                    pe_status_living (flying, |vel|)
 //   brain            WUID -> AIObjectManager -> the game's exported
 //                    ai_cast<C_IntelligentObject>, then C_IntelligentObject's
 //                    suspend state (+0x128) and reason mask (+0x129) (WO-107)
@@ -44,6 +46,8 @@ enum EntryFlags : uint16_t {
     kDriven       = 1 << 8,    // npc_drive binds this body (a joiner's puppet)
     kBrainKnown   = 1 << 9,
     kEntFlagsKnown= 1 << 10,
+    kSimKnown     = 1 << 11,   // living: pe_player_dynamics.bActive was read
+    kSimActive    = 1 << 12,   // ... and it was 1 (the character is simulated)
 };
 
 struct Entry {

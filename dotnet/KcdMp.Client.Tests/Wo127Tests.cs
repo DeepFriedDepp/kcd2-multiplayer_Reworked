@@ -329,8 +329,10 @@ public class Wo127Tests
         Assert.Equal("0000000000000001", a1[npc0]);
         Assert.Equal("10.0", a1[npc0 + 6]);   // d_host
         Assert.Equal("1", a1[npc0 + 8]);      // exists
-        Assert.Equal("", a1[npc0 + 18]);      // moved: no previous sample
-        Assert.Equal("1", a1[npc0 + 19]);     // in_stream_1s
+        Assert.Equal("", a1[npc0 + 12]);      // phys_awake: a living entity -> unknown (the engine never says)
+        Assert.Equal("", a1[npc0 + 13]);      // phys_sim: not read in this entry
+        Assert.Equal("", a1[npc0 + 19]);      // moved: no previous sample
+        Assert.Equal("1", a1[npc0 + 20]);     // in_stream_1s
 
         // Next second: a moved, b gone.
         var inputs2 = inputs1 with { TSeconds = 2.0, Npcs = new[] { Npc(1, "a", 12, 0) } };
@@ -338,7 +340,7 @@ public class Wo127Tests
         Assert.Equal(3, rows2.Count);
         Assert.All(rows2, r => Assert.Equal(want, Cols(r)));
         var a2 = rows2[1].Split(',');
-        Assert.Equal("1", a2[npc0 + 18]);     // moved
+        Assert.Equal("1", a2[npc0 + 19]);     // moved
         Assert.Contains(",0,", rows2[2]);      // exists=0 row for b
         Assert.Contains("b,with comma", rows2[2]);
     }
@@ -349,7 +351,7 @@ public class Wo127Tests
         int want = Cols(LeashCsv.JoinerHeader);
         var b = new LeashRowBuilder();
         var rows = b.JoinerRows(new LeashRowBuilder.JoinerInputs(DateTime.UtcNow, 1, (0, 0, 0),
-            new[] { Npc(9, "c", 3, 4, LeashEntry.Driven, 2, 0x01) }, n => n == "c" ? 120.4 : null)).ToList();
+            new[] { Npc(9, "c", 3, 4, LeashEntry.Driven | LeashEntry.SimKnown | LeashEntry.SimActive, 2, 0x01) }, n => n == "c" ? 120.4 : null)).ToList();
         Assert.Single(rows);
         Assert.Equal(want, Cols(rows[0]));
         var f = rows[0].Split(',');
@@ -359,6 +361,7 @@ public class Wo127Tests
         Assert.Equal("1", f[13]);     // suspended (brain state 2)
         Assert.Equal("01", f[15]);    // brain_mask
         Assert.Equal("1", f[16]);     // driven
+        Assert.Equal("1", f[19]);     // phys_sim
     }
 
     [Fact]

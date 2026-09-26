@@ -126,6 +126,7 @@ struct PhysicsStatus {
     uint8_t present = 0;      // the entity has a physical entity
     uint8_t awakeKnown = 0, awake = 0;   // pe_status_awake answered, and its answer
     uint8_t living = 0;       // a CryPhysics living entity
+    uint8_t activeKnown = 0, active = 0;   // living: pe_player_dynamics.bActive (simulated), when readable
     uint8_t flying = 0;       // pe_status_living.bFlying
     uint8_t speedKnown = 0;
     float   speed = 0;        // |pe_status_living.vel|, m/s
