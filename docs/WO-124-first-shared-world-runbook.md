@@ -1,18 +1,26 @@
 # The first shared-world session (two machines)
 
-For the maintainer (the **host**) and one partner (the **joiner**). About 20
-minutes. What it proves: the partner's own character arrives in your world
-and plays there. Background: `docs/WO-124-findings.md`.
+For the maintainer (the **host**) and one partner (the **joiner**). About 30
+minutes. What it proves: the partner's character arrives in your world, plays
+there, and keeps its progress in your world from one session to the next.
+Background: `docs/WO-124-findings.md`, `docs/WO-125-findings.md`.
 
 ## Before you start
 
-* Both machines on a build of `main` at `fbc890e` or later (WO-124 made no
-  installer: build one with `tools\Build-Installer.ps1` when you decide to).
-* The **partner** has a save of their own (any playthrough). The game brings
-  their **newest** save's character. To pick another one, before joining, in
-  the console (`~`): `mp_join_henry playline2/save021` (their playline/file).
+* Both machines on a build of `main` with WO-125 or later (no installer was
+  made: build one with `tools\Build-Installer.ps1` when you decide to). Both
+  machines on the **same** commit: an older host never tells the joiner which
+  world it runs, and the joiner then waits forever.
+* **Joiner: delete any copy of the host's save you copied in by hand** under
+  the old 0.28.x method. The mod ignores those now (a save of the host's
+  playthrough is never treated as yours), but they clutter the save list, and
+  if one is your newest save the main menu's Continue still loads it.
+* The joiner needs **a save of their own with Henry in it** to bring their
+  character, or **a new game's first save** (the one right after the prologue)
+  to start fresh.
 * The host is in the world in **daytime**, somewhere quiet, not in a fight,
-  dialogue or cutscene. **Make a save of your own first** (it is your world).
+  dialogue or cutscene, and past the prologue (the joiner can't join while the
+  host plays Godwin). **Make a save of your own first** (it is your world).
 * Host starts first: the host's launcher **Host** (relay on this machine).
 
 ## Start it
@@ -21,40 +29,78 @@ and plays there. Background: `docs/WO-124-findings.md`.
    `mp_shared_world on`. You should read `WO122-TOGGLE shared_world=on`.
 2. **Joiner**: launcher → Join (host's address) → Launch. **Stay at the main
    menu.** Do not press Continue.
-3. Wait. Nothing to click on either side.
+3. **First time in this host's world only:** the joiner's launcher asks
+   **Bring my character** / **Start fresh**. Nothing is asked of the host
+   until you answer, so take your time.
+   * Bring: the character from your newest own Henry save.
+   * Start fresh: a new game's starting Henry (from your first save after the
+     prologue). Never the host's character.
+   * Console instead of the buttons: `mp_join_henry auto` (bring), `mp_join_henry
+     fresh`, or `mp_join_henry playline2/save021` (a save of yours).
+4. Wait. Nothing else to click.
 
 ## What each screen should say
 
 | when | host | joiner (launcher banner) |
 |---|---|---|
 | joiner connects | — | "Waiting for your host..." |
+| first time in this world | — | "First time in this world: bring your character, or start fresh?" + two buttons |
 | host busy (fight, dialogue, loading) | nothing | "Your host is busy, you'll join in a moment." |
 | host pauses | "<partner> is joining... [bar] N%" — world frozen, keys dead | "Your host is saving the world..." then "Receiving the world... N%" |
 | joiner prepares | same | "Preparing your character..." |
 | joiner loads (about 50-60 s, loading screen) | "<partner> is loading the world..." | "Loading your host's world..." |
 | in | world resumes by itself | "In your host's world." + in game: "Co-op: you are in your host's world." |
 
-The joiner arrives **3 m beside the host**, with their own character (money,
-items, skills), in the host's world (time, NPCs, quests).
+The joiner arrives **3 m beside the host**, with their own character, in the
+host's world (time, NPCs, quests).
+
+## What is kept now
+
+* Every time **the host's game saves** (the 5-minute autosave, `mp_world_save`,
+  a manual save, the exit save) while the joiner is in, the joiner's character
+  is stored for this world. The joiner's screen hitches for about half a
+  second each time; that is the snapshot.
+* When the joiner quits (or crashes), their character in this world is the
+  one from **the host's last save**. The launcher says: "Your progress in this
+  world is saved up to your host's last save." Anything after that save is
+  lost, never duplicated.
+* Next time, the joiner's character for this world comes back by itself (no
+  question). Their own saves are never touched.
+* Each host world has its own character on the joiner's side; joining another
+  host world never changes it.
 
 ## Try
 
-* Walk together; talk to an NPC; a fist fight with each other (friendly fire
-  is on); one of you rides a horse and gets off (the partner's avatar must
-  come off it, WO-124 6a).
+* Walk together; a fist fight with each other (friendly fire is on); one of
+  you rides a horse and gets off (the partner's avatar must come off it).
 * Joiner: the pause menu's **Save & Quit** is greyed out. That is correct:
-  only the host saves this world. (Try Save Game too and note what it does.)
-* Host: `mp_world_save` writes a world save (an autosave in your playline).
+  only the host saves this world.
+* Host: `mp_world_save`. The joiner's screen hitches once (the snapshot).
+* **Rejoin:** joiner picks something up, host `mp_world_save`, joiner picks up
+  one more thing, then quits and starts the game again and waits at the menu.
+  After the join: the first thing is there, the second is not.
+* **A host reload takes the joiner along:** host loads a save of this world
+  (from the pause menu). The joiner sees "Your host is reloading…", then
+  rejoins from inside the world by itself (about 15 s) and their character
+  rewinds to where it was at that save.
+* Joiner console: `mp_henry_files` lists the host worlds your character is
+  stored for.
 
 ## Expected not to work yet
 
-* **The joiner's progress is not kept.** When they quit, the launcher says
-  "Your progress in shared worlds isn't saved yet." Their own saves are
-  untouched; next time, Continue loads their own game. (WO-125)
 * **No "back to the main menu"** in KCD2. If the host leaves, or a check
-  fails, the joiner is told and their **own** newest save loads.
-* Rejoining starts again from the joiner's newest own save.
-* A host reload does not take the joiner along (WO-125).
+  fails, the joiner is told and their **own** newest save loads. With no save
+  of their own at all, the game drops to the main menu with a "Game load
+  failed" box: press OK. That is intended.
+* **Talking to NPCs near the host:** on the joiner's machine those NPCs are
+  held still (suspended), so the joiner can't talk to them (WO-112).
+* **NPCs don't fight back when the joiner hits them:** they turn, but don't
+  swing (WO-121).
+* **NPCs stand instead of sitting** on the joiner's screen.
+* **The prologue and Godwin's part of the story:** no join while the host
+  plays one of them ("Your host is in a part of the story where you can't join
+  yet."). What to do there together is a later WO.
+* Quest progress does not reach the other player live (a later WO).
 * Already in a world when connecting? The joiner is told to quit, restart and
   wait at the main menu.
 
@@ -64,6 +110,8 @@ items, skills), in the host's world (time, NPCs, quests).
   also resumes by itself after 180 s.
 * Joiner stuck on the loading screen for more than 3 minutes: quit the game;
   the host resumes by itself.
+* Joiner wants to start over in this host's world: `mp_henry_reset` (the next
+  join asks Bring / Start fresh again).
 * Anything else: note the time, carry on or stop, and capture (below).
 
 ## Capture afterwards (both machines, before relaunching the game)
@@ -72,9 +120,9 @@ items, skills), in the host's world (time, NPCs, quests).
 * The agent log (`agent.log` beside `KcdMpClient.exe`) and
   `kcdmp-native.mirror.log` (Modding Tools folder).
 * The host: the relay's log, if the launcher kept one.
-* Screenshots of anything odd.
-* Do **not** send save files around (every save names the machine's account);
-  the joiner's received world is deleted by itself.
+* Screenshots of anything odd (the launcher's two buttons, please).
+* Do **not** send save files or the joiner's `KCDMP\henry` folder around
+  (saves name the machine's account).
 
-Lines worth grepping: `MP-JOIN`, `MP-SAVELOCK`, `MP-JOINPLACE`, `MP-DISMOUNT`,
-`WO124-`, `Game load failed`.
+Lines worth grepping: `MP-JOIN`, `MP-HENRY`, `MP-SAVELOCK`, `MP-JOINPLACE`,
+`MP-DISMOUNT`, `WO124-`, `WO125-`, `Game load failed`.

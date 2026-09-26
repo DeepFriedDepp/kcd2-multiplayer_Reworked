@@ -12,10 +12,15 @@ decision unworkable reports that instead of editing it here.
 | joiner saving | locked all session; only the host writes world saves |
 | per-player | inventory incl. money, equipment, skills, perks, stats, health, status effects, position |
 | world-shared | quests, NPCs, horses, merchants, crime, reputation, **renown** |
-| first join | **import** the joiner's Henry from their own newest save |
+| first join | the joiner **chooses** (WO-125): **Bring my character** = their own newest Henry save, or **Start fresh** = a genuinely new starting Henry, **never a copy of the host's Henry**, not even on a new game. Every later join to that world restores the joiner's own Henry for it |
+| Henry files | **per world**, keyed by the save's playthrough seed; one world's Henry is never overwritten from another's; nothing is copied from the host. Stale worlds are cleaned up (90 days unjoined by default) |
+| matched pairs | a joiner's Henry for a world is only ever a snapshot taken at a host world save: anything after the last pair is **lost** on quit or crash, **never duplicated** |
+| "own" saves | a save with the host world's seed is **never** the joiner's own: not as the Bring source, not as the leave route's target, not in the Continue check. Such files are left alone (only warned about); saves the mod makes never stay in a playline |
+| no own save to leave to | the failed-load route back to the main menu (an empty listed file), with the launcher explaining the "Game load failed" box; never stuck, never a host-seed copy |
+| non-Henry stretches | prologue / Godwin: **no join**, detected and refused cleanly, the host never paused; what to do in them together belongs to quest sync |
 | story progress stat | always from the **host's** world (hidden stat id 8) |
 | host reload | the joiner reloads with the host; the joiner's Henry **rewinds** to the snapshot matching the host's save |
-| Henry snapshots | taken **when the host's game saves**, as a matched pair with the world |
+| Henry snapshots | taken **when the host's game saves**, as a matched pair with the world (keyed by the host save's md5) |
 | saddlebags | per rider |
 | whistle | each player's horse comes to its own rider |
 | dialogue | world clock **keeps running** |
