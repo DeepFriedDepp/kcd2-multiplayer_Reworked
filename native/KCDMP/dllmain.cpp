@@ -15,6 +15,8 @@
 #include "pipe_server.h"
 #include "respawn.h"
 #include "script_context.h"
+#include "join_native.h"
+#include "savelist.h"
 
 #include <windows.h>
 
@@ -190,6 +192,12 @@ DWORD WINAPI plugin_main(LPVOID) {
     // WO-121: drain the capture / friendly-fire queues, avatar jumps.
     kcdmp::main_thread::post_repeating(&kcdmp::motion::tick);
     kcdmp::main_thread::post_repeating(&kcdmp::hits::tick);
+    // WO-124: the joiner's placement gives the fall damage back; the save-list
+    // research trigger (kcdmp-savelist-test.txt, opt-in, absent = idle).
+    // Observed: this tick runs at the MAIN MENU too on 1.5.5 (the pipe is up
+    // there), which the join's save-list rescan depends on.
+    kcdmp::main_thread::post_repeating(&kcdmp::joinnative::tick);
+    kcdmp::main_thread::post_repeating(&kcdmp::savelist::test_watch);
 
     kcdmp::pipe::start();
     return 0;

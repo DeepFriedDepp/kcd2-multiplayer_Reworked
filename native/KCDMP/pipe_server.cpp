@@ -14,6 +14,8 @@
 #include "motion.h"
 #include "hits.h"
 #include "npc_trace.h"
+#include "join_native.h"
+#include "savelist.h"
 #include "log.h"
 
 #include <windows.h>
@@ -906,6 +908,95 @@ void serve(HANDLE h) {
                 logf("PIPE: ConceptProbe(\"%s\") -> %s", path.c_str(),
                      ok ? "ran" : "failed (see CONCEPT lines)");
                 send_result(h, ran && ok, seq, (ran && ok) ? 0 : (faultedFlag ? kReasonTaskFaulted : 0));
+                break;
+            }
+
+            // WO-124: the joiner's placement beside the host (main thread).
+            case kJoinPlace: {
+                BYTE out[2 + 2 + 36 + 4]{};
+                out[1] = seq;
+                if (len != kJoinPlaceLen) {
+                    logf("PIPE: JoinPlace wrong length %u", len);
+                    EnterCriticalSection(&g_write_lock);
+                    send_frame(h, kJoinPlaceReply, out, sizeof(out));
+                    LeaveCriticalSection(&g_write_lock);
+                    break;
+                }
+                float x = 0, y = 0, z = 0, dist = 0;
+                std::memcpy(&x, body, 4); std::memcpy(&y, body + 4, 4); std::memcpy(&z, body + 8, 4); std::memcpy(&dist, body + 12, 4);
+                joinnative::PlaceReport r{};
+                bool faultedFlag = false;
+                const bool ran = run_sync_bounded<joinnative::PlaceReport>(
+                    [x, y, z, dist](joinnative::PlaceReport& res) { res = joinnative::place(x, y, z, dist); },
+                    "JoinPlace", r, &faultedFlag);
+                out[0] = (ran && r.ok) ? 1 : 0;
+                out[2] = r.snapped ? 1 : 0;
+                out[3] = r.fallHeld ? 1 : 0;
+                std::memcpy(out + 4, r.target, 12);
+                std::memcpy(out + 16, r.before, 12);
+                std::memcpy(out + 28, r.after, 12);
+                std::memcpy(out + 40, &r.residual, 4);
+                EnterCriticalSection(&g_write_lock);
+                send_frame(h, kJoinPlaceReply, out, sizeof(out));
+                LeaveCriticalSection(&g_write_lock);
+                break;
+            }
+
+            // WO-124: the joiner's post-load check that the death guard is on.
+            // Atomics / plain reads of the respawn module's state: no main-thread hop.
+            case kJoinGuard: {
+                BYTE out[5]{};
+                out[0] = 1; out[1] = seq;
+                out[2] = respawn::session_active() ? 1 : 0;
+                out[3] = respawn::enabled() ? 1 : 0;
+                out[4] = respawn::guard_applied() ? 1 : 0;
+                EnterCriticalSection(&g_write_lock);
+                send_frame(h, kJoinGuardReply, out, sizeof(out));
+                LeaveCriticalSection(&g_write_lock);
+                break;
+            }
+
+            // WO-124: rescan the save list / is a file listed / what Continue loads.
+            case kSaveList: {
+                BYTE out[2 + 1 + 2 + 2 + 1 + 1 + 2 + 1 + 64]{};
+                out[1] = seq;
+                char name[64]{};
+                const uint8_t nlen = len >= 3 ? body[2] : 0;
+                if (len < 3 || nlen > 63 || len != 3u + nlen) {
+                    logf("PIPE: SaveList wrong length %u", len);
+                    EnterCriticalSection(&g_write_lock);
+                    send_frame(h, kSaveListReply, out, 12);
+                    LeaveCriticalSection(&g_write_lock);
+                    break;
+                }
+                const uint8_t op = body[0];
+                const int pl = static_cast<int8_t>(body[1]);
+                std::memcpy(name, body + 3, nlen);
+                savelist::Report r{};
+                bool faultedFlag = false;
+                std::string nm(name);
+                const bool ran = run_sync_bounded<savelist::Report>(
+                    [op, pl, nm](savelist::Report& res) {
+                        res = savelist::query(op != 3, op == 2 ? -1 : pl, op == 2 ? nullptr : nm.c_str());
+                    }, "SaveList", r, &faultedFlag);
+                const bool ok = ran && r.ok;
+                logf("PIPE: SaveList op=%u playline%d/%s -> %s listed=%d idx=%d count=%d current=%d continue=playline%d/%s",
+                     op, pl, nlen ? name : "-", ok ? "ok" : (savelist::ready() ? "unreadable" : savelist::why_not()),
+                     r.listed ? 1 : 0, r.idx, r.count, r.current, r.contPlayline, r.contName[0] ? r.contName : "-");
+                out[0] = ok ? 1 : 0;
+                out[2] = r.listed ? 1 : 0;
+                const int16_t idx = static_cast<int16_t>(r.idx), cnt = static_cast<int16_t>(r.count), ci = static_cast<int16_t>(r.contIdx);
+                std::memcpy(out + 3, &idx, 2);
+                std::memcpy(out + 5, &cnt, 2);
+                out[7] = static_cast<BYTE>(static_cast<int8_t>(r.current));
+                out[8] = static_cast<BYTE>(static_cast<int8_t>(r.contPlayline));
+                std::memcpy(out + 9, &ci, 2);
+                const size_t cl = std::strlen(r.contName);
+                out[11] = static_cast<BYTE>(cl);
+                std::memcpy(out + 12, r.contName, cl);
+                EnterCriticalSection(&g_write_lock);
+                send_frame(h, kSaveListReply, out, static_cast<uint16_t>(12 + cl));
+                LeaveCriticalSection(&g_write_lock);
                 break;
             }
 

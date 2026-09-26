@@ -255,6 +255,16 @@ constexpr uint8_t kApplyPvpHit        = 0x1A;   // [st:4f][hp:4f][flags][attacke
 constexpr uint8_t kWo121Status        = 0x1B;   // -> 0x8A [ok][seq][text]
 constexpr uint8_t kWo121StatusReply   = 0x8A;
 constexpr uint8_t kAttributedReply    = 0x8B;   // [ok][seq][steps][attackerWuid:8][victimWuid:8]
+// WO-124: put the joiner beside the host, on the ground (join_native.h).
+constexpr uint8_t kJoinPlace          = 0x1C;   // [hostX:4f][hostY:4f][hostZ:4f][dist:4f] -> 0x8C
+constexpr uint8_t kJoinPlaceReply     = 0x8C;   // [ok][seq][snapped][fallHeld][target:12][before:12][after:12][residual:4f]
+constexpr int     kJoinPlaceLen       = 16;
+// WO-124: the engine's cached save list (savelist.h): [op][playline][nameLen][name]
+//   op 1 = rescan + find, 2 = rescan + Continue's pick only, 3 = find without a rescan
+constexpr uint8_t kSaveList           = 0x1D;   // -> 0x8D
+constexpr uint8_t kJoinGuard          = 0x1E;   // WO-124: the death guard's state -> 0x8E [ok][seq][session][enabled][applied]
+constexpr uint8_t kJoinGuardReply     = 0x8E;
+constexpr uint8_t kSaveListReply      = 0x8D;   // [ok][seq][listed][idx:2][count:2][current][contPl][contIdx:2][nameLen][contName]
 constexpr uint8_t kLocalAction        = 0x96;   // unsolicited: [kind][phase][ic][zone][type][flags][guid:16][eid:4][nameLen][name]
 constexpr uint8_t kPvpHitOut          = 0x97;   // unsolicited: [victimEid:4][st:4f][hp:4f][flags][material]
 

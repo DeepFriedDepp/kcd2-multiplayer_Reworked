@@ -17,10 +17,11 @@
 //                  [--linger 8]                   seconds to stay connected after the last step
 //                  [--duration 400]               hard stop
 //
-// Synthetic host: connects FIRST, waits for a JoinRequest, sends --join-host <file>
-// (or random:<bytes>) with the agent's own WorldSender, then waits for Done/abort
-// and Ready. Measures the relay transfer alone.
-//        SynthPeer --join-host <file|random:N> [--port 7778] [--name synth-host] [--duration 120]
+// Synthetic host (WO-124: what a REAL joiner game joins): connects FIRST, announces
+// its session mode, streams its avatar, waits for a JoinRequest, sends --join-host
+// <file> (a copy of a real host save, or random:<bytes>) with the agent's own
+// WorldSender and the host's status sequence, then waits for Done/abort and Ready.
+// Options: see RunHostAsync.
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
@@ -28,6 +29,7 @@ using System.Net.Sockets;
 using System.Text;
 using KcdMp.Client;
 using KcdMp.Wire;
+using System.Linq;
 
 static class JoinPeer
 {
@@ -217,45 +219,140 @@ static class JoinPeer
         return rc;
     }
 
+    // WO-124: the synthetic HOST a real joiner game joins. Connect it FIRST (id 0 =
+    // the damage authority). It announces its session mode to peers 1..7 every
+    // 5 s (JoinStatus state "session", joinId 0, as a WO-124 host agent does),
+    // streams its avatar at --host-pos every second, and on a JoinRequest sends
+    // --join-host <file> (a COPY of a real host save; never logged by path) with
+    // the agent's own WorldSender and the real host's status sequence, then
+    // waits for the joiner's Done and Ready ("the host resumes") or an abort.
+    //        SynthPeer --join-host <file|random:N> [--port 7778] [--name synth-host] [--duration 600]
+    //                  [--host-pos x,y,z] [--shared on|off] [--corrupt-chunk N] [--ready-wait 240]
+    //                  [--leave-after-ready S]   disconnect S seconds after Ready (the joiner must leave the world)
+    //                  [--serve 1]               joins to serve before staying idle
+    // The offer carries the save's OWN footer MD5 (the joiner checks it against the file); random bytes have none.
+    static byte[] FooterMd5(byte[] file)
+    {
+        var v = WhsSave.Verify(file);
+        return v.Md5.Length == 32 ? Convert.FromHexString(v.Md5) : new byte[16];
+    }
+
     public static async Task<int> RunHostAsync(string[] a, string release)
     {
         string host = Arg(a, "--host", "127.0.0.1"); int port = IntArg(a, "--port", 7778);
         string name = Arg(a, "--name", "synth-host");
         string src = Arg(a, "--join-host", "");
-        double duration = DblArg(a, "--duration", 120);
+        double duration = DblArg(a, "--duration", 600), readyWait = DblArg(a, "--ready-wait", 240);
+        double leaveAfterReady = DblArg(a, "--leave-after-ready", -1);
+        int corrupt = IntArg(a, "--corrupt-chunk", -1), serve = IntArg(a, "--serve", 1);
+        bool shared = Arg(a, "--shared", "on") != "off";
+        var hp = Arg(a, "--host-pos", "0,0,0").Split(',').Select(v => float.Parse(v, CultureInfo.InvariantCulture)).ToArray();
         byte[] file = src.StartsWith("random:", StringComparison.Ordinal)
             ? System.Security.Cryptography.RandomNumberGenerator.GetBytes(int.Parse(src[7..], CultureInfo.InvariantCulture))
             : File.ReadAllBytes(src);
         using var hard = new CancellationTokenSource(TimeSpan.FromSeconds(duration));
         var (st, myId, tcp) = await ConnectAsync(host, port, name, release);
-        Say($"host connected id={myId} file_bytes={file.Length} ({(src.StartsWith("random:") ? "random bytes" : "a file")})");
+        Say(FormattableString.Invariant($"host connected id={myId} file_bytes={file.Length} ({(src.StartsWith("random:") ? "random bytes" : "a host save copy")}) mode={(shared ? "shared-world" : "separate")} pos={hp[0]:F1},{hp[1]:F1},{hp[2]:F1}"));
+        var wlock = new SemaphoreSlim(1, 1);
+        async Task W(byte[] pkt) { await wlock.WaitAsync(); try { await st.WriteAsync(pkt, hard.Token); } finally { wlock.Release(); } }
+        // Heartbeat: the avatar every second, the session mode every 5 s.
+        _ = Task.Run(async () =>
+        {
+            int n = 0;
+            try
+            {
+                while (!hard.IsCancellationRequested)
+                {
+                    await W(PositionCodec.BuildPosition(hp[0], hp[1], hp[2], 0, false, false, null));
+                    if (n++ % 5 == 0)
+                        for (byte g = 1; g < 8; g++)
+                            await W(JoinStatusCodec.Build(g, 0, Protocol.JoinStateSession, Protocol.JoinReasonId(shared ? "shared-world" : "separate"), 0));
+                    await Task.Delay(1000, hard.Token);
+                }
+            }
+            catch { }
+        });
+        int served = 0, rc = 0;
         try
         {
-            while (true)
+            while (served < serve)
             {
                 var (type, p) = await ReadPacket(st, hard.Token);
                 if (type != Protocol.JoinRequestDown || !Protocol.TrySplitJoinDown(p, out byte joiner, out _, out uint joinId, out _)) continue;
+                served++;
                 Say($"JoinRequest 0x{joinId:x8} from {joiner}");
-                var tx = new WorldSender(file, joinId, joiner, 1, new byte[16]);
-                await st.WriteAsync(tx.BuildOfferPacket(), hard.Token);
-                var t0 = Clock.Elapsed.TotalSeconds;
-                while (true)
+                if (!shared)
                 {
-                    foreach (var pkt in tx.TakeSendable()) await st.WriteAsync(pkt, hard.Token);
-                    var (rt, rp) = await ReadPacket(st, hard.Token);
-                    if (!Protocol.IsJoinDown(rt, rp.Length)) continue;
-                    var body = BodyOf(rp);
-                    if (rt == Protocol.WorldAckDown) tx.OnAck(BinaryPrimitives.ReadUInt32LittleEndian(body), out _);
-                    else if (rt == Protocol.WorldDoneDown || rt == Protocol.JoinAbortDown)
+                    await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStateRefused, Protocol.JoinReasonId("shared-world-off"), 0));
+                    Say("refused: shared-world-off (as a real host with mp_shared_world off)");
+                    continue;
+                }
+                var t0 = Clock.Elapsed.TotalSeconds;
+                await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStatePaused, 0, 0));
+                Say("world 'paused' (synthetic: nothing to pause)");
+                await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStateSaving, 0, 0));
+                var tx = new WorldSender(file, joinId, joiner, 1, FooterMd5(file));
+                await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStateSending, 0, 0));
+                await W(tx.BuildOfferPacket());
+                bool done = false, ended = false;
+                double tDone = 0;
+                while (!ended)
+                {
+                    foreach (var pkt in tx.TakeSendable())
                     {
-                        double s = Clock.Elapsed.TotalSeconds - t0;
-                        Say(FormattableString.Invariant($"{(rt == Protocol.WorldDoneDown ? "Done" : "JoinAbort " + Protocol.JoinAbortName(body[0]))} after {s:F2} s; acked {tx.AckedBytes}/{tx.TotalBytes} B = {tx.AckedBytes / 1048576.0 / Math.Max(s, 1e-3):F2} MB/s through the relay"));
-                        return 0;
+                        if (corrupt >= 0 && pkt.Length > 16 && BinaryPrimitives.ReadUInt32LittleEndian(pkt.AsSpan(8)) == (uint)corrupt)
+                        {
+                            pkt[pkt.Length / 2] ^= 0x5A;
+                            Say($"corrupted chunk {corrupt} (one byte flipped) on the way out");
+                        }
+                        await W(pkt);
+                    }
+                    var rt = ReadPacket(st, hard.Token);
+                    double left = done ? readyWait - (Clock.Elapsed.TotalSeconds - tDone) : 60;
+                    if (await Task.WhenAny(rt, Task.Delay(TimeSpan.FromSeconds(Math.Max(1, left)), hard.Token)) != rt)
+                    {
+                        Say(done ? $"no Ready {readyWait:F0} s after Done -- the host would resume (timeout)" : "no ack/Done for 60 s -- the host would resume (timeout)");
+                        await W(WorldReceiver.BuildAbort(joiner, joinId, Protocol.JoinAbortTimeout));
+                        rc = 2; ended = true; break;
+                    }
+                    var (ty, rp) = await rt;
+                    if (!Protocol.IsJoinDown(ty, rp.Length)) continue;
+                    var body = BodyOf(rp);
+                    double now = Clock.Elapsed.TotalSeconds;
+                    switch (ty)
+                    {
+                        case Protocol.WorldAckDown: tx.OnAck(BinaryPrimitives.ReadUInt32LittleEndian(body), out _); break;
+                        case Protocol.WorldDoneDown:
+                            done = true; tDone = now;
+                            Say(FormattableString.Invariant($"Done after {now - t0:F2} s (acked {tx.AckedBytes}/{tx.TotalBytes} B); waiting for Ready (up to {readyWait:F0} s)"));
+                            await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStateWaitingReady, 0, 0));
+                            break;
+                        case Protocol.JoinerReadyDown:
+                            Say(FormattableString.Invariant($"Ready {now - tDone:F1} s after Done ({now - t0:F1} s after the request) -- THE HOST RESUMES (ready)"));
+                            await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStateResumed, Protocol.JoinReasonId("ready"), (ushort)(now - t0)));
+                            ended = true;
+                            break;
+                        case Protocol.JoinAbortDown:
+                            Say(FormattableString.Invariant($"JoinAbort {Protocol.JoinAbortName(body.Length > 0 ? body[0] : (byte)0)} after {now - t0:F1} s -- THE HOST RESUMES (failed)"));
+                            await W(JoinStatusCodec.Build(joiner, joinId, Protocol.JoinStateResumed, Protocol.JoinReasonId("failed"), (ushort)(now - t0)));
+                            rc = 3; ended = true;
+                            break;
                     }
                 }
+                if (rc == 0 && leaveAfterReady >= 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(leaveAfterReady), hard.Token);
+                    Say($"leaving {leaveAfterReady:F0} s after Ready (disconnect) -- the joiner must leave the host's world");
+                    tcp.Close();
+                    return rc;
+                }
             }
+            // stay up (heartbeat) until the duration ends
+            await Task.Delay(Timeout.Infinite, hard.Token);
         }
-        catch (OperationCanceledException) { Say("duration reached"); return 1; }
+        catch (OperationCanceledException) { Say("duration reached"); }
+        catch (IOException ex) { Say($"connection ended: {ex.Message}"); }
         finally { tcp.Dispose(); }
+        return rc;
     }
 }

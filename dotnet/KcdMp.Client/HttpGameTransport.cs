@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -104,6 +104,47 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         catch { return false; }
     }
 
+    /// <summary>
+    /// WO-124: (the debug API answers, the Calendar's GameTime). GameTime is 0
+    /// at the main menu (docs/kcd2_lua_api.md) -- a joiner connects there.
+    /// </summary>
+    public async Task<(bool Up, float GameTime)> ReadGameTimeAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var xml = await _http.GetStringAsync($"{gameApiBase}/api/rpg/Calendar?depth=1", ct);
+            var m = GameTimeRegex().Match(xml);
+            return (true, m.Success && float.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float t) ? t : 0f);
+        }
+        catch { return (false, 0f); }
+    }
+
+    /// <summary>
+    /// WO-124: is a world loaded, asked of the game itself: the player entity
+    /// "Dude" exists. GameTime alone cannot tell: after a failed load the
+    /// engine is back at the main menu with the Calendar still counting
+    /// (observed). Rides on sv_servername like ReadRotStateAsync; a value
+    /// that is not ours (the yaw loop wrote in between) is asked again.
+    /// Null when the answer cannot be read.
+    /// </summary>
+    public async Task<bool?> ReadWorldLoadedAsync(CancellationToken ct = default)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            try
+            {
+                await SendNowAsync(@"System.SetCVar(""sv_servername"",System.GetEntityByName(""Dude"") and ""kcdmp-where=world"" or ""kcdmp-where=menu"")", ct);
+                var xml = await _http.GetStringAsync($"{gameApiBase}/api/System/Console/GetCvarValue?name=sv_servername", ct);
+                var m = CvarValueRegex().Match(xml);
+                if (m.Success && m.Groups[1].Value.StartsWith("kcdmp-where=", StringComparison.Ordinal))
+                    return m.Groups[1].Value == "kcdmp-where=world";
+            }
+            catch { }
+            await Task.Delay(100, ct);
+        }
+        return null;
+    }
+
     /// <summary>Position this tick, plus the most recent cached yaw/mount state.</summary>
     public async Task<PlayerState?> ReadPlayerStateAsync(CancellationToken ct = default)
     {
@@ -160,7 +201,8 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
         {
             await SendNowAsync(
                 @"System.SetCVar(""sv_servername"",(function()" +
-                @"local r=player:GetWorldAngles().z;" +
+                // WO-124: no player at the main menu (the agent connects there now)
+                @"local r=player and player:GetWorldAngles().z or 0;" +
                 @"local ride=KCD2MP and KCD2MP.isRiding and 'r' or 's';" +
                 @"return string.format('%.4f,%s',r,ride)end)())", ct);
 

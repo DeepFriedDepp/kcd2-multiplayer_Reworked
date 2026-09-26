@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
@@ -1139,6 +1139,16 @@ public partial class GameBridge(ClientConfig config)
         }
 
         await tail.StartAsync(ct);
+        if (_startedAtMenu)
+        {
+            // WO-124: at the main menu no Script.SetTimer fires (observed), so the
+            // emitter cannot produce frames yet; the tail is what carries the
+            // join's events and the load lines. The emitter is re-armed after a
+            // load by the usual chain restart.
+            tail.GameEvent += OnGameEvent;
+            Console.WriteLine($"[transport] {tail.Name} -- started at the main menu (no emitter frames until a world loads)");
+            return tail;
+        }
         Console.WriteLine($"[transport] waiting for the mod's state emitter ({Path.GetFileName(tail.LogPath)})...");
 
         var deadline = DateTime.UtcNow.AddSeconds(3);
@@ -1183,6 +1193,7 @@ public partial class GameBridge(ClientConfig config)
 
     private async Task RunLoopAsync(HttpGameTransport http, CancellationToken ct)
     {
+        _httpForMenu = http;
         while (!ct.IsCancellationRequested)
         {
             await WaitForGameAsync(ct);
@@ -1238,11 +1249,35 @@ public partial class GameBridge(ClientConfig config)
     private async Task WaitForGameAsync(CancellationToken ct = default)
     {
         Console.WriteLine("Waiting for game to load a save...");
+        bool menuSaid = false;
         while (!ct.IsCancellationRequested)
         {
             if (await _transport.IsGameReadyAsync(ct))
             {
+                // WO-124: GameTime > 0 is also what a failed load leaves behind at
+                // the main menu (observed). Ask whether the player entity exists.
+                if (KcdLogLocator.Find() is string klog && LogTailGameTransport.ScanAtMainMenu(klog) == true)
+                {
+                    if (!menuSaid) Console.WriteLine("MP-JOIN the game is at the MAIN MENU (the log's last word is the menu, after a failed load; the clock is left from that world) -- connecting now; world pushes into the mod wait for a loaded world");
+                    menuSaid = true;
+                    _where = GameWhere.Menu;
+                    _startedAtMenu = true;
+                    return;
+                }
                 Console.WriteLine("Game ready!");
+                return;
+            }
+            // WO-124: a joiner waits at the MAIN MENU for its host's world, and
+            // only a connection tells it the host's session mode. The console
+            // answers there (GameTime 0) -- connect. Until a world exists, the
+            // agent's pushes into Lua are held (ExecLuaAsync's menu gate).
+            var h = _transport as HttpGameTransport ?? _httpForMenu;
+            if (h is not null && (await h.ReadGameTimeAsync(ct)) is { Up: true, GameTime: <= 0 })
+            {
+                if (!menuSaid) Console.WriteLine("MP-JOIN the game is at the MAIN MENU -- connecting now (a shared-world host's joiner joins from here); world pushes into the mod wait for a loaded world");
+                menuSaid = true;
+                _where = GameWhere.Menu;
+                _startedAtMenu = true;
                 return;
             }
             await Task.Delay(3000, ct).ContinueWith(_ => { });
@@ -1431,6 +1466,7 @@ public partial class GameBridge(ClientConfig config)
         // WO-19: lets the launcher poll this agent's own release version plus
         // whatever release versions have arrived for connected peers so far.
         Wo123SweepAtStart();   // WO-123: staging files an earlier agent left behind
+        Wo124SweepAtStart();   // WO-124: transient mpworld files a crash left in the saves folder
         _versionIpcServer = new VersionIpcServer(() => _ghostReleaseVersions.ToArray(), config.VersionIpcPort, JoinStatusJson);
         _versionIpcServer.Start();
 
@@ -1632,6 +1668,7 @@ public partial class GameBridge(ClientConfig config)
         Wo121OnConnect(stream, cts.Token);   // WO-121: action frames, friendly fire, the toggles
         Wo122OnConnect(stream, cts.Token);   // WO-122: owner death, the host-only save lock, world saves
         Wo123OnConnect(stream, cts.Token);   // WO-123: the join (send the world, pause the host)
+        Wo124OnConnect(stream, cts.Token);   // WO-124: the session mode, the joiner's side of the join
         _ = _combat.NpcConfigAsync(_nativeWriteOn, _nativeSenderClock, cts.Token);
         _ = RespawnHeartbeatAsync(stream, announceGraves: true, cts.Token);
         // WO-99 Phase 0: learn who the local player is before the first hit.
@@ -1710,6 +1747,12 @@ public partial class GameBridge(ClientConfig config)
             tailForPause.AutoSaveRefused += Wo122OnAutoSaveRefused;  // WO-122
             tailForPause.GameplayStarted += Wo123OnGameplayStarted;  // WO-123: a host load ends a join
             tailForPause.LoadStarted += Wo123OnLoadStarted;          // WO-123: joins defer through a load
+            tailForPause.GameplayStarted += Wo124OnGameplayStarted;  // WO-124: the joiner's load finished
+            tailForPause.LoadStarted += Wo124OnLoadStarted;          // WO-124
+            tailForPause.GameQuit += Wo124OnGameQuit;                // WO-124: quitting from the host's world
+            tailForPause.SaveLoadAccepted += Wo124OnSaveLoadAccepted;   // WO-124
+            tailForPause.LoadFailedToMenu += Wo124OnLoadFailedToMenu;   // WO-124
+            tailForPause.MainMenuShown += Wo124OnMainMenuShown;         // WO-124
 
             // A reconnect keeps the tail (and its last marker) alive, so seed
             // from it rather than waiting for the next checkpoint -- at a
@@ -2096,6 +2139,12 @@ public partial class GameBridge(ClientConfig config)
                 tailForPause2.AutoSaveRefused -= Wo122OnAutoSaveRefused; // WO-122
                 tailForPause2.GameplayStarted -= Wo123OnGameplayStarted; // WO-123
                 tailForPause2.LoadStarted -= Wo123OnLoadStarted;         // WO-123
+                tailForPause2.GameplayStarted -= Wo124OnGameplayStarted; // WO-124
+                tailForPause2.LoadStarted -= Wo124OnLoadStarted;         // WO-124
+                tailForPause2.GameQuit -= Wo124OnGameQuit;               // WO-124
+                tailForPause2.SaveLoadAccepted -= Wo124OnSaveLoadAccepted;  // WO-124
+                tailForPause2.LoadFailedToMenu -= Wo124OnLoadFailedToMenu;  // WO-124
+                tailForPause2.MainMenuShown -= Wo124OnMainMenuShown;        // WO-124
             }
             _sendPauseIfChanged = null;
             _sendPlayerHit = null;
@@ -2112,6 +2161,7 @@ public partial class GameBridge(ClientConfig config)
             Wo121OnDisconnect();   // WO-121
             await Wo122OnDisconnectAsync();   // WO-122: the joiner may save again
             await Wo123OnDisconnectAsync();   // WO-123: a paused host resumes; a joiner's staging goes
+            await Wo124OnDisconnectAsync();   // WO-124: a joiner in the host's world leaves it
             _myOpenDrops.Clear();
             // WO-113: no relay, no session -- the DLL's guard stands down
             // (vanilla death), and every peer's mirror gravestone goes.
@@ -4486,6 +4536,7 @@ public partial class GameBridge(ClientConfig config)
                     try { await _combat.MirrorGraveAsync(2, ghostId, 0, 0, 0, 0, ct); } catch { }
                     try { await ExecLuaAsync($"KCD2MP_RemoveGhost(\"{ghostId}\")"); } catch { }
                     await Wo123OnPeerGoneAsync(ghostId);   // WO-123: a joiner gone mid-join resumes the host
+                    await Wo124OnPeerGoneAsync(ghostId);   // WO-124: the host gone -> the joiner leaves its world
                 }
                 else if (type == Protocol.VoiceDown && payloadLen == 1 + Protocol.VoiceFrameLen)
                 {
@@ -5433,6 +5484,11 @@ public partial class GameBridge(ClientConfig config)
             case "join_ready":
                 Wo123OnEvent(name, arg);
                 return;
+            case "wo124_reply":      // WO-124
+            case "wo124_where":
+            case "wo124_henry_cfg":
+                Wo124OnEvent(name, arg);
+                return;
         }
 
         var interactions = Interactions;
@@ -6311,7 +6367,28 @@ public partial class GameBridge(ClientConfig config)
         finally { Interlocked.Exchange(ref _nativeHeartbeatBusy, 0); }
     }
 
-    private Task ExecLuaAsync(string lua) => _transport.ExecuteAsync(lua);
+    private Task ExecLuaAsync(string lua)
+    {
+        // WO-124: at the main menu (before any world) only the join's own calls
+        // go through; a ghost or NPC push would try to spawn into no level.
+        if (_where == GameWhere.Menu && !IsMenuSafeLua(lua))
+        {
+            if (Interlocked.Increment(ref _menuHeldLua) % 50 == 1)
+                Console.WriteLine($"MP-JOIN menu gate: holding world pushes into the mod until a world loads ({_menuHeldLua} so far)");
+            return Task.CompletedTask;
+        }
+        return _transport.ExecuteAsync(lua);
+    }
+
+    private bool _startedAtMenu;
+    private HttpGameTransport? _httpForMenu;   // WO-124: the REST probe for "at the main menu", set by RunLoopAsync
+    private int _menuHeldLua;
+    /// <summary>WO-124: the calls that may reach the mod at the main menu (the join's own, the WO-122/123 state setters).</summary>
+    public static bool IsMenuSafeLua(string lua) => MenuSafeLua.IsMatch(lua);
+
+    private static readonly System.Text.RegularExpressions.Regex MenuSafeLua = new(
+        @"^(if )?KCD2MP_(Wo12[1-4]|Join|HostOnlyLock|EmitEvent|SetHitSensor|WorldSavedIn|SaveRefused|SaveLeak)|^if KCD2MP_Wo124|^System\.LogAlways",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     // WO-110 R9: the client side of the framing-drop counters (the relay has
     // ClientHandler.CountDrop). Drained into one MP-RELAY-DROPS line every

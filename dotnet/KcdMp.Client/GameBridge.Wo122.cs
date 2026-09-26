@@ -117,7 +117,12 @@ public partial class GameBridge
         }
     }
 
-    private bool Wo122WantLock() => _sharedWorld && _wo122Connected && _combatRoleApplied && !_isDamageAuthority;
+    // WO-124: the session mode is the host's (JoinerSharedEffective), and with a
+    // host that announces it the lock is held only while this game's world IS
+    // the host's (after a join). Without the announcement (an older host, the
+    // WO-122 synthetic runs) it is held as WO-122 shipped it.
+    private bool Wo122WantLock() => JoinerSharedEffective && _wo122Connected && _combatRoleApplied && !_isDamageAuthority
+                                    && (!_hostModeKnown || _joinedWorld);
 
     private void Wo122OnGameplayStarted()
     {
@@ -179,6 +184,7 @@ public partial class GameBridge
             $"MP-WO122 cfg shared_world={On(_sharedWorld)} owner_death={On(_ownerDeath)} autosave_minutes={_autosaveMinutes} role={(!_combatRoleApplied ? "unknown" : _isDamageAuthority ? "host" : "joiner")} connected={On(_wo122Connected)}"));
         if (wasShared != _sharedWorld)
         {
+            Wo124OnSharedWorldChanged();   // WO-124: tell the peers the new session mode
             Wo122EnsureWatcher();
             if (_sharedWorld) _lastWorldSaveUtc = DateTime.UtcNow;
         }
@@ -311,7 +317,8 @@ public partial class GameBridge
     /// <summary>The watcher runs only while mp_shared_world is on: dormant means nothing new happens.</summary>
     private void Wo122EnsureWatcher()
     {
-        if (!_sharedWorld)
+        // WO-124: a joiner in its host's world watches too (its own toggle may be off).
+        if (!_sharedWorld && !_joinedWorld)
         {
             if (_savesWatcher is not null)
             {

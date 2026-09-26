@@ -242,6 +242,7 @@ public partial class GameBridge
                     Console.WriteLine($"MP-JOIN joiner: the host aborted join 0x{joinId:x8} ({r}) -- staging deleted");
                     return;
                 }
+                if (await Wo124OnHostAbortAsync(joinId, Protocol.JoinAbortName(body.Length > 0 ? body[0] : (byte)0))) return;   // WO-124
                 if (_joinOutId == joinId) { _joinOutId = 0; SetJoinUi("aborted", "The host stopped the join."); }
                 return;
             case Protocol.JoinStatusDown:
@@ -552,7 +553,7 @@ public partial class GameBridge
 
     private async Task SendJoinRequestAsync()
     {
-        if (!_sharedWorld) { Console.WriteLine("MP-JOIN mp_join_request needs mp_shared_world on"); return; }
+        if (!JoinerSharedEffective) { Console.WriteLine($"MP-JOIN mp_join_request needs a shared-world session ({(_hostModeKnown ? "the host runs separate worlds" : "mp_shared_world off here and no word from a host")})"); return; }
         if (!_wo122Connected || !_combatRoleApplied) { Console.WriteLine("MP-JOIN mp_join_request: no session"); return; }
         if (_isDamageAuthority) { Console.WriteLine("MP-JOIN mp_join_request: this machine is the host -- the joiner asks"); return; }
         if (_joinRx is not null) { Console.WriteLine("MP-JOIN mp_join_request: a transfer is already running"); return; }
@@ -597,6 +598,7 @@ public partial class GameBridge
     private void OnJoinStatusIn(byte src, uint joinId, byte[] body)
     {
         if (!JoinStatusCodec.TryDecode(body, out byte state, out byte reason, out ushort arg)) return;
+        if (state == Protocol.JoinStateSession) { Wo124OnSessionMode(src, reason); return; }   // WO-124: the host's session mode
         string st = Protocol.JoinStateName(state), rs = Protocol.JoinReasonName(reason);
         Console.WriteLine($"MP-JOIN joiner: host status join=0x{joinId:x8} state={st} reason={rs} arg={arg}");
         switch (state)
@@ -607,16 +609,17 @@ public partial class GameBridge
             case Protocol.JoinStateWaitingReady: SetJoinUi("received", "World received. Loading..."); break;
             case Protocol.JoinStateRefused: _joinOutId = 0; SetJoinUi("refused", $"Your host can't take a join right now ({rs})."); break;
             case Protocol.JoinStateResumed:
-                if (rs != "ready") SetJoinUi("aborted", $"The join ended ({rs}).");
+                // WO-124: a message this joiner already gave (no own save, a failed splice) stays.
+                if (rs != "ready" && _joinUiState is not ("no-save" or "failed" or "left")) SetJoinUi("aborted", $"The join ended ({rs}).");
                 break;
         }
     }
 
     private async Task OnWorldOfferInAsync(byte host, uint joinId, byte[] body, CancellationToken ct)
     {
-        if (!_sharedWorld || _isDamageAuthority)
+        if (!JoinerSharedEffective || _isDamageAuthority)
         {
-            Console.WriteLine($"MP-JOIN joiner: offer 0x{joinId:x8} refused ({(!_sharedWorld ? "mp_shared_world off" : "this machine is the host")})");
+            Console.WriteLine($"MP-JOIN joiner: offer 0x{joinId:x8} refused ({(!JoinerSharedEffective ? "not a shared-world session" : "this machine is the host")})");
             try { await WriteJoinAsync(WorldReceiver.BuildAbort(host, joinId, Protocol.JoinAbortSharedWorldOff)); } catch { }
             return;
         }
@@ -692,9 +695,11 @@ public partial class GameBridge
         await WriteJoinAsync(rx.BuildDone());
         _joinReceivedId = joinId;
         _joinReceivedSeq = rx.Offer.WorldSavedSeq;
+        _joinOutId = 0;
         SetJoinUi("received", "World received. Loading...");
         Console.WriteLine(FormattableString.Invariant(
             $"MP-JOIN joiner: join 0x{joinId:x8} received {rx.Received} B in {secs:F2} s -- sha256 ok, WhsSave.Verify ok, md5 = the offer's -> <data>/join-staging/{Path.GetFileName(rx.FinalPath)}"));
+        _ = Wo124OnWorldReceivedAsync(joinId, host, rx.FinalPath, rx.Offer.WorldSavedSeq);   // WO-124: splice, place, load -- off the frame loop (a load takes ~50 s)
     }
 
     private void SetJoinUi(string state, string message)

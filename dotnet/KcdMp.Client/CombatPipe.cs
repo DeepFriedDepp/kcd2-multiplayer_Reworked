@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Threading.Channels;
@@ -62,6 +62,13 @@ public sealed class CombatPipe : IAsyncDisposable
     private const byte AttributedReply   = 0x8B;   // [ok][seq][steps][attackerWuid:8][victimWuid:8]
     private const byte LocalAction       = 0x96;   // unsolicited, LocalActionFrame
     private const byte PvpHitOut         = 0x97;   // unsolicited: [victimEid:4][stamina:4f][health:4f][flags][material]
+    // WO-124: the joiner's side of the join (native/KCDMP/join_native.h, savelist.h)
+    private const byte JoinPlace         = 0x1C;   // [hostX:4f][hostY:4f][hostZ:4f][dist:4f] -> 0x8C
+    private const byte JoinPlaceReply    = 0x8C;
+    private const byte SaveList          = 0x1D;   // [op][playline][nameLen][name] -> 0x8D
+    private const byte SaveListReply     = 0x8D;
+    private const byte JoinGuard         = 0x1E;   // -> 0x8E [ok][seq][session][enabled][applied]
+    private const byte JoinGuardReply    = 0x8E;
 
     private const int GuidLen = 16;
 
@@ -437,6 +444,51 @@ public sealed class CombatPipe : IAsyncDisposable
         var (body, _) = await SendAndAwaitAsync(Wo121Status, [], Wo121StatusReply, ct);
         if (body is null || body.Length < 3 || body[0] != 1) return null;
         return System.Text.Encoding.UTF8.GetString(body, 2, body.Length - 2);
+    }
+
+    // ---- WO-124 ------------------------------------------------------------
+
+    /// <summary>The engine's save list after an optional rescan (op 1 = rescan + find, 2 = rescan + Continue only, 3 = find only).</summary>
+    public sealed record SaveListReport(bool Listed, int Idx, int Count, int Current, int ContinuePlayline, int ContinueIdx, string ContinueName);
+
+    public async Task<SaveListReport?> SaveListAsync(byte op, int playline, string name, CancellationToken ct = default)
+    {
+        var nb = System.Text.Encoding.ASCII.GetBytes(name ?? "");
+        if (nb.Length > 63) return null;
+        var payload = new byte[3 + nb.Length];
+        payload[0] = op; payload[1] = unchecked((byte)(sbyte)playline); payload[2] = (byte)nb.Length;
+        nb.CopyTo(payload, 3);
+        var (body, _) = await SendAndAwaitAsync(SaveList, payload, SaveListReply, ct);
+        if (body is null || body.Length < 12 || body[0] != 1) return null;
+        int cl = body[11];
+        if (body.Length < 12 + cl) return null;
+        return new SaveListReport(body[2] == 1, BinaryPrimitives.ReadInt16LittleEndian(body.AsSpan(3)), BinaryPrimitives.ReadInt16LittleEndian(body.AsSpan(5)),
+                                  (sbyte)body[7], (sbyte)body[8], BinaryPrimitives.ReadInt16LittleEndian(body.AsSpan(9)),
+                                  System.Text.Encoding.ASCII.GetString(body, 12, cl));
+    }
+
+    public sealed record JoinPlaceReport(bool Ok, bool Snapped, bool FallHeld, float[] Target, float[] Before, float[] After, float Residual);
+
+    /// <summary>Put the player <paramref name="dist"/> m beside (x,y,z), on the ground, with the fall damage held (main thread, WO-113's teleport).</summary>
+    public async Task<JoinPlaceReport?> JoinPlaceAsync(float x, float y, float z, float dist, CancellationToken ct = default)
+    {
+        var payload = new byte[16];
+        BinaryPrimitives.WriteSingleLittleEndian(payload, x);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(4), y);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(8), z);
+        BinaryPrimitives.WriteSingleLittleEndian(payload.AsSpan(12), dist);
+        var (body, _) = await SendAndAwaitAsync(JoinPlace, payload, JoinPlaceReply, ct);
+        if (body is null || body.Length < 44) return null;
+        float[] V(int o) => [BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(o)), BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(o + 4)), BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(o + 8))];
+        return new JoinPlaceReport(body[0] == 1, body[2] == 1, body[3] == 1, V(4), V(16), V(28), BinaryPrimitives.ReadSingleLittleEndian(body.AsSpan(40)));
+    }
+
+    /// <summary>(session, enabled, applied) of the WO-113 death guard, or null.</summary>
+    public async Task<(bool Session, bool Enabled, bool Applied)?> JoinGuardAsync(CancellationToken ct = default)
+    {
+        var (body, _) = await SendAndAwaitAsync(JoinGuard, [], JoinGuardReply, ct);
+        if (body is null || body.Length < 5 || body[0] != 1) return null;
+        return (body[2] == 1, body[3] == 1, body[4] == 1);
     }
 
     private static byte B(bool v) => v ? (byte)1 : (byte)0;

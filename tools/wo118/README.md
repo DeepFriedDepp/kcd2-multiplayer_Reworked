@@ -57,3 +57,21 @@ with `GATE GREEN` or `GATE RED` and restores both toggles on.
   5 s of silence and a stream's sequence after 2 s.
 * **Plans are save-specific.** Regenerate with `WO118_Plan`, `WO118_PlanHold`,
   `WO118_PlanMany`, `WO118_SlopeFind`, `WO118_Flat` (see the header of `lua/wo118.lua`).
+
+## WO-123 / WO-124: the join
+
+| script | what |
+|---|---|
+| `join123.py` | WO-123: the running game's agent as the HOST, `synthpeer --join` as the joiner |
+| `join124.py` | WO-124: the running game's agent as the JOINER (at the main menu), `synthpeer --join-host <copy of a host save>` as the host: `relay`, `host <tag> ...`, `agent <tag> <KcdMpClient.dll> [ENV=VAL]`, `stop host|agent|all`, `lines` |
+
+* `synthpeer --join-host` announces its session mode (`--shared on|off`), streams its
+  avatar at `--host-pos x,y,z` (the host save's Henry spot), and serves `--serve N` joins;
+  `--corrupt-chunk N` flips a byte on the way out; `--leave-after-ready S` disconnects.
+* A plan's `ride <t0> <t1>` line makes the peer's ghost ride between t0 and t1 (6a).
+* Run the agent and the peers from COPIES of their build folders: a running agent locks
+  `bin/Release`, and the next build fails.
+* `KCDMP_DATA_DIR` (default `data124/`, git-ignored) is the agent's staging folder;
+  `KCDMP_JOIN_SAVES_DIR=<empty dir>` makes the joiner a player with no save of their own.
+* The host save the synthetic host serves is a COPY in the session scratchpad: never in
+  the repo, never logged by path.

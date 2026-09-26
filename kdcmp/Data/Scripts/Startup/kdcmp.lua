@@ -3539,7 +3539,8 @@ function KCD2MP_HostOnlyLock(want, why)
         return false
     end
     if want then
-        if not w.sharedWorld then return false end   -- dormant: never lock with the toggle off
+        -- dormant: never lock unless this toggle, or the HOST's session mode (WO-124), says shared world
+        if not (w.sharedWorld or (KCD2MP.w124 and KCD2MP.w124.sessionShared)) then return false end
         -- Every refused add costs one engine "[Error] Script save lock ... already
         -- exists" line (observed), so a held lock is re-checked on the agent's
         -- 1 s tick only every lockCheckS; a load ("after-load") or anything but
@@ -5005,8 +5006,8 @@ function KCD2MP_JoinCancel()
 end
 
 function KCD2MP_JoinRequest()
-    if not KCD2MP.w122.sharedWorld then
-        mp_log("MP-JOIN mp_join_request needs mp_shared_world on")
+    if not (KCD2MP.w122.sharedWorld or (KCD2MP.w124 and KCD2MP.w124.sessionShared)) then
+        mp_log("MP-JOIN mp_join_request needs a shared-world session (mp_shared_world on here, or a host that runs one)")
         return false
     end
     KCD2MP_EmitEvent("join_request", "")
@@ -5031,6 +5032,121 @@ function KCD2MP_JoinDrawUI()
     mp_draw_row("join_title", 760, 480, label, 2.4, label)
     mp_draw_row("join_bar", 760, 520, bar, 2.0, "bar")
     mp_draw_row("join_hint", 760, 556, "The world is paused until they arrive (mp_join_cancel to stop).", 1.4)
+end
+
+-- ===== WO-124: the join, on the joiner's side ======================================
+-- docs/WO-124-findings.md. The agent drives all of it (at the main menu no
+-- Script.SetTimer fires -- observed -- but a console/REST call runs Lua and its
+-- System.LogAlways reaches kcd.log). The mode is the HOST's: the agent tells
+-- this machine with KCD2MP_Wo124SessionMode, and the joiner's save lock follows
+-- it (KCD2MP_HostOnlyLock). Dormant: nothing here does anything unless a host
+-- announces a shared world.
+KCD2MP.w124 = { sessionShared = false, henry = "auto", msgs = 0 }
+
+function KCD2MP_Wo124CfgEmit()
+    KCD2MP_EmitEvent("wo124_henry_cfg", KCD2MP.w124.henry)
+end
+
+-- The host's session mode, from the agent.
+function KCD2MP_Wo124SessionMode(on)
+    local w = KCD2MP.w124
+    local v = (on == true)
+    if w.sessionShared ~= v then
+        mp_log(string.format("WO124-SESSION the host runs %s -- %s", v and "a SHARED WORLD" or "separate worlds",
+            v and "this joiner follows it (the save lock is held while its world is the host's)" or "this machine saves as before"))
+    end
+    w.sessionShared = v
+    if not v and KCD2MP.w122.lockHeld and not KCD2MP.w122.sharedWorld then KCD2MP_HostOnlyLock(false, "host-separate") end
+    return v
+end
+
+-- Where the game is: the agent asks once per connection (and after a load
+-- the log lines say it). "menu" = no player entity.
+function KCD2MP_Wo124Where()
+    local where = "menu"
+    local okL, loading = pcall(function() return Game.IsLoadingEngineSaveGame and Game.IsLoadingEngineSaveGame() end)
+    if okL and loading == true then
+        where = "loading"
+    elseif player ~= nil then
+        where = "world"
+    else
+        local ok, d = pcall(System.GetEntityByName, "Dude")
+        if ok and d then where = "world" end
+    end
+    KCD2MP_EmitEvent("wo124_where", where)
+    return where
+end
+
+-- mp_join_henry <auto|playlineN/file>: which own save the joiner's Henry comes from.
+function KCD2MP_SetJoinHenry(arg)
+    local w = KCD2MP.w124
+    local v = tostring(arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if v ~= "" and v ~= "%line" and v ~= "nil" then
+        if v ~= "auto" and not v:match("^playline[0-4]/[%w_]+$") and not v:match("^playline[0-4]/[%w_]+%.whs$") then
+            mp_log("mp_join_henry: expected auto or playlineN/file (e.g. playline2/save021), got '" .. v .. "'")
+            return false
+        end
+        w.henry = v
+    end
+    mp_log("WO124-TOGGLE join_henry=" .. w.henry .. " -- the joiner's Henry comes from " ..
+        (w.henry == "auto" and "its newest own save (by save time, every playline)" or w.henry))
+    KCD2MP_Wo124CfgEmit()
+    return true
+end
+
+-- Step 1 after the load: the host-only lock, read back by the engine's own refusal.
+function KCD2MP_Wo124Lock(tok)
+    local held = false
+    local ok = pcall(function() held = KCD2MP_HostOnlyLock(true, "join") == true end)
+    KCD2MP_EmitEvent("wo124_reply", tostring(tok) .. " lock=" .. ((ok and held) and "held" or "failed") ..
+        " name=" .. tostring(KCD2MP.w122.lockName))
+end
+
+-- Step 3: the live Henry, for the agent to compare with the spliced file.
+-- money = GetMoney (the file's money item amount / 10); items = class:amount
+-- for every inventory entry; skills are read for the log only.
+function KCD2MP_Wo124Henry(tok)
+    local money, items, skills = "?", {}, {}
+    pcall(function() money = string.format("%.2f", player.inventory:GetMoney()) end)
+    pcall(function()
+        local t = player.inventory:GetInventoryTable()
+        for i = 1, #t do
+            local it = ItemManager.GetItem(t[i])
+            if it and it.class then items[#items + 1] = tostring(it.class) .. ":" .. tostring(it.amount or 1) end
+        end
+    end)
+    for _, nm in ipairs({ "fencing", "weapon_sword", "survival", "stealth" }) do
+        pcall(function()
+            local lv = player.soul:GetSkillLevel(nm)
+            local pr = player.soul.GetSkillProgress and player.soul:GetSkillProgress(nm)
+            skills[#skills + 1] = nm .. ":" .. tostring(lv) .. (pr and string.format(":%.4f", pr) or "")
+        end)
+    end
+    mp_log(string.format("WO124-HENRY money=%s items=%d skills=%s", money, #items, table.concat(skills, ",")))
+    KCD2MP_EmitEvent("wo124_reply", tostring(tok) .. " money=" .. money .. " items=" .. table.concat(items, ";") ..
+        " skills=" .. table.concat(skills, ","))
+end
+
+-- A one-line message for the player (in the world; at the menu nothing draws).
+function KCD2MP_Wo124Msg(text)
+    KCD2MP.w124.msgs = KCD2MP.w124.msgs + 1
+    mp_log("WO124-MSG " .. tostring(text))
+    pcall(KCD2MP_ShowInteractionMsg, tostring(text))
+end
+
+-- The join's load (and the way back to the player's own save), from the menu
+-- or a world. playline = the on-disk index, name = the base name.
+function KCD2MP_Wo124LoadGame(pl, name, why)
+    local n = tonumber(pl)
+    local f = tostring(name or "")
+    if not n or n < 0 or n > 4 or not f:match("^[%w_]+$") then
+        mp_log("WO124-LOAD refused: bad playline/name")
+        return false
+    end
+    mp_log(string.format("WO124-LOAD wh_sys_LoadGame %d %s (%s)", n, f, tostring(why)))
+    local ok, err = pcall(System.ExecuteCommand, string.format("wh_sys_LoadGame %d %s", n, f))
+    if not ok then mp_log("WO124-LOAD ExecuteCommand failed: " .. tostring(err)) end
+    return ok
 end
 
 
@@ -13165,6 +13281,10 @@ local ok, err = pcall(function()
             w.timeoutS, w.holdMethod, w.npcRadius))
         KCD2MP_Wo123CfgEmit()
     end
+    -- WO-124: the joiner's side of the join (the agent drives it; dormant unless the host runs a shared world).
+    System.AddCCommand("mp_join_henry",          'KCD2MP_SetJoinHenry(%line)',            "WO-124: which own save the joiner's Henry comes from: mp_join_henry <auto|playlineN/file> (auto = the newest own save by save time); bare = report")
+    mp_log("WO124-BUILD join_henry=auto place_m=3 transient=mpworld<joinId>.whs -- dormant unless the host runs a shared world")
+    KCD2MP_Wo124CfgEmit()
     System.AddCCommand("mp_npc_native_write",    'KCD2MP_SetNpcNativeWrite(%line)',           "WO-118: KCDMP.dll writes every bound NPC puppet every frame at its frame hook (default on); off = the 50 ms Lua path: mp_npc_native_write on|off; bare = report")
     System.AddCCommand("mp_npc_detach",          'KCD2MP_SetNpcDetach(%line)',                "WO-118: at puppet start, right after the pause, free the NPC from its seat/activity (wh_ai_NPCStateResetElement Stance + Unstance; default on): mp_npc_detach on|off")
     System.AddCCommand("mp_npc_trace",           'KCD2MP_NpcTrace(%line)',                    "WO-118: per-frame position of one named entity at the DLL's frame hook and at render, to a CSV in the game folder: mp_npc_trace <name> [seconds] | mp_npc_trace stop")

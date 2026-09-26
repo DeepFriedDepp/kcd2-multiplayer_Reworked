@@ -95,24 +95,34 @@ public static partial class Protocol
     // ---- JoinAbort reasons (APPEND-ONLY) ----
     public const byte JoinAbortHostCancel = 1, JoinAbortTimeout = 2, JoinAbortHashMismatch = 3, JoinAbortVerifyFailed = 4,
                       JoinAbortSaveFailed = 5, JoinAbortIo = 6, JoinAbortProtocol = 7, JoinAbortSharedWorldOff = 8,
-                      JoinAbortJoinerCancel = 9, JoinAbortHostReload = 10, JoinAbortTooBig = 11;
+                      JoinAbortJoinerCancel = 9, JoinAbortHostReload = 10, JoinAbortTooBig = 11,
+                      // WO-124: the joiner's side of the join (docs/WO-124-findings.md)
+                      JoinAbortNoOwnSave = 12, JoinAbortSpliceFailed = 13, JoinAbortLoadFailed = 14,
+                      JoinAbortHenryMismatch = 15, JoinAbortLockFailed = 16, JoinAbortPlaceFailed = 17;
 
     public static string JoinAbortName(byte r) => r switch
     {
         JoinAbortHostCancel => "host-cancel", JoinAbortTimeout => "timeout", JoinAbortHashMismatch => "hash-mismatch",
         JoinAbortVerifyFailed => "verify-failed", JoinAbortSaveFailed => "save-failed", JoinAbortIo => "io-error",
         JoinAbortProtocol => "protocol", JoinAbortSharedWorldOff => "shared-world-off", JoinAbortJoinerCancel => "joiner-cancel",
-        JoinAbortHostReload => "host-reload", JoinAbortTooBig => "too-big", _ => $"unknown-{r}",
+        JoinAbortHostReload => "host-reload", JoinAbortTooBig => "too-big",
+        JoinAbortNoOwnSave => "no-own-save", JoinAbortSpliceFailed => "splice-failed", JoinAbortLoadFailed => "load-failed",
+        JoinAbortHenryMismatch => "henry-mismatch", JoinAbortLockFailed => "lock-failed", JoinAbortPlaceFailed => "place-failed",
+        _ => $"unknown-{r}",
     };
 
     // ---- JoinStatus states and deferral reasons (APPEND-ONLY) ----
     public const byte JoinStateDeferred = 1, JoinStatePaused = 2, JoinStateSaving = 3, JoinStateSending = 4,
-                      JoinStateWaitingReady = 5, JoinStateResumed = 6, JoinStateRefused = 7;
+                      JoinStateWaitingReady = 5, JoinStateResumed = 6, JoinStateRefused = 7,
+                      // WO-124: the host's session mode, sent to every peer (joinId 0) on connect, on a new
+                      // peer, on a toggle change and every 30 s; reason "shared-world" or "separate".
+                      JoinStateSession = 8;
 
     public static string JoinStateName(byte s) => s switch
     {
         JoinStateDeferred => "deferred", JoinStatePaused => "paused", JoinStateSaving => "saving", JoinStateSending => "sending",
-        JoinStateWaitingReady => "waiting-ready", JoinStateResumed => "resumed", JoinStateRefused => "refused", _ => $"unknown-{s}",
+        JoinStateWaitingReady => "waiting-ready", JoinStateResumed => "resumed", JoinStateRefused => "refused",
+        JoinStateSession => "session", _ => $"unknown-{s}",
     };
 
     /// <summary>Why a host defers (JoinStateDeferred) or refuses (JoinStateRefused). APPEND-ONLY.</summary>
@@ -120,6 +130,9 @@ public static partial class Protocol
     {
         "none", "combat", "dialogue", "cutscene", "loading", "cannot-save", "dead", "shared-world-off", "not-host",
         "another-join", "no-mod", "skip-time", "menu", "ready", "joiner-gone", "cancel", "timeout", "failed", "host-reload", "clock-sync",
+        // WO-124
+        "shared-world", "separate", "no-own-save", "splice-failed", "load-failed", "henry-mismatch", "lock-failed", "place-failed",
+        "joiner-abort",
     };
 
     public static byte JoinReasonId(string name)

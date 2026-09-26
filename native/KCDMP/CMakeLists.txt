@@ -27,6 +27,8 @@
     inline_hook.cpp
     motion.cpp
     hits.cpp
+    savelist.cpp
+    join_native.cpp
 )
 
 target_include_directories(KCDMP PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 
 namespace KcdMp.Client;
@@ -302,6 +302,49 @@ public sealed class LogTailGameTransport : IGameTransport
     /// </summary>
     public event Action? LoadStarted;
 
+    /// <summary>WO-124: "CSystem::Quit invoked ..." -- the game is ending its process (the menu's Quit, System.Quit()).</summary>
+    public event Action? GameQuit;
+
+    /// <summary>
+    /// WO-124: "Loading saved game '%USER%/saves/playlineN/x.whs' ..." -- a save
+    /// load was accepted (printed at once; from the main menu the level loads
+    /// next and "[CryAction] LoadGame" follows ~40 s later). Argument: playlineN/x.whs.
+    /// </summary>
+    public event Action<string>? SaveLoadAccepted;
+
+    /// <summary>WO-124: "Exiting to main menu because save game loading failed." -- the engine's own way back to the menu.</summary>
+    public event Action? LoadFailedToMenu;
+
+    /// <summary>WO-124: "PlayVideoOnly 'main_menu..." -- the main menu is up (at startup, and after a failed load).</summary>
+    public event Action? MainMenuShown;
+
+    /// <summary>
+    /// WO-124: is the game at the main menu, read from the log's own history:
+    /// the later of the last "PlayVideoOnly 'main_menu" (the menu came up: at
+    /// startup, or after a failed load) and the last "Gameplay started". True =
+    /// menu, false = a world, null = neither seen. The Calendar cannot tell: a
+    /// failed load leaves the menu with the clock and even the player entity
+    /// still there (observed).
+    /// </summary>
+    public static bool? ScanAtMainMenu(string logPath, int tailBytes = 16 * 1024 * 1024)
+    {
+        try
+        {
+            using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            long start = Math.Max(0, fs.Length - tailBytes);
+            fs.Seek(start, SeekOrigin.Begin);
+            var buf = new byte[fs.Length - start];
+            int got = 0;
+            while (got < buf.Length) { int n = fs.Read(buf, got, buf.Length - got); if (n <= 0) break; got += n; }
+            string text = Encoding.UTF8.GetString(buf, 0, got);
+            int menu = text.LastIndexOf("PlayVideoOnly 'main_menu", StringComparison.Ordinal);
+            int world = text.LastIndexOf("\nGameplay started", StringComparison.Ordinal);
+            if (menu < 0 && world < 0) return null;
+            return menu > world;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
+
     /// <summary>
     /// WO-122: "AutoSave is disabled under a script lock 'Script:&lt;name&gt;'" --
     /// the engine refused an autosave (sleep, a quest save, the mod's own
@@ -501,6 +544,35 @@ public sealed class LogTailGameTransport : IGameTransport
             catch (Exception ex) { Console.WriteLine($"[join] load-started handler threw: {ex.Message}"); }
         }
 
+        if (SaveLoadAccepted is not null && line.StartsWith("Loading saved game '", StringComparison.Ordinal))
+        {
+            var rest = line[20..];
+            int q = rest.IndexOf('\'');
+            if (q > 0)
+            {
+                var path = rest[..q].ToString().Replace('\\', '/');
+                int pl = path.LastIndexOf("/playline", StringComparison.Ordinal);
+                try { SaveLoadAccepted.Invoke(pl >= 0 ? path[(pl + 1)..] : path); }
+                catch (Exception ex) { Console.WriteLine($"[join] save-load handler threw: {ex.Message}"); }
+            }
+        }
+        if (MainMenuShown is not null && line.StartsWith("PlayVideoOnly 'main_menu", StringComparison.Ordinal))
+        {
+            try { MainMenuShown.Invoke(); }
+            catch (Exception ex) { Console.WriteLine($"[join] main-menu handler threw: {ex.Message}"); }
+        }
+        if (LoadFailedToMenu is not null && line.StartsWith("Exiting to main menu because save game loading failed", StringComparison.Ordinal))
+        {
+            try { LoadFailedToMenu.Invoke(); }
+            catch (Exception ex) { Console.WriteLine($"[join] load-failed handler threw: {ex.Message}"); }
+        }
+
+        if (GameQuit is not null && line.StartsWith("CSystem::Quit invoked", StringComparison.Ordinal))
+        {
+            try { GameQuit.Invoke(); }
+            catch (Exception ex) { Console.WriteLine($"[join] quit handler threw: {ex.Message}"); }
+        }
+
         if (GameplayStarted is not null && line.Length < 40 && line.StartsWith("Gameplay started", StringComparison.Ordinal))
         {
             try { GameplayStarted.Invoke(); }
@@ -566,12 +638,25 @@ public sealed class LogTailGameTransport : IGameTransport
 
     // -------------------------------------------------------------------------
 
+    /// <summary>WO-124: the line [start, start+len) is the event line already delivered before its terminator arrived.</summary>
+    private static bool IsEarlyDelivered(string text, int start, int len, string? early) =>
+        early is not null && text.AsSpan(start, len).TrimEnd('\r').SequenceEqual(early.AsSpan());
+
     private async Task TailLoopAsync(CancellationToken ct)
     {
         var decoder = Encoding.UTF8.GetDecoder();
         var buffer = new byte[64 * 1024];
         var chars = new char[64 * 1024];
         var partial = new StringBuilder();
+        // WO-124: CryEngine writes a log line's terminator only when the NEXT
+        // line is written (observed: the last line of a quiet kcd.log has no
+        // CR LF). In a world the log never goes quiet; at the main menu it
+        // does, and a mod event could sit unread until something else logs.
+        // An EVENT line left unchanged for 300 ms is taken as complete (the mod
+        // writes each one with a single System.LogAlways), and its terminator,
+        // when it comes, does not deliver it twice.
+        string? earlyDone = null;
+        DateTime partialSince = DateTime.MinValue;
 
         FileStream? fs = null;
         try
@@ -623,6 +708,15 @@ public sealed class LogTailGameTransport : IGameTransport
 
                 if (read == 0)
                 {
+                    if (partial.Length > 0 && earlyDone is null && (DateTime.UtcNow - partialSince).TotalMilliseconds >= 300)
+                    {
+                        string pending = partial.ToString();
+                        if (pending.StartsWith(EventTag, StringComparison.Ordinal))
+                        {
+                            earlyDone = pending;
+                            ProcessLine(pending.AsSpan());
+                        }
+                    }
                     // Caught up. Poll well inside the emit interval so a fresh
                     // line is picked up promptly without spinning a core.
                     await Task.Delay(Math.Max(2, _emitIntervalMs / 4), ct);
@@ -639,13 +733,15 @@ public sealed class LogTailGameTransport : IGameTransport
                 for (int i = 0; i < text.Length; i++)
                 {
                     if (text[i] != '\n') continue;
-                    ProcessLine(text.AsSpan(start, i - start));
+                    if (!IsEarlyDelivered(text, start, i - start, earlyDone)) ProcessLine(text.AsSpan(start, i - start));   // WO-124
+                    earlyDone = null;
                     start = i + 1;
                 }
 
                 partial.Clear();
                 if (start < text.Length)
                     partial.Append(text, start, text.Length - start);
+                partialSince = DateTime.UtcNow;
             }
         }
         catch (OperationCanceledException) { }
