@@ -438,10 +438,12 @@ public partial class GameBridge
         if (ws is not WorldSaved w) return;
         if (w.IsBranchEntry) { Wo125OnBranchEntry(w); return; }   // WO-125: the host's branch, replayed before an offer
         _ = Wo125OnHostWorldSavedAsync(w, src);                    // WO-125: a joiner in the world snapshots its Henry
-        long age = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - w.SenderUnixMs;
+        // WO-129: the host's stamp is on the host's wall clock; remove the
+        // measured offset (the first session's joiner ran 8.04 s ahead).
+        long age = Wo129.HostStampAgeMs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), w.SenderUnixMs, _clockOffsetMs, out bool skewRemoved);
         string md5 = Convert.ToHexString(w.Md5).ToLowerInvariant();
         Console.WriteLine(FormattableString.Invariant(
-            $"MP-WORLDSAVED in: host ghost {src} saved playline{w.Playline}/{w.FileName} seq={w.Seq} md5={md5[..8]} sender_ms={w.SenderUnixMs} age_ms={age} (clock skew not removed)"));
+            $"MP-WORLDSAVED in: host ghost {src} saved playline{w.Playline}/{w.FileName} seq={w.Seq} md5={md5[..8]} sender_ms={w.SenderUnixMs} age_ms={age} skew_removed={(skewRemoved ? "yes" : "no (no clock sample yet)")}"));
         await ExecLuaAsync(FormattableString.Invariant(
             $"if KCD2MP_WorldSavedIn then KCD2MP_WorldSavedIn({src}, {w.Seq}, \"playline{w.Playline}/{w.FileName}\", \"{md5}\", {age}) end"));
     }

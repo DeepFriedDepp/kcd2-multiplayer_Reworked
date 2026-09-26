@@ -107,32 +107,37 @@ public sealed class DiscordPresence : IDisposable
                 {
                     LargeImageKey = _largeImageKey,
                     LargeImageText = "Kingdom Come: Deliverance II Multiplayer",
-                    // WO-50 set this to "" believing it stopped DiscordRPC
-                    // 1.6.1's Assets.Merge NRE. WO-101 field logs (every
-                    // bundle since) show it does not: the null is on the
-                    // OTHER side. Discord's ack echoes the presence back
-                    // without a small_image field, the library merges that
-                    // reply into ours, and other._smallimagekey.StartsWith()
-                    // throws on the reply's null. The library catches it on
-                    // its own read thread and logs "Unhandled Exception while
-                    // processing event"; the presence itself was already sent
-                    // and shows, later SetPresence calls work, and the only
-                    // loss is the OnPresenceUpdate callback (our
-                    // "[discord] presence ack" line never prints). Benign.
-                    // Upstream has the null guard on master but the only
-                    // newer NuGet package (1.143.0) is deprecated/unlisted
-                    // "critical bugs", so there is nothing to upgrade to.
-                    // Kept at "" -- harmless -- rather than a second real
-                    // asset key, which would put a badge on the art.
+                    // No small image (a second real key would badge the art).
+                    // The Assets.Merge NRE this used to be blamed for is on
+                    // Discord's reply side: see ForgetCachedAssets (WO-129).
                     SmallImageKey = ""
                 },
                 Timestamps = _startTimestamp
             });
+            ForgetCachedAssets(_client.CurrentPresence);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[discord] SetPresence failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// WO-129: stops DiscordRPC 1.6.1's "Unhandled Exception while processing
+    /// event ... at DiscordRPC.Assets.Merge" (three ERR lines per update in
+    /// both agent logs of the first two-player session). SetPresence sends one
+    /// clone of our presence and keeps another as CurrentPresence; Discord's
+    /// reply is merged into that cached copy, and Assets.Merge calls
+    /// other._smallimagekey.StartsWith("mp:external") with no null check
+    /// (IL, 1.6.1.70) on a reply that carries no small image. RichPresence.Merge
+    /// only calls Assets.Merge when the cached copy HAS assets; without them it
+    /// takes the reply's. So the cached copy's assets are dropped right after
+    /// the send: what Discord shows is the sent clone, unchanged; the ack then
+    /// adopts Discord's own echo (and OnPresenceUpdate finally fires).
+    /// </summary>
+    public static void ForgetCachedAssets(RichPresence? cached)
+    {
+        try { if (cached is not null) cached.Assets = null; } catch { }
     }
 
     public void Dispose()
