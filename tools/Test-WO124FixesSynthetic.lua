@@ -1,6 +1,8 @@
 -- WO-124 Phase 6 synthetic test, against the real kdcmp.lua under MoonSharp:
 -- the two fixes from the 0.28.3 peer test (not behind mp_shared_world).
 --
+--   (h) 6b: a detach skipped for a conversation is retried once it ends
+--       (why=retry-after-dialog), once, and never while the NPC still talks
 --   (i) 6a: Riding STOP dismounts a mounted avatar even when the latched flag
 --       missed the mount, reads it back, and only then may the native writer
 --       have it; a dismount that does not take keeps the writer off and is
@@ -143,6 +145,35 @@ local function tick(name, sx, sy, sz, flags)
     KCD2MP_NpcPuppetTick("ext")
 end
 local function alive() KCD2MP_NpcNativeAlive(1, 1, 0, 0) end
+
+-- ---------------------------------------------------------------- (h) 6b
+do
+    reset(); NOW = 900
+    local e = mkEntity("h_talk", 40, 40, 1)
+    e.inDialog = true
+    tick("h_talk", 40.1, 40, 1)
+    check("h: in a conversation at puppet start -> skipped, logged",
+          (lastLog("MP-DETACH npc=h_talk") or ""):find("result=skipped-dialog", 1, true) ~= nil
+          and cmdCount("wh_ai_NPCStateResetElement h_talk") == 0, lastLog("MP-DETACH npc=h_talk"))
+    check("h: the skip is remembered", KCD2MP.npcPuppets.h_talk and KCD2MP.npcPuppets.h_talk.detachPending ~= nil)
+    for i = 1, 30 do tick("h_talk", 40.1 + i * 0.01, 40, 1) end   -- 1.5 s still talking
+    check("h: no reset while the NPC still talks", cmdCount("wh_ai_NPCStateResetElement h_talk") == 0, cmdCount("wh_ai_NPCStateResetElement h_talk"))
+    check("h: no skipped line per tick while it waits", logCount("MP-DETACH npc=h_talk stance=skipped") == 1, logCount("MP-DETACH npc=h_talk stance=skipped"))
+    e.inDialog = false
+    for i = 1, 12 do tick("h_talk", 40.5 + i * 0.01, 40, 1) end
+    check("h: the conversation over -> Stance + Unstance reset issued once",
+          cmdCount("wh_ai_NPCStateResetElement h_talk Stance") == 1 and cmdCount("wh_ai_NPCStateResetElement h_talk Unstance") == 1,
+          cmdCount("wh_ai_NPCStateResetElement h_talk"))
+    check("h: the retry is logged", lastLog("MP-DETACH npc=h_talk retry") ~= nil, lastLog("MP-DETACH npc=h_talk retry"))
+    STATE.h_talk = "Idle"
+    for i = 1, 16 do tick("h_talk", 40.7 + i * 0.01, 40, 1) end
+    check("h: the result line carries why=retry-after-dialog",
+          (lastLog("MP-DETACH npc=h_talk stance=ok") or ""):find("why=retry-after-dialog", 1, true) ~= nil, lastLog("MP-DETACH npc=h_talk stance=ok"))
+    for i = 1, 30 do tick("h_talk", 41 + i * 0.01, 40, 1) end
+    check("h: never repeated", cmdCount("wh_ai_NPCStateResetElement h_talk Stance") == 1)
+    check("h: pending cleared", KCD2MP.npcPuppets.h_talk.detachPending == nil)
+    check("h: no Lua errors", #ERRS == 0, ERRS[1])
+end
 
 -- ---------------------------------------------------------------- (i) 6a
 local function mkGhost(id, mountedAtStart)

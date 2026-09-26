@@ -3200,8 +3200,13 @@ function KCD2MP_NpcDetach(name, p, why)
         st.skipped = st.skipped + 1
         mp_log(string.format("MP-DETACH npc=%s stance=skipped unstance=skipped result=skipped-%s changed=0 why=%s",
             tostring(name), inDialog and "dialog" or "cutscene", tostring(why)))
+        -- 0.28.3 peer test: a detach skipped here was never tried again, and the
+        -- NPC fought its activity spot for its whole puppet lifetime. The puppet
+        -- tick retries it once the conversation (or cutscene) is over.
+        p.detachPending = p.detachPending or { since = os.clock(), reason = inDialog and "dialog" or "cutscene", checkedAt = os.clock() }
         return
     end
+    p.detachPending = nil
     local before = "?"
     pcall(function() if e.actor and e.actor.GetCurrentAnimationState then before = tostring(e.actor:GetCurrentAnimationState()) end end)
     local ok1, err1 = pcall(System.ExecuteCommand, "wh_ai_NPCStateResetElement " .. tostring(name) .. " Stance")
@@ -3210,6 +3215,25 @@ function KCD2MP_NpcDetach(name, p, why)
     p.detach = { at = os.clock(), before = before, why = why,
                  stance = ok1 and "ok" or ("err:" .. tostring(err1)),
                  unstance = ok2 and "ok" or ("err:" .. tostring(err2)) }
+end
+
+-- From the puppet tick: a detach that was skipped for a conversation or a
+-- cutscene is issued as soon as neither holds (checked twice a second, no
+-- log while it waits). why=retry-after-dialog|retry-after-cutscene.
+function KCD2MP_NpcDetachRetry(name, p, e)
+    local d = p.detachPending
+    if not d or not KCD2MP.npcDetach then return false end
+    local now = os.clock()
+    if (now - (d.checkedAt or 0)) < 0.5 then return false end
+    d.checkedAt = now
+    if KCD2MP.cutsceneActive then return false end
+    local inDialog = false
+    if not pcall(function() if e.human and e.human.IsInDialog then inDialog = e.human:IsInDialog() == true end end) then return false end
+    if inDialog then return false end
+    mp_log(string.format("MP-DETACH npc=%s retry: the %s is over after %.1f s -- detaching now", tostring(name), d.reason, now - d.since))
+    p.detachPending = nil
+    KCD2MP_NpcDetach(name, p, "retry-after-" .. tostring(d.reason))
+    return true
 end
 
 -- From the puppet tick: the reset's result, read 0.6 s later (the engine
@@ -7070,6 +7094,7 @@ function KCD2MP_NpcPuppetTick(arg, gen)
             local e, isReplica = KCD2MP_NpcBody(name)
             if not e then return end
             if p.detach then KCD2MP_NpcDetachCheck(name, p, e) end   -- WO-118 Phase 3: MP-DETACH result line
+            if p.detachPending then KCD2MP_NpcDetachRetry(name, p, e) end   -- skipped for a conversation: retried after it
             -- WO-104: life state (dead/KO/hp) is read from the WORLD NPC -- the
             -- canonical local copy every by-name path still targets -- never
             -- from the replica body.
