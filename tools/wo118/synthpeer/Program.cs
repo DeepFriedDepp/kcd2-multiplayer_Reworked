@@ -24,6 +24,7 @@
 //   timed <npc> <yaw> t0 x0 y0 z0 t1 x1 y1 z1 ...              (piecewise linear in time)
 //   fight <npc> <cx> <cy> <cz> <r>      (circles; flag 0x04 drawn, a 0x08 swing cue every 2.5 s)
 //   ghost <x0> <y0> <z0> <ux> <uy> <len> <speed> [ms]          (a player position stream, ping-pong)
+//   ride <t0_s> <t1_s>                                         (WO-124 6a: the ghost rides between t0 and t1)
 //   start <seconds>                                             (delay before streaming)
 using System.Buffers.Binary;
 using System.Diagnostics;
@@ -186,6 +187,7 @@ static class P
         if (a.Contains("--join-host")) return await JoinPeer.RunHostAsync(a, release);
 
         var movers = new List<Mover>(); double startDelay = 0; Line? ghost = null; int ghostMs = 30;
+        var rides = new List<(double T0, double T1)>();
         // WO-121: `row <t_s> <npc> <rowGuid>` -- the host NPC committed that
         // attack row at stream time t: an NpcAttack action event (v8).
         var rows = new List<(double T, string Npc, Guid Row)>();
@@ -215,6 +217,11 @@ static class P
                 case "ghost":
                     ghost = new Line { Name = "ghost", X0 = F(f[1]), Y0 = F(f[2]), Z0 = F(f[3]), Ux = F(f[4]), Uy = F(f[5]), Len = F(f[6]), Speed = F(f[7]), PingPong = true };
                     ghostMs = f.Length > 8 ? int.Parse(f[8]) : 30;
+                    break;
+                // WO-124 (6a): `ride <t0_s> <t1_s>` -- the ghost's Position carries the
+                // riding flag between t0 and t1 of the stream (mount, ride, dismount).
+                case "ride":
+                    rides.Add((F(f[1]), F(f[2])));
                     break;
                 case "start": startDelay = double.Parse(f[1], CultureInfo.InvariantCulture); break;
                 case "row": rows.Add((double.Parse(f[1], CultureInfo.InvariantCulture), f[2], Guid.Parse(f[3]))); break;
@@ -257,6 +264,7 @@ static class P
         var sw = Stopwatch.StartNew();
         var queue = new PriorityQueue<byte[], double>();
         double lastPing = 0, lastReport = 0, lastGhost = -1e9; long sent = 0, emitted = 0;
+        bool ghostWasRiding = false;
         double streamT0 = startDelay;
         while (sw.Elapsed.TotalSeconds < duration + startDelay)
         {
@@ -312,6 +320,10 @@ static class P
                 BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(3), gx); BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(7), gy);
                 BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(11), gz); BinaryPrimitives.WriteSingleLittleEndian(gp.AsSpan(15), gyaw);
                 gp[19] = ghostSenderMs ? Protocol.PositionFlagSenderMs : (byte)0;
+                double gt = ts - streamT0;
+                bool riding = rides.Any(r => gt >= r.T0 && gt < r.T1);
+                if (riding) gp[19] |= Protocol.PositionFlagRiding;
+                if (riding != ghostWasRiding) { Console.WriteLine(FormattableString.Invariant($"SYNTH ghost riding={(riding ? "ON" : "OFF")} at t={gt:F1}s")); ghostWasRiding = riding; }
                 // Stamped at the sample, before the injected delay: the jitter then
                 // shows as lateness against the stamp, exactly as on a real link.
                 if (ghostSenderMs)
