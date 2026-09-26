@@ -294,9 +294,14 @@ void resolve_inventory() {
     void* im = item_manager();
     const bool takeIsExport = g_vftInventory[kInvTakeItem / 8] == takeExport;
     logf("ACTIONS: inventory: player inventory %s, item manager %s, C_Inventory slot 0x10 %s the exported C_ItemHolder::TakeItem",
-         inv ? "found (RTTI C_Inventory)" : "NOT found", im ? "found (RTTI C_ItemManager)" : "NOT found",
+         inv ? "found (RTTI C_Inventory)" : "not there yet (checked again at every use)", im ? "found (RTTI C_ItemManager)" : "not there yet",
          takeIsExport ? "IS" : "is NOT (an override; the slot is what AddItem calls)");
-    g_invArmed = inv && im;
+    // WO-129: armed on the static anchors alone. Every joiner injects at the
+    // main menu, where no player inventory exists yet: the first two-player
+    // session's joiner logged "graves NOT armed" at startup and made no grave
+    // at its death. make_grave() and move_everything() fetch the player
+    // inventory and the item manager at use and refuse cleanly without them.
+    g_invArmed = true;
 }
 
 struct MoveStats { int moved = 0, quest = 0, keyring = 0, borrowed = 0, failed = 0, movable = 0; bool money = false; };
@@ -1058,6 +1063,12 @@ GraveReport make_grave(void* playerSoul, float x, float y, float z) {
 
 int graves_maintain(uint64_t* removed, int max) {
     if (!g_graveArmed) return 0;
+    // WO-129: say once when the live objects the graves need first exist.
+    static bool s_liveLogged = false;
+    if (!s_liveLogged && player_inventory() && item_manager()) {
+        s_liveLogged = true;
+        logf("ACTIONS: graves live (player inventory and item manager found)");
+    }
     if (!g_scanned) rescan();
     int64_t now = 0;
     const bool haveTime = g_clockArmed && world_ms(&now);
