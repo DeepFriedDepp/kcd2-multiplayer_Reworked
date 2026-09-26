@@ -29,18 +29,6 @@ namespace KCDMP_launcher.Models
         public string? SteamCode { get; set; }
     }
 
-    // WO-127: mirrors AgentConnectionStatus.Json (dotnet/KcdMp.Client/ConnectionTools.cs).
-    public class ConnectionStatusData
-    {
-        public string State { get; set; } = "";
-        public string Via { get; set; } = "direct";
-        public string Kind { get; set; } = "None";
-        public string Message { get; set; } = "";
-        public string Next { get; set; } = "";
-        public bool Fatal { get; set; }
-        public int Failures { get; set; }
-    }
-
     // WO-127: the host's relay, GET api/local/status (loopback only).
     public class RelayLocalStatusData
     {
@@ -111,18 +99,6 @@ namespace KCDMP_launcher.Models
     {
         public string MyReleaseVersion { get; set; } = "";
         public List<PeerVersionData> Peers { get; set; } = new();
-    }
-
-    // Mirrors GameBridge.JoinStatusJson (dotnet/KcdMp.Client/GameBridge.Wo123.cs, WO-123):
-    // the joiner's world transfer, for "Receiving the world... 62%".
-    public class JoinStatusData
-    {
-        public string State { get; set; } = "idle";
-        public double Percent { get; set; }
-        public long Bytes { get; set; }
-        public long Total { get; set; }
-        public double EtaS { get; set; }
-        public string Message { get; set; } = "";
     }
 
     public class PeerVersionData

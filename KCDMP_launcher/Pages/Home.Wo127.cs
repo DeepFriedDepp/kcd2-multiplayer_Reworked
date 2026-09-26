@@ -259,41 +259,66 @@ namespace KCDMP_launcher.Pages
             Log.Information("Agent started via {Via}", server.SteamCode is null ? "address" : "Steam");
             pendingServer = server;
             steamFallbackShown = false;
-            connStatusLine = server.SteamCode is null ? "Connecting to your host..." : "Connecting to your host through Steam...";
-            connStatusBad = false;
-
             versionPollCts?.Cancel();
             versionPollCts = new CancellationTokenSource();
             _ = PollVersionMismatchAsync(versionPollCts.Token);
-            _ = PollJoinStatusAsync(versionPollCts.Token);   // WO-123: same lifetime as the version poll
+            // WO-129: the agent's status has the agent's lifetime, not the
+            // version poll's (which a closed launch panel cancels).
+            agentPollCts?.Cancel();
+            agentPollCts = new CancellationTokenSource();
+            agentBanner.Start(server.SteamCode is not null, agentClock.Elapsed.TotalSeconds);
+            SyncAgentBanner();
+            _ = PollAgentStatusAsync(agentProcess, agentPollCts.Token);
         }
 
-        /// <summary>The agent's /connection-status, as one plain line at the bottom of the window.</summary>
-        private async Task RefreshConnectionStatusAsync()
+        // WO-129: the connection line and the join banner, from the agent's two
+        // endpoints (AgentStatusBanner has the rules). One loop per agent
+        // process; an iteration that throws is logged and the loop goes on --
+        // the first session's launchers showed a frozen "Connecting..." and
+        // never the join buttons, with nothing in either launcher log.
+        private readonly AgentStatusBanner agentBanner = new();
+        private readonly Stopwatch agentClock = Stopwatch.StartNew();
+        private CancellationTokenSource? agentPollCts;
+        private bool agentPollErrorLogged;
+
+        private void SyncAgentBanner()
         {
-            var cs = await NetService.GetConnectionStatusAsync(settings.VersionIpcPort);
-            if (cs is null) return;
-            string line; bool bad = false;
-            switch (cs.State)
+            connStatusLine = agentBanner.ConnLine;
+            connStatusBad = agentBanner.ConnBad;
+            joinStatusMessage = agentBanner.JoinMessage;
+            joinStatusState = agentBanner.JoinState;
+        }
+
+        private async Task PollAgentStatusAsync(Process? agent, CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
             {
-                case "connected": line = ""; break;
-                case "failed":
-                    line = (cs.Message + " " + cs.Next).Trim();
-                    bad = true;
+                try { await Task.Delay(1000, ct); } catch (OperationCanceledException) { break; }
+                bool alive;
+                try { alive = agent is not null && !agent.HasExited; } catch { alive = false; }
+                try
+                {
+                    var cs = alive ? await NetService.GetConnectionStatusAsync(settings.VersionIpcPort) : null;
+                    var js = alive ? await NetService.GetJoinStatusAsync(settings.VersionIpcPort) : null;
                     // Steam failed: offer the address right here, in this same launch.
-                    if (cs.Via == "steam" && !steamFallbackShown && cs.Kind != "Lost")
+                    if (cs is { State: "failed", Via: "steam" } && !steamFallbackShown && cs.Kind != "Lost")
                     {
                         steamFallbackShown = true;
                         ShowMessage("STEAM CONNECTION FAILED", cs.Message, "", addressFallback: true);
                     }
-                    break;
-                default: line = cs.Message; break;
-            }
-            if (line != connStatusLine || bad != connStatusBad)
-            {
-                connStatusLine = line;
-                connStatusBad = bad;
-                await InvokeAsync(StateHasChanged);
+                    string? change = agentBanner.Apply(cs, js, alive, agentClock.Elapsed.TotalSeconds);
+                    if (change is not null)
+                    {
+                        Log.Information(change);
+                        SyncAgentBanner();
+                        await InvokeAsync(StateHasChanged);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (!agentPollErrorLogged) { agentPollErrorLogged = true; Log.Warning(ex, "Agent status poll: an iteration failed (the loop goes on)"); }
+                }
+                if (!alive) break;
             }
         }
 

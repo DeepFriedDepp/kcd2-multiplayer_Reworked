@@ -670,33 +670,6 @@ namespace KCDMP_launcher.Pages
         }
 
         /// <summary>
-        /// WO-123. While the agent runs, shows its world-transfer line (the host
-        /// busy, receiving with a percentage, received, failed). Idle shows
-        /// nothing. Stops with the version poll's token (disconnect/exit).
-        /// </summary>
-        private async Task PollJoinStatusAsync(CancellationToken ct)
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                await Task.Delay(1000, ct).ContinueWith(_ => { });
-                if (ct.IsCancellationRequested) break;
-                await RefreshConnectionStatusAsync();   // WO-127
-                var js = await NetService.GetJoinStatusAsync(settings.VersionIpcPort);
-                string msg = js is null || js.State == "idle" ? "" : js.Message;
-                string st = js?.State ?? "idle";
-                if (msg != joinStatusMessage || st != joinStatusState)
-                {
-                    joinStatusMessage = msg;
-                    joinStatusState = st;
-                    await InvokeAsync(StateHasChanged);
-                }
-            }
-            joinStatusMessage = "";
-            joinStatusState = "idle";
-            connStatusLine = "";
-        }
-
-        /// <summary>
         /// WO-125: the first-join answer ("Bring my character" / "Start fresh"),
         /// sent to the agent's /join-choice. The agent asks the host only after it.
         /// </summary>

@@ -25,4 +25,10 @@
     <ProjectReference Include="..\KcdMp.Client\KcdMp.Client.csproj" />
   </ItemGroup>
 
+  <!-- WO-129: the launcher's agent-status rules, compiled here by link (the
+       launcher has no test project of its own; the file has no UI types). -->
+  <ItemGroup>
+    <Compile Include="..\..\KCDMP_launcher\Models\AgentStatusBanner.cs" Link="Launcher\AgentStatusBanner.cs" />
+  </ItemGroup>
+
 </Project>
