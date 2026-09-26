@@ -22,6 +22,81 @@ namespace KCDMP_launcher.Models
         public int Ping { get; set; } = -1;
 
         public bool IsOnline { get; set; } = false;
+
+        // WO-127: a host reached through Steam (its join code) instead of Ip:Port.
+        // Never stored in custom_servers.json: built on the fly by the Steam join window.
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string? SteamCode { get; set; }
+    }
+
+    // WO-127: mirrors AgentConnectionStatus.Json (dotnet/KcdMp.Client/ConnectionTools.cs).
+    public class ConnectionStatusData
+    {
+        public string State { get; set; } = "";
+        public string Via { get; set; } = "direct";
+        public string Kind { get; set; } = "None";
+        public string Message { get; set; } = "";
+        public string Next { get; set; } = "";
+        public bool Fatal { get; set; }
+        public int Failures { get; set; }
+    }
+
+    // WO-127: the host's relay, GET api/local/status (loopback only).
+    public class RelayLocalStatusData
+    {
+        public string Release { get; set; } = "";
+        public RelaySteamData Steam { get; set; } = new();
+        public int Players { get; set; }
+        public bool HostConnected { get; set; }
+        public string? RefusedRelease { get; set; }
+        public int RefusedSecondsAgo { get; set; } = -1;
+    }
+
+    public class RelaySteamData
+    {
+        public string State { get; set; } = "off";
+        public string Message { get; set; } = "";
+        public uint AppId { get; set; }
+        public string AppName { get; set; } = "";
+        public string? Code { get; set; }
+        public int Peers { get; set; }
+    }
+
+    // WO-127: KcdMpClient.exe --test-connection (ConnectionTest.Result.ToJson).
+    public class TestConnectionData
+    {
+        public bool Reachable { get; set; }
+        public string Via { get; set; } = "";
+        public int RttMs { get; set; } = -1;
+        public int ConnectMs { get; set; } = -1;
+        public string? HostRelease { get; set; }
+        public string MyRelease { get; set; } = "";
+        public bool VersionMatch { get; set; }
+        public bool? HostConnected { get; set; }
+        public int Players { get; set; } = -1;
+        public string Kind { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string Next { get; set; } = "";
+        public int SteamPingMs { get; set; } = -1;
+        public bool? Relayed { get; set; }
+        public string Detail { get; set; } = "";
+    }
+
+    // WO-127: KcdMpClient.exe --steam-friends (SteamFriendsList). Names are shown, never logged.
+    public class SteamFriendsData
+    {
+        public string State { get; set; } = "";
+        public string Message { get; set; } = "";
+        public string Next { get; set; } = "";
+        public string App { get; set; } = "";
+        public List<SteamFriendData> Friends { get; set; } = new();
+    }
+
+    public class SteamFriendData
+    {
+        public string Name { get; set; } = "";
+        public string Code { get; set; } = "";
+        public string Release { get; set; } = "";
     }
 
     public class DedicatedServerInfoData
@@ -139,5 +214,16 @@ namespace KCDMP_launcher.Models
         // Mirrors KcdMp.Client's --voice/--no-voice. Exposed as a normal
         // setting rather than something only reachable via the command line.
         public bool VoiceChatEnabled { get; set; } = true;
+
+        // WO-127: "Also allow Steam" in the Host window (the relay also listens on Steam P2P).
+        public bool HostAllowSteam { get; set; } = true;
+
+        // WO-127 (Settings, advanced): the Steam app id both players use. 2429020 is the
+        // game's own (Modding Tools); 480 and 1771300 are selectable. The maintainer decides
+        // the final default after the WO-128 test.
+        public uint SteamAppId { get; set; } = 2429020;
+
+        // WO-127: the last Steam code typed in the Join window (this machine only).
+        public string LastSteamCode { get; set; } = "";
     }
 }

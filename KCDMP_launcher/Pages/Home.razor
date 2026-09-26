@@ -35,6 +35,7 @@
                     IsAscending="@isAscending"
                     OnSort="@SortTable"
                     OnLaunch="@LaunchGame"
+                    OnTest="@TestServerConnectionAsync"
                     OnToggleFavorite="@ToggleFavorite"
                     OnAddClick="@OpenAddModal"
                     OnEditClick="@OpenEditModal"
@@ -52,6 +53,7 @@
             OnRefresh="@RefreshApp"
             OnExit="@ExitApp"
             OnHostGame="@OpenHostModal"
+            OnJoinSteam="@OpenJoinSteam"
             OnReportBug="@(() => showReportBug = true)"
 />
 
@@ -96,9 +98,42 @@
                 Addresses="@hostLanAddresses"
                 ErrorMessage="@hostErrorMessage"
                 RelayRunning="@(hostedRelayProcess != null && !hostedRelayProcess.HasExited)"
+                AllowSteam="@settings.HostAllowSteam"
+                SteamToggleLocked="@(launchStage != LaunchStage.Idle && launchStage != LaunchStage.Failed)"
+                OnAllowSteamChanged="@SetHostAllowSteamAsync"
+                SteamState="@hostSteamState"
+                SteamMessage="@hostSteamMessage"
+                SteamCode="@hostSteamCode"
+                SteamAppName="@hostSteamAppName"
+                RefusedNotice="@hostRefusedNotice"
                 OnLaunchAsHost="@LaunchAsHost"
                 OnStopRelay="@(() => { StopHostedRelay(); showHostInfo = false; })"
                 OnClose="@(() => showHostInfo = false)" />
+
+<JoinSteamModal IsVisible="@showJoinSteam"
+                Code="@steamCodeInput"
+                CodeChanged="@(c => steamCodeInput = c)"
+                AppName="@SteamAppNameOf(settings.SteamAppId)"
+                Friends="@steamFriends"
+                FriendsNote="@steamFriendsNote"
+                ResultMessage="@steamResultMessage"
+                ResultOk="@steamResultOk"
+                Busy="@steamBusy"
+                BusyText="@steamBusyText"
+                OnFindFriends="@FindSteamFriendsAsync"
+                OnTest="@TestSteamConnectionAsync"
+                OnJoin="@JoinThroughSteamAsync"
+                OnClose="@(() => showJoinSteam = false)" />
+
+<MessageModal IsVisible="@showMessage"
+              Title="@messageTitle"
+              Message="@messageText"
+              NextStep="@messageNext"
+              ShowAddressFallback="@messageAddressFallback"
+              Address="@fallbackAddress"
+              AddressChanged="@(a => fallbackAddress = a)"
+              OnUseAddress="@ConnectByAddressAfterSteamAsync"
+              OnClose="@(() => showMessage = false)" />
 
 <ExitModal  IsVisible="@showExitConfirm"
             OnConfirm="@ConfirmExit"
@@ -128,7 +163,7 @@
 @if (!string.IsNullOrEmpty(joinStatusMessage))
 {
     @* WO-123: the joiner's world transfer, from the agent's /join-status *@
-    <div class="join-status-banner" style="position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); padding: 10px 22px; background: rgba(20, 14, 8, 0.88); border: 1px solid #8a6d3b; color: #e8d9b5; font-size: 16px; z-index: 900;">
+    <div class="join-status-banner" style="position: fixed; left: 50%; bottom: @(string.IsNullOrEmpty(connStatusLine) ? "64px" : "112px"); transform: translateX(-50%); padding: 10px 22px; background: rgba(20, 14, 8, 0.88); border: 1px solid #8a6d3b; color: #e8d9b5; font-size: 16px; z-index: 900;">
         @joinStatusMessage
         @if (joinStatusState == "choose")
         {
@@ -138,6 +173,14 @@
                 <button class="btn btn-secondary" @onclick='() => SendJoinChoiceAsync("fresh")'>Start fresh</button>
             </div>
         }
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(connStatusLine))
+{
+    @* WO-127: the agent's connection in plain words (never raw exception text) *@
+    <div class="conn-status-banner" style="position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%); padding: 8px 20px; background: rgba(20, 14, 8, 0.88); border: 1px solid @(connStatusBad ? "#a0522d" : "#8a6d3b"); color: #e8d9b5; font-size: 15px; z-index: 899; max-width: 80%; text-align: center;">
+        @connStatusLine
     </div>
 }
 

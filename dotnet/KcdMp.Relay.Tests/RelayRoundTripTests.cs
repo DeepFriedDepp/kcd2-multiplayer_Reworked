@@ -40,6 +40,9 @@ public sealed class RelayFixture : IAsyncLifetime
     public int TcpPort { get; private set; }
     private WebApplication? _app;
 
+    /// <summary>WO-127: the relay's services (ClientSessionRunner, ClientHandler) for transport-level tests.</summary>
+    public IServiceProvider Services => _app!.Services;
+
     public async Task InitializeAsync()
     {
         TcpPort = FreePort();

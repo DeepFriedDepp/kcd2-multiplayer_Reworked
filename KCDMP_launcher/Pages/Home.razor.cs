@@ -492,9 +492,12 @@ namespace KCDMP_launcher.Pages
                 return;
             }
 
-            if (!await IsServerReachableAsync(server))
+            // WO-127: a Steam host has no address to probe (the agent dials the code).
+            // An unreachable address says why, in plain words, from the same test
+            // the TEST CONNECTION button runs.
+            if (server.SteamCode is null && !await IsServerReachableAsync(server))
             {
-                UiService.ShowError("Server is unreachable. Cannot launch.");
+                await ShowConnectionTestAsync(server, launching: true);
                 return;
             }
 
@@ -556,8 +559,10 @@ namespace KCDMP_launcher.Pages
             }
             catch (Exception ex)
             {
+                // WO-127: plain words on screen, the exception in the log.
                 errorMessage = ex.Message;
-                UiService.ShowError($"Critical Launch Error: {ex.Message}");
+                Log.Error(ex, "Launch failed");
+                UiService.ShowError("The game couldn't be started. Check the game path in Settings, then try again.");
                 ResetLaunchState();
             }
         }
@@ -616,7 +621,8 @@ namespace KCDMP_launcher.Pages
                         await injector.WaitForExitAsync();
                         if (injector.ExitCode != 0)
                         {
-                            UiService.ShowError($"Injection failed (exit code {injector.ExitCode}).");
+                            Log.Warning("Injector exited with code {Code}", injector.ExitCode);
+                            UiService.ShowError($"The multiplayer plugin couldn't be loaded into the game (code {injector.ExitCode}). Close the game and try again.");
                             ResetLaunchState();
                             return;
                         }
@@ -648,35 +654,17 @@ namespace KCDMP_launcher.Pages
                 // this point is a reliable "this session is hosting" signal;
                 // ServerHost/Ip alone is not, since a LAN host address looks
                 // identical to a joiner pointed at the same address.
-                bool isHosting = hostedRelayProcess != null && !hostedRelayProcess.HasExited;
-                var agentArgs = $"--host {pendingServer.Ip} --port {pendingServer.Port}" +
-                    (settings.VoiceChatEnabled ? "" : " --no-voice") +
-                    (isHosting ? " --hosting" : "");
-
-                var agentStartInfo = new ProcessStartInfo
-                {
-                    FileName = agentPath,
-                    Arguments = agentArgs,
-                    UseShellExecute = false,
-                    WorkingDirectory = Path.GetDirectoryName(agentPath)
-                };
-
-                StopExistingAgent();
-                agentProcess = Process.Start(agentStartInfo);
+                StartAgent(pendingServer);   // WO-127: also used by the Steam -> address fallback
 
                 launchStage = LaunchStage.Connected;
-                launchStatusMessage = "Connected. You can close this once you're playing.";
+                launchStatusMessage = "The game is ready. The line at the bottom of this window shows the connection; you can close this.";
                 StateHasChanged();
-
-                versionPollCts?.Cancel();
-                versionPollCts = new CancellationTokenSource();
-                _ = PollVersionMismatchAsync(versionPollCts.Token);
-                _ = PollJoinStatusAsync(versionPollCts.Token);   // WO-123: same lifetime as the version poll
             }
             catch (Exception ex)
             {
                 errorMessage = ex.Message;
-                UiService.ShowError($"Critical Connect Error: {ex.Message}");
+                Log.Error(ex, "Connect failed");
+                UiService.ShowError("The multiplayer part couldn't be started. Try again; if it keeps failing, send the logs with Report a bug.");
                 ResetLaunchState();
             }
         }
@@ -692,6 +680,7 @@ namespace KCDMP_launcher.Pages
             {
                 await Task.Delay(1000, ct).ContinueWith(_ => { });
                 if (ct.IsCancellationRequested) break;
+                await RefreshConnectionStatusAsync();   // WO-127
                 var js = await NetService.GetJoinStatusAsync(settings.VersionIpcPort);
                 string msg = js is null || js.State == "idle" ? "" : js.Message;
                 string st = js?.State ?? "idle";
@@ -704,6 +693,7 @@ namespace KCDMP_launcher.Pages
             }
             joinStatusMessage = "";
             joinStatusState = "idle";
+            connStatusLine = "";
         }
 
         /// <summary>
@@ -923,7 +913,7 @@ namespace KCDMP_launcher.Pages
                         var relayStartInfo = new ProcessStartInfo
                         {
                             FileName = relayPath,
-                            Arguments = $"--port {settings.HostPort}",
+                            Arguments = RelayArguments(),   // WO-127: + Steam when "Also allow Steam" is on
                             UseShellExecute = false,
                             CreateNoWindow = true,
                             WorkingDirectory = Path.GetDirectoryName(relayPath)
@@ -933,19 +923,22 @@ namespace KCDMP_launcher.Pages
                         await Task.Delay(500);
                         if (hostedRelayProcess == null || hostedRelayProcess.HasExited)
                         {
-                            hostErrorMessage = "The relay process exited immediately -- check app.log.";
+                            Log.Warning("The relay exited right after starting (code {Code})", hostedRelayProcess?.ExitCode);
+                            hostErrorMessage = $"Hosting stopped right after it started. Another copy may already be running on port {settings.HostPort}: close it (or restart the computer) and try again.";
                             hostedRelayProcess = null;
                         }
                     }
                     catch (Exception ex)
                     {
-                        hostErrorMessage = $"Could not start the relay: {ex.Message}";
+                        Log.Error(ex, "Could not start the relay");
+                        hostErrorMessage = "Hosting couldn't start on this computer. Check the relay path in Settings, then try again.";
                         hostedRelayProcess = null;
                     }
                 }
             }
 
             showHostInfo = true;
+            StartHostStatusPoll();   // WO-127: Steam state, the code, refused joiner versions
             StateHasChanged();
         }
 
@@ -1277,6 +1270,7 @@ namespace KCDMP_launcher.Pages
         private void ConfirmExit()
         {
             versionPollCts?.Cancel();
+            hostPollCts?.Cancel();
             StopHostedRelay();
             StopHostedMasterServer();
             Environment.Exit(0);

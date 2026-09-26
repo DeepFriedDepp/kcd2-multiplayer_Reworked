@@ -44,7 +44,7 @@ public partial class GameBridge
     private volatile bool _ffSession = FriendlyFireDefault;
     private volatile bool _ffFromHost;
 
-    private NetworkStream? _wo121Stream;
+    private Stream? _wo121Stream;
     private CancellationToken _wo121Ct;
     private readonly ConcurrentDictionary<byte, uint> _ghostLastSenderMs = new();
     private readonly ConcurrentDictionary<byte, DateTime> _peerV8AttackAt = new();
@@ -68,7 +68,7 @@ public partial class GameBridge
     private long _w121EvOut, _w121EvIn, _w121EvStale, _w121EvNoRow, _w121EvNoBody, _w121Swings, _w121Jumps;
     private long _w121FfOut, _w121FfOutDropped, _w121FfIn, _w121FfInDropped, _w121AttribIn, _w121AttribOut, _w121NpcRowsOut, _w121NpcRowsIn;
 
-    private void Wo121OnConnect(NetworkStream stream, CancellationToken ct)
+    private void Wo121OnConnect(Stream stream, CancellationToken ct)
     {
         _wo121Stream = stream;
         _wo121Ct = ct;
@@ -152,7 +152,7 @@ public partial class GameBridge
     /// <summary>The host tells every peer the session's friendly-fire value (on change, on a new peer, every 30 s).</summary>
     private async Task SendSessionSettingAsync(string why)
     {
-        if (!_isDamageAuthority || _wo121Stream is not NetworkStream s) return;
+        if (!_isDamageAuthority || _wo121Stream is not Stream s) return;
         try
         {
             var pkt = _actionOut.Build(ActionKind.SessionSetting, ActionPhase.Commit,
@@ -243,7 +243,7 @@ public partial class GameBridge
     /// <summary>The DLL committed an action on this machine (0x96).</summary>
     private async Task OnLocalActionAsync(LocalActionFrame f)
     {
-        if (_wo121Stream is not NetworkStream s) return;
+        if (_wo121Stream is not Stream s) return;
         uint ms = SenderMsNow();
         byte[]? pkt = null;
         string what;
@@ -293,7 +293,7 @@ public partial class GameBridge
             if (kv.Value == victimEid && byte.TryParse(kv.Key, out byte gid)) { victim = gid; break; }
         string line = FormattableString.Invariant(
             $"MP-FF dir=out victim_eid=0x{victimEid:X} ghost={(victim is byte v0 ? v0.ToString() : "?")} hp={health:F2} st={stamina:F2} unarmed={((flags & PlayerHitV8.FlagUnarmed) != 0 ? 1 : 0)} missile={((flags & PlayerHitV8.FlagMissile) != 0 ? 1 : 0)} session={On(_ffSession)}");
-        if (!_ffSession || victim is not byte vid || _wo121Stream is not NetworkStream s || (health <= 0 && stamina <= 0))
+        if (!_ffSession || victim is not byte vid || _wo121Stream is not Stream s || (health <= 0 && stamina <= 0))
         {
             _w121FfOutDropped++;
             Console.WriteLine(line + $" result=dropped reason={(!_ffSession ? "friendly-fire-off" : victim is null ? "unknown-avatar" : _wo121Stream is null ? "no-relay" : "no-damage")}");

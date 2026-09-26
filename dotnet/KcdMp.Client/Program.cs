@@ -15,6 +15,24 @@ if (args.Contains("--save-tool"))
 var config = ClientConfig.Load();
 config.ApplyCommandLine(args);
 
+// WO-127: the launcher's helpers. Run before the agent.log tee (a helper run
+// never rotates the agent's log) and print exactly one machine-read line.
+// --test-connection: reach the host (direct or --steam CODE), report
+// reachable / version / round trip, never start a session.
+// --steam-friends: Steam friends hosting under --steam-app, for the launcher's
+// picker. Persona names and codes go to stdout only, for the launcher's screen.
+if (args.Contains("--test-connection"))
+{
+    var r = await ConnectionTest.RunAsync(config, CancellationToken.None);
+    Console.WriteLine("TEST-CONNECTION " + r.ToJson());
+    return r.Reachable ? 0 : 1;
+}
+if (args.Contains("--steam-friends"))
+{
+    Console.WriteLine("STEAM-FRIENDS " + await SteamFriendsList.RunAsync(config));
+    return 0;
+}
+
 // WO-39 (item K): tee everything the agent prints into agent.log next to the
 // executable. WO-38's real testers sent logs containing ZERO game telemetry
 // because the agent's console -- where every [combat]/[npcsync]/[timeskip]/
@@ -234,7 +252,9 @@ static string? GetSteamPersonaName()
 }
 
 Console.WriteLine("=== KCD2 Multiplayer Client Agent ===");
-Console.WriteLine($"Server   : {config.ServerHost}:{config.ServerPort}");
+Console.WriteLine(string.IsNullOrWhiteSpace(config.SteamCode)
+    ? $"Server   : {config.ServerHost}:{config.ServerPort}"
+    : $"Server   : through Steam (app {config.SteamAppId}); the code is not logged");
 Console.WriteLine($"Name     : {config.PlayerName}");
 Console.WriteLine($"Game     : {config.GameApiBase}");
 Console.WriteLine($"Voice    : {(config.VoiceChatEnabled ? "on" : "off")}");

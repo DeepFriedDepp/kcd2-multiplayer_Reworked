@@ -19,7 +19,8 @@ namespace KcdMp.Client;
 ///
 /// GET /version-status -> { "myReleaseVersion": "0.9.5", "peers": [{"ghostId":1,"releaseVersion":"0.9.4"}] }
 /// </summary>
-public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port, Func<string>? getJoinStatus = null, Action<string>? onJoinChoice = null)
+public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers, int port, Func<string>? getJoinStatus = null, Action<string>? onJoinChoice = null,
+    Func<string>? getConnectionStatus = null)
 {
     private readonly HttpListener _listener = new();
     private CancellationTokenSource? _cts;
@@ -131,6 +132,18 @@ public sealed class VersionIpcServer(Func<KeyValuePair<byte, string>[]> getPeers
             if (req.HttpMethod == "GET" && req.Url?.AbsolutePath == "/join-status" && getJoinStatus is not null)
             {
                 var bytes = Encoding.UTF8.GetBytes(getJoinStatus());
+                res.StatusCode = 200;
+                res.ContentType = "application/json";
+                res.ContentLength64 = bytes.Length;
+                await res.OutputStream.WriteAsync(bytes);
+                res.Close();
+                return;
+            }
+
+            // WO-127: the connection in plain words (state, one sentence, one next step; never raw exception text).
+            if (req.HttpMethod == "GET" && req.Url?.AbsolutePath == "/connection-status" && getConnectionStatus is not null)
+            {
+                var bytes = Encoding.UTF8.GetBytes(getConnectionStatus());
                 res.StatusCode = 200;
                 res.ContentType = "application/json";
                 res.ContentLength64 = bytes.Length;

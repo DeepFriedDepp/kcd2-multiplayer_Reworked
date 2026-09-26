@@ -400,7 +400,7 @@ public partial class GameBridge(ClientConfig config)
     // non-owner asks for one over the action channel. Rate-limited so a
     // sleep that both machines notice costs one burst, not two.
     private DateTime _lastResyncBurstUtc = DateTime.MinValue;
-    private volatile NetworkStream? _resyncStream;
+    private volatile Stream? _resyncStream;
     private static readonly TimeSpan ResyncBurstMinGap = TimeSpan.FromSeconds(5);
     private long _resyncOut, _resyncBursts, _resyncEmitted, _resyncInPackets, _resyncDeadApplied, _resyncSkipped, _resyncInRequests, _resyncInRefused;
     private static readonly TimeSpan OwnedNpcRecent = TimeSpan.FromSeconds(10);
@@ -1098,12 +1098,30 @@ public partial class GameBridge(ClientConfig config)
         // Discord IPC pipe.
         _discordPresence = new DiscordPresence(config);
 
+        // WO-127: the launcher's IPC (version, join status, and now the plain
+        // connection status) lives as long as the agent, not one connection, so
+        // a failure BEFORE the first connection can be shown too.
+        _versionIpcServer = new VersionIpcServer(() => _ghostReleaseVersions.ToArray(), config.VersionIpcPort, JoinStatusJson, Wo125OnLauncherChoice,
+            AgentConnectionStatus.Json);
+        _versionIpcServer.Start();
+        AgentConnectionStatus.Set("waiting-for-game", string.IsNullOrWhiteSpace(config.SteamCode) ? "direct" : "steam", "Waiting for the game...");
+
         try
         {
             await RunLoopAsync(http, ct);
+            // WO-127: a fatal refusal (version, full, Steam code/app) ends the loop;
+            // stay up, quiet, so the launcher can still read why. It kills this
+            // agent before starting the next one.
+            if (!ct.IsCancellationRequested)
+            {
+                Console.WriteLine("MP-CONN not retrying (see the reason above); waiting for the launcher");
+                await Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => { });
+            }
         }
         finally
         {
+            _versionIpcServer?.Stop();
+            _versionIpcServer = null;
             _discordPresence?.Dispose();
             if (!ReferenceEquals(_transport, http))
                 await _transport.DisposeAsync();
@@ -1230,10 +1248,21 @@ public partial class GameBridge(ClientConfig config)
                 Console.WriteLine($"[!] {ex.Message}");
                 break;
             }
+            catch (FatalConnectException)
+            {
+                // WO-127: a bad Steam code, a different Steam app id, a Steam that
+                // refuses this app. The plain reason is already published.
+                break;
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[!] Unexpected error: {ex.Message}");
             }
+
+            // WO-127: a session that was up and ended is "lost" for the launcher
+            // until the reconnect below succeeds.
+            if (AgentConnectionStatus.State == "connected")
+                AgentConnectionStatus.Fail(string.IsNullOrWhiteSpace(config.SteamCode) ? "direct" : "steam", ConnectionTrouble.Lost, "the relay connection ended", fatal: false);
 
             if (ct.IsCancellationRequested) break;
             Console.WriteLine("Reconnecting in 3 s...");
@@ -1302,78 +1331,91 @@ public partial class GameBridge(ClientConfig config)
 
     private async Task ConnectAndRunAsync(CancellationToken appCt = default)
     {
-        using var tcp = new TcpClient();
-        tcp.NoDelay = true;   // WO-110 R6: no Nagle on the 40-byte NPC frames (the relay sets it on its accepted sockets too)
-
-        Console.WriteLine($"Connecting to relay server {config.ServerHost}:{config.ServerPort}...");
+        // WO-127: direct TCP exactly as before, or Steam P2P into the same
+        // frames (RelayConnector). Every failure becomes one plain sentence for
+        // the launcher (AgentConnectionStatus); the detail goes to this log.
+        bool viaSteam = !string.IsNullOrWhiteSpace(config.SteamCode);
+        string via = viaSteam ? "steam" : "direct";
+        AgentConnectionStatus.Set("connecting", via, viaSteam ? "Connecting to your host through Steam..." : "Connecting to your host...");
+        RelayLink link;
         try
         {
-            await tcp.ConnectAsync(config.ServerHost, config.ServerPort);
+            if (viaSteam)
+            {
+                Console.WriteLine($"Connecting to the relay through Steam (app {config.SteamAppId})...");
+                link = await RelayConnector.ConnectSteamAsync(config.SteamCode!, config.SteamAppId, config.SteamGameExe,
+                    PlainConnectionError.SteamRouteTimeout, appCt, Console.WriteLine);
+            }
+            else
+            {
+                Console.WriteLine($"Connecting to relay server {config.ServerHost}:{config.ServerPort}...");
+                link = await RelayConnector.ConnectTcpAsync(config.ServerHost, config.ServerPort, TimeSpan.FromSeconds(15), appCt);
+            }
         }
-        catch (Exception ex)
+        catch (RelayConnectException ex)
         {
-            Console.WriteLine($"[!] Cannot connect: {ex.Message}");
+            Console.WriteLine($"[!] Cannot connect: {ex.Kind}");
+            // Retrying cannot fix a bad code, a different app id or a Steam that
+            // refuses this app; everything else (Steam not up yet, no route, the
+            // host not started) is worth the usual 3 s retry.
+            bool fatal = ex.Kind is ConnectionTrouble.BadCode or ConnectionTrouble.OwnCode or ConnectionTrouble.AppIdMismatch or ConnectionTrouble.SteamUnavailable;
+            AgentConnectionStatus.Fail(via, ex.Kind, ex.Detail, fatal, ex.Theirs, ex.Mine);
+            if (fatal) throw new FatalConnectException();
             return;
         }
 
-        var stream = tcp.GetStream();
+        using var linkOwner = link;
+        var stream = link.Stream;
 
-        // --- Handshake:  [version:1][nameLen:1][name:UTF-8] ---
-        var nameBytes = Encoding.UTF8.GetBytes(config.PlayerName ?? Environment.MachineName);
-        if (nameBytes.Length > 255)
-        {
-            // Trim to 255 bytes without splitting a multi-byte UTF-8 sequence:
-            // back off while the first cut byte is a continuation byte (10xxxxxx).
-            int len = 255;
-            while (len > 0 && (nameBytes[len] & 0xC0) == 0x80)
-                len--;
-            nameBytes = nameBytes[..len];
-        }
-
-        // WO-19: trailing release-version field, appended after the name.
-        // Optional and unlengthed on purpose -- see Protocol.cs's release
-        // version layer doc -- so an old relay that only reads
-        // [version][nameLen][name] is unaffected by these extra bytes.
-        var releaseVersionBytes = Encoding.UTF8.GetBytes(ReleaseVersionInfo.Current);
-        int handshakePayloadLen = 2 + nameBytes.Length + releaseVersionBytes.Length;
-        var handshake = new byte[3 + handshakePayloadLen];
-        handshake[0] = Protocol.Handshake;
-        BinaryPrimitives.WriteUInt16LittleEndian(handshake.AsSpan(1), (ushort)handshakePayloadLen);
-        handshake[3] = Protocol.Version;
-        handshake[4] = (byte)nameBytes.Length;
-        nameBytes.CopyTo(handshake, 5);
-        releaseVersionBytes.CopyTo(handshake, 5 + nameBytes.Length);
-        await stream.WriteAsync(handshake);
+        // --- Handshake:  [version:1][nameLen:1][name:UTF-8][release] ---
+        // WO-19: the trailing release-version field is optional and unlengthed
+        // on purpose -- see Protocol.cs's release version layer doc -- so an old
+        // relay that only reads [version][nameLen][name] is unaffected.
+        await stream.WriteAsync(RelayConnector.BuildHandshake(config.PlayerName ?? Environment.MachineName, ReleaseVersionInfo.Current), appCt);
 
         // --- Ack (S→C 0xFF [id:1]) or a rejection: 0x09 [serverVersion:1],
         // 0x36 [maxPlayers:1], or 0x3D [relayRelease:UTF-8] (WO-110 R9). The
         // first three are 4 bytes; 0x3D is variable, so the header is read
         // first and the payload sized from it.
-        var replyHeader = new byte[3];
-        await ReadExactAsync(stream, replyHeader);
-        int replyLen = BinaryPrimitives.ReadUInt16LittleEndian(replyHeader.AsSpan(1));
-        var replyBody = new byte[replyLen];
-        if (replyLen > 0) await ReadExactAsync(stream, replyBody);
-
-        if (replyHeader[0] == Protocol.VersionMismatch && replyLen >= 1)
-            throw new ProtocolVersionMismatchException(replyBody[0]);
-
-        if (replyHeader[0] == Protocol.ServerFull && replyLen >= 1)
-            throw new ServerFullException(replyBody[0]);
-
-        if (replyHeader[0] == Protocol.ReleaseVersionMismatch)
+        byte replyType; byte[] replyBody;
+        try { (replyType, replyBody) = await RelayConnector.ReadFrameAsync(stream, appCt); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            string relayRelease = Encoding.UTF8.GetString(replyBody);
+            AgentConnectionStatus.Fail(via, ConnectionTrouble.Lost, $"handshake read failed: {ex.GetType().Name}: {ex.Message}", fatal: false);
+            return;
+        }
+        int replyLen = replyBody.Length;
+
+        if (replyType == Protocol.VersionMismatch && replyLen >= 1)
+        {
+            AgentConnectionStatus.Fail(via, ConnectionTrouble.ProtocolMismatch, $"relay protocol v{replyBody[0]}, agent v{Protocol.Version}", fatal: true,
+                $"protocol v{replyBody[0]}", $"protocol v{Protocol.Version}");
+            throw new ProtocolVersionMismatchException(replyBody[0]);
+        }
+
+        if (replyType == Protocol.ServerFull && replyLen >= 1)
+        {
+            AgentConnectionStatus.Fail(via, ConnectionTrouble.ServerFull, $"relay full (max {replyBody[0]})", fatal: true);
+            throw new ServerFullException(replyBody[0]);
+        }
+
+        if (replyType == Protocol.ReleaseVersionMismatch)
+        {
+            string relayRelease = ConnectionTestReply.Decode(replyBody).Release;
+            AgentConnectionStatus.Fail(via, ConnectionTrouble.VersionMismatch, $"relay release {relayRelease}, agent {ReleaseVersionInfo.Current}", fatal: true,
+                relayRelease, ReleaseVersionInfo.Current);
             // Into the game too: the player sees why nothing connects.
-            try { await ExecLuaAsync($"if KCD2MP_ShowNativeToast then KCD2MP_ShowNativeToast(\"KCD2-MP: relay runs {EscapeLua(relayRelease)}, you run {EscapeLua(ReleaseVersionInfo.Current)} -- both machines must install the same release\") end"); await _transport.FlushAsync(appCt); } catch { }
+            try { await ExecLuaAsync($"if KCD2MP_ShowNativeToast then KCD2MP_ShowNativeToast(\"KCD2-MP: your host runs {EscapeLua(relayRelease)}, you run {EscapeLua(ReleaseVersionInfo.Current)} -- both players need the same version\") end"); await _transport.FlushAsync(appCt); } catch { }
             throw new ReleaseVersionMismatchException(relayRelease);
         }
 
-        if (replyHeader[0] != Protocol.Ack || replyLen < 1)
+        if (replyType != Protocol.Ack || replyLen < 1)
         {
-            Console.WriteLine($"[!] Expected Ack, got packet type 0x{replyHeader[0]:X2}. Dropping connection.");
+            Console.WriteLine($"[!] Expected Ack, got packet type 0x{replyType:X2}. Dropping connection.");
+            AgentConnectionStatus.Fail(via, ConnectionTrouble.Unknown, $"expected Ack, got 0x{replyType:X2}", fatal: false);
             return;
         }
+        AgentConnectionStatus.Set("connected", via, viaSteam ? "Connected to your host through Steam." : "Connected to your host.");
 
         byte myId = replyBody[0];
         _myGhostId = myId;
@@ -1467,8 +1509,7 @@ public partial class GameBridge(ClientConfig config)
         // whatever release versions have arrived for connected peers so far.
         Wo123SweepAtStart();   // WO-123: staging files an earlier agent left behind
         Wo125AtStart();        // WO-125 (replaces WO-124's start sweep): transient files and ledgered saves out of the playlines, the 90-day rule
-        _versionIpcServer = new VersionIpcServer(() => _ghostReleaseVersions.ToArray(), config.VersionIpcPort, JoinStatusJson, Wo125OnLauncherChoice);
-        _versionIpcServer.Start();
+        // (WO-127: the version IPC server now starts once in RunAsync.)
 
         // Kick off the Lua interp tick immediately so KCD2MP.isRiding gets updated
         // even before the first ghost is spawned (e.g. player already on horse at connect time).
@@ -1787,7 +1828,7 @@ public partial class GameBridge(ClientConfig config)
             long lastRespawnHeartbeat = nowTimestamp;   // WO-113
             long lastNativeHeartbeat = nowTimestamp;    // WO-118
 
-            while (tcp.Connected)
+            while (link.IsOpen)   // WO-127: TcpClient.Connected, or the Steam connection's state
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var state = await _transport.ReadPlayerStateAsync(cts.Token);
@@ -2193,8 +2234,6 @@ public partial class GameBridge(ClientConfig config)
             Dice = null;
             _diceIpcServer?.Stop();
             _diceIpcServer = null;
-            _versionIpcServer?.Stop();
-            _versionIpcServer = null;
             _ghostNames.Clear();
             _ghostReleaseVersions.Clear();
             _discordPresence?.ResetForReconnect();
@@ -2261,7 +2300,7 @@ public partial class GameBridge(ClientConfig config)
             $"if KCD2MP_SetClockOffset then KCD2MP_SetClockOffset({off:F1},{rtt:F1},{n}) end"));
     }
 
-    private async Task PingLoopAsync(NetworkStream stream, CancellationToken ct)
+    private async Task PingLoopAsync(Stream stream, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -2314,7 +2353,7 @@ public partial class GameBridge(ClientConfig config)
     /// re-equips by hand instead of via a preset leaves BaseClothingPreset all
     /// zero, so only the per-item read is trustworthy.
     /// </summary>
-    private async Task AppearanceLoopAsync(NetworkStream stream, CancellationToken ct)
+    private async Task AppearanceLoopAsync(Stream stream, CancellationToken ct)
     {
         long lastSentTimestamp = 0; // zero forces the first successful poll to send
         var heartbeatInterval = TimeSpan.FromSeconds(Protocol.AppearanceHeartbeatSeconds);
@@ -2760,7 +2799,7 @@ public partial class GameBridge(ClientConfig config)
     /// transport's thread (auto) and the log-tail event thread (manual, via
     /// <see cref="OnGameEvent"/>) can both fire in close succession.
     /// </summary>
-    private async Task SendPauseIfChangedAsync(NetworkStream stream, CancellationToken ct)
+    private async Task SendPauseIfChangedAsync(Stream stream, CancellationToken ct)
     {
         await _pauseSendLock.WaitAsync(ct);
         try
@@ -2785,7 +2824,7 @@ public partial class GameBridge(ClientConfig config)
     // -------------------------------------------------------------------------
 
     /// <summary>Puts one TimeSkipUp (0x28) on the wire.</summary>
-    private async Task SendTimeSkipAsync(NetworkStream stream, byte phase, byte kind, uint worldTime, CancellationToken ct)
+    private async Task SendTimeSkipAsync(Stream stream, byte phase, byte kind, uint worldTime, CancellationToken ct)
     {
         try
         {
@@ -3044,7 +3083,7 @@ public partial class GameBridge(ClientConfig config)
     /// Puts one StoryBeatUp (0x37) on the wire: this client just crossed a
     /// quest objective. Pure telemetry -- the receiver only ever reports it.
     /// </summary>
-    private async Task SendStoryBeatAsync(NetworkStream stream, byte kind, string text, CancellationToken ct)
+    private async Task SendStoryBeatAsync(Stream stream, byte kind, string text, CancellationToken ct)
     {
         var body = StoryBeat.BuildUpPayload(kind, text);
         var packet = new byte[3 + body.Length];
@@ -3396,7 +3435,7 @@ public partial class GameBridge(ClientConfig config)
         SendQuestDivergence(ghostId, peerMarker);
     }
 
-    private async Task SendHorseInfoAsync(NetworkStream stream, string horseName, CancellationToken ct)
+    private async Task SendHorseInfoAsync(Stream stream, string horseName, CancellationToken ct)
     {
         try
         {
@@ -3417,7 +3456,7 @@ public partial class GameBridge(ClientConfig config)
     /// (draw/sheathe/swing/block) from the mod's combat event line. The mod
     /// already rate-limits swings; this just puts the byte on the wire.
     /// </summary>
-    private async Task SendCombatEventAsync(NetworkStream stream, byte evt, ushort sid, CancellationToken ct)
+    private async Task SendCombatEventAsync(Stream stream, byte evt, ushort sid, CancellationToken ct)
     {
         try
         {
@@ -3558,7 +3597,7 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Puts one ItemDropUp (0x32) on the wire (first send and heartbeat both).</summary>
-    private async Task SendItemDropAsync(NetworkStream stream, byte[] payload, CancellationToken ct)
+    private async Task SendItemDropAsync(Stream stream, byte[] payload, CancellationToken ct)
     {
         try
         {
@@ -3572,7 +3611,7 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Puts one ItemClaimUp (0x34) on the wire.</summary>
-    private async Task SendItemClaimAsync(NetworkStream stream, uint dropId, CancellationToken ct)
+    private async Task SendItemClaimAsync(Stream stream, uint dropId, CancellationToken ct)
     {
         try
         {
@@ -3604,7 +3643,7 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Puts one PlayerRespawnedUp (0x3E) on the wire.</summary>
-    private async Task SendPlayerRespawnedAsync(NetworkStream stream, float x, float y, float z, byte reason, CancellationToken ct)
+    private async Task SendPlayerRespawnedAsync(Stream stream, float x, float y, float z, byte reason, CancellationToken ct)
     {
         try
         {
@@ -3623,7 +3662,7 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Puts one GraveAddUp (0x40) or GraveRemoveUp (0x42) on the wire.</summary>
-    private async Task SendGraveAsync(NetworkStream stream, bool add, ulong id, float x, float y, float z, CancellationToken ct)
+    private async Task SendGraveAsync(Stream stream, bool add, ulong id, float x, float y, float z, CancellationToken ct)
     {
         try
         {
@@ -3649,7 +3688,7 @@ public partial class GameBridge(ClientConfig config)
     /// SetSession(on) to the DLL, and optionally re-announce every grave the
     /// DLL says we still own. Both idempotent; cheap enough for a 5 s cadence.
     /// </summary>
-    private async Task RespawnHeartbeatAsync(NetworkStream stream, bool announceGraves, CancellationToken ct)
+    private async Task RespawnHeartbeatAsync(Stream stream, bool announceGraves, CancellationToken ct)
     {
         try
         {
@@ -3679,7 +3718,7 @@ public partial class GameBridge(ClientConfig config)
     // -------------------------------------------------------------------------
 
     /// <summary>Puts one WeatherUp (0x2E) on the wire.</summary>
-    private async Task SendWeatherAsync(NetworkStream stream, string profile, ushort blendSec, CancellationToken ct)
+    private async Task SendWeatherAsync(Stream stream, string profile, ushort blendSec, CancellationToken ct)
     {
         try
         {
@@ -3920,7 +3959,7 @@ public partial class GameBridge(ClientConfig config)
     /// player's last real health change would otherwise render no health at
     /// all until the next time they got hit.
     /// </summary>
-    private async Task SendPlayerStateIfChangedAsync(NetworkStream stream, PlayerState st, CancellationToken ct)
+    private async Task SendPlayerStateIfChangedAsync(Stream stream, PlayerState st, CancellationToken ct)
     {
         if (st.Health is not { } health) return;
         float stamina = st.Stamina ?? Protocol.UnknownStat;
@@ -3981,7 +4020,7 @@ public partial class GameBridge(ClientConfig config)
     /// this reads IsDead rather than tracking a one-way "has died" bit: a player
     /// reloads and lives again in the same session, repeatedly.
     /// </summary>
-    private async Task SendDeathIfNewAsync(NetworkStream stream, PlayerState st, CancellationToken ct)
+    private async Task SendDeathIfNewAsync(Stream stream, PlayerState st, CancellationToken ct)
     {
         if (st.IsDead is not { } dead) return;   // v1 line: no opinion either way
 
@@ -4043,7 +4082,7 @@ public partial class GameBridge(ClientConfig config)
     /// send those -- sending is how an entity is claimed -- so the authority
     /// gate is skipped and the relay's per-entity table arbitrates.
     /// </summary>
-    private async Task SendNpcStateAsync(NetworkStream stream, string npcName,
+    private async Task SendNpcStateAsync(Stream stream, string npcName,
                                          float x, float y, float z, float rotZ,
                                          float health, byte flags, CancellationToken ct,
                                          bool asClaim = false)
@@ -4077,7 +4116,7 @@ public partial class GameBridge(ClientConfig config)
         catch (Exception ex) { Console.WriteLine($"[npcsync] send failed: {ex.Message}"); }
     }
 
-    private async Task SendPlayerHitAsync(NetworkStream stream, byte targetGhostId,
+    private async Task SendPlayerHitAsync(Stream stream, byte targetGhostId,
                                           float healthLoss, float staminaLoss, CancellationToken ct)
     {
         if (!_isDamageAuthority)
@@ -4174,7 +4213,7 @@ public partial class GameBridge(ClientConfig config)
         catch (Exception ex) { Console.WriteLine($"[role] could not tell the mod: {ex.Message}"); }
     }
 
-    private async Task SendAppearanceAsync(NetworkStream stream, Guid[] itemClasses, CancellationToken ct)
+    private async Task SendAppearanceAsync(Stream stream, Guid[] itemClasses, CancellationToken ct)
     {
         int payloadLen = 1 + itemClasses.Length * Protocol.ItemClassLen;
         var packet = new byte[3 + payloadLen];
@@ -4209,7 +4248,7 @@ public partial class GameBridge(ClientConfig config)
     /// written once per late sample (docs/WO-118-findings.md s3.10).
     /// A processor that dies ends the reader too, as the single loop did.
     /// </summary>
-    private async Task ReceiveLoopAsync(NetworkStream stream, CancellationToken ct)
+    private async Task ReceiveLoopAsync(Stream stream, CancellationToken ct)
     {
         var frames = Channel.CreateUnbounded<InFrame>(new UnboundedChannelOptions { SingleReader = true });
         var processor = ProcessFramesAsync(frames.Reader, ct);
@@ -6442,7 +6481,7 @@ public partial class GameBridge(ClientConfig config)
     /// will bounce the same hit back and forth forever. That is why applying
     /// remote damage goes straight to the pipe and never through here.
     /// </summary>
-    public async Task SendLocalHitAsync(NetworkStream stream, Guid soul,
+    public async Task SendLocalHitAsync(Stream stream, Guid soul,
                                                float stamina, float health,
                                                bool suppressHitReaction)
     {
@@ -6461,7 +6500,7 @@ public partial class GameBridge(ClientConfig config)
     /// cross-install-reliable alternative to guid-addressed 0x12. The caller
     /// has already translated the local per-save guid to the soul's name.
     /// </summary>
-    public async Task SendNpcDamageAsync(NetworkStream stream, string npcName,
+    public async Task SendNpcDamageAsync(Stream stream, string npcName,
                                                 float stamina, float health,
                                                 bool suppressHitReaction,
                                                 bool fatal = false, bool attributed = false)
@@ -6483,7 +6522,7 @@ public partial class GameBridge(ClientConfig config)
     }
 
     /// <summary>Report an NPC our client killed. Idempotent at every receiver.</summary>
-    public async Task SendLocalDeathAsync(NetworkStream stream, Guid soul)
+    public async Task SendLocalDeathAsync(Stream stream, Guid soul)
     {
         var packet = new byte[3 + Protocol.DeathUpPayloadLen];
         packet[0] = Protocol.DeathUp;
@@ -6492,7 +6531,7 @@ public partial class GameBridge(ClientConfig config)
         await WritePacketAsync(stream, packet);
     }
 
-    private async Task SendVoiceAsync(NetworkStream stream, byte[] pcm)
+    private async Task SendVoiceAsync(Stream stream, byte[] pcm)
     {
         // 3 header + 640 payload = 643 bytes
         var packet = new byte[3 + Protocol.VoiceFrameLen];
@@ -6502,7 +6541,7 @@ public partial class GameBridge(ClientConfig config)
         await WritePacketAsync(stream, packet);
     }
 
-    private async Task SendPositionAsync(NetworkStream stream, float x, float y, float z, float rotZ,
+    private async Task SendPositionAsync(Stream stream, float x, float y, float z, float rotZ,
                                          bool isRiding, bool stale = false, BodyState2? state2 = null)
     {
         // WO-121 (v8): the WO-100.5 five-byte body state is superseded by the
@@ -6516,7 +6555,7 @@ public partial class GameBridge(ClientConfig config)
         // WO-118 follow-up: every packet carries the sender's clock, so the
         // peer's native writer renders this ghost on our timeline, not on its
         // arrival (flag 0x08; STALE heartbeats too -- same place, later time).
-        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, state2, SenderMsNow()));
+        await WritePacketAsync(stream, PositionCodec.BuildPosition(x, y, z, rotZ, isRiding, stale, state2, SenderMsNow(), Wo127ClaimsHost()));
     }
 
     /// <summary>
@@ -6814,7 +6853,7 @@ public partial class GameBridge(ClientConfig config)
     /// and said so. The owner runs the mod's burst; a non-owner sends an
     /// NpcResync action to the owner.
     /// </summary>
-    private async Task RequestNpcResyncAsync(byte reason, NetworkStream? stream, CancellationToken ct)
+    private async Task RequestNpcResyncAsync(byte reason, Stream? stream, CancellationToken ct)
     {
         string why = NpcResyncReason.Name(reason);
         if (!_hostAuthority)
@@ -6899,7 +6938,7 @@ public partial class GameBridge(ClientConfig config)
     /// -- and that is the point: it proves the wire half on its own, so that
     /// when the native write lands the only new thing is the dispatch.
     /// </summary>
-    private async Task SendAttackEdgeAsync(NetworkStream stream, LocalBodyState lb, CancellationToken ct)
+    private async Task SendAttackEdgeAsync(Stream stream, LocalBodyState lb, CancellationToken ct)
     {
         var edge = _attackEdge.Feed(lb.HaveCombat, lb.InputClass, lb.Zone, lb.AttackType, lb.Prepared);
         if (edge is not (ActionPhase phase, AttackPayload payload)) return;
@@ -6923,7 +6962,7 @@ public partial class GameBridge(ClientConfig config)
         }
     }
 
-    private async Task WritePacketAsync(NetworkStream stream, byte[] packet, CancellationToken ct = default)
+    private async Task WritePacketAsync(Stream stream, byte[] packet, CancellationToken ct = default)
     {
         await _tcpWriteLock.WaitAsync(ct);
         try { await stream.WriteAsync(packet, ct); }
@@ -6943,7 +6982,7 @@ public partial class GameBridge(ClientConfig config)
     private static void WriteFloat(byte[] buf, int offset, float value) =>
         BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(offset), BitConverter.SingleToInt32Bits(value));
 
-    private static async Task ReadExactAsync(NetworkStream stream, byte[] buffer, CancellationToken ct = default)
+    private static async Task ReadExactAsync(Stream stream, byte[] buffer, CancellationToken ct = default)
     {
         int offset = 0;
         while (offset < buffer.Length)
@@ -6966,3 +7005,6 @@ public partial class GameBridge(ClientConfig config)
 
     // XML scraping moved to HttpGameTransport along with the calls that needed it.
 }
+
+/// <summary>WO-127: a connect failure retrying cannot fix (bad Steam code, different app id, Steam refuses the app).</summary>
+internal sealed class FatalConnectException : Exception { }

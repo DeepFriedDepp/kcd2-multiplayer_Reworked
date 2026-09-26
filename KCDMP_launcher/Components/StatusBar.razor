@@ -9,6 +9,10 @@
             HOST GAME
         </span>
         <span class="sep">|</span>
+        <span class="status-btn" @onclick="OnJoinSteam" style="color: var(--kcd-gold); font-weight: bold;">
+            JOIN THROUGH STEAM
+        </span>
+        <span class="sep">|</span>
         <span class="status-btn" @onclick="OnReportBug">
             REPORT BUG
         </span>
@@ -40,5 +44,6 @@
     [Parameter] public EventCallback OnRefresh { get; set; }
     [Parameter] public EventCallback OnExit { get; set; }
     [Parameter] public EventCallback OnHostGame { get; set; }
+    [Parameter] public EventCallback OnJoinSteam { get; set; }   // WO-127
     [Parameter] public EventCallback OnReportBug { get; set; }
 }

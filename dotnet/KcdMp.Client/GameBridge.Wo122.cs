@@ -38,7 +38,7 @@ public partial class GameBridge
     private volatile bool _ownerDeath = OwnerDeathDefault;
     private volatile int _autosaveMinutes = AutosaveMinutesDefault;
 
-    private NetworkStream? _wo122Stream;
+    private Stream? _wo122Stream;
     private CancellationToken _wo122Ct;
     private volatile bool _wo122Connected;
     private volatile bool _lockHeld;            // we asked the mod to hold kcdmp_host_only
@@ -61,7 +61,7 @@ public partial class GameBridge
 
     // ------------------------------------------------------------------ lifecycle
 
-    private void Wo122OnConnect(NetworkStream stream, CancellationToken ct)
+    private void Wo122OnConnect(Stream stream, CancellationToken ct)
     {
         _wo122Stream = stream;
         _wo122Ct = ct;
@@ -405,7 +405,7 @@ public partial class GameBridge
             await ExecLuaAsync($"if KCD2MP_SaveLeak then KCD2MP_SaveLeak(\"{s.Display}\") end");
             return;
         }
-        if (!(_combatRoleApplied && _isDamageAuthority && _wo122Stream is NetworkStream stream))
+        if (!(_combatRoleApplied && _isDamageAuthority && _wo122Stream is Stream stream))
         {
             Console.WriteLine($"MP-WORLDSAVE observed {s.Display} ({kind}, {s.Bytes} B, verify ok) -- no session as the host, not announced");
             return;

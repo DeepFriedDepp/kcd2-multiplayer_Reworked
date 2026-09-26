@@ -60,6 +60,8 @@
   <ItemGroup>
     <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
     <ProjectReference Include="..\KcdMp.Farkle\KcdMp.Farkle.csproj" />
+    <!-- WO-127: Steam P2P beside TCP (off unless Steam:Enabled). -->
+    <ProjectReference Include="..\KcdMp.Steam\KcdMp.Steam.csproj" />
   </ItemGroup>
 
   <ItemGroup>

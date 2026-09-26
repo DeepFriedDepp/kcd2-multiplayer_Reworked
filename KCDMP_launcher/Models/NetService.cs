@@ -289,6 +289,38 @@ namespace KCDMP_launcher.Services
         }
 
         /// <summary>
+        /// WO-127: the agent's connection in plain words (GET /connection-status).
+        /// Null while the agent is not up.
+        /// </summary>
+        public async Task<ConnectionStatusData?> GetConnectionStatusAsync(int port)
+        {
+            try
+            {
+                return await _httpClient.GetFromJsonAsync<ConnectionStatusData>($"http://localhost:{port}/connection-status");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// WO-127: the host's own relay -- Steam state, the join code, the last
+        /// refused joiner version (GET api/local/status, loopback only).
+        /// </summary>
+        public async Task<RelayLocalStatusData?> GetRelayLocalStatusAsync(int infoPort)
+        {
+            try
+            {
+                return await _httpClient.GetFromJsonAsync<RelayLocalStatusData>($"http://127.0.0.1:{infoPort}/api/local/status");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// WO-125: the player's answer to a first join ("bring" / "fresh"),
         /// POST /join-choice on the agent's listener. False when it did not land.
         /// </summary>

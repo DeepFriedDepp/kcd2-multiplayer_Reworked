@@ -1,6 +1,7 @@
 using KcdMp.Server.Features.ClientHandling;
 using KcdMp.Server.Features.Interactions;
 using KcdMp.Server.Features.ServerInformation;
+using KcdMp.Server.Features.Steam;
 using KcdMp.Server.Features.Tcp;
 using Serilog;
 
@@ -17,6 +18,10 @@ public class Program
 		["--port"] = "Tcp:Port",
 		["-p"]     = "Tcp:Port",
 		["--echo"] = "Echo",
+		// WO-127: the launcher's "Also allow Steam" (Host window).
+		["--steam"]      = "Steam:Enabled",
+		["--steam-app"]  = "Steam:AppId",
+		["--steam-game"] = "Steam:GameExe",
 	};
 
 	/// <summary>
@@ -66,6 +71,11 @@ public class Program
 		builder.Services.AddSingleton<ClientHandler>();
 		builder.Services.AddSingleton<TcpBroadcastService>();
 		builder.Services.AddSingleton<SessionManager>();
+		builder.Services.AddSingleton<ClientSessionRunner>();   // WO-127: one session lifecycle for TCP and Steam
+
+		// WO-127: Steam P2P beside the TCP listener. Does nothing unless Steam:Enabled.
+		builder.Services.AddSingleton<SteamRelayStatus>();
+		builder.Services.AddHostedService<SteamRelayService>();
 
 		var app = builder.Build();
 

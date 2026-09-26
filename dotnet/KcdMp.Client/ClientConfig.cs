@@ -195,6 +195,23 @@ public sealed class ClientConfig
     /// </summary>
     public bool IsHosting { get; set; } = false;
 
+    /// <summary>
+    /// WO-127: the host's Steam join code (launcher: Join, "Through Steam").
+    /// When set, the agent reaches the relay over Steam P2P instead of
+    /// ServerHost:ServerPort. Command line only (--steam), never written to
+    /// the config file: the code names the host's account.
+    /// </summary>
+    [JsonIgnore]
+    public string? SteamCode { get; set; }
+
+    /// <summary>WO-127: the Steam app id both players use (launcher Settings, advanced). Command line: --steam-app.</summary>
+    [JsonIgnore]
+    public uint SteamAppId { get; set; } = KcdMp.Steam.SteamApps.Default;
+
+    /// <summary>WO-127: the game exe whose steam_api64.dll to borrow (--steam-game); null = search.</summary>
+    [JsonIgnore]
+    public string? SteamGameExe { get; set; }
+
     [JsonIgnore]
     public static string DefaultPath =>
         Path.Combine(
@@ -340,6 +357,22 @@ public sealed class ClientConfig
                         break;
                     case "--hosting":
                         IsHosting = true;
+                        break;
+                    case "--steam" when value is not null:   // WO-127
+                        SteamCode = value;
+                        i++;
+                        break;
+                    case "--steam-app" when value is not null:
+                        if (uint.TryParse(value, out uint sa) && sa != 0) SteamAppId = sa;
+                        else Console.WriteLine($"[config] --steam-app '{value}' is not an app id, keeping {SteamAppId}");
+                        i++;
+                        break;
+                    case "--steam-game" when value is not null:
+                        SteamGameExe = value;
+                        i++;
+                        break;
+                    case "--test-connection":   // WO-127: handled in Program
+                    case "--steam-friends":
                         break;
                     case "--authority-host":
                         HostAuthorityEnabled = true;

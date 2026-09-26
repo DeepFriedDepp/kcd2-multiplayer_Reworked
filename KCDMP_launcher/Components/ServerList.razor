@@ -78,6 +78,15 @@
 
         <div class="frame-sep"></div>
 
+        @* WO-127: reachable / same version / round trip, without starting a session *@
+        <button class="frame-btn"
+                disabled="@(selectedServer == null)"
+                @onclick="() => OnTest.InvokeAsync(selectedServer)">
+            TEST CONNECTION
+        </button>
+
+        <div class="frame-sep"></div>
+
         <button class="frame-btn primary"
                 disabled="@(selectedServer == null)"
                 @onclick="() => OnLaunch.InvokeAsync(selectedServer)">
@@ -97,6 +106,7 @@
 
     [Parameter] public EventCallback<string> OnSort { get; set; }
     [Parameter] public EventCallback<ServerInfo> OnLaunch { get; set; }
+    [Parameter] public EventCallback<ServerInfo> OnTest { get; set; }   // WO-127
     [Parameter] public EventCallback<ServerInfo> OnToggleFavorite { get; set; }
 
     [Parameter] public EventCallback OnAddClick { get; set; }

@@ -44,7 +44,7 @@ public static class PositionCodec
     /// its bytes can never disagree. The sender ms goes after the state block.
     /// </summary>
     public static byte[] BuildPosition(float x, float y, float z, float rotZ,
-                                       bool isRiding, bool stale, BodyState2? state2, uint? senderMs = null)
+                                       bool isRiding, bool stale, BodyState2? state2, uint? senderMs = null, bool hostClaim = false)
     {
         int payloadLen = Protocol.PositionPayloadLen
                        + (state2.HasValue ? Protocol.BodyState2Len : 0)
@@ -59,7 +59,8 @@ public static class PositionCodec
         packet[19] = (byte)((isRiding ? Protocol.PositionFlagRiding : 0)
                           | (stale    ? Protocol.PositionFlagStale   : 0)
                           | (state2.HasValue ? Protocol.PositionFlagBodyState2 : 0)
-                          | (senderMs.HasValue ? Protocol.PositionFlagSenderMs : 0));
+                          | (senderMs.HasValue ? Protocol.PositionFlagSenderMs : 0)
+                          | (hostClaim ? Protocol.PositionFlagHostClaim : 0));   // WO-127: read and cleared by the relay
         int o = 20;
         if (state2 is BodyState2 b)
         {

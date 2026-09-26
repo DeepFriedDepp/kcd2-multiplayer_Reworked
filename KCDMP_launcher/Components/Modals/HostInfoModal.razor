@@ -17,8 +17,39 @@
                 }
                 else if (RelayRunning)
                 {
+                    @* WO-127: Steam first -- a code works across networks with no port forwarding. *@
                     <div class="kcd-input-group">
-                        <label class="kcd-label">Share this with your friend</label>
+                        <label class="kcd-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" checked="@AllowSteam" disabled="@SteamToggleLocked"
+                                   @onchange="e => OnAllowSteamChanged.InvokeAsync(e.Value is bool b && b)" />
+                            Also allow Steam
+                        </label>
+                        @if (AllowSteam)
+                        {
+                            @if (!string.IsNullOrEmpty(SteamCode) && SteamState == "ready")
+                            {
+                                <div class="kcd-hint">Your code (read it out to your friend; they choose JOIN THROUGH STEAM):</div>
+                                <div class="kcd-input" style="margin: 6px 0; font-weight: bold; font-size: 22px; letter-spacing: 3px; text-align: center;">@SteamCode</div>
+                            }
+                            <div class="kcd-hint" style="@(SteamState == "failed" ? "color: var(--kcd-warn);" : "")">@SteamMessage</div>
+                            @if (!string.IsNullOrEmpty(SteamAppName))
+                            {
+                                <div class="kcd-hint">Steam app: @SteamAppName (your friend's launcher must use the same one).</div>
+                            }
+                        }
+                        @if (SteamToggleLocked)
+                        {
+                            <div class="kcd-hint">Stop hosting to change this.</div>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(RefusedNotice))
+                    {
+                        <div class="kcd-hint" style="color: var(--kcd-warn); margin-bottom: 10px;">@RefusedNotice</div>
+                    }
+
+                    <div class="kcd-input-group">
+                        <label class="kcd-label">Or share your address</label>
                         @if (Addresses.Count == 0)
                         {
                             <div class="kcd-hint">No network adapters found -- pass "127.0.0.1:@Port" to a friend on this same machine only, or check your network connection.</div>
@@ -67,4 +98,14 @@
     [Parameter] public bool RelayRunning { get; set; }
     [Parameter] public EventCallback OnLaunchAsHost { get; set; }
     [Parameter] public EventCallback OnStopRelay { get; set; }
+
+    // WO-127: Steam as a way in, beside the addresses.
+    [Parameter] public bool AllowSteam { get; set; }
+    [Parameter] public bool SteamToggleLocked { get; set; }
+    [Parameter] public EventCallback<bool> OnAllowSteamChanged { get; set; }
+    [Parameter] public string SteamState { get; set; } = "off";
+    [Parameter] public string SteamMessage { get; set; } = "";
+    [Parameter] public string? SteamCode { get; set; }
+    [Parameter] public string SteamAppName { get; set; } = "";
+    [Parameter] public string RefusedNotice { get; set; } = "";
 }

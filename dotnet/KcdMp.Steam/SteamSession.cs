@@ -104,20 +104,20 @@ public sealed class SteamSession : IDisposable
 
         try
         {
-            if (!SteamNative.SteamAPI_IsSteamRunning())
-            {
-                failure = SteamStartFailure.SteamNotRunning;
-                detail = "SteamAPI_IsSteamRunning=false";
-                return null;
-            }
+            // WO-127 Phase 0: SteamAPI_IsSteamRunning only reads the
+            // ActiveProcess registry pid, which the current Steam client leaves
+            // at 0 while it is up and logged on (observed). InitFlat's own
+            // answer is the authority; the registry reading is kept as detail.
+            bool runningHint = SteamNative.SteamAPI_IsSteamRunning();
             var err = new byte[1024];
             int r = SteamNative.SteamAPI_InitFlat(err);
             if (r != 0)
             {
                 failure = r == 2 ? SteamStartFailure.SteamNotRunning : SteamStartFailure.InitFailed;
-                detail = $"SteamAPI_InitFlat={r} {CString(err)}";
+                detail = $"SteamAPI_InitFlat={r} {CString(err)} IsSteamRunning={(runningHint ? 1 : 0)}";
                 return null;
             }
+            if (!runningHint) detail = "IsSteamRunning=0 (registry hint) but InitFlat=OK";
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
         {
@@ -203,6 +203,14 @@ public sealed class SteamSession : IDisposable
 
     public void ClearRichPresence() => SteamNative.SteamAPI_ISteamFriends_ClearRichPresence(_friends);
 
+    /// <summary>Our own rich presence value for <paramref name="key"/> as Steam reports it (null when unset).</summary>
+    public string? OwnRichPresence(string key)
+    {
+        var p = SteamNative.SteamAPI_ISteamFriends_GetFriendRichPresence(_friends, LocalSteamId, key);
+        string? v = p == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(p);
+        return string.IsNullOrEmpty(v) ? null : v;
+    }
+
     /// <summary>
     /// Friends playing under the same app id right now, with one of their
     /// rich presence values. Returned in memory only; callers must not log
@@ -221,6 +229,23 @@ public sealed class SteamSession : IDisposable
             var p = SteamNative.SteamAPI_ISteamFriends_GetFriendRichPresence(_friends, f, richPresenceKey);
             string? v = p == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(p);
             list.Add((f, string.IsNullOrEmpty(v) ? null : v));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// WO-127: friends in this app whose <paramref name="richPresenceKey"/> is
+    /// set, with their persona name, for the launcher's "pick a friend" list.
+    /// In memory only: the name and id must never reach a log.
+    /// </summary>
+    public List<(ulong SteamId, string Persona, string Value)> FriendsWithPresence(string richPresenceKey)
+    {
+        var list = new List<(ulong, string, string)>();
+        foreach (var (id, value) in FriendsInThisApp(richPresenceKey))
+        {
+            if (value is null) continue;
+            var p = SteamNative.SteamAPI_ISteamFriends_GetFriendPersonaName(_friends, id);
+            list.Add((id, p == IntPtr.Zero ? "" : Marshal.PtrToStringUTF8(p) ?? "", value));
         }
         return list;
     }

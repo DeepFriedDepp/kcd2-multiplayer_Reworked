@@ -1,0 +1,75 @@
+@inherits ModalBase
+@using KCDMP_launcher.Models
+
+@* WO-127: Join, "Through Steam": the host's code, or a Steam friend who is hosting. *@
+@if (IsVisible)
+{
+    <div class="modal-overlay @(isClosing ? "closing" : "")">
+        <div class="modal-box" @onclick:stopPropagation="true" style="max-width: 560px;">
+
+            <div class="modal-frame-top modal-frame-bg"></div>
+
+            <div class="modal-content" style="text-align: left;">
+                <div class="modal-title" style="text-align: center;">JOIN THROUGH STEAM</div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Your host's code</label>
+                    <input class="kcd-input" placeholder="ABCD-EFG" value="@Code" style="font-size: 20px; letter-spacing: 3px; text-align: center;"
+                           @oninput="e => CodeChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)" />
+                    <div class="kcd-hint">Steam app: @AppName. Your host's launcher must use the same one (Settings, Advanced).</div>
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Or pick a Steam friend who is hosting</label>
+                    <button class="kcd-btn" disabled="@Busy" @onclick="OnFindFriends" style="padding: 6px 14px; font-size: 12px;">FIND FRIENDS</button>
+                    @if (Friends is { Count: > 0 })
+                    {
+                        @foreach (var f in Friends)
+                        {
+                            <div class="kcd-input" style="margin-top: 6px; cursor: pointer; @(f.Code == Code ? "font-weight: bold;" : "")"
+                                 @onclick="() => CodeChanged.InvokeAsync(f.Code)">
+                                @f.Name <span style="opacity: 0.7;">(version @f.Release)</span>
+                            </div>
+                        }
+                    }
+                    @if (!string.IsNullOrEmpty(FriendsNote))
+                    {
+                        <div class="kcd-hint">@FriendsNote</div>
+                    }
+                </div>
+
+                @if (!string.IsNullOrEmpty(ResultMessage))
+                {
+                    <div class="kcd-hint" style="margin: 10px 0; @(ResultOk ? "" : "color: var(--kcd-warn);")">@ResultMessage</div>
+                }
+                @if (Busy)
+                {
+                    <div class="kcd-hint">@BusyText</div>
+                }
+
+                <div class="modal-actions">
+                    <button class="kcd-btn" disabled="@(Busy || string.IsNullOrWhiteSpace(Code))" @onclick="OnTest">TEST CONNECTION</button>
+                    <button class="kcd-btn primary" disabled="@(Busy || string.IsNullOrWhiteSpace(Code))" @onclick="OnJoin">JOIN</button>
+                    <button class="kcd-btn" @onclick="CloseModalAsync">CLOSE</button>
+                </div>
+            </div>
+
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string Code { get; set; } = "";
+    [Parameter] public EventCallback<string> CodeChanged { get; set; }
+    [Parameter] public string AppName { get; set; } = "";
+    [Parameter] public List<SteamFriendData>? Friends { get; set; }
+    [Parameter] public string FriendsNote { get; set; } = "";
+    [Parameter] public string ResultMessage { get; set; } = "";
+    [Parameter] public bool ResultOk { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string BusyText { get; set; } = "";
+    [Parameter] public EventCallback OnFindFriends { get; set; }
+    [Parameter] public EventCallback OnTest { get; set; }
+    [Parameter] public EventCallback OnJoin { get; set; }
+}

@@ -133,7 +133,7 @@ public partial class GameBridge
         return n;
     }
 
-    private void Wo124OnConnect(NetworkStream stream, CancellationToken ct)
+    private void Wo124OnConnect(Stream stream, CancellationToken ct)
     {
         _modeTold.Clear();
         _modeBroadcastUtc = DateTime.MinValue;

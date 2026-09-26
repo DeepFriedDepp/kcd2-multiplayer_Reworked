@@ -204,7 +204,7 @@ public partial class GameBridge
     {
         var br = BranchNewestFirst();
         br.Reverse();
-        if (br.Count == 0 || _wo122Stream is not System.Net.Sockets.NetworkStream stream) { Console.WriteLine($"MP-HENRY host: join 0x{joinId:x8}: no branch to replay"); return; }
+        if (br.Count == 0 || _wo122Stream is not Stream stream) { Console.WriteLine($"MP-HENRY host: join 0x{joinId:x8}: no branch to replay"); return; }
         var m = BranchMap();
         for (int i = 0; i < br.Count; i++)
         {

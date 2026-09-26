@@ -1,0 +1,52 @@
+@inherits ModalBase
+
+@* WO-127: a plain title + message (Test connection results, connection problems). *@
+@if (IsVisible)
+{
+    <div class="modal-overlay @(isClosing ? "closing" : "")">
+        <div class="modal-box" @onclick:stopPropagation="true" style="max-width: 520px;">
+
+            <div class="modal-frame-top modal-frame-bg"></div>
+
+            <div class="modal-content" style="text-align: center;">
+                <div class="modal-title">@Title</div>
+
+                <p>@Message</p>
+                @if (!string.IsNullOrEmpty(NextStep))
+                {
+                    <p style="opacity: 0.85;">@NextStep</p>
+                }
+
+                @if (ShowAddressFallback)
+                {
+                    @* WO-127: Steam failed -- the direct path still works in this same launch. *@
+                    <div class="kcd-input-group" style="text-align: left;">
+                        <label class="kcd-label">The host's address (IP or name, and port)</label>
+                        <input class="kcd-input" placeholder="203.0.113.7:7778" value="@Address"
+                               @oninput="e => AddressChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)" />
+                    </div>
+                }
+
+                <div class="modal-actions">
+                    @if (ShowAddressFallback)
+                    {
+                        <button class="kcd-btn primary" disabled="@string.IsNullOrWhiteSpace(Address)" @onclick="OnUseAddress">CONNECT BY ADDRESS</button>
+                    }
+                    <button class="kcd-btn" @onclick="CloseModalAsync">CLOSE</button>
+                </div>
+            </div>
+
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Message { get; set; } = "";
+    [Parameter] public string NextStep { get; set; } = "";
+    [Parameter] public bool ShowAddressFallback { get; set; }
+    [Parameter] public string Address { get; set; } = "";
+    [Parameter] public EventCallback<string> AddressChanged { get; set; }
+    [Parameter] public EventCallback OnUseAddress { get; set; }
+}

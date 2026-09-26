@@ -71,6 +71,7 @@ internal static class SteamNative
     [DllImport(Lib, CallingConvention = Cc)] public static extern void SteamAPI_ISteamFriends_RequestFriendRichPresence(IntPtr self, ulong friend);
     [DllImport(Lib, CallingConvention = Cc)] [return: MarshalAs(UnmanagedType.I1)] public static extern bool SteamAPI_ISteamFriends_SetRichPresence(IntPtr self, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, [MarshalAs(UnmanagedType.LPUTF8Str)] string? value);
     [DllImport(Lib, CallingConvention = Cc)] public static extern void SteamAPI_ISteamFriends_ClearRichPresence(IntPtr self);
+    [DllImport(Lib, CallingConvention = Cc)] public static extern IntPtr SteamAPI_ISteamFriends_GetFriendPersonaName(IntPtr self, ulong friend);
     [DllImport(Lib, CallingConvention = Cc)] [return: MarshalAs(UnmanagedType.I1)] public static extern bool SteamAPI_ISteamFriends_InviteUserToGame(IntPtr self, ulong friend, [MarshalAs(UnmanagedType.LPUTF8Str)] string connectString);
 
     /// <summary>k_EFriendFlagImmediate: real friends, not blocked/requested/clan members.</summary>

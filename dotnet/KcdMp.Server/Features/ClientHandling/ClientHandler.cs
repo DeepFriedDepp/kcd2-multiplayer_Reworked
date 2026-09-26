@@ -218,20 +218,62 @@ public class ClientHandler
 	/// reconnects. Rule 1 is inert for a dedicated relay box (no loopback
 	/// client) and for a two-peers-on-one-machine test (two loopback clients),
 	/// both of which fall through to rule 2 exactly as before.
+	///
+	/// WO-127 puts one rule in front: (0) a client that CLAIMS the host
+	/// (Position flag 0x40: the launcher started the relay for it, or it runs a
+	/// shared world from inside a world -- GameBridge.Wo127) is the authority,
+	/// whatever order people connected in. That closes WO-124's carry-forward
+	/// (with a remote relay the first to connect used to win). Several
+	/// claimants (two players each in their own world with the toggle on)
+	/// resolve among themselves by rules 1 and 2. A Steam session is never
+	/// loopback (RelayConnection), so a Steam joiner can never take rule 1
+	/// from the host's own agent.
 	/// </summary>
 	private ClientSession? PickAuthority(out string reason)
 	{
+		var claimants = new List<ClientSession>();
+		foreach (var c in _clients)
+			if (c.IsReady && c.ClaimsHost) claimants.Add(c);
+		if (claimants.Count == 1) { reason = "declared-host"; return claimants[0]; }
+		var pool = claimants.Count > 1 ? claimants : _clients.Where(c => c.IsReady);
+		string prefix = claimants.Count > 1 ? "declared-host+" : "";
+
 		ClientSession? loop = null; int loopN = 0;
 		ClientSession? lowest = null;
-		foreach (var c in _clients)
+		foreach (var c in pool)
 		{
-			if (!c.IsReady) continue;
 			if (c.IsLoopback) { loopN++; loop ??= c; }
 			if (lowest is null || c.Id < lowest.Id) lowest = c;
 		}
-		if (loopN == 1) { reason = "relay-local"; return loop; }
-		reason = lowest is null ? "none" : "lowest-id";
+		if (loopN == 1) { reason = prefix + "relay-local"; return loop; }
+		reason = lowest is null ? "none" : prefix + "lowest-id";
 		return lowest;
+	}
+
+	/// <summary>
+	/// WO-127: the connection test's "is the host's game here": a ready client
+	/// that claims the host, or the relay-local one (a pre-WO-127 host agent
+	/// never claims).
+	/// </summary>
+	public bool HasHostConnected()
+	{
+		lock (_lock)
+			return _clients.Any(c => c.IsReady && (c.ClaimsHost || c.IsLoopback));
+	}
+
+	// WO-127: the last release a joiner was refused for, for the host's launcher
+	// (GET api/local/status): the mixed-build check in plain words on both sides.
+	private string? _lastRefusedRelease;
+	private DateTime _lastRefusedUtc;
+
+	public void NoteRefusedRelease(string release)
+	{
+		lock (_lock) { _lastRefusedRelease = release; _lastRefusedUtc = DateTime.UtcNow; }
+	}
+
+	public (string? Release, DateTime Utc) LastRefusedRelease
+	{
+		get { lock (_lock) return (_lastRefusedRelease, _lastRefusedUtc); }
 	}
 
 	/// <summary>

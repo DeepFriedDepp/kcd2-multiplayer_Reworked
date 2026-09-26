@@ -99,7 +99,7 @@ public partial class GameBridge
         catch (Exception ex) { Console.WriteLine($"MP-JOIN staging sweep failed: {ex.Message}"); }
     }
 
-    private void Wo123OnConnect(NetworkStream stream, CancellationToken ct)
+    private void Wo123OnConnect(Stream stream, CancellationToken ct)
     {
         _ = ExecLuaAsync("if KCD2MP_Wo123CfgEmit then KCD2MP_Wo123CfgEmit() end");
     }
@@ -266,7 +266,7 @@ public partial class GameBridge
 
     private async Task WriteJoinAsync(byte[] pkt)
     {
-        if (_wo122Stream is not NetworkStream s) throw new IOException("no relay connection");
+        if (_wo122Stream is not Stream s) throw new IOException("no relay connection");
         await WritePacketAsync(s, pkt, _wo122Ct);
     }
 

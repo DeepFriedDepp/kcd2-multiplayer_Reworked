@@ -77,6 +77,17 @@
                     </label>
                 </div>
 
+                @* WO-127: advanced. Both players must pick the same one. *@
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Advanced: Steam app for Steam connections</label>
+                    <select class="kcd-input" value="@Settings.SteamAppId" @onchange="e => Settings.SteamAppId = uint.TryParse(e.Value?.ToString(), out var a) ? a : 2429020u">
+                        <option value="2429020">KCD2 Modding Tools (2429020) - default</option>
+                        <option value="480">Spacewar (480) - Valve's test app</option>
+                        <option value="1771300">KCD2 retail (1771300)</option>
+                    </select>
+                    <div class="kcd-hint">Both players must use the same one. Leave it unless the tester page says otherwise.</div>
+                </div>
+
                 <div class="modal-actions">
                     <button class="kcd-btn primary" @onclick="OnSave">SAVE & CLOSE</button>
                     <button class="kcd-btn" @onclick="CloseModalAsync">CANCEL</button>

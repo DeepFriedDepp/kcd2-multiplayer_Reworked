@@ -16,8 +16,10 @@ namespace KcdMp.Server.Features.ClientHandling;
 public class ClientSession
 {
     private readonly ILogger _logger;
-    private readonly TcpClient _tcp;
-    private readonly NetworkStream _stream;
+    // WO-127: the transport is a RelayConnection (TCP or Steam P2P), never a
+    // TcpClient directly, so a Steam peer is its own non-loopback session.
+    private readonly RelayConnection _conn;
+    private readonly Stream _stream;
     private readonly TcpBroadcastService _broadcastService;
     private readonly SessionManager _sessions;
     private readonly ClientHandler _clientHandler;
@@ -60,6 +62,15 @@ public class ClientSession
     /// host's own agent. Read once at construction; see ClientHandler.PickAuthority.</summary>
     public bool IsLoopback { get; }
 
+    /// <summary>WO-127: "tcp" or "steam". A Steam session is never loopback.</summary>
+    public string Transport => _conn.Transport;
+
+    /// <summary>
+    /// WO-127: the client's latest Position carried the HOST CLAIM bit (it runs
+    /// the session). Read by ClientHandler.PickAuthority; see ProtocolWo127.cs.
+    /// </summary>
+    public bool ClaimsHost { get; private set; }
+
     /// <summary>WO-19. Null when the client's Handshake carried no trailing
     /// release-version field (an old build, or a synthetic test peer).</summary>
     public string? ReleaseVersion { get; private set; }
@@ -77,15 +88,19 @@ public class ClientSession
 
     public ClientSession(ILogger logger, TcpClient tcp, TcpBroadcastService broadcastService,
         SessionManager sessions, ClientHandler clientHandler, TimeSpan idleTimeout)
+        : this(logger, RelayConnection.FromTcp(tcp), broadcastService, sessions, clientHandler, idleTimeout) { }
+
+    public ClientSession(ILogger logger, RelayConnection conn, TcpBroadcastService broadcastService,
+        SessionManager sessions, ClientHandler clientHandler, TimeSpan idleTimeout)
     {
         _logger = logger;
-        _tcp = tcp;
-        _stream = tcp.GetStream();
+        _conn = conn;
+        _stream = conn.Stream;
         _idleTimeout = idleTimeout;
         _broadcastService = broadcastService;
         _sessions = sessions;
         _clientHandler = clientHandler;
-        IsLoopback = tcp.Client.RemoteEndPoint is IPEndPoint ep && IPAddress.IsLoopback(ep.Address);
+        IsLoopback = conn.IsLoopback;
     }
 
     public async Task RunAsync()
@@ -156,10 +171,24 @@ public class ClientSession
             // Protocol.cs, "Release-version enforcement": 0.26.4 + 0.26.5 must
             // not connect; a peer that declares nothing (pre-WO-19 build or a
             // synthetic test peer) is still accepted and logged as such.
+            // WO-127: a connection test (the launcher's Test connection button).
+            // Answered like a release refusal -- 0x3D, then closed -- so it never
+            // becomes a session, with "who is here" appended for the tester.
+            if (string.Equals(ReleaseVersion, Protocol.ConnectionTestRelease, StringComparison.Ordinal))
+            {
+                bool hostHere = _clientHandler.HasHostConnected();
+                int ready = _clientHandler.ReadyClientCount;
+                _logger.Information("[test] connection test over {Transport} from {ClientRemoteEndPoint}: answered release {Release}, ready={Ready}, host={Host}.",
+                    Transport, _conn.Remote, RelayReleaseVersion.Current, ready, hostHere ? 1 : 0);
+                EnqueueRaw(BuildPacket(Protocol.ReleaseVersionMismatch, ConnectionTestReply.BuildPayload(RelayReleaseVersion.Current, ready, hostHere)));
+                return;
+            }
+
             if (ReleaseVersion is { Length: > 0 } && !string.Equals(ReleaseVersion, RelayReleaseVersion.Current, StringComparison.Ordinal))
             {
+                _clientHandler.NoteRefusedRelease(ReleaseVersion);   // WO-127: the host's launcher says so in plain words
                 _logger.Warning("[!] Rejecting '{Name}' from {ClientRemoteEndPoint}: release {ClientRelease} does not match this relay's {RelayRelease} (both machines must run the same build).",
-                    name, _tcp.Client.RemoteEndPoint, ReleaseVersion, RelayReleaseVersion.Current);
+                    name, _conn.Remote, ReleaseVersion, RelayReleaseVersion.Current);
                 _clientHandler.CountDrop(Protocol.Handshake, "release-mismatch");
                 EnqueueRaw(BuildPacket(Protocol.ReleaseVersionMismatch, Encoding.UTF8.GetBytes(RelayReleaseVersion.Current)));
                 return;
@@ -168,7 +197,7 @@ public class ClientSession
             if (!_clientHandler.TryMarkReady(this))
             {
                 _logger.Warning("[!] Rejecting '{Name}' from {ClientRemoteEndPoint}: server is full.",
-                    name, _tcp.Client.RemoteEndPoint);
+                    name, _conn.Remote);
                 // WO-76: previously just returned, closing the socket with no
                 // packet -- the client's generic "expected Ack" failure looked
                 // identical to any other refusal, so it retried forever,
@@ -189,7 +218,7 @@ public class ClientSession
             Name = name;
 
             _logger.Information("[+] '{Name}' connected (id={Id}, protocol v{Version}, release {Release}, loopback={Loopback}) from {ClientRemoteEndPoint}.",
-                Name, Id, clientVersion, ReleaseVersion ?? "(none)", IsLoopback ? 1 : 0, _tcp.Client.RemoteEndPoint);
+                Name, Id, clientVersion, ReleaseVersion ?? "(none)", IsLoopback ? 1 : 0, _conn.Remote);
 
             // Broadcast this client's name to all others; send existing names to this client
             _broadcastService.BroadcastName(this);
@@ -757,6 +786,18 @@ public class ClientSession
                 float z    = ReadFloat(posPayload, 8);
                 float rotZ = ReadFloat(posPayload, 12);
                 byte  flags = posPayload[16];
+                // WO-127: the HOST CLAIM bit is for the relay alone -- read for the
+                // authority decision, cleared before the Ghost fan-out so every
+                // receiver sees exactly what it saw before WO-127.
+                bool claims = (flags & Protocol.PositionFlagHostClaim) != 0;
+                flags = (byte)(flags & ~Protocol.PositionFlagHostClaim);
+                if (claims != ClaimsHost)
+                {
+                    ClaimsHost = claims;
+                    _logger.Information("MP-HOST-CLAIM '{Name}' (id={Id}, {Transport}) {What} the session host.",
+                        Name, Id, Transport, claims ? "claims" : "no longer claims");
+                    _broadcastService.BroadcastCombatRole();   // re-decides and logs MP-AUTHORITY-OWNER
+                }
                 // WO-101: everything after the flags byte is the tail -- body
                 // state (5) and/or the sender's ms (4, WO-118 follow-up), none
                 // on a 17-byte packet -- forwarded verbatim. The relay does not
@@ -780,7 +821,7 @@ public class ClientSession
         {
             StopWriteQueue();
             await writeTask;
-            _tcp.Dispose();
+            _conn.Dispose();
         }
     }
 
@@ -1337,7 +1378,7 @@ public class ClientSession
         if (reason is not null)
             _logger.Warning("[!] Disconnecting {Name}: {Reason}.", Name ?? $"id={Id}", reason);
         _writeSignal.Release();
-        _tcp.Dispose();
+        _conn.Dispose();
     }
 
     private async Task WriteLoopAsync()

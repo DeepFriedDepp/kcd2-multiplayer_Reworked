@@ -180,6 +180,12 @@ async Task<int> ChildAsync(string childRole)
         {
             using var l = s.Listen(F.VirtualPort);
             Out.Line($"WO120 check app={app} listen=OK friends_bucket={(s.FriendCount() switch { 0 => "0", < 10 => "1-9", < 50 => "10-49", _ => "50+" })}");
+            // WO-127 Phase 0: rich presence round trip on this account (set, read our own key back).
+            bool rpSet = s.SetRichPresence("kcdmp", "check");
+            await Task.Delay(500);
+            string? rpBack = s.OwnRichPresence("kcdmp");
+            Out.Line($"WO120 check app={app} rich_presence_set={(rpSet ? 1 : 0)} read_back={(rpBack == "check" ? "match" : rpBack is null ? "empty" : "other")}");
+            s.ClearRichPresence();
             return ok ? 0 : 5;
         }
         case "host":
