@@ -4935,6 +4935,7 @@ function KCD2MP_JoinTry(joinId, partner, timeoutS)
     w.joinId, w.partner, w.paused, w.pausedAt = joinId, tostring(partner or "your partner"), true, os.clock()
     w.timeoutS = tonumber(timeoutS) or w.timeoutS
     w.npcs, w.npcN, w.npcSkipped, w.pct, w.phase = {}, 0, 0, 0, "saving"
+    w.phaseAt = os.clock()   -- WO-129: each stage's own elapsed seconds on the host's bar
     -- the clock: read, freeze, read back
     w.ratioWas, w.ratioSet = nil, false
     pcall(function() w.ratioWas = Calendar.GetWorldTimeRatio() end)
@@ -5033,7 +5034,37 @@ end
 function KCD2MP_JoinProgress(joinId, pct, phase)
     local w = KCD2MP.w123
     if w.joinId ~= tostring(joinId) then return end
-    w.pct, w.phase = tonumber(pct) or 0, tostring(phase or "")
+    local ph = tostring(phase or "")
+    if ph ~= w.phase then w.phaseAt = os.clock() end   -- WO-129: a new stage starts its own clock
+    w.pct, w.phase = tonumber(pct) or 0, ph
+end
+
+-- WO-129: the host's join bar, one pure function (Test-WO129Synthetic). The
+-- first session's bar read 100 % for the whole 1-2 minutes the joiner spent
+-- loading: it measured the file transfer only. Now it names the stage and
+-- counts that stage's seconds; only "sending" shows a percentage.
+--   returns title, ladder
+function KCD2MP_JoinBarText(partner, phase, pct, stageS)
+    local who = tostring(partner or "your partner")
+    local secs = math.max(0, math.floor(tonumber(stageS) or 0))
+    local p = math.max(0, math.min(100, math.floor(tonumber(pct) or 0)))
+    local title
+    if phase == "loading" then title = string.format("%s is loading your world... %d s", who, secs)
+    elseif phase == "sending" then title = string.format("Sending the world to %s... %d%%", who, p)
+    else title = string.format("%s is joining -- saving the world... %d s", who, secs) end
+    local order = { "saving", "sending", "loading" }
+    local names = { saving = "save", sending = "send", loading = "load" }
+    local at = 1
+    for i, k in ipairs(order) do if k == phase then at = i end end
+    local parts = {}
+    for i, k in ipairs(order) do
+        local mark = i < at and "[x]" or (i == at and "[>]" or "[ ]")
+        local extra = ""
+        if i == at then extra = (k == "sending") and string.format(" %d%%", p) or string.format(" %d s", secs) end
+        parts[#parts + 1] = mark .. " " .. names[k] .. extra
+    end
+    parts[#parts + 1] = "[ ] ready"
+    return title, table.concat(parts, "   ")
 end
 
 -- mp_join_cancel: on the host, resume NOW (here, not via the agent) and tell
@@ -5064,12 +5095,9 @@ function KCD2MP_JoinDrawUI()
         KCD2MP_JoinResume(w.joinId, "mod-safety-timeout")
         return
     end
-    local label = w.phase == "loading" and (w.partner .. " is loading the world...")
-               or (w.partner .. " is joining...")
-    local pct = math.max(0, math.min(100, math.floor(w.pct or 0)))
-    local bars = math.floor(pct / 5)
-    local bar = "[" .. string.rep("|", bars) .. string.rep(".", 20 - bars) .. "] " .. pct .. "%"
-    mp_draw_row("join_title", 760, 480, label, 2.4, label)
+    local label, bar = KCD2MP_JoinBarText(w.partner, w.phase, w.pct, os.clock() - (w.phaseAt or w.pausedAt or os.clock()))
+    -- the log key: once per stage, not once a second
+    mp_draw_row("join_title", 760, 480, label, 2.4, (label:gsub("%d+ s", "N s"):gsub("%d+%%", "N%%")))
     mp_draw_row("join_bar", 760, 520, bar, 2.0, "bar")
     mp_draw_row("join_hint", 760, 556, "The world is paused until they arrive (mp_join_cancel to stop).", 1.4)
 end
@@ -5834,8 +5862,28 @@ end
 -- rescan cadence (KCD2MP_NpcSyncTick, scanMs). A momentary crossing does
 -- not flip the state -- togetherDwellS of SUSTAINED wanting-the-other-state
 -- is required, tracked by KCD2MP._togetherWantSince.
+-- WO-129: a host running a SHARED world owns every NPC near either player.
+-- The first two-player session's host respawned 369 m away; the co-location
+-- state went "apart", the joiner stopped being a scan anchor, and the NPCs
+-- around the joiner left the stream (their copies jittered until the host
+-- came back). "Apart = NPCs local" is the separate-worlds design (WO-102.5
+-- Phase 4); in one shared world there is no "local" for a joiner to fall
+-- back to. So: while this machine hosts a shared world, co-location stays
+-- "together" (peer ghosts are always anchors, nothing is released).
+function KCD2MP_Wo129SharedAnchors()
+    return KCD2MP.w122 ~= nil and KCD2MP.w122.sharedWorld == true
+end
+
 local function mp_wo1025_colocation_tick()
     if not (KCD2MP.wo102.authorityHost and KCD2MP.hitSensorOn) then return end
+    if KCD2MP_Wo129SharedAnchors() then
+        KCD2MP._togetherWantSince = nil
+        if not KCD2MP.wo1025.together then
+            KCD2MP.wo1025.together = true
+            mp_log("WO129-SHARED shared world hosted here: every player is an NPC scan anchor, apart never releases")
+        end
+        return
+    end
     local pp = nil
     pcall(function() pp = player:GetWorldPos() end)
     if not pp then return end
@@ -5905,7 +5953,7 @@ local function mp_npc_rescan()
     -- the transition, stops owning) anything near a far peer, rather than
     -- each NPC crossing its own radius threshold independently.
     local anchors = { pp }
-    if underHostAuthority and KCD2MP.wo1025.together then
+    if underHostAuthority and (KCD2MP.wo1025.together or KCD2MP_Wo129SharedAnchors()) then
         for _, g in pairs(KCD2MP.ghosts or {}) do
             local gp = nil
             pcall(function() if g.entity and g.entity.GetWorldPos then gp = g.entity:GetWorldPos() end end)

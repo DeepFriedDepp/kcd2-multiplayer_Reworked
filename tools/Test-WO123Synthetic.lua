@@ -331,23 +331,26 @@ do
 end
 
 -- (l) the bar ---------------------------------------------------------------------
+-- WO-129 replaced the 20-block bar with the stage and its seconds (the host saw
+-- "loading" with no progress for a minute in the first two-player session);
+-- the wording checks follow KCD2MP_JoinBarText (tools/Test-WO129Synthetic.lua).
 do
     reset()
     KCD2MP_JoinTry("0000c0de", "Bob", 180)
     DRAWN = {}
     KCD2MP_DrawInteractionUI()
     local all = table.concat(DRAWN, " | ")
-    check("l: 'Bob is joining...' on screen", all:find("Bob is joining...", 1, true) ~= nil, all)
-    check("l: the bar starts at 0%", all:find("] 0%", 1, true) ~= nil, all)
+    check("l: 'Bob is joining -- saving the world...' on screen", all:find("Bob is joining -- saving the world... 0 s", 1, true) ~= nil, all)
+    check("l: the ladder starts on save", all:find("[>] save 0 s   [ ] send", 1, true) ~= nil, all)
     KCD2MP_JoinProgress("0000c0de", 62, "sending")
     DRAWN = {}
     KCD2MP_DrawInteractionUI()
     all = table.concat(DRAWN, " | ")
-    check("l: 62% with 12 of 20 bars", all:find("[||||||||||||........] 62%", 1, true) ~= nil, all)
+    check("l: sending shows 62%", all:find("Sending the world to Bob... 62%", 1, true) ~= nil and all:find("[x] save   [>] send 62%", 1, true) ~= nil, all)
     KCD2MP_JoinProgress("0000c0de", 100, "loading")
     DRAWN = {}
     KCD2MP_DrawInteractionUI()
-    check("l: then 'Bob is loading the world...'", table.concat(DRAWN, " | "):find("Bob is loading the world...", 1, true) ~= nil)
+    check("l: then 'Bob is loading your world... N s'", table.concat(DRAWN, " | "):find("Bob is loading your world... 0 s", 1, true) ~= nil, table.concat(DRAWN, " | "))
     KCD2MP_JoinProgress("ffffffff", 5, "sending")
     check("l: another join's progress is ignored", KCD2MP.w123.pct == 100)
     KCD2MP_JoinResume("0000c0de", "ready")
